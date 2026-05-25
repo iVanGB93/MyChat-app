@@ -44,7 +44,8 @@
         "android.permission.VIBRATE",
         "android.permission.RECEIVE_BOOT_COMPLETED"
       ],
-      "package": "com.qbared.chat"
+      "package": "com.qbared.chat",
+      "versionCode": 1
     },
     "web": {
       "favicon": "./assets/favicon.png"
