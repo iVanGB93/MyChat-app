@@ -45,8 +45,7 @@
         "android.permission.RECEIVE_BOOT_COMPLETED"
       ],
       "package": "com.qbared.chat",
-      "versionCode": 1,
-      "googleServicesFile": "$GOOGLE_SERVICES_JSON"
+      "versionCode": 1
     },
     "web": {
       "favicon": "./assets/favicon.png"
