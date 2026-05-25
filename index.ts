@@ -1,3 +1,6 @@
+// Register foreground service headless task BEFORE anything else (must be module-level)
+import './src/services/foregroundService';
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';
