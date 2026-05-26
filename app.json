@@ -44,7 +44,7 @@
         "android.permission.VIBRATE",
         "android.permission.RECEIVE_BOOT_COMPLETED"
       ],
-      "package": "com.qbared.chat",
+      "package": "com.axonic",
       "versionCode": 1
     },
     "web": {
