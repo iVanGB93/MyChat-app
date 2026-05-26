@@ -1,4 +1,4 @@
-package com.qbared.chat
+package com.axonic
 
 import android.content.Intent
 import com.facebook.react.bridge.Promise

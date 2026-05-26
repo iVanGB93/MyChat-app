@@ -114,10 +114,11 @@ function withNativeFiles(config) {
     (cfg) => {
       const projectRoot = cfg.modRequest.projectRoot;
       const srcDir = path.join(projectRoot, 'plugins', 'android');
+      const pkg = (cfg.android?.package || cfg.expo?.android?.package || 'com.axonic').replace(/\./g, '/');
       const javaDir = path.join(
         projectRoot,
         'android', 'app', 'src', 'main',
-        'java', 'com', 'qbared', 'chat'
+        'java', ...pkg.split('/')
       );
 
       // Ensure java package directory exists

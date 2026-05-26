@@ -1,4 +1,4 @@
-package com.qbared.chat
+package com.axonic
 
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.ReactApplicationContext
