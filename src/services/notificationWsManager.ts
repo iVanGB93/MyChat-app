@@ -17,7 +17,7 @@ import api, { getTokens, saveTokens, BASE_URL } from './api';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
-const USER_ID_KEY = '@mychat_ws_userid';
+const USER_ID_KEY = '@axonic_ws_userid';
 
 /* ---- Types ---- */
 export interface NotificationPayload {

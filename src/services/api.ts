@@ -5,7 +5,7 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const TOKEN_KEY = '@mychat_tokens';
+const TOKEN_KEY = '@axonic_tokens';
 
 // Change this to your backend URL (use your machine's LAN IP for device testing)
 // export const BASE_URL = 'http://10.0.2.2:8000';  // Android emulator → host
