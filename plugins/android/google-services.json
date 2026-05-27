@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "515455178402",
+    "project_id": "axion-3b993",
+    "storage_bucket": "axion-3b993.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:515455178402:android:001824da86a4ae037ca9fb",
+        "android_client_info": {
+          "package_name": "com.axonic"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBMHLvqNG2JhZjsOyCf4gOSh0pP1vS--Fs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
