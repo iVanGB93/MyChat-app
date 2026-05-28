@@ -1,10 +1,9 @@
 /* ------------------------------------------------------------------ */
-/*  Avatar — circular user avatar with online indicator                */
+/*  Avatar — futuristic neon-ring style                               */
 /* ------------------------------------------------------------------ */
 
 import React from 'react';
 import { View, Text, StyleSheet, Image } from 'react-native';
-import { Font } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 
 interface Props {
@@ -15,37 +14,75 @@ interface Props {
   isOnline?: boolean;
 }
 
+function stringToColor(str: string): string {
+  const palette = ['#00E5FF', '#A855F7', '#00FF9F', '#FF3B6B', '#FFB800', '#66F0FF'];
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  return palette[Math.abs(hash) % palette.length];
+}
+
 export default function Avatar({ uri, name, size = 48, showOnline = false, isOnline = false }: Props) {
   const { colors: Colors } = useTheme();
   const initials = name
     .split(' ')
-    .map((w) => w[0])
+    .map((w) => w[0] ?? '')
     .join('')
     .toUpperCase()
     .slice(0, 2);
 
-  const bgColor = stringToColor(name);
+  const ringColor = stringToColor(name || 'A');
+  const innerSize = size - 4;
 
   return (
-    <View style={[styles.wrapper, { width: size, height: size }]}>
-      {uri ? (
-        <Image source={{ uri }} style={[styles.image, { width: size, height: size, borderRadius: size / 2 }]} />
-      ) : (
-        <View style={[styles.placeholder, { width: size, height: size, borderRadius: size / 2, backgroundColor: bgColor }]}>
-          <Text style={[styles.initials, { fontSize: size * 0.38, color: Colors.textInverse }]}>{initials}</Text>
-        </View>
-      )}
+    <View style={{ width: size, height: size }}>
+      <View
+        style={[
+          styles.ring,
+          {
+            width: size,
+            height: size,
+            borderRadius: size / 2,
+            borderColor: ringColor,
+            shadowColor: ringColor,
+          },
+        ]}
+      >
+        {uri ? (
+          <Image
+            source={{ uri }}
+            style={{ width: innerSize, height: innerSize, borderRadius: innerSize / 2 }}
+            resizeMode="cover"
+          />
+        ) : (
+          <View
+            style={[
+              styles.placeholder,
+              {
+                width: innerSize,
+                height: innerSize,
+                borderRadius: innerSize / 2,
+                backgroundColor: Colors.surface,
+              },
+            ]}
+          >
+            <Text style={{ fontSize: size * 0.35, fontWeight: '700', color: ringColor, letterSpacing: 0.5 }}>
+              {initials}
+            </Text>
+          </View>
+        )}
+      </View>
+
       {showOnline && (
         <View
           style={[
             styles.badge,
             {
-              backgroundColor: isOnline ? Colors.online : Colors.offline,
               width: size * 0.28,
               height: size * 0.28,
-              borderRadius: size * 0.14,
-              borderWidth: size * 0.05,
-              borderColor: Colors.surface,
+              borderRadius: (size * 0.28) / 2,
+              backgroundColor: isOnline ? Colors.online : Colors.offline,
+              borderColor: Colors.background,
+              shadowColor: isOnline ? Colors.online : 'transparent',
             },
           ]}
         />
@@ -54,21 +91,28 @@ export default function Avatar({ uri, name, size = 48, showOnline = false, isOnl
   );
 }
 
-function stringToColor(str: string): string {
-  const colors = ['#7C3AED', '#8B5CF6', '#A78BFA', '#6D28D9', '#5B21B6', '#C084FC', '#9333EA', '#7E22CE'];
-  let hash = 0;
-  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
-  return colors[Math.abs(hash) % colors.length];
-}
-
 const styles = StyleSheet.create({
-  wrapper: { position: 'relative' },
-  image: { resizeMode: 'cover' },
-  placeholder: { alignItems: 'center', justifyContent: 'center' },
-  initials: { ...Font.bold },
+  ring: {
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOpacity: 0.75,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
+  placeholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   badge: {
     position: 'absolute',
     bottom: 0,
     right: 0,
+    borderWidth: 2,
+    shadowOpacity: 0.9,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
   },
 });

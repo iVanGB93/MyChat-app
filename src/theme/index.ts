@@ -1,124 +1,132 @@
 /* ------------------------------------------------------------------ */
-/*  Design tokens — Light & Dark palettes                              */
+/*  Design tokens — Futuristic Neon / Cyberpunk palettes              */
 /* ------------------------------------------------------------------ */
 
 const shared = {
-  // Purple palette (same in both themes)
-  primary: '#5B21B6',
-  primaryDark: '#4C1D95',
-  primaryLight: '#7C3AED',
-  accent: '#6D28D9',
+  // Neon cyan primary
+  primary: '#00E5FF',
+  primaryDark: '#00B2CC',
+  primaryLight: '#66F0FF',
+  accent: '#A855F7',           // electric violet
 
   // Gradients
-  gradientStart: '#5B21B6',
-  gradientEnd: '#7C3AED',
+  gradientStart: '#00E5FF',
+  gradientEnd: '#A855F7',
 
   // Header
-  headerBg: '#5B21B6',
-  headerText: '#FFFFFF',
+  headerBg: '#020D1F',
+  headerText: '#00E5FF',
 
   // Semantic
-  success: '#10B981',
-  error: '#EF4444',
-  warning: '#F59E0B',
-  info: '#3B82F6',
+  success: '#00FF9F',
+  error: '#FF3B6B',
+  warning: '#FFB800',
+  info: '#00E5FF',
 
   // Status
-  online: '#10B981',
-  offline: '#9CA3AF',
+  online: '#00FF9F',
+  offline: '#3D5A6E',
 
   // Others
-  overlay: 'rgba(0, 0, 0, 0.5)',
-  badge: '#EF4444',
-  textInverse: '#FFFFFF',
+  overlay: 'rgba(0, 0, 0, 0.72)',
+  badge: '#FF3B6B',
+  textInverse: '#020D1F',
 };
 
 export const LightColors = {
   ...shared,
 
   // Surfaces
-  background: '#F8F7FC',
-  chatBg: '#F3F0FF',
+  background: '#EAF6FF',
+  chatBg: '#DFF1FA',
   surface: '#FFFFFF',
-  surfaceVariant: '#F0EEFF',
+  surfaceVariant: '#D6EEF9',
   card: '#FFFFFF',
 
   // Text
-  text: '#1A1A2E',
-  textSecondary: '#6B7280',
-  textTertiary: '#9CA3AF',
+  text: '#02101E',
+  textSecondary: '#2A5370',
+  textTertiary: '#6B9AB8',
 
   // Chat bubbles
-  bubbleSent: '#EDE9FE',
-  bubbleSentText: '#1A1A2E',
+  bubbleSent: '#C8EEFF',
+  bubbleSentText: '#02101E',
   bubbleReceived: '#FFFFFF',
-  bubbleReceivedText: '#1A1A2E',
+  bubbleReceivedText: '#02101E',
 
   // Others
-  border: '#E5E7EB',
-  inputBg: '#F3F4F6',
-  shadow: 'rgba(91, 33, 182, 0.08)',
+  border: 'rgba(0, 180, 220, 0.3)',
+  inputBg: '#EAF6FF',
+  shadow: 'rgba(0, 229, 255, 0.12)',
   tabBarBg: '#FFFFFF',
-  unread: '#5B21B6',
-  checkBlue: '#6D28D9',
+  unread: '#00B2CC',
+  checkBlue: '#00B2CC',
 
   // Extras
-  fab: '#5B21B6',
-  fabShadow: 'rgba(91, 33, 182, 0.35)',
-  shimmer: '#E5E7EB',
-  activeTab: '#5B21B6',
-  inactiveTab: '#9CA3AF',
-  divider: '#F3F4F6',
-  searchBg: '#F3F4F6',
-  highlight: '#EDE9FE',
+  fab: '#00B2CC',
+  fabShadow: 'rgba(0, 229, 255, 0.35)',
+  shimmer: '#C8EEFF',
+  activeTab: '#00B2CC',
+  inactiveTab: '#6B9AB8',
+  divider: 'rgba(0, 180, 220, 0.15)',
+  searchBg: '#EAF6FF',
+  highlight: '#C8EEFF',
+
+  // Neon glow border (used for cards / inputs)
+  neonBorder: 'rgba(0, 180, 220, 0.4)',
+  neonGlow: 'rgba(0, 229, 255, 0.2)',
 
   // Aliases
-  teal: '#5B21B6',
-  tealDark: '#4C1D95',
+  teal: '#00B2CC',
+  tealDark: '#007A8C',
 };
 
 export const DarkColors = {
   ...shared,
 
-  // Surfaces
-  background: '#0F0D19',
-  chatBg: '#161225',
-  surface: '#1E1A2E',
-  surfaceVariant: '#28223D',
-  card: '#1E1A2E',
+  // Surfaces — deep space panels
+  background: '#010812',
+  chatBg: '#020D1F',
+  surface: '#071428',
+  surfaceVariant: '#0C1F3F',
+  card: '#071428',
 
   // Text
-  text: '#E8E6F0',
-  textSecondary: '#A09BB5',
-  textTertiary: '#706B85',
+  text: '#D9F0FA',
+  textSecondary: '#7BAEC7',
+  textTertiary: '#3D6A85',
 
   // Chat bubbles
-  bubbleSent: '#3B2D6B',
-  bubbleSentText: '#E8E6F0',
-  bubbleReceived: '#1E1A2E',
-  bubbleReceivedText: '#E8E6F0',
+  bubbleSent: '#0C2854',
+  bubbleSentText: '#D9F0FA',
+  bubbleReceived: '#071428',
+  bubbleReceivedText: '#D9F0FA',
 
   // Others
-  border: '#2D2845',
-  inputBg: '#1E1A2E',
-  shadow: 'rgba(0, 0, 0, 0.3)',
-  tabBarBg: '#13101F',
-  unread: '#7C3AED',
-  checkBlue: '#7C3AED',
+  border: 'rgba(0, 229, 255, 0.15)',
+  inputBg: '#020D1F',
+  shadow: 'rgba(0, 229, 255, 0.08)',
+  tabBarBg: '#010812',
+  unread: '#00E5FF',
+  checkBlue: '#00E5FF',
 
   // Extras
-  fab: '#6D28D9',
-  fabShadow: 'rgba(109, 40, 217, 0.45)',
-  shimmer: '#2D2845',
-  activeTab: '#7C3AED',
-  inactiveTab: '#706B85',
-  divider: '#28223D',
-  searchBg: '#1E1A2E',
-  highlight: '#28223D',
+  fab: '#00E5FF',
+  fabShadow: 'rgba(0, 229, 255, 0.4)',
+  shimmer: '#0C1F3F',
+  activeTab: '#00E5FF',
+  inactiveTab: '#3D6A85',
+  divider: 'rgba(0, 229, 255, 0.1)',
+  searchBg: '#020D1F',
+  highlight: '#0C2854',
+
+  // Neon glow borders
+  neonBorder: 'rgba(0, 229, 255, 0.25)',
+  neonGlow: 'rgba(0, 229, 255, 0.12)',
 
   // Aliases
-  teal: '#6D28D9',
-  tealDark: '#5B21B6',
+  teal: '#00E5FF',
+  tealDark: '#00B2CC',
 };
 
 /** Type for theme colors object */
@@ -137,6 +145,7 @@ export const Spacing = {
 };
 
 export const Radius = {
+  xs: 4,
   sm: 6,
   md: 12,
   lg: 16,
@@ -146,10 +155,10 @@ export const Radius = {
 };
 
 export const Font = {
-  regular: { fontWeight: '400' as const },
-  medium: { fontWeight: '500' as const },
-  semiBold: { fontWeight: '600' as const },
-  bold: { fontWeight: '700' as const },
+  regular: { fontWeight: '400' as const, letterSpacing: 0.2 },
+  medium: { fontWeight: '500' as const, letterSpacing: 0.3 },
+  semiBold: { fontWeight: '600' as const, letterSpacing: 0.4 },
+  bold: { fontWeight: '700' as const, letterSpacing: 0.5 },
   size: {
     xs: 11,
     sm: 13,

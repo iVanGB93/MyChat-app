@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Chat List Screen — modern purple theme                             */
+/*  Chat List Screen — futuristic cyberpunk theme                     */
 /* ------------------------------------------------------------------ */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -16,8 +16,9 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { Font, Spacing } from '../../theme';
+import { Font, Spacing, Radius } from '../../theme';
 import { getRooms } from '../../services/chatService';
+import { getLastMessagePerRoom } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import Avatar from '../../components/ui/Avatar';
@@ -35,11 +36,19 @@ export default function ChatListScreen() {
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [localLastMessages, setLocalLastMessages] = useState<Record<string, { content: string; created_at: string } | null>>({});
 
   const fetchRooms = useCallback(async () => {
     try {
       const data = await getRooms();
       setRooms(data);
+      // Load last messages from local DB for all rooms
+      const localMsgsMap = await getLastMessagePerRoom();
+      const map: Record<string, { content: string; created_at: string } | null> = {};
+      for (const [roomId, msg] of Object.entries(localMsgsMap)) {
+        map[roomId] = { content: msg.content ?? '', created_at: msg.created_at };
+      }
+      setLocalLastMessages(map);
     } catch { /* ignore */ } finally {
       setLoading(false);
       setRefreshing(false);
@@ -77,15 +86,25 @@ export default function ChatListScreen() {
     return d.format('DD/MM/YY');
   };
 
+  const getLastMessage = (room: ChatRoom) => {
+    const local = localLastMessages[room.id];
+    const server = room.last_message;
+    // Prefer whichever is more recent
+    if (local && server) {
+      return new Date(local.created_at) >= new Date(server.created_at) ? local : server;
+    }
+    return local ?? server ?? null;
+  };
+
   const renderItem = ({ item }: { item: ChatRoom }) => {
     const displayName = getRoomDisplayName(item);
     const other = getOtherMember(item);
-    const lastMsg = item.last_message;
+    const lastMsg = getLastMessage(item);
 
     return (
       <TouchableOpacity
-        style={[styles.chatItem, { backgroundColor: Colors.surface }]}
-        activeOpacity={0.6}
+        style={[styles.chatItem, { borderColor: Colors.neonBorder }]}
+        activeOpacity={0.7}
         onPress={() =>
           navigation.navigate('ChatRoom', {
             roomId: item.id,
@@ -94,11 +113,14 @@ export default function ChatListScreen() {
           })
         }
       >
-        <View style={[styles.avatarContainer, { shadowColor: Colors.primary }]}>
+        {/* Left accent bar */}
+        <View style={[styles.accentBar, { backgroundColor: Colors.primary }]} />
+
+        <View style={styles.avatarWrapper}>
           <Avatar
             name={displayName}
             uri={null}
-            size={52}
+            size={50}
             showOnline={item.room_type === 'direct'}
             isOnline={other?.is_online ?? false}
           />
@@ -110,11 +132,13 @@ export default function ChatListScreen() {
               {displayName}
             </Text>
             {lastMsg && (
-              <Text style={[styles.chatTime, { color: Colors.textTertiary }]}>{formatTime(lastMsg.created_at)}</Text>
+              <Text style={[styles.chatTime, { color: Colors.primary }]}>
+                {formatTime(lastMsg.created_at)}
+              </Text>
             )}
           </View>
           <Text style={[styles.lastMessage, { color: Colors.textSecondary }]} numberOfLines={1}>
-            {lastMsg ? lastMsg.content : 'Tap to start chatting'}
+            {lastMsg ? lastMsg.content : '— no messages yet —'}
           </Text>
         </View>
       </TouchableOpacity>
@@ -138,9 +162,9 @@ export default function ChatListScreen() {
         contentContainerStyle={rooms.length === 0 ? styles.emptyContainer : styles.list}
         ListEmptyComponent={
           <EmptyState
-            icon="💬"
-            title="No conversations yet"
-            subtitle="Add contacts and start chatting!"
+            icon="📡"
+            title="No channels open"
+            subtitle="Add contacts and start chatting"
           />
         }
         refreshControl={
@@ -151,16 +175,16 @@ export default function ChatListScreen() {
             tintColor={Colors.primary}
           />
         }
-        ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: Colors.border }]} />}
+        ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: Colors.divider }]} />}
       />
 
-      {/* FAB — new chat */}
+      {/* FAB */}
       <TouchableOpacity
-        style={[styles.fab, { backgroundColor: Colors.primary, shadowColor: Colors.primary }]}
+        style={[styles.fab, { backgroundColor: Colors.surface, borderColor: Colors.primary, shadowColor: Colors.primary }]}
         activeOpacity={0.8}
         onPress={() => navigation.navigate('Contacts')}
       >
-        <Text style={styles.fabIcon}>+</Text>
+        <Text style={[styles.fabIcon, { color: Colors.primary }]}>+</Text>
       </TouchableOpacity>
     </View>
   );
@@ -170,48 +194,55 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyContainer: { flexGrow: 1 },
-  list: { paddingBottom: Spacing.md },
+  list: { paddingBottom: 80 },
 
   chatItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md + 2,
+    paddingVertical: Spacing.md,
+    paddingRight: Spacing.lg,
+    borderBottomWidth: 0,
+    overflow: 'hidden',
   },
-  avatarContainer: {
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
+  accentBar: {
+    width: 3,
+    alignSelf: 'stretch',
+    marginRight: Spacing.md,
+    borderRadius: 2,
   },
-  chatInfo: { flex: 1, marginLeft: Spacing.md },
+  avatarWrapper: {
+    marginRight: Spacing.md,
+  },
+  chatInfo: { flex: 1 },
   chatHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  chatName: { fontSize: Font.size.md, flex: 1, ...Font.semiBold },
-  chatTime: { fontSize: Font.size.xs, marginLeft: Spacing.sm },
-  lastMessage: { fontSize: Font.size.sm, marginTop: 3 },
+  chatName: { fontSize: Font.size.md, flex: 1, fontWeight: '600', letterSpacing: 0.3 },
+  chatTime: { fontSize: Font.size.xs, marginLeft: Spacing.sm, letterSpacing: 0.5, fontWeight: '600' },
+  lastMessage: { fontSize: Font.size.sm, marginTop: 3, letterSpacing: 0.2 },
 
   separator: {
-    height: StyleSheet.hairlineWidth,
-    marginLeft: 80,
+    height: 1,
+    marginLeft: 71,
   },
 
   fab: {
     position: 'absolute',
     bottom: Spacing.xl,
     right: Spacing.lg,
-    width: 58,
-    height: 58,
-    borderRadius: 29,
+    width: 56,
+    height: 56,
+    borderRadius: Radius.md,
+    borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
   },
   fabIcon: {
-    fontSize: 30,
-    color: '#fff',
+    fontSize: 28,
+    fontWeight: '300',
     lineHeight: 32,
-    ...Font.bold,
+    letterSpacing: 0,
   },
 });

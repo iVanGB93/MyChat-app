@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Profile Screen — modern purple theme                                */
+/*  Profile Screen — futuristic cyberpunk theme                       */
 /* ------------------------------------------------------------------ */
 
 import React, { useState } from 'react';
@@ -66,25 +66,21 @@ export default function ProfileScreen() {
   if (!user) return null;
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: Colors.surfaceVariant }]} contentContainerStyle={styles.content}>
+    <ScrollView style={[styles.container, { backgroundColor: Colors.background }]} contentContainerStyle={styles.content}>
       {/* Avatar section */}
-      <View style={[styles.avatarSection, { backgroundColor: Colors.surface }]}>
-        <View style={[styles.avatarRing, { borderColor: Colors.primary }]}>
-          <Avatar name={user.username} uri={user.avatar} size={100} />
-        </View>
-        <Text style={[styles.username, { color: Colors.text }]}>{user.username}</Text>
+      <View style={[styles.avatarSection, { backgroundColor: Colors.surface, borderBottomColor: Colors.neonBorder }]}>
+        <Avatar name={user.username} uri={user.avatar} size={100} />
+        <Text style={[styles.username, { color: Colors.primary }]}>{user.username.toUpperCase()}</Text>
         <Text style={[styles.email, { color: Colors.textSecondary }]}>{user.email}</Text>
-        <View style={[styles.statusBadge, { backgroundColor: Colors.surfaceVariant }]}>
-          <View style={[styles.statusDot, { backgroundColor: Colors.online }]} />
-          <Text style={[styles.statusText, { color: Colors.textSecondary }]}>Online</Text>
+        <View style={[styles.statusBadge, { backgroundColor: Colors.surface, borderColor: Colors.online, shadowColor: Colors.online }]}>
+          <View style={[styles.statusDot, { backgroundColor: Colors.online, shadowColor: Colors.online }]} />
+          <Text style={[styles.statusText, { color: Colors.online }]}>ONLINE</Text>
         </View>
       </View>
 
       {/* About card */}
-      <View style={[styles.card, { backgroundColor: Colors.surface }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: Colors.primary }]}>About</Text>
-        </View>
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ ABOUT</Text>
         <Input
           placeholder="Write something about yourself…"
           value={bio}
@@ -92,38 +88,34 @@ export default function ProfileScreen() {
           multiline
           maxLength={200}
         />
-        <Button title="Save" onPress={handleSave} loading={saving} style={[styles.saveBtn, { backgroundColor: Colors.primary, shadowColor: Colors.primary }]} />
+        <Button title="SAVE" onPress={handleSave} loading={saving} style={styles.saveBtn} />
       </View>
 
       {/* Account info card */}
-      <View style={[styles.card, { backgroundColor: Colors.surface }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: Colors.primary }]}>Account</Text>
-        </View>
-        <View style={[styles.infoRow, { borderBottomColor: Colors.border }]}>
-          <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>Username</Text>
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ ACCOUNT</Text>
+        <View style={[styles.infoRow, { borderBottomColor: Colors.divider }]}>
+          <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>USERNAME</Text>
           <Text style={[styles.infoValue, { color: Colors.text }]}>{user.username}</Text>
         </View>
-        <View style={[styles.infoRow, { borderBottomColor: Colors.border }]}>
-          <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>Email</Text>
+        <View style={[styles.infoRow, { borderBottomColor: Colors.divider }]}>
+          <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>EMAIL</Text>
           <Text style={[styles.infoValue, { color: Colors.text }]}>{user.email}</Text>
         </View>
-        <View style={[styles.infoRow, { borderBottomWidth: 0, borderBottomColor: Colors.border }]}>
-          <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>User ID</Text>
+        <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+          <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>NODE ID</Text>
           <Text style={[styles.infoValue, { color: Colors.text }]}>{user.id}</Text>
         </View>
       </View>
 
       {/* Theme card */}
-      <View style={[styles.card, { backgroundColor: Colors.surface }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: Colors.primary }]}>Theme</Text>
-        </View>
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ DISPLAY</Text>
         <View style={styles.themeRow}>
           {([
-            { key: 'system' as const, label: '📱 System', desc: 'Follow device' },
-            { key: 'light' as const,  label: '☀️ Light',  desc: '' },
-            { key: 'dark' as const,   label: '🌙 Dark',   desc: '' },
+            { key: 'system' as const, label: 'SYSTEM' },
+            { key: 'light' as const,  label: 'LIGHT' },
+            { key: 'dark' as const,   label: 'DARK' },
           ]).map((opt) => {
             const active = preference === opt.key;
             return (
@@ -131,18 +123,18 @@ export default function ProfileScreen() {
                 key={opt.key}
                 style={[
                   styles.themeOption,
-                  { borderColor: active ? Colors.primary : Colors.border,
-                    backgroundColor: active ? Colors.primaryLight + '22' : 'transparent' },
+                  {
+                    borderColor: active ? Colors.primary : Colors.neonBorder,
+                    backgroundColor: active ? Colors.highlight : 'transparent',
+                    shadowColor: active ? Colors.primary : 'transparent',
+                  },
                 ]}
                 onPress={() => setPreference(opt.key)}
                 activeOpacity={0.7}
               >
-                <Text style={[styles.themeLabel, { color: active ? Colors.primary : Colors.text }]}>
+                <Text style={[styles.themeLabel, { color: active ? Colors.primary : Colors.textSecondary }]}>
                   {opt.label}
                 </Text>
-                {opt.desc ? (
-                  <Text style={[styles.themeDesc, { color: Colors.textSecondary }]}>{opt.desc}</Text>
-                ) : null}
               </TouchableOpacity>
             );
           })}
@@ -150,31 +142,16 @@ export default function ProfileScreen() {
       </View>
 
       {/* Connectivity card */}
-      <View style={[styles.card, { backgroundColor: Colors.surface }]}>
-        <View style={styles.cardHeader}>
-          <Text style={[styles.cardTitle, { color: Colors.primary }]}>Call Connectivity</Text>
-        </View>
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ CALL CONNECTIVITY</Text>
         <Text style={[styles.connectivityDesc, { color: Colors.textSecondary }]}>
-          Controls how call connections are established. "Auto" tries a direct peer-to-peer path
-          first and falls back to a relay server automatically.
+          Controls how call connections are established. Auto tries P2P first and falls back to relay.
         </Text>
         <View style={styles.connectivityRow}>
           {([
-            {
-              key: 'auto' as ConnectivityMode,
-              label: '🔀 Auto',
-              desc: 'P2P → relay',
-            },
-            {
-              key: 'p2p' as ConnectivityMode,
-              label: '⚡ P2P Only',
-              desc: 'No relay',
-            },
-            {
-              key: 'server' as ConnectivityMode,
-              label: '🖥️ Server',
-              desc: 'Always relay',
-            },
+            { key: 'auto' as ConnectivityMode,   label: 'AUTO',   desc: 'P2P → relay' },
+            { key: 'p2p' as ConnectivityMode,    label: 'P2P',    desc: 'Direct only' },
+            { key: 'server' as ConnectivityMode, label: 'RELAY',  desc: 'Server only' },
           ]).map((opt) => {
             const active = connectivityMode === opt.key;
             return (
@@ -183,9 +160,10 @@ export default function ProfileScreen() {
                 style={[
                   styles.connectivityOption,
                   {
-                    borderColor: active ? Colors.primary : Colors.border,
-                    backgroundColor: active ? Colors.primaryLight + '22' : 'transparent',
+                    borderColor: active ? Colors.primary : Colors.neonBorder,
+                    backgroundColor: active ? Colors.highlight : 'transparent',
                     opacity: savingConnectivity ? 0.6 : 1,
+                    shadowColor: active ? Colors.primary : 'transparent',
                   },
                 ]}
                 onPress={() => handleSaveConnectivity(opt.key)}
@@ -205,8 +183,12 @@ export default function ProfileScreen() {
       </View>
 
       {/* Logout */}
-      <TouchableOpacity style={[styles.logoutBtn, { backgroundColor: Colors.surface, borderColor: Colors.error }]} onPress={handleLogout} activeOpacity={0.7}>
-        <Text style={[styles.logoutText, { color: Colors.error }]}>Sign Out</Text>
+      <TouchableOpacity
+        style={[styles.logoutBtn, { borderColor: Colors.error, shadowColor: Colors.error }]}
+        onPress={handleLogout}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.logoutText, { color: Colors.error }]}>◉ DISCONNECT</Text>
       </TouchableOpacity>
     </ScrollView>
   );
@@ -220,44 +202,46 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: Spacing.xl,
     marginBottom: Spacing.sm,
+    borderBottomWidth: 1,
   },
-  avatarRing: {
-    padding: 4,
-    borderRadius: 60,
-    borderWidth: 2.5,
-  },
-  username: { fontSize: Font.size.xl, marginTop: Spacing.md, ...Font.bold },
-  email: { fontSize: Font.size.sm, marginTop: Spacing.xs },
+  username: { fontSize: Font.size.xl, marginTop: Spacing.md, fontWeight: '800', letterSpacing: 3 },
+  email: { fontSize: Font.size.sm, marginTop: Spacing.xs, letterSpacing: 0.5 },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: Spacing.sm,
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.xs,
-    borderRadius: Radius.full,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
   },
-  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: Spacing.xs },
-  statusText: { fontSize: Font.size.sm, ...Font.medium },
+  statusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    marginRight: Spacing.xs,
+    shadowOpacity: 0.9,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  statusText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5 },
 
   card: {
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.lg,
-    paddingBottom: Spacing.sm,
+    paddingBottom: Spacing.md,
     marginBottom: Spacing.sm,
-    borderRadius: Radius.lg,
+    borderRadius: Radius.md,
     marginHorizontal: Spacing.sm,
+    borderWidth: 1,
   },
-  cardHeader: {
-    marginBottom: Spacing.md,
-  },
-  cardTitle: { fontSize: Font.size.sm, ...Font.semiBold, textTransform: 'uppercase', letterSpacing: 0.5 },
+  cardTitle: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5, marginBottom: Spacing.md },
   saveBtn: {
     marginTop: Spacing.sm,
-    borderRadius: Radius.pill,
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 4,
+    borderRadius: Radius.md,
   },
 
   infoRow: {
@@ -266,18 +250,21 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
     borderBottomWidth: 1,
   },
-  infoLabel: { fontSize: Font.size.md },
-  infoValue: { fontSize: Font.size.md, ...Font.medium },
+  infoLabel: { fontSize: Font.size.sm, letterSpacing: 1, fontWeight: '600' },
+  infoValue: { fontSize: Font.size.sm, fontWeight: '500' },
 
   logoutBtn: {
     marginTop: Spacing.md,
     marginHorizontal: Spacing.lg,
     paddingVertical: Spacing.lg,
     alignItems: 'center',
-    borderRadius: Radius.pill,
+    borderRadius: Radius.md,
     borderWidth: 1.5,
+    shadowOpacity: 0.35,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
   },
-  logoutText: { fontSize: Font.size.md, ...Font.semiBold },
+  logoutText: { fontSize: Font.size.sm, fontWeight: '800', letterSpacing: 2 },
 
   themeRow: {
     flexDirection: 'row',
@@ -288,22 +275,23 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     paddingVertical: Spacing.md,
-    borderRadius: Radius.md,
+    borderRadius: Radius.sm,
     borderWidth: 1.5,
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
   },
   themeLabel: {
-    fontSize: Font.size.sm,
-    ...Font.semiBold,
-  },
-  themeDesc: {
     fontSize: Font.size.xs,
-    marginTop: 2,
+    fontWeight: '700',
+    letterSpacing: 1,
   },
 
   connectivityDesc: {
     fontSize: Font.size.sm,
     lineHeight: 20,
     marginBottom: Spacing.md,
+    letterSpacing: 0.2,
   },
   connectivityRow: {
     flexDirection: 'row',
@@ -314,17 +302,22 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     paddingVertical: Spacing.md,
-    borderRadius: Radius.md,
+    borderRadius: Radius.sm,
     borderWidth: 1.5,
+    shadowOpacity: 0.4,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
   },
   connectivityLabel: {
-    fontSize: Font.size.sm,
-    ...Font.semiBold,
+    fontSize: Font.size.xs,
+    fontWeight: '700',
+    letterSpacing: 1,
     textAlign: 'center',
   },
   connectivitySubLabel: {
     fontSize: Font.size.xs,
     marginTop: 2,
     textAlign: 'center',
+    letterSpacing: 0.3,
   },
 });

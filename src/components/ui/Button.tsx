@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Button — primary, outline, ghost variants                          */
+/*  Button — futuristic neon-glow variants                            */
 /* ------------------------------------------------------------------ */
 
 import React from 'react';
@@ -31,15 +31,34 @@ export default function Button({
   const { colors: Colors } = useTheme();
   const isDisabled = disabled || loading;
 
+  const primaryStyle = {
+    backgroundColor: Colors.primary,
+    shadowColor: Colors.primary,
+    shadowOpacity: 0.55,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+  };
+
+  const outlineStyle = {
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    shadowColor: Colors.primary,
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+  };
+
   return (
     <TouchableOpacity
       onPress={onPress}
       disabled={isDisabled}
-      activeOpacity={0.7}
+      activeOpacity={0.75}
       style={[
         styles.base,
-        variant === 'primary' && { backgroundColor: Colors.primary },
-        variant === 'outline' && { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: Colors.primary },
+        variant === 'primary' && primaryStyle,
+        variant === 'outline' && outlineStyle,
         variant === 'ghost' && { backgroundColor: 'transparent' },
         isDisabled && styles.disabled,
         style,
@@ -78,6 +97,6 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     minHeight: 52,
   },
-  disabled: { opacity: 0.5 },
-  text: { fontSize: Font.size.md, ...Font.semiBold },
+  disabled: { opacity: 0.45 },
+  text: { fontSize: Font.size.md, ...Font.semiBold, letterSpacing: 0.8 },
 });

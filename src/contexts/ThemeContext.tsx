@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
-import { useColorScheme } from 'react-native';
+import { Appearance } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LightColors, DarkColors, type ThemeColors } from '../theme';
 
@@ -24,8 +24,24 @@ const ThemeContext = createContext<ThemeContextValue>({
   setPreference: () => {},
 });
 
+/** Reliable system scheme — Appearance.getColorScheme() is synchronous and
+ *  always correct, unlike useColorScheme() which can return null before the
+ *  native bridge initialises on New Architecture / Android. */
+function useSystemScheme(): 'light' | 'dark' {
+  const [scheme, setScheme] = useState<'light' | 'dark'>(
+    () => Appearance.getColorScheme() === 'dark' ? 'dark' : 'light',
+  );
+  useEffect(() => {
+    const sub = Appearance.addChangeListener(({ colorScheme }) => {
+      setScheme(colorScheme === 'dark' ? 'dark' : 'light');
+    });
+    return () => sub.remove();
+  }, []);
+  return scheme;
+}
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const systemScheme = useColorScheme();
+  const systemScheme = useSystemScheme();
   const [preference, setPreferenceState] = useState<ThemePreference>('system');
   const [loaded, setLoaded] = useState(false);
 
@@ -47,9 +63,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<ThemeContextValue>(() => {
     const resolvedMode: ThemeMode =
-      preference === 'system'
-        ? systemScheme === 'dark' ? 'dark' : 'light'
-        : preference;
+      preference === 'system' ? systemScheme : preference;
     return {
       colors: resolvedMode === 'dark' ? DarkColors : LightColors,
       mode: resolvedMode,

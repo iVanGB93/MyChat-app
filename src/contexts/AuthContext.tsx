@@ -9,6 +9,8 @@ import { registerForPushNotifications } from '../services/pushNotificationServic
 import { unregisterBackgroundFetch } from '../services/backgroundNotificationService';
 import { stopForegroundService } from '../services/foregroundService';
 import { destroyWsManager } from '../services/notificationWsManager';
+import { setCurrentUserId } from '../services/chatWsManager';
+import { initDB } from '../services/localMessageStore';
 import type { User } from '../types';
 
 interface AuthState {
@@ -48,10 +50,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Try to restore session on mount
   useEffect(() => {
     (async () => {
+      initDB().catch(() => {}); // ensure DB is ready
       try {
         const tokens = await getTokens();
         if (tokens?.access) {
           const user = await getProfile();
+          setCurrentUserId(user.id, user.username);
           setState({ user, isLoading: false, isAuthenticated: true });
           // Register push token with backend on session restore
           syncPushToken();
@@ -68,6 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     await loginApi(username, password);
     const user = await getProfile();
+    setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
     // Register push token with backend after login
     syncPushToken();
@@ -77,6 +82,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await registerApi(username, email, password);
     await loginApi(username, password);
     const user = await getProfile();
+    setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
     // Register push token with backend after registration
     syncPushToken();

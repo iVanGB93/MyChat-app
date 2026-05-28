@@ -23,6 +23,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
+import { saveMessage, messageExists, getPendingOutbox } from './localMessageStore';
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
 
@@ -52,6 +53,8 @@ export type RoomStatus = 'connected' | 'connecting' | 'reconnecting' | 'disconne
 export interface RoomSnapshot {
   messages: WsMessage[];
   readIds: Set<string>;
+  pendingIds: Set<string>;
+  deliveredIds: Set<string>;
   status: RoomStatus;
   reconnectCount: number;
 }
@@ -67,6 +70,8 @@ interface RoomState {
   status: RoomStatus;
   messages: WsMessage[];
   readIds: Set<string>;
+  pendingIds: Set<string>;
+  deliveredIds: Set<string>;
   readReceiptQueue: string[];
   reconnectDelay: number;
   reconnectCount: number;
@@ -76,6 +81,7 @@ interface RoomState {
   pongTimer: ReturnType<typeof setTimeout> | null;
   connectionTimeoutTimer: ReturnType<typeof setTimeout> | null;
   authTimeoutTimer: ReturnType<typeof setTimeout> | null;
+  pendingFlushes: number[];
   listeners: Set<RoomListener>;
 }
 
@@ -86,6 +92,28 @@ let _netInfoUnsub: (() => void) | null = null;
 let _appStateUnsub: { remove: () => void } | null = null;
 let _hasInternet = true;
 let _appStateDebouncing = false; // prevent duplicate fires vs notificationWsManager
+let _myUserId: number | null = null;
+let _myUsername = 'me';
+
+/** Call this once after login so sendChatMessage can stamp messages correctly. */
+export function setCurrentUserId(userId: number, username: string): void {
+  _myUserId = userId;
+  _myUsername = username;
+}
+
+/** Safe UUID v4 — works on all Hermes/Android versions without a polyfill */
+function generateUUID(): string {
+  try {
+    // Available in Hermes ≥ 0.14 / RN ≥ 0.71
+    return crypto.randomUUID();
+  } catch {
+    // Fallback for environments where crypto.randomUUID is unavailable
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+}
 
 /* ================================================================== */
 /*  Internal helpers                                                   */
@@ -100,6 +128,8 @@ function createRoomState(): RoomState {
     status: 'disconnected',
     messages: [],
     readIds: new Set(),
+    pendingIds: new Set(),
+    deliveredIds: new Set(),
     readReceiptQueue: [],
     reconnectDelay: INITIAL_RECONNECT_MS,
     reconnectCount: 0,
@@ -109,6 +139,7 @@ function createRoomState(): RoomState {
     pongTimer: null,
     connectionTimeoutTimer: null,
     authTimeoutTimer: null,
+    pendingFlushes: [],
     listeners: new Set(),
   };
 }
@@ -124,6 +155,8 @@ function notifyListeners(roomId: string, state: RoomState) {
   const snapshot: RoomSnapshot = {
     messages: state.messages,
     readIds: state.readIds,
+    pendingIds: state.pendingIds,
+    deliveredIds: state.deliveredIds,
     status: state.status,
     reconnectCount: state.reconnectCount,
   };
@@ -240,7 +273,7 @@ async function refreshTokenIfNeeded(): Promise<string | null> {
 /*  Core connect                                                       */
 /* ================================================================== */
 
-async function connectRoom(roomId: string): Promise<void> {
+export async function connectRoom(roomId: string): Promise<void> {
   const s = getOrCreate(roomId);
 
   if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) return;
@@ -337,6 +370,14 @@ async function connectRoom(roomId: string): Promise<void> {
           setStatus(roomId, s, 'connected');
           startPing(roomId, s);
           flushReadQueue(s);
+          // Tell the server we are ready to receive pending messages
+          try { socket.send(JSON.stringify({ type: 'ready_to_receive' })); } catch { /* ignore */ }
+          // Flush any outbox entries queued while the WS was offline
+          if (s.pendingFlushes.length > 0) {
+            const toFlush = [...s.pendingFlushes];
+            s.pendingFlushes = [];
+            toFlush.forEach((recipientId) => _doFlush(roomId, s, recipientId));
+          }
           return;
         }
 
@@ -349,6 +390,16 @@ async function connectRoom(roomId: string): Promise<void> {
 
         // Drop all messages until auth handshake completes
         if (!s.authenticated) return;
+
+        // ---- Server delivery ack (no UI action needed) ----
+        if (msgType === 'message_server_ack') {
+          console.log('[ChatWsManager] server_ack', data.message_id, 'room', roomId);
+          if (data.message_id && s.pendingIds.has(data.message_id)) {
+            s.pendingIds = new Set([...s.pendingIds].filter((id) => id !== data.message_id));
+            notifyListeners(roomId, s);
+          }
+          return;
+        }
 
         // ---- Keep-alive ----
         if (msgType === 'pong') {
@@ -369,8 +420,37 @@ async function connectRoom(roomId: string): Promise<void> {
         // ---- Chat message ----
         const msg: WsMessage = { ...data, is_read: false };
         if (msg.id && msg.sender_id !== undefined) {
-          s.messages = [...s.messages, msg];
-          notifyListeners(roomId, s);
+          (async () => {
+            const exists = await messageExists(msg.id);
+            const isOwn = msg.sender_id === _myUserId;
+            if (!exists) {
+              await saveMessage({
+                id: msg.id,
+                room_id: roomId,
+                sender_id: msg.sender_id,
+                sender_name: msg.sender,
+                content: msg.content,
+                type: msg.message_type,
+                file_uri: null,
+                created_at: msg.created_at,
+                is_mine: isOwn,
+                reactions: {},
+                is_deleted: false,
+              });
+              s.messages = [...s.messages, msg];
+              notifyListeners(roomId, s);
+            }
+            // Ack non-own messages so the server clears the PendingDelivery
+            if (!isOwn && s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+              try {
+                s.ws.send(JSON.stringify({
+                  type: 'message_ack',
+                  message_id: msg.id,
+                  sender_id: msg.sender_id,
+                }));
+              } catch { /* ignore */ }
+            }
+          })().catch(() => { /* ignore DB errors */ });
         }
       } catch { /* ignore malformed frames */ }
     };
@@ -500,15 +580,108 @@ export function disconnectAllRooms(): void {
 }
 
 /**
- * Send a chat message. Returns false if the socket is not ready.
+ * Send a chat message.
+ * Always saves to local DB first, then attempts WS delivery.
+ * Returns the client-generated message UUID.
  */
-export function sendChatMessage(roomId: string, content: string, messageType = 'text'): boolean {
+export async function sendChatMessage(
+  roomId: string,
+  content: string,
+  messageType = 'text',
+): Promise<string | null> {
+  console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId);
+  const msgId = generateUUID();
+  const createdAt = new Date().toISOString();
+
   const s = rooms.get(roomId);
-  if (!s?.ws || s.ws.readyState !== WebSocket.OPEN || !s.authenticated) return false;
+
+  // Optimistically add to in-memory list IMMEDIATELY so UI updates without waiting for SQLite
+  if (_myUserId !== null && s) {
+    const optimisticMsg: WsMessage = {
+      id: msgId,
+      sender: _myUsername,
+      sender_id: _myUserId,
+      content,
+      message_type: messageType,
+      created_at: createdAt,
+      is_read: false,
+    };
+    s.pendingIds = new Set([...s.pendingIds, msgId]);
+    s.messages = [...s.messages, optimisticMsg];
+    console.log('[ChatWsManager] optimistic update — listeners:', s.listeners.size, 'total msgs:', s.messages.length);
+    notifyListeners(roomId, s);
+  } else {
+    console.warn('[ChatWsManager] skipped optimistic update — _myUserId:', _myUserId, 'roomState:', !!s);
+  }
+
+  // Persist locally in the background (so it's never lost on reconnect)
+  if (_myUserId !== null) {
+    try {
+      await saveMessage({
+        id: msgId,
+        room_id: roomId,
+        sender_id: _myUserId,
+        sender_name: _myUsername,
+        content,
+        type: messageType,
+        file_uri: null,
+        created_at: createdAt,
+        is_mine: true,
+        reactions: {},
+        is_deleted: false,
+      });
+    } catch (err) {
+      console.warn('[ChatWsManager] failed to save message locally:', err);
+    }
+  }
+
+  if (s?.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+    try {
+      s.ws.send(JSON.stringify({
+        id: msgId,
+        message: content,
+        message_type: messageType,
+        created_at: createdAt,
+      }));
+    } catch { /* message is saved locally, will be flushed on reconnect */ }
+  }
+
+  return msgId;
+}
+
+/** @internal Re-sends undelivered outbox messages for a specific recipient. */
+async function _doFlush(roomId: string, s: RoomState, recipientId: number): Promise<void> {
+  if (_myUserId === null) return;
   try {
-    s.ws.send(JSON.stringify({ message: content, message_type: messageType }));
-    return true;
-  } catch { return false; }
+    const msgs = await getPendingOutbox(roomId, _myUserId, recipientId);
+    for (const msg of msgs) {
+      if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+        s.ws.send(JSON.stringify({
+          id: msg.id,
+          message: msg.content,
+          message_type: msg.type,
+          created_at: msg.created_at,
+        }));
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+/**
+ * Called by notificationWsManager when a receiver_ready event arrives.
+ * Re-sends undelivered messages for that recipient in the given room.
+ */
+export function flushOutboxForRecipient(roomId: string, recipientId: number): void {
+  const s = rooms.get(roomId);
+  if (s?.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+    _doFlush(roomId, s, recipientId);
+  } else {
+    const rs = getOrCreate(roomId);
+    if (!rs.pendingFlushes.includes(recipientId)) {
+      rs.pendingFlushes.push(recipientId);
+    }
+    connectRoom(roomId);
+  }
 }
 
 /**
@@ -550,6 +723,29 @@ export function markIdsAsReadInRoom(roomId: string, ids: string[]): void {
 /** Return a snapshot of the current room state (safe to call any time). */
 export function getSnapshot(roomId: string): RoomSnapshot {
   const s = rooms.get(roomId);
-  if (!s) return { messages: [], readIds: new Set(), status: 'disconnected', reconnectCount: 0 };
-  return { messages: s.messages, readIds: s.readIds, status: s.status, reconnectCount: s.reconnectCount };
+  if (!s) return { messages: [], readIds: new Set(), pendingIds: new Set(), deliveredIds: new Set(), status: 'disconnected', reconnectCount: 0 };
+  return { messages: s.messages, readIds: s.readIds, pendingIds: s.pendingIds, deliveredIds: s.deliveredIds, status: s.status, reconnectCount: s.reconnectCount };
+}
+
+/**
+ * Merge message IDs into the deliveredIds set
+ * (called when message_delivery_ack arrives via the notification channel).
+ */
+export function markIdsAsDeliveredInRoom(roomId: string, ids: string[]): void {
+  const s = rooms.get(roomId);
+  if (!s || ids.length === 0) return;
+  s.deliveredIds = new Set([...s.deliveredIds, ...ids]);
+  notifyListeners(roomId, s);
+}
+
+/**
+ * Inject a received message into the room's in-memory state from an external source
+ * (e.g. notification WS relay). No-op if the room has no active listeners.
+ */
+export function injectReceivedMessage(roomId: string, msg: WsMessage): void {
+  const s = rooms.get(roomId);
+  if (!s || s.listeners.size === 0) return;
+  if (s.messages.some((m) => m.id === msg.id)) return; // dedup
+  s.messages = [...s.messages, msg];
+  notifyListeners(roomId, s);
 }

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getSnapshot,
+  markIdsAsDeliveredInRoom,
   markIdsAsReadInRoom,
   markRoomAsRead,
   RoomSnapshot,
@@ -65,6 +66,13 @@ export function useChat(roomId: string, currentUserId?: number) {
     [roomId],
   );
 
+  const markIdsAsDelivered = useCallback(
+    (ids: string[]) => {
+      markIdsAsDeliveredInRoom(roomId, ids);
+    },
+    [roomId],
+  );
+
   const markIdsAsRead = useCallback(
     (ids: string[]) => {
       markIdsAsReadInRoom(roomId, ids);
@@ -80,7 +88,10 @@ export function useChat(roomId: string, currentUserId?: number) {
     sendMessage,
     markAsRead,
     readIds: snapshot.readIds,
+    pendingIds: snapshot.pendingIds,
+    deliveredIds: snapshot.deliveredIds,
     markIdsAsRead,
+    markIdsAsDelivered,
     reconnectCount: snapshot.reconnectCount,
   };
 }

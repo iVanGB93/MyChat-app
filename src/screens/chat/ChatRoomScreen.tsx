@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Chat Room Screen — modern purple theme with keyboard fix            */
+/*  Chat Room Screen                                                   */
 /* ------------------------------------------------------------------ */
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -15,14 +15,21 @@ import {
   ActivityIndicator,
   Keyboard,
   Alert,
+  Modal,
+  Pressable,
+  useWindowDimensions,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useHeaderHeight } from '@react-navigation/elements';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import dayjs from 'dayjs';
 import { Font, Spacing, Radius } from '../../theme';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getRoomMessages } from '../../services/chatService';
+import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage } from '../../services/localMessageStore';
 import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
@@ -30,164 +37,321 @@ import type { Message, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
+const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
+
+/* Convert a LocalMessage row to the shared Message type */
+function toMsg(m: LocalMessage): Message {
+  return {
+    id: m.id,
+    room: m.room_id,
+    sender: m.sender_id,
+    sender_username: m.sender_name,
+    content: m.content ?? '',
+    message_type: m.type as Message['message_type'],
+    file: m.file_uri,
+    is_read: false,
+    created_at: m.created_at,
+    reactions: m.reactions,
+    is_deleted: m.is_deleted,
+  };
+}
+
+/* Convert a WsMessage to the shared Message type */
+function wsToMsg(m: WsMessage, roomId: string): Message {
+  return {
+    id: m.id,
+    room: roomId,
+    sender: m.sender_id,
+    sender_username: m.sender,
+    content: m.content,
+    message_type: m.message_type as Message['message_type'],
+    file: null,
+    is_read: m.is_read ?? false,
+    created_at: m.created_at,
+  };
+}
+
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
   const { user } = useAuth();
-  const { messages: wsMessages, sendMessage, connected, markAsRead, readIds, markIdsAsRead, reconnectCount } = useChat(roomId, user?.id);
+  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount } = useChat(roomId, user?.id);
   const { subscribe } = useNotificationContext();
   const { colors: Colors } = useTheme();
-  const [historicalMessages, setHistoricalMessages] = useState<Message[]>([]);
+
+  /* SQLite-sourced messages — only updated by load/reload calls */
+  const [sqliteMessages, setSqliteMessages] = useState<Message[]>([]);
+  const [contextMsg, setContextMsg] = useState<Message | null>(null);
+  const [contextY,   setContextY]   = useState(0);
+  const { height: winHeight } = useWindowDimensions();
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
   const flatListRef = useRef<FlatList>(null);
+  const headerHeight = useHeaderHeight();
+  const insets = useSafeAreaInsets();
 
-  // Add call buttons to header
+  /* Load (or reload) messages from the local SQLite DB */
+  const loadFromDB = useCallback(async (cancelled?: { current: boolean }) => {
+    const dbMsgs = await getMessages(roomId);
+    console.log('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
+    if (cancelled?.current) return;
+    setSqliteMessages(dbMsgs.map(toMsg));
+  }, [roomId]);
+
+  /* ── Initial load from SQLite (+ one-time server-history migration) ── */
+  useEffect(() => {
+    const cancel = { current: false };
+    (async () => {
+      try {
+        await initDB();
+        // One-time migration: pull server history into local DB
+        const migrationKey = `history_migrated_${roomId}`;
+        const migrated = await AsyncStorage.getItem(migrationKey);
+        if (!migrated) {
+          try {
+            const res = await getRoomMessages(roomId);
+            for (const msg of (res.results ?? [])) {
+              await saveMessage({
+                id: msg.id,
+                room_id: roomId,
+                sender_id: msg.sender,
+                sender_name: msg.sender_username || '',
+                content: msg.content ?? null,
+                type: msg.message_type,
+                file_uri: msg.file ?? null,
+                created_at: msg.created_at,
+                is_mine: msg.sender === user?.id,
+                reactions: {},
+                is_deleted: false,
+              });
+            }
+            await AsyncStorage.setItem(migrationKey, '1');
+          } catch { /* ignore — will retry next open */ }
+        }
+        await loadFromDB(cancel);
+      } catch { /* ignore */ } finally {
+        if (!cancel.current) setLoading(false);
+      }
+    })();
+    return () => { cancel.current = true; };
+  }, [roomId, loadFromDB]);
+
+  /* ── Reload SQLite after WS reconnect (picks up any messages saved while disconnected) ── */
+  useEffect(() => {
+    if (reconnectCount === 0) return;
+    loadFromDB().catch(() => {});
+  }, [reconnectCount, loadFromDB]);
+
+  /* ── Merge SQLite messages + live WS messages (dedup by ID, WS wins for freshness) ── */
+  const allMessages = useMemo(() => {
+    const byId = new Map<string, Message>();
+    const sqliteById = new Map(sqliteMessages.map((m) => [m.id, m]));
+    // SQLite messages first (historical base)
+    for (const m of sqliteMessages) byId.set(m.id, m);
+    // WS messages overlay (includes optimistic sent + incoming received this session)
+    for (const m of wsMessages) byId.set(m.id, wsToMsg(m, roomId));
+    // Re-apply sqlite-only fields (reactions, is_deleted) that WS messages don't carry
+    for (const [id, msg] of byId) {
+      const sql = sqliteById.get(id);
+      if (sql && (sql.is_deleted || (sql.reactions && Object.keys(sql.reactions).length > 0))) {
+        byId.set(id, { ...msg, reactions: sql.reactions, is_deleted: sql.is_deleted });
+      }
+    }
+    console.log('[ChatRoom] allMessages:', byId.size, '(sqlite:', sqliteMessages.length, 'ws:', wsMessages.length, ')');
+    return Array.from(byId.values()).sort(
+      (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    );
+  }, [sqliteMessages, wsMessages, roomId]);
+
+  /* ── Apply read-receipt overlay ── */
+  const displayedMsgs = useMemo(
+    () => allMessages.map(m => ({ ...m, is_read: m.is_read || readIds.has(m.id) })),
+    [allMessages, readIds],
+  );
+
+  /* ── Auto-scroll and keyboard scroll removed — FlatList is inverted, newest messages
+     always appear at the bottom automatically ── */
+
+  /* ── Sound for incoming messages ── */
+  const prevWsCount = useRef(wsMessages.length);
+  useEffect(() => {
+    if (wsMessages.length > prevWsCount.current) {
+      const last = wsMessages[wsMessages.length - 1];
+      if (last && last.sender_id !== user?.id) playSound('message_received');
+    }
+    prevWsCount.current = wsMessages.length;
+  }, [wsMessages.length]);
+
+  /* ── Listen for read receipts + delivery acks from notification channel ── */
+  useEffect(() => {
+    const unsub = subscribe((payload) => {
+      if (payload.event === 'messages_read' && payload.room_id === roomId && payload.message_ids) {
+        markIdsAsRead(payload.message_ids as string[]);
+      }
+      if (payload.event === 'message_delivery_ack' && payload.room_id === roomId && payload.message_id) {
+        markIdsAsDelivered([payload.message_id as string]);
+      }
+    });
+    return unsub;
+  }, [subscribe, roomId, markIdsAsRead, markIdsAsDelivered]);
+
+  /* ── Call header buttons ── */
+  const handleCall = async (callType: 'voice' | 'video') => {
+    if (!otherUserId) { Alert.alert('Info', 'Calls are only available in direct chats'); return; }
+    try {
+      const res = await initiateCall(otherUserId, callType);
+      navigation.navigate('ActiveCall', {
+        callId: res.call_id, otherName: route.params.roomName,
+        callType, roomName: res.room_name, isOutgoing: true, peerUserId: otherUserId,
+      });
+    } catch { Alert.alert('Error', 'Failed to start call'); }
+  };
+
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <View style={{ flexDirection: 'row', gap: 16, marginRight: 4 }}>
-          <TouchableOpacity onPress={() => handleCall('video')}>
-            <Text style={{ fontSize: 20 }}>📹</Text>
+        <View style={{ flexDirection: 'row', gap: 8, marginRight: 8 }}>
+          <TouchableOpacity
+            onPress={() => handleCall('video')}
+            activeOpacity={0.7}
+            style={{
+              width: 36, height: 36, borderRadius: 18,
+              backgroundColor: 'rgba(0,229,255,0.10)',
+              borderWidth: 1, borderColor: 'rgba(0,229,255,0.30)',
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Text style={{ fontSize: 16, lineHeight: 20 }}>🎥</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => handleCall('voice')}>
-            <Text style={{ fontSize: 20 }}>📞</Text>
+          <TouchableOpacity
+            onPress={() => handleCall('voice')}
+            activeOpacity={0.7}
+            style={{
+              width: 36, height: 36, borderRadius: 18,
+              backgroundColor: 'rgba(0,229,255,0.10)',
+              borderWidth: 1, borderColor: 'rgba(0,229,255,0.30)',
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Text style={{ fontSize: 16, lineHeight: 20 }}>📞</Text>
           </TouchableOpacity>
         </View>
       ),
     });
   }, [navigation, otherUserId]);
 
-  const handleCall = async (callType: 'voice' | 'video') => {
-    if (!otherUserId) {
-      Alert.alert('Info', 'Calls are only available in direct chats');
-      return;
-    }
-    try {
-      const res = await initiateCall(otherUserId, callType);
-      navigation.navigate('ActiveCall', {
-        callId: res.call_id,
-        otherName: route.params.roomName,
-        callType,
-        roomName: res.room_name,
-        isOutgoing: true,
-        peerUserId: otherUserId,
-      });
-    } catch {
-      Alert.alert('Error', 'Failed to start call');
-    }
-  };
-
-  // Load message history (re-fetch on WS reconnect to catch missed messages)
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await getRoomMessages(roomId);
-        setHistoricalMessages(res.results);
-      } catch { /* ignore */ } finally {
-        setLoading(false);
-      }
-    })();
-  }, [roomId, reconnectCount]);
-
-  // Listen for read receipts from the notification channel (backup)
-  useEffect(() => {
-    const unsub = subscribe((payload) => {
-      if (
-        payload.event === 'messages_read' &&
-        payload.room_id === roomId &&
-        payload.message_ids
-      ) {
-        markIdsAsRead(payload.message_ids as string[]);
-      }
-    });
-    return unsub;
-  }, [subscribe, roomId, markIdsAsRead]);
-
-  // Merge historical + live messages
-  const msgs = useMemo(() => {
-    const histIds = new Set(historicalMessages.map((m) => m.id));
-    const liveConverted: Message[] = wsMessages
-      .filter((m) => !histIds.has(m.id))
-      .map((m) => ({
-        id: m.id,
-        room: roomId,
-        sender: m.sender_id,
-        sender_username: m.sender,
-        content: m.content,
-        message_type: m.message_type as any,
-        file: null,
-        is_read: m.is_read ?? false,
-        created_at: m.created_at,
-      }));
-    const merged = [...historicalMessages, ...liveConverted]
-      .map((msg) => ({
-        ...msg,
-        is_read: msg.is_read || readIds.has(msg.id),
-      }))
-      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    return merged;
-  }, [historicalMessages, wsMessages, roomId, readIds]);
-
-  // Auto-scroll to bottom
-  useEffect(() => {
-    if (msgs.length > 0) {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
-    }
-  }, [msgs.length]);
-
-  // Scroll when keyboard shows
-  useEffect(() => {
-    const sub = Keyboard.addListener('keyboardDidShow', () => {
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-    });
-    return () => sub.remove();
-  }, []);
-
-  // Play sound for incoming live messages
-  const prevWsCount = useRef(wsMessages.length);
-  useEffect(() => {
-    if (wsMessages.length > prevWsCount.current) {
-      const last = wsMessages[wsMessages.length - 1];
-      if (last && last.sender_id !== user?.id) {
-        playSound('message_received');
-      }
-    }
-    prevWsCount.current = wsMessages.length;
-  }, [wsMessages.length]);
-
   const handleSend = () => {
     const trimmed = text.trim();
     if (!trimmed) return;
+    console.log('[ChatRoom] sending:', trimmed.slice(0, 30));
     sendMessage(trimmed);
     setText('');
     playSound('message_sent');
   };
 
+  const handleReaction = useCallback(async (emoji: string) => {
+    if (!contextMsg || !user) return;
+    const msgId = contextMsg.id;
+    setContextMsg(null);
+    await toggleReaction(msgId, emoji, String(user.id));
+    loadFromDB().catch(() => {});
+  }, [contextMsg, user, loadFromDB]);
+
+  const handleDelete = useCallback(() => {
+    if (!contextMsg) return;
+    const msgId = contextMsg.id;
+    setContextMsg(null);
+    Alert.alert(
+      'Delete message',
+      'This message will be removed for you only.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: async () => {
+          await deleteMessage(msgId);
+          loadFromDB().catch(() => {});
+        }},
+      ],
+    );
+  }, [contextMsg, loadFromDB]);
+
   const renderMessage = ({ item }: { item: Message }) => {
-    const isMine = item.sender === user?.id;
+    const isMine      = item.sender === user?.id;
+    const isPending   = isMine && pendingIds.has(item.id);
+    const isRead      = isMine && (item.is_read || readIds.has(item.id));
+    const isDelivered = isMine && !isPending && deliveredIds.has(item.id);
+
+    let statusIcon: string;
+    let statusColor: string;
+    if (isPending) {
+      statusIcon  = '⏱';
+      statusColor = Colors.textTertiary;
+    } else if (isRead) {
+      statusIcon  = '✓✓';
+      statusColor = Colors.checkBlue;
+    } else if (isDelivered) {
+      statusIcon  = '✓✓';
+      statusColor = Colors.textTertiary;
+    } else {
+      statusIcon  = '✓';
+      statusColor = Colors.textTertiary;
+    }
     return (
       <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
-        <View style={[styles.bubble, isMine ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent }] : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived }]]}>
-          {!isMine && (
-            <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
-          )}
-          <Text style={[styles.messageText, { color: Colors.text }]}>
-            {item.content}
-          </Text>
-          <View style={styles.metaRow}>
-            <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
-              {dayjs(item.created_at).format('HH:mm')}
-            </Text>
-            {isMine && (
-              <Text style={[
-                styles.checkMark,
-                item.is_read ? [styles.checkRead, { color: Colors.checkBlue }] : [styles.checkSent, { color: Colors.textTertiary }],
-              ]}>
-                {item.is_read ? '✓✓' : '✓'}
-              </Text>
+        <TouchableOpacity
+          onLongPress={(e) => {
+            if (!item.is_deleted) {
+              setContextY(e.nativeEvent.pageY);
+              setContextMsg(item);
+            }
+          }}
+          delayLongPress={350}
+          activeOpacity={0.85}
+        >
+          <View style={[
+            styles.bubble,
+            isMine
+              ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
+              : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
+          ]}>
+            {!isMine && (
+              <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
             )}
+            {item.is_deleted ? (
+              <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>
+                🚫 This message was deleted.
+              </Text>
+            ) : (
+              <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
+            )}
+            {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
+              <View style={styles.reactionsDisplay}>
+                {Object.entries(item.reactions).map(([emoji, users]) => (
+                  <TouchableOpacity
+                    key={emoji}
+                    onPress={() => {
+                      toggleReaction(item.id, emoji, String(user?.id ?? '')).then(() => loadFromDB());
+                    }}
+                    style={[styles.reactionBadge, {
+                      backgroundColor: users.includes(String(user?.id))
+                        ? Colors.neonGlow : Colors.surfaceVariant,
+                      borderColor: users.includes(String(user?.id))
+                        ? Colors.primary : Colors.border,
+                    }]}
+                  >
+                    <Text style={styles.reactionBadgeText}>{emoji} {users.length}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+            <View style={styles.metaRow}>
+              <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
+                {dayjs(item.created_at).format('HH:mm')}
+              </Text>
+              {isMine && !item.is_deleted && (
+                <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
+              )}
+            </View>
           </View>
-        </View>
+        </TouchableOpacity>
       </View>
     );
   };
@@ -195,58 +359,111 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   if (loading) {
     return (
       <View style={[styles.center, { backgroundColor: Colors.chatBg }]}>
-        <ActivityIndicator size="large" color={Colors.teal} />
+        <ActivityIndicator size="large" color={Colors.primary} />
       </View>
     );
   }
 
   return (
+    /* On Android, windowSoftInputMode=adjustResize in manifest handles keyboard natively.
+       On iOS, KeyboardAvoidingView with behavior="padding" is needed. */
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: Colors.chatBg }]}
       behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 80}
     >
-      {/* Connection indicator */}
       {!connected && (
-        <View style={[styles.connectionBar, { backgroundColor: Colors.primary }]}>
-          <Text style={[styles.connectionText, { color: Colors.textInverse }]}>⏳ Connecting…</Text>
+        <View style={[styles.connectionBar, { backgroundColor: Colors.surface, borderBottomColor: Colors.warning }]}>
+          <Text style={[styles.connectionText, { color: Colors.warning }]}>◈ SYNCING…</Text>
         </View>
       )}
 
-      {/* Messages */}
       <FlatList
         ref={flatListRef}
-        data={msgs}
-        extraData={readIds.size}
+        data={[...displayedMsgs].reverse()}
+        extraData={displayedMsgs.length}
         keyExtractor={(item) => item.id}
         renderItem={renderMessage}
+        style={styles.messageList}
         contentContainerStyle={styles.messagesList}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
+        inverted
         keyboardShouldPersistTaps="handled"
       />
 
-      {/* Input bar */}
-      <View style={[styles.inputBar, { backgroundColor: Colors.chatBg }]}>
-        <View style={[styles.inputRow, { backgroundColor: Colors.surface }]}>
+      <View style={[styles.inputBar, { backgroundColor: Colors.chatBg, borderTopColor: Colors.neonBorder, paddingBottom: insets.bottom + Spacing.sm }]}>
+        <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
           <TextInput
             style={[styles.textInput, { color: Colors.text }]}
             value={text}
             onChangeText={setText}
-            placeholder="Message"
+            placeholder="Compose message…"
             placeholderTextColor={Colors.textTertiary}
             multiline
             maxLength={2000}
           />
         </View>
         <TouchableOpacity
-          style={[styles.sendBtn, { backgroundColor: Colors.primary, shadowColor: Colors.primary }, !text.trim() && [styles.sendBtnDisabled, { backgroundColor: Colors.primaryLight }]]}
+          style={[
+            styles.sendBtn,
+            {
+              backgroundColor: text.trim() ? Colors.primary : Colors.surface,
+              borderColor: Colors.neonBorder,
+              shadowColor: Colors.primary,
+            },
+          ]}
           onPress={handleSend}
           disabled={!text.trim()}
-          activeOpacity={0.7}
+          activeOpacity={0.75}
         >
-          <Text style={[styles.sendIcon, { color: Colors.textInverse }]}>▶</Text>
+          <Text style={[styles.sendIcon, { color: text.trim() ? Colors.textInverse : Colors.textTertiary }]}>▶</Text>
         </TouchableOpacity>
       </View>
+      {/* Long-press context menu */}
+      <Modal
+        visible={contextMsg !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setContextMsg(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setContextMsg(null)}>
+          <Pressable
+            style={[styles.contextPanel, {
+              backgroundColor: Colors.surface,
+              borderColor: Colors.neonBorder,
+              top: Math.min(Math.max(contextY - 70, 60), winHeight - 200),
+            }]}
+            onPress={() => {}}
+          >
+            <View style={styles.reactionsRow}>
+              {REACTION_EMOJIS.map((emoji) => {
+                const mine = contextMsg?.reactions?.[emoji]?.includes(String(user?.id));
+                return (
+                  <TouchableOpacity
+                    key={emoji}
+                    onPress={() => handleReaction(emoji)}
+                    style={[styles.reactionBtn, {
+                      backgroundColor: mine ? Colors.neonGlow : Colors.surfaceVariant,
+                      borderWidth: mine ? 1 : 0,
+                      borderColor: Colors.primary,
+                    }]}
+                  >
+                    <Text style={styles.reactionEmoji}>{emoji}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {contextMsg?.sender === user?.id && (
+              <>
+                <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
+                <TouchableOpacity onPress={handleDelete} style={styles.contextOption}>
+                  <Text style={[styles.contextOptionText, { color: Colors.error }]}>🗑  Delete message</Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -258,12 +475,14 @@ const styles = StyleSheet.create({
   connectionBar: {
     paddingVertical: Spacing.xs,
     alignItems: 'center',
+    borderBottomWidth: 1,
   },
-  connectionText: { fontSize: Font.size.xs, ...Font.medium },
+  connectionText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 2 },
 
-  messagesList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
+  messageList: { flex: 1 },
+  messagesList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, flexGrow: 1 },
 
-  bubbleRow: { marginBottom: Spacing.xs + 2 },
+  bubbleRow: { marginBottom: Spacing.sm },
   bubbleRowRight: { alignItems: 'flex-end' },
   bubbleRowLeft: { alignItems: 'flex-start' },
 
@@ -273,77 +492,130 @@ const styles = StyleSheet.create({
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.xs,
     borderRadius: Radius.lg,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowRadius: 2,
-    shadowOffset: { width: 0, height: 1 },
+    borderWidth: 1,
+    elevation: 2,
   },
   bubbleSent: {
-    borderBottomRightRadius: Radius.sm,
+    borderBottomRightRadius: Radius.xs ?? 4,
   },
   bubbleReceived: {
-    borderBottomLeftRadius: Radius.sm,
+    borderBottomLeftRadius: Radius.xs ?? 4,
   },
 
   senderName: {
     fontSize: Font.size.xs,
     marginBottom: 2,
-    ...Font.semiBold,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 
   messageText: {
     fontSize: Font.size.md,
-    lineHeight: 20,
+    lineHeight: 22,
+    letterSpacing: 0.2,
   },
 
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    marginTop: 2,
-    gap: 3,
+    marginTop: 3,
+    gap: 4,
   },
-  timeText: { fontSize: 10 },
-  checkMark: { fontSize: 10 },
-  checkSent: {},
-  checkRead: {},
+  timeText: { fontSize: 10, letterSpacing: 0.3 },
+  statusIcon: { fontSize: 10 },
 
   inputBar: {
     flexDirection: 'row',
     alignItems: 'flex-end',
     paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.sm,
+    paddingTop: Spacing.sm,
+    // paddingBottom is set dynamically via insets.bottom
+    borderTopWidth: 1,
   },
   inputRow: {
     flex: 1,
-    borderRadius: Radius.pill,
+    borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md,
     minHeight: 44,
     justifyContent: 'center',
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOpacity: 0.06,
-    shadowRadius: 2,
-    shadowOffset: { width: 0, height: 1 },
+    borderWidth: 1,
   },
   textInput: {
     fontSize: Font.size.md,
     maxHeight: 100,
     paddingVertical: Platform.OS === 'ios' ? Spacing.md : Spacing.sm,
+    letterSpacing: 0.2,
   },
   sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: Spacing.sm,
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
+  sendIcon: { fontSize: 16, fontWeight: '700' },
+
+  deletedText: {
+    fontSize: Font.size.sm,
+    fontStyle: 'italic',
+    lineHeight: 20,
+  },
+  reactionsDisplay: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  reactionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+  },
+  reactionBadgeText: { fontSize: 13, lineHeight: 18 },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.58)',
+  },
+  contextPanel: {
+    position: 'absolute',
+    left: '4%',
+    width: '92%',
+    borderRadius: Radius.xl,
+    borderWidth: 1,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    elevation: 24,
+    shadowColor: '#00E5FF',
+    shadowOpacity: 0.25,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: -4 },
+  },
+  reactionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.xs,
+  },
+  reactionBtn: {
     width: 44,
     height: 44,
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: Spacing.sm,
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 2 },
-    elevation: 4,
   },
-  sendBtnDisabled: { opacity: 0.4 },
-  sendIcon: { fontSize: 18 },
+  reactionEmoji: { fontSize: 26 },
+  contextDivider: { height: 1, marginVertical: Spacing.sm },
+  contextOption: { paddingVertical: Spacing.sm, alignItems: 'center' },
+  contextOptionText: { fontSize: Font.size.md, fontWeight: '600', letterSpacing: 0.5 },
 });

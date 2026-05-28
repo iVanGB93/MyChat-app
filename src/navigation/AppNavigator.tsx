@@ -44,19 +44,36 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator();
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
-/* ---- Tab icons (emoji-based — swap for a vector icon lib later) ---- */
+/* ---- Tab icons ---- */
 function TabIcon({ label, focused }: { label: string; focused: boolean }) {
   const { colors: Colors } = useTheme();
   const icons: Record<string, string> = {
-    Chats: '💬',
-    Calls: '📞',
+    Chats:   '💬',
+    Calls:   '📞',
     Profile: '👤',
   };
   return (
-    <View style={{ alignItems: 'center' }}>
-      <Text style={{ fontSize: focused ? 22 : 20, opacity: focused ? 1 : 0.55 }}>
+    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+      <Text style={{
+        fontSize: 22,
+        opacity: focused ? 1 : 0.38,
+        transform: [{ scale: focused ? 1.08 : 1 }],
+      }}>
         {icons[label] ?? '•'}
       </Text>
+      {focused && (
+        <View style={{
+          width: 4,
+          height: 4,
+          borderRadius: 2,
+          backgroundColor: Colors.primary,
+          marginTop: 2,
+          shadowColor: Colors.primary,
+          shadowOpacity: 0.9,
+          shadowRadius: 4,
+          shadowOffset: { width: 0, height: 0 },
+        }} />
+      )}
     </View>
   );
 }
@@ -71,30 +88,33 @@ function MainTabs() {
           backgroundColor: Colors.headerBg,
           elevation: 0,
           shadowOpacity: 0,
+          borderBottomWidth: 1,
+          borderBottomColor: Colors.neonBorder,
         },
-        headerTitleStyle: { ...Font.bold, color: Colors.headerText, fontSize: Font.size.xl },
-        headerTintColor: Colors.headerText,
+        headerTitleStyle: { fontWeight: '800', letterSpacing: 3, color: Colors.primary, fontSize: Font.size.lg },
+        headerTintColor: Colors.primary,
         tabBarStyle: {
           backgroundColor: Colors.tabBarBg,
-          borderTopColor: Colors.border,
-          borderTopWidth: StyleSheet.hairlineWidth,
-          height: 60,
-          paddingBottom: 8,
-          elevation: 8,
-          shadowColor: '#000',
-          shadowOpacity: 0.06,
-          shadowRadius: 8,
+          borderTopColor: Colors.neonBorder,
+          borderTopWidth: 1,
+          height: 62,
+          paddingBottom: 10,
+          paddingTop: 6,
+          elevation: 12,
+          shadowColor: Colors.primary,
+          shadowOpacity: 0.15,
+          shadowRadius: 16,
           shadowOffset: { width: 0, height: -4 },
         },
         tabBarActiveTintColor: Colors.primary,
         tabBarInactiveTintColor: Colors.textTertiary,
-        tabBarLabelStyle: { fontSize: Font.size.xs, ...Font.semiBold },
+        tabBarLabelStyle: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1 },
         tabBarIcon: ({ focused }) => <TabIcon label={route.name} focused={focused} />,
       })}
     >
-      <Tab.Screen name="Chats" component={ChatListScreen} options={{ headerTitle: 'Axonic' }} />
-      <Tab.Screen name="Calls" component={CallsScreen} options={{ headerTitle: 'Calls' }} />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
+      <Tab.Screen name="Chats" component={ChatListScreen} options={{ headerTitle: 'AXONIC' }} />
+      <Tab.Screen name="Calls" component={CallsScreen} options={{ headerTitle: 'CALLS' }} />
+      <Tab.Screen name="Profile" component={ProfileScreen} options={{ headerTitle: 'PROFILE' }} />
     </Tab.Navigator>
   );
 }
@@ -207,25 +227,25 @@ function MessageNotificationListener() {
       style={[toastStyles.container, { transform: [{ translateY: slideAnim }] }]}
     >
       <TouchableOpacity
-        style={[toastStyles.inner, { backgroundColor: Colors.primaryDark, shadowColor: Colors.primary }]}
+        style={[toastStyles.inner, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder, shadowColor: Colors.primary }]}
         onPress={handlePress}
         activeOpacity={0.85}
       >
-        <View style={[toastStyles.avatar, { backgroundColor: Colors.primaryLight }]}>
-          <Text style={toastStyles.avatarText}>
+        <View style={[toastStyles.avatar, { backgroundColor: Colors.highlight, borderColor: Colors.primary }]}>
+          <Text style={[toastStyles.avatarText, { color: Colors.primary }]}>
             {toast.sender.charAt(0).toUpperCase()}
           </Text>
         </View>
         <View style={toastStyles.textCol}>
-          <Text style={[toastStyles.sender, { color: Colors.headerText }]} numberOfLines={1}>
+          <Text style={[toastStyles.sender, { color: Colors.primary }]} numberOfLines={1}>
             {toast.sender}
           </Text>
-          <Text style={toastStyles.content} numberOfLines={1}>
+          <Text style={[toastStyles.content, { color: Colors.textSecondary }]} numberOfLines={1}>
             {toast.content}
           </Text>
         </View>
         <TouchableOpacity onPress={dismiss} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}>
-          <Text style={toastStyles.close}>✕</Text>
+          <Text style={[toastStyles.close, { color: Colors.textTertiary }]}>✕</Text>
         </TouchableOpacity>
       </TouchableOpacity>
     </Animated.View>
@@ -239,10 +259,12 @@ export default function AppNavigator() {
 
   if (isLoading) {
     return (
-      <View style={[styles.splash, { backgroundColor: Colors.primary }]}>
-        <Text style={styles.splashLogo}>💬</Text>
-        <Text style={[styles.splashTitle, { color: Colors.textInverse }]}>Axonic</Text>
-        <ActivityIndicator size="large" color={Colors.textInverse} style={{ marginTop: Spacing.lg }} />
+      <View style={[styles.splash, { backgroundColor: Colors.background }]}>
+        <View style={[styles.splashMark, { borderColor: Colors.primary, shadowColor: Colors.primary }]}>
+          <Text style={[styles.splashMarkText, { color: Colors.primary }]}>AX</Text>
+        </View>
+        <Text style={[styles.splashTitle, { color: Colors.primary }]}>AXONIC</Text>
+        <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: Spacing.lg }} />
       </View>
     );
   }
@@ -327,8 +349,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  splashLogo: { fontSize: 80 },
-  splashTitle: { fontSize: Font.size.title, marginTop: Spacing.sm, ...Font.bold },
+  splashMark: {
+    width: 80,
+    height: 80,
+    borderRadius: 14,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOpacity: 0.7,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 10,
+    marginBottom: Spacing.lg,
+  },
+  splashMarkText: {
+    fontSize: 28,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+  splashTitle: { fontSize: Font.size.title, marginTop: 0, fontWeight: '800', letterSpacing: 8 },
 });
 
 const toastStyles = StyleSheet.create({
@@ -343,43 +382,45 @@ const toastStyles = StyleSheet.create({
   inner: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: Radius.lg,
+    borderRadius: Radius.md,
     paddingHorizontal: 14,
     paddingVertical: 12,
+    borderWidth: 1,
     shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
     elevation: 10,
   },
   avatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
   },
   avatarText: {
-    color: '#fff',
-    fontSize: 18,
-    ...Font.bold,
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   textCol: {
     flex: 1,
     marginRight: 8,
   },
   sender: {
-    fontSize: Font.size.md,
-    ...Font.semiBold,
+    fontSize: Font.size.sm,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   content: {
-    color: 'rgba(255,255,255,0.75)',
     fontSize: Font.size.sm,
     marginTop: 2,
+    letterSpacing: 0.2,
   },
   close: {
-    color: 'rgba(255,255,255,0.6)',
-    fontSize: 16,
+    fontSize: 14,
     padding: 4,
   },
 });

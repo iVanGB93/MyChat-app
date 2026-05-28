@@ -14,6 +14,8 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api, { getTokens, saveTokens, BASE_URL } from './api';
+import { connectRoom, flushOutboxForRecipient, injectReceivedMessage } from './chatWsManager';
+import { saveMessage, messageExists, markDelivered } from './localMessageStore';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
@@ -290,6 +292,22 @@ async function connectWs() {
         // Drop all messages until auth completes
         if (!_wsAuthenticated) return;
 
+        // ---- Pending deliveries: server tells us which senders have queued messages ----
+        // Connect to those rooms so the ready_to_receive handshake can run.
+        if ((payload as any).type === 'pending_deliveries') {
+          const deliveries: Array<{ room_id: string }> = (payload as any).deliveries ?? [];
+          for (const d of deliveries) {
+            if (d.room_id) connectRoom(d.room_id);
+          }
+          return;
+        }
+
+        // ---- Peer sync: another session of this user can share its message history ----
+        if ((payload as any).type === 'peer_sync_available') {
+          // TODO Phase 8: query localMessageStore for each room's latest timestamp and send request_sync
+          return;
+        }
+
         // Handle pong
         if (payload.event === 'pong' || payload.type === 'pong') {
           if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
@@ -297,6 +315,61 @@ async function connectWs() {
         }
 
         console.log('[WsManager] event:', payload.event, payload.call_id ?? '');
+
+        // ---- receiver_ready: an offline user just connected — flush our outbox for them ----
+        if (payload.event === 'receiver_ready' && payload.room_id && payload.user_id) {
+          flushOutboxForRecipient(String(payload.room_id), payload.user_id as number);
+          // Don't return — let listeners know too
+        }
+
+        // ---- message_delivery_ack: recipient confirmed they stored our message ----
+        if (payload.event === 'message_delivery_ack' && payload.message_id && payload.by_user_id) {
+          markDelivered(String(payload.message_id), payload.by_user_id as number).catch(() => {});
+          // Fall through — notify listeners so the chat UI can update the delivery tick
+        }
+
+        // ---- new_message via notification channel (user not in chat room WS) ----
+        if (payload.event === 'new_message' && payload.message_id && payload.sender_id !== undefined) {
+          (async () => {
+            const exists = await messageExists(String(payload.message_id));
+            const wsMsg = {
+              id: String(payload.message_id),
+              sender: String(payload.sender || payload.from_username || ''),
+              sender_id: payload.sender_id as number,
+              content: String(payload.content ?? ''),
+              message_type: String(payload.message_type ?? 'text'),
+              created_at: String(payload.created_at ?? new Date().toISOString()),
+              is_read: false,
+            };
+            if (!exists) {
+              await saveMessage({
+                id: wsMsg.id,
+                room_id: String(payload.room_id ?? ''),
+                sender_id: wsMsg.sender_id,
+                sender_name: wsMsg.sender,
+                content: wsMsg.content ?? null,
+                type: wsMsg.message_type,
+                file_uri: null,
+                created_at: wsMsg.created_at,
+                is_mine: false,
+                reactions: {},
+                is_deleted: false,
+              });
+            }
+            // Inject into chatWsManager state if the room screen is open
+            injectReceivedMessage(String(payload.room_id ?? ''), wsMsg);
+            // Ack receipt so server deletes the PendingDelivery record
+            if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
+              ws.send(JSON.stringify({
+                type: 'message_ack',
+                message_id: payload.message_id,
+                sender_id: payload.sender_id,
+                room_id: String(payload.room_id ?? ''),
+              }));
+            }
+          })().catch(() => {});
+          // Fall through — local notification and listeners still receive the event
+        }
 
         // When app is in background the WS is still alive (ForegroundService keeps it connected),
         // but in-app UI components are not rendered. FCM may race with app_state reporting.

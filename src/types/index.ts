@@ -58,6 +58,8 @@ export interface Message {
   file: string | null;
   is_read: boolean;
   created_at: string;
+  reactions?: Record<string, string[]>;
+  is_deleted?: boolean;
 }
 
 // ---- Calls ----

@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Login Screen — modern purple theme                                  */
+/*  Login Screen — futuristic cyberpunk theme                         */
 /* ------------------------------------------------------------------ */
 
 import React, { useState } from 'react';
@@ -66,13 +66,19 @@ export default function LoginScreen({ navigation }: Props) {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.logo}>💬</Text>
-          <Text style={[styles.title, { color: Colors.primary }]}>Axonic</Text>
-          <Text style={[styles.subtitle, { color: Colors.textSecondary }]}>Enter your credentials to continue</Text>
+          {/* Hex logo mark */}
+          <View style={[styles.logoMark, { borderColor: Colors.primary, shadowColor: Colors.primary }]}>
+            <Text style={[styles.logoText, { color: Colors.primary }]}>AX</Text>
+          </View>
+          <Text style={[styles.title, { color: Colors.primary }]}>AXONIC</Text>
+          <View style={[styles.titleUnderline, { backgroundColor: Colors.accent }]} />
+          <Text style={[styles.subtitle, { color: Colors.textSecondary }]}>
+            SECURE COMMUNICATION NETWORK
+          </Text>
         </View>
 
         {/* Form */}
-        <View style={styles.form}>
+        <View style={[styles.form, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder, shadowColor: Colors.primary }]}>
           <Input
             label="Username"
             placeholder="Enter your username"
@@ -90,14 +96,19 @@ export default function LoginScreen({ navigation }: Props) {
             isPassword
           />
 
-          <Button title="NEXT" onPress={handleLogin} loading={loading} style={[styles.btn, { backgroundColor: Colors.primary, shadowColor: Colors.primary }]} />
+          <Button
+            title="CONNECT"
+            onPress={handleLogin}
+            loading={loading}
+            style={styles.btn}
+          />
         </View>
 
         {/* Footer */}
         <View style={styles.footer}>
-          <Text style={[styles.footerText, { color: Colors.textSecondary }]}>Don't have an account?</Text>
+          <Text style={[styles.footerText, { color: Colors.textSecondary }]}>NEW TO AXONIC?</Text>
           <TouchableOpacity onPress={() => navigation.navigate('Register')}>
-            <Text style={[styles.link, { color: Colors.primary }]}> Sign Up</Text>
+            <Text style={[styles.link, { color: Colors.primary }]}> REGISTER</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -113,19 +124,55 @@ const styles = StyleSheet.create({
     padding: Spacing.xl,
   },
   header: { alignItems: 'center', marginBottom: Spacing.xxl },
-  logo: { fontSize: 64, marginBottom: Spacing.sm },
-  title: { fontSize: Font.size.title, ...Font.bold },
-  subtitle: { fontSize: Font.size.md, marginTop: Spacing.sm },
-  form: { marginBottom: Spacing.lg },
-  btn: {
-    marginTop: Spacing.md,
-    borderRadius: Radius.pill,
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+  logoMark: {
+    width: 72,
+    height: 72,
+    borderRadius: 12,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.lg,
+    shadowOpacity: 0.6,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 8,
   },
-  footer: { flexDirection: 'row', justifyContent: 'center', marginTop: Spacing.lg },
-  footerText: { fontSize: Font.size.sm },
-  link: { fontSize: Font.size.sm, ...Font.semiBold },
+  logoText: {
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: 2,
+  },
+  title: {
+    fontSize: Font.size.title,
+    fontWeight: '800',
+    letterSpacing: 8,
+  },
+  titleUnderline: {
+    width: 48,
+    height: 2,
+    marginTop: 6,
+    marginBottom: Spacing.sm,
+  },
+  subtitle: {
+    fontSize: Font.size.xs,
+    letterSpacing: 2,
+    marginTop: Spacing.xs,
+  },
+  form: {
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 6,
+    marginBottom: Spacing.lg,
+  },
+  btn: {
+    marginTop: Spacing.sm,
+    borderRadius: Radius.md,
+  },
+  footer: { flexDirection: 'row', justifyContent: 'center', marginTop: Spacing.sm },
+  footerText: { fontSize: Font.size.sm, letterSpacing: 1 },
+  link: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1 },
 });

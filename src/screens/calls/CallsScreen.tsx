@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Call History Screen — modern purple theme                            */
+/*  Call History Screen — futuristic cyberpunk theme                  */
 /* ------------------------------------------------------------------ */
 
 import React, { useCallback, useEffect, useState } from 'react';
@@ -17,7 +17,7 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { Font, Spacing } from '../../theme';
+import { Font, Spacing, Radius } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getCallHistory, initiateCall } from '../../services/callService';
@@ -78,31 +78,49 @@ export default function CallsScreen() {
   const renderItem = ({ item }: { item: CallLog }) => {
     const isOutgoing = item.caller === user?.id;
     const otherName = isOutgoing ? item.callee_username : item.caller_username;
-
     const isMissed = item.status === 'missed' || item.status === 'rejected';
-    const directionArrow = isOutgoing ? '↗' : '↙';
-    const arrowColor = isMissed ? Colors.error : Colors.teal;
+    const directionLabel = isOutgoing ? 'OUT' : 'IN';
+    const statusColor = isMissed ? Colors.error : Colors.primary;
 
     const durationStr = item.duration_seconds > 0
       ? `${Math.floor(item.duration_seconds / 60)}:${String(item.duration_seconds % 60).padStart(2, '0')}`
       : null;
 
     return (
-      <TouchableOpacity style={[styles.callItem, { backgroundColor: Colors.surface }]} onPress={() => handleCallback(item)} activeOpacity={0.7}>
-        <Avatar name={otherName} size={48} />
+      <TouchableOpacity
+        style={[styles.callItem, { borderColor: isMissed ? Colors.error + '30' : Colors.neonBorder }]}
+        onPress={() => handleCallback(item)}
+        activeOpacity={0.7}
+      >
+        {/* Accent bar */}
+        <View style={[styles.accentBar, { backgroundColor: statusColor }]} />
+
+        <Avatar name={otherName} size={46} />
+
         <View style={styles.callInfo}>
-          <Text style={[styles.callName, { color: Colors.text }, isMissed && { color: Colors.error }]}>{otherName}</Text>
+          <Text style={[styles.callName, { color: isMissed ? Colors.error : Colors.text }]}>
+            {otherName.toUpperCase()}
+          </Text>
           <View style={styles.callMeta}>
-            <Text style={[styles.direction, { color: arrowColor }]}>{directionArrow}</Text>
+            <Text style={[styles.directionTag, { color: statusColor, borderColor: statusColor }]}>
+              {directionLabel}
+            </Text>
             <Text style={[styles.callType, { color: Colors.textSecondary }]}>
-              {item.call_type === 'video' ? '📹' : '📞'}{' '}
-              {durationStr ?? item.status}
+              {item.call_type === 'video' ? 'VIDEO' : 'AUDIO'}
+              {durationStr ? `  ${durationStr}` : `  ${item.status.toUpperCase()}`}
             </Text>
           </View>
         </View>
+
         <View style={styles.callRight}>
-          <Text style={[styles.callTime, { color: Colors.textTertiary }]}>{formatCallTime(item.started_at)}</Text>
-          <Text style={[styles.callbackIcon, { color: Colors.primary }]}>{item.call_type === 'video' ? '📹' : '📞'}</Text>
+          <Text style={[styles.callTime, { color: Colors.primary }]}>
+            {formatCallTime(item.started_at)}
+          </Text>
+          <View style={[styles.callbackBtn, { borderColor: Colors.primary }]}>
+            <Text style={[styles.callbackIcon, { color: Colors.primary }]}>
+              {item.call_type === 'video' ? '⊞' : '◉'}
+            </Text>
+          </View>
         </View>
       </TouchableOpacity>
     );
@@ -111,7 +129,7 @@ export default function CallsScreen() {
   if (loading) {
     return (
       <View style={[styles.center, { backgroundColor: Colors.background }]}>
-        <ActivityIndicator size="large" color={Colors.teal} />
+        <ActivityIndicator size="large" color={Colors.primary} />
       </View>
     );
   }
@@ -124,12 +142,17 @@ export default function CallsScreen() {
         renderItem={renderItem}
         contentContainerStyle={calls.length === 0 ? styles.emptyContainer : styles.list}
         ListEmptyComponent={
-          <EmptyState icon="📞" title="No calls yet" subtitle="Start a call from a chat conversation" />
+          <EmptyState icon="◉" title="No call history" subtitle="Start a call from a chat conversation" />
         }
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchCalls(); }} colors={[Colors.primary]} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => { setRefreshing(true); fetchCalls(); }}
+            colors={[Colors.primary]}
+            tintColor={Colors.primary}
+          />
         }
-        ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: Colors.border }]} />}
+        ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: Colors.divider }]} />}
       />
     </View>
   );
@@ -143,16 +166,39 @@ const styles = StyleSheet.create({
   callItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.md,
+    paddingRight: Spacing.lg,
+    borderBottomWidth: 0,
+  },
+  accentBar: {
+    width: 3,
+    alignSelf: 'stretch',
+    marginRight: Spacing.md,
+    borderRadius: 2,
   },
   callInfo: { flex: 1, marginLeft: Spacing.md },
-  callName: { fontSize: Font.size.md, ...Font.semiBold },
-  callMeta: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, marginTop: 2 },
-  direction: { fontSize: 14, ...Font.bold },
-  callType: { fontSize: Font.size.sm },
+  callName: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1 },
+  callMeta: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: 4 },
+  directionTag: {
+    fontSize: Font.size.xs,
+    fontWeight: '700',
+    letterSpacing: 1,
+    borderWidth: 1,
+    borderRadius: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
+  callType: { fontSize: Font.size.xs, letterSpacing: 0.8 },
   callRight: { alignItems: 'flex-end', gap: 6 },
-  callTime: { fontSize: Font.size.xs },
-  callbackIcon: { fontSize: 18 },
-  separator: { height: 1, marginLeft: 80 },
+  callTime: { fontSize: Font.size.xs, fontWeight: '600', letterSpacing: 0.5 },
+  callbackBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  callbackIcon: { fontSize: 14, fontWeight: '600' },
+  separator: { height: 1, marginLeft: 56 },
 });
