@@ -5,7 +5,7 @@
     "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-screen.png",
@@ -63,6 +63,7 @@
       ],
       "expo-background-task",
       "expo-task-manager",
+      "expo-sqlite",
       "./plugins/withForegroundService"
     ],
     "extra": {

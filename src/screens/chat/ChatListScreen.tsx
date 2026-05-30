@@ -21,6 +21,7 @@ import { getRooms } from '../../services/chatService';
 import { getLastMessagePerRoom } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useNotificationContext } from '../../contexts/NotificationContext';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 import type { ChatRoom, RootStackParamList } from '../../types';
@@ -61,6 +62,51 @@ export default function ChatListScreen() {
     const unsub = navigation.addListener('focus', fetchRooms);
     return unsub;
   }, [navigation, fetchRooms]);
+
+  // Live-update the list when a new message arrives over the notification WS.
+  // Without this, the "last message" preview only refreshes when the screen
+  // is focused/refreshed — so messages arriving while the user is sitting on
+  // the chat list look stale until they tap into a room.
+  const { subscribe } = useNotificationContext();
+  useEffect(() => {
+    const unsub = subscribe((payload) => {
+      if (payload.event !== 'new_message') return;
+      const roomId = String(payload.room_id ?? '');
+      if (!roomId) return;
+      const createdAt = payload.created_at ?? new Date().toISOString();
+      const content = payload.content ?? '';
+
+      setLocalLastMessages((prev) => ({
+        ...prev,
+        [roomId]: { content, created_at: createdAt },
+      }));
+
+      // Bump the affected room to the top of the list.
+      setRooms((prev) => {
+        const idx = prev.findIndex((r) => r.id === roomId);
+        if (idx === -1) {
+          // New room not yet in our list — re-fetch to pick it up.
+          fetchRooms();
+          return prev;
+        }
+        const updated: ChatRoom = {
+          ...prev[idx],
+          last_message: {
+            id: String(payload.message_id ?? ''),
+            sender: String(payload.sender ?? ''),
+            content,
+            created_at: createdAt,
+          },
+          updated_at: createdAt,
+        };
+        const next = prev.slice();
+        next.splice(idx, 1);
+        next.unshift(updated);
+        return next;
+      });
+    });
+    return unsub;
+  }, [subscribe, fetchRooms]);
 
   const getRoomDisplayName = (room: ChatRoom): string => {
     if (room.name) return room.name;

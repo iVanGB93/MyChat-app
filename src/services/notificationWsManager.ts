@@ -532,8 +532,14 @@ async function connectWs() {
       }
     };
 
-    socket.onerror = (err) => {
-      console.warn('[WsManager] error', err);
+    socket.onerror = (err: any) => {
+      // The RN WebSocket "error" event is a generic Event with no useful
+      // detail — onclose fires right after with the real reason/code and
+      // handles the reconnect. Just log a short line instead of dumping
+      // the entire event object.
+      const url = err?.target?.url ?? err?.currentTarget?.url ?? '';
+      console.warn('[WsManager] socket error (will reconnect via onclose)', url);
+      // onclose fires after onerror → reconnect handled there
       connecting = false;
       // onclose fires after onerror → reconnect handled there
     };

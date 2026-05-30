@@ -89,19 +89,35 @@ export async function showLocalNotification({
   body,
   data,
   channelId = 'messages',
+  identifier,
+  groupKey,
+  isGroupSummary = false,
 }: {
   title: string;
   body: string;
   data?: Record<string, any>;
   channelId?: string;
+  /** Stable id so repeated calls update an existing notification instead of stacking. */
+  identifier?: string;
+  /** Android grouping key. Notifications sharing a key collapse into one entry. */
+  groupKey?: string;
+  /** Marks the group summary notification on Android. */
+  isGroupSummary?: boolean;
 }) {
   await Notifications.scheduleNotificationAsync({
+    identifier,
     content: {
       title,
       body,
       data: data ?? {},
       sound: 'default',
-      ...(Platform.OS === 'android' ? { channelId } : {}),
+      ...(Platform.OS === 'android'
+        ? {
+            channelId,
+            ...(groupKey ? { groupKey } : {}),
+            ...(isGroupSummary ? { groupSummary: true } : {}),
+          }
+        : {}),
     },
     trigger: null, // immediate
   });
@@ -131,6 +147,17 @@ export async function showCallNotification({
 }
 
 /* ---- Show message notification ---- */
+//
+// On Android we want multiple messages from the same room to *collapse* into a
+// single notification entry rather than stack as N separate items in the tray.
+// We achieve that with two tricks:
+//   1. `identifier` is derived from the roomId, so each new message from the
+//      same room *replaces* the previous notification for that room.
+//   2. `groupKey` is set to the roomId too, so even across rooms the messages
+//      sit under a single "Axonic" group that the OS can summarise.
+//
+// iOS automatically groups notifications by thread; we set `data.roomId` and
+// rely on the system default for that platform.
 export async function showMessageNotification({
   senderName,
   content,
@@ -142,11 +169,14 @@ export async function showMessageNotification({
   roomId: string;
   roomName: string;
 }) {
+  const safeRoomId = roomId || 'unknown';
   await showLocalNotification({
     title: senderName,
     body: content,
     data: { type: 'new_message', roomId, roomName },
     channelId: 'messages',
+    identifier: `room-${safeRoomId}`,
+    groupKey: `room-${safeRoomId}`,
   });
 }
 

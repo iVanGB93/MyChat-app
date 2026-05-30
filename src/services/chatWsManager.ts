@@ -96,6 +96,8 @@ interface RoomState {
   pendingFlushes: number[];
   lastMutationAt: number;
   listeners: Set<RoomListener>;
+  /** Pending teardown timer scheduled by subscribeRoom when listeners reach 0. */
+  disconnectTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /* ---- Module-level state (survives React unmounts) ---- */
@@ -158,6 +160,7 @@ function createRoomState(): RoomState {
     pendingFlushes: [],
     lastMutationAt: 0,
     listeners: new Set(),
+    disconnectTimer: null,
   };
 }
 
@@ -653,19 +656,47 @@ function ensureAppStateListener() {
 /**
  * Subscribe to state updates for a room.
  * Automatically connects the room if not already connected.
- * Returns an unsubscribe function that does NOT close the WebSocket —
- * the connection stays alive so it is ready when the user returns.
+ *
+ * The returned unsubscribe function removes this listener. If it was the LAST
+ * listener for the room we also disconnect the room WebSocket (after a short
+ * grace period to absorb React StrictMode / quick navigation remounts).
+ *
+ * Why disconnect on last unsubscribe?
+ *   The Django consumer treats users who are connected to the chat room WS as
+ *   "currently in the room" and skips sending them a `new_message` event over
+ *   the notification WS. If we kept the room socket open after the screen
+ *   unmounted, the user would never get an in-app toast or local push for
+ *   subsequent messages in that room — exactly the bug we are fixing.
  */
 export function subscribeRoom(roomId: string, listener: RoomListener): () => void {
   ensureNetworkListener();
   ensureAppStateListener();
   const s = getOrCreate(roomId);
+  // If a pending disconnect was scheduled (from a recent unsubscribe), cancel it.
+  if (s.disconnectTimer) {
+    clearTimeout(s.disconnectTimer);
+    s.disconnectTimer = null;
+  }
   s.listeners.add(listener);
   // Connect if not already open
   if (!s.ws || s.ws.readyState !== WebSocket.OPEN || !s.authenticated) {
     connectRoom(roomId);
   }
-  return () => { s.listeners.delete(listener); };
+  return () => {
+    s.listeners.delete(listener);
+    if (s.listeners.size === 0) {
+      // Defer the disconnect briefly so a quick remount (navigation animation,
+      // StrictMode double-invoke) doesn't churn the WebSocket.
+      if (s.disconnectTimer) clearTimeout(s.disconnectTimer);
+      s.disconnectTimer = setTimeout(() => {
+        s.disconnectTimer = null;
+        // Re-check: a new subscriber may have arrived during the grace period.
+        if (s.listeners.size === 0) {
+          disconnectRoom(roomId);
+        }
+      }, 1500);
+    }
+  };
 }
 
 /**
@@ -675,6 +706,7 @@ export function subscribeRoom(roomId: string, listener: RoomListener): () => voi
 export function disconnectRoom(roomId: string): void {
   const s = rooms.get(roomId);
   if (!s) return;
+  if (s.disconnectTimer) { clearTimeout(s.disconnectTimer); s.disconnectTimer = null; }
   clearTimers(s);
   closeWs(s);
   rooms.delete(roomId);
