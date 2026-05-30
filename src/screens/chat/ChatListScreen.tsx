@@ -47,7 +47,17 @@ export default function ChatListScreen() {
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [localLastMessages, setLocalLastMessages] = useState<Record<string, { content: string; created_at: string } | null>>({});
+  const [localLastMessages, setLocalLastMessages] = useState<
+    Record<
+      string,
+      {
+        content: string;
+        created_at: string;
+        sender_id?: number;
+        status?: 'pending' | 'sent' | 'read';
+      } | null
+    >
+  >({});
 
   const fetchRooms = useCallback(async () => {
     try {
@@ -55,9 +65,23 @@ export default function ChatListScreen() {
       setRooms(data);
       // Load last messages from local DB for all rooms
       const localMsgsMap = await getLastMessagePerRoom();
-      const map: Record<string, { content: string; created_at: string } | null> = {};
+      const map: Record<
+        string,
+        {
+          content: string;
+          created_at: string;
+          sender_id?: number;
+          status?: 'pending' | 'sent' | 'read';
+        } | null
+      > = {};
       for (const [roomId, msg] of Object.entries(localMsgsMap)) {
-        map[roomId] = { content: msg.content ?? '', created_at: msg.created_at };
+        map[roomId] = {
+          content: msg.content ?? '',
+          created_at: msg.created_at,
+          sender_id: msg.sender_id,
+          // SQLite has no pending tracking — if it's mine and stored, assume at least 'sent'.
+          status: msg.is_mine ? (msg.is_read ? 'read' : 'sent') : undefined,
+        };
       }
       setLocalLastMessages(map);
     } catch { /* ignore */ } finally {
@@ -143,11 +167,17 @@ export default function ChatListScreen() {
   };
 
   const getLastMessage = (room: ChatRoom) => {
-    const candidates = [
+    type LastMsg = {
+      content: string;
+      created_at: string;
+      sender_id?: number;
+      status?: 'pending' | 'sent' | 'read';
+    };
+    const candidates: LastMsg[] = [
       lastMessageByRoom[room.id] ?? null,
       localLastMessages[room.id] ?? null,
       room.last_message ?? null,
-    ].filter((m): m is { content: string; created_at: string } => !!m);
+    ].filter((m): m is LastMsg => !!m);
     if (candidates.length === 0) return null;
     return candidates.reduce((latest, m) =>
       new Date(m.created_at) > new Date(latest.created_at) ? m : latest,
@@ -234,7 +264,28 @@ export default function ChatListScreen() {
                 ? (typers.length === 1
                     ? `${typers[0].username} is typing…`
                     : 'typing…')
-                : (lastMsg ? lastMsg.content : '— no messages yet —')}
+                : lastMsg
+                  ? (
+                    <>
+                      {lastMsg.sender_id === user?.id && (
+                        <Text
+                          style={{
+                            color: lastMsg.status === 'read'
+                              ? Colors.checkBlue
+                              : Colors.textTertiary,
+                          }}
+                        >
+                          {lastMsg.status === 'pending'
+                            ? '⏱ '
+                            : lastMsg.status === 'read'
+                              ? '✓✓ '
+                              : '✓ '}
+                        </Text>
+                      )}
+                      {lastMsg.content}
+                    </>
+                  )
+                  : '— no messages yet —'}
             </Text>
             {unread > 0 && (
               <View style={[styles.unreadBadge, { backgroundColor: isMuted ? Colors.textTertiary : Colors.primary }]}>

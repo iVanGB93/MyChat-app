@@ -22,6 +22,7 @@ import {
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Swipeable } from 'react-native-gesture-handler';
 import dayjs from 'dayjs';
 import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,12 +30,13 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
 import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage } from '../../services/localMessageStore';
-import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom } from '../../services/chatWsManager';
+import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, sendChatMessage } from '../../services/chatWsManager';
+import { getRooms } from '../../services/chatService';
 import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
-import type { Message, RootStackParamList } from '../../types';
+import type { Message, RootStackParamList, ChatRoom } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
@@ -54,6 +56,7 @@ function toMsg(m: LocalMessage): Message {
     created_at: m.created_at,
     reactions: m.reactions,
     is_deleted: m.is_deleted,
+    reply_to: m.reply_to,
   };
 }
 
@@ -71,6 +74,7 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
     created_at: m.created_at,
     reactions: m.reactions ?? {},
     is_deleted: m.is_deleted ?? false,
+    reply_to: m.reply_to ?? null,
   };
 }
 
@@ -98,6 +102,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const [sqliteMessages, setSqliteMessages] = useState<Message[]>([]);
   const [contextMsg, setContextMsg] = useState<Message | null>(null);
   const [contextY,   setContextY]   = useState(0);
+  /** Message currently being forwarded — when set, the room-picker modal is shown. */
+  const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
+  const [forwardRooms, setForwardRooms] = useState<ChatRoom[]>([]);
+  const [forwardLoading, setForwardLoading] = useState(false);
+  /** Message currently being replied to — when set, shows a preview strip above the input. */
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const { height: winHeight } = useWindowDimensions();
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
@@ -272,8 +282,18 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     const trimmed = text.trim();
     if (!trimmed) return;
     console.log('[ChatRoom] sending:', trimmed.slice(0, 30));
-    sendMessage(trimmed);
+    const reply = replyingTo
+      ? {
+          id: replyingTo.id,
+          sender_name: replyingTo.sender_username || '',
+          // Truncate to keep WS frames small and the bubble preview manageable
+          content: (replyingTo.content ?? '').slice(0, 140),
+          type: replyingTo.message_type,
+        }
+      : null;
+    sendMessage(trimmed, 'text', reply);
     setText('');
+    setReplyingTo(null);
     playSound('message_sent');
   };
 
@@ -304,6 +324,39 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     );
   }, [contextMsg, roomId, loadFromDB]);
 
+  /** Open the forward picker. Fetches the room list on demand. */
+  const handleForward = useCallback(async () => {
+    if (!contextMsg) return;
+    const target = contextMsg;
+    setContextMsg(null);
+    setForwardMsg(target);
+    setForwardLoading(true);
+    try {
+      const data = await getRooms();
+      // Exclude the source room — forwarding to self is rarely useful.
+      setForwardRooms(data.filter((r) => r.id !== roomId));
+    } catch {
+      setForwardRooms([]);
+    } finally {
+      setForwardLoading(false);
+    }
+  }, [contextMsg, roomId]);
+
+  /** Send the forwarded message to the selected room. */
+  const doForwardTo = useCallback(async (targetRoomId: string) => {
+    if (!forwardMsg) return;
+    const msg = forwardMsg;
+    setForwardMsg(null);
+    try {
+      await sendChatMessage(
+        targetRoomId,
+        msg.content ?? '',
+        (msg.message_type as string) || 'text',
+      );
+      playSound('message_sent');
+    } catch { /* ignore — saved locally */ }
+  }, [forwardMsg]);
+
   const renderMessage = ({ item }: { item: Message }) => {
     const isMine    = item.sender === user?.id;
     const isPending = isMine && pendingIds.has(item.id);
@@ -323,65 +376,99 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       statusColor = Colors.textTertiary;
     }
     return (
-      <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
-        <TouchableOpacity
-          onLongPress={(e) => {
-            if (!item.is_deleted) {
-              setContextY(e.nativeEvent.pageY);
-              setContextMsg(item);
-            }
-          }}
-          delayLongPress={350}
-          activeOpacity={0.85}
-        >
-          <View style={[
-            styles.bubble,
-            isMine
-              ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
-              : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
-          ]}>
-            {!isMine && (
-              <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
-            )}
-            {item.is_deleted ? (
-              <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>
-                🚫 This message was deleted.
-              </Text>
-            ) : (
-              <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
-            )}
-            {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
-              <View style={styles.reactionsDisplay}>
-                {Object.entries(item.reactions).map(([emoji, users]) => (
-                  <TouchableOpacity
-                    key={emoji}
-                    onPress={async () => {
-                      const newReactions = await toggleReaction(item.id, emoji, String(user?.id ?? ''));
-                      sendMessageUpdate(roomId, item.id, { reactions: newReactions, reacted_emoji: emoji });
-                    }}
-                    style={[styles.reactionBadge, {
-                      backgroundColor: users.includes(String(user?.id))
-                        ? Colors.neonGlow : Colors.surfaceVariant,
-                      borderColor: users.includes(String(user?.id))
-                        ? Colors.primary : Colors.border,
-                    }]}
-                  >
-                    <Text style={styles.reactionBadgeText}>{emoji} {users.length}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            )}
-            <View style={styles.metaRow}>
-              <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
-                {dayjs(item.created_at).format('HH:mm')}
-              </Text>
-              {isMine && !item.is_deleted && (
-                <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
-              )}
-            </View>
+      <Swipeable
+        renderLeftActions={() => (
+          <View style={styles.swipeReplyHint}>
+            <Ionicons name="arrow-undo" size={22} color={Colors.primary} />
           </View>
-        </TouchableOpacity>
-      </View>
+        )}
+        leftThreshold={40}
+        friction={2}
+        overshootLeft={false}
+        enabled={!item.is_deleted}
+        onSwipeableOpen={(direction, swipeable) => {
+          if (direction === 'left') {
+            setReplyingTo(item);
+            swipeable.close();
+          }
+        }}
+      >
+        <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
+          <TouchableOpacity
+            onLongPress={(e) => {
+              if (!item.is_deleted) {
+                setContextY(e.nativeEvent.pageY);
+                setContextMsg(item);
+              }
+            }}
+            delayLongPress={350}
+            activeOpacity={0.85}
+          >
+            <View style={[
+              styles.bubble,
+              isMine
+                ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
+                : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
+            ]}>
+              {!isMine && (
+                <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
+              )}
+              {item.reply_to && !item.is_deleted && (
+                <View style={[styles.quoteBlock, {
+                  borderLeftColor: Colors.primary,
+                  backgroundColor: Colors.surfaceVariant,
+                }]}>
+                  <Text style={[styles.quoteName, { color: Colors.primary }]} numberOfLines={1}>
+                    {item.reply_to.sender_name || 'Unknown'}
+                  </Text>
+                  <Text style={[styles.quoteText, { color: Colors.textSecondary }]} numberOfLines={2}>
+                    {item.reply_to.content
+                      || (item.reply_to.type && item.reply_to.type !== 'text'
+                        ? `[${item.reply_to.type}]`
+                        : '')}
+                  </Text>
+                </View>
+              )}
+              {item.is_deleted ? (
+                <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>
+                  🚫 This message was deleted.
+                </Text>
+              ) : (
+                <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
+              )}
+              {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
+                <View style={styles.reactionsDisplay}>
+                  {Object.entries(item.reactions).map(([emoji, users]) => (
+                    <TouchableOpacity
+                      key={emoji}
+                      onPress={async () => {
+                        const newReactions = await toggleReaction(item.id, emoji, String(user?.id ?? ''));
+                        sendMessageUpdate(roomId, item.id, { reactions: newReactions, reacted_emoji: emoji });
+                      }}
+                      style={[styles.reactionBadge, {
+                        backgroundColor: users.includes(String(user?.id))
+                          ? Colors.neonGlow : Colors.surfaceVariant,
+                        borderColor: users.includes(String(user?.id))
+                          ? Colors.primary : Colors.border,
+                      }]}
+                    >
+                      <Text style={styles.reactionBadgeText}>{emoji} {users.length}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+              <View style={styles.metaRow}>
+                <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
+                  {dayjs(item.created_at).format('HH:mm')}
+                </Text>
+                {isMine && !item.is_deleted && (
+                  <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
+                )}
+              </View>
+            </View>
+          </TouchableOpacity>
+        </View>
+      </Swipeable>
     );
   };
 
@@ -427,35 +514,60 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               : `${typers.map(t => t.username).join(', ')} are typing…`}
           </Text>
         )}
-        <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
-          <TextInput
-            style={[styles.textInput, { color: Colors.text }]}
-            value={text}
-            onChangeText={(t) => {
-              setText(t);
-              if (t.length > 0) notifyTyping();
-            }}
-            placeholder="Compose message…"
-            placeholderTextColor={Colors.textTertiary}
-            multiline
-            maxLength={2000}
-          />
+        {replyingTo && (
+          <View style={[styles.replyPreview, {
+            backgroundColor: Colors.surface,
+            borderLeftColor: Colors.primary,
+            borderColor: Colors.neonBorder,
+          }]}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.replyPreviewName, { color: Colors.primary }]} numberOfLines={1}>
+                ↩ Replying to {replyingTo.sender_username || 'Unknown'}
+              </Text>
+              <Text style={[styles.replyPreviewText, { color: Colors.textSecondary }]} numberOfLines={1}>
+                {replyingTo.content || (replyingTo.message_type !== 'text' ? `[${replyingTo.message_type}]` : '')}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={() => setReplyingTo(null)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              style={styles.replyPreviewClose}
+            >
+              <Ionicons name="close" size={18} color={Colors.textTertiary} />
+            </TouchableOpacity>
+          </View>
+        )}
+        <View style={styles.inputRowWrap}>
+          <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+            <TextInput
+              style={[styles.textInput, { color: Colors.text }]}
+              value={text}
+              onChangeText={(t) => {
+                setText(t);
+                if (t.length > 0) notifyTyping();
+              }}
+              placeholder="Compose message…"
+              placeholderTextColor={Colors.textTertiary}
+              multiline
+              maxLength={2000}
+            />
+          </View>
+          <TouchableOpacity
+            style={[
+              styles.sendBtn,
+              {
+                backgroundColor: text.trim() ? Colors.primary : Colors.surface,
+                borderColor: Colors.neonBorder,
+                shadowColor: Colors.primary,
+              },
+            ]}
+            onPress={handleSend}
+            disabled={!text.trim()}
+            activeOpacity={0.75}
+          >
+            <Text style={[styles.sendIcon, { color: text.trim() ? Colors.textInverse : Colors.textTertiary }]}>▶</Text>
+          </TouchableOpacity>
         </View>
-        <TouchableOpacity
-          style={[
-            styles.sendBtn,
-            {
-              backgroundColor: text.trim() ? Colors.primary : Colors.surface,
-              borderColor: Colors.neonBorder,
-              shadowColor: Colors.primary,
-            },
-          ]}
-          onPress={handleSend}
-          disabled={!text.trim()}
-          activeOpacity={0.75}
-        >
-          <Text style={[styles.sendIcon, { color: text.trim() ? Colors.textInverse : Colors.textTertiary }]}>▶</Text>
-        </TouchableOpacity>
       </View>
       {/* Long-press context menu */}
       <Modal
@@ -492,6 +604,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 );
               })}
             </View>
+            {contextMsg && !contextMsg.is_deleted && (contextMsg.message_type === 'text' || !contextMsg.message_type) && (
+              <>
+                <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
+                <TouchableOpacity onPress={handleForward} style={styles.contextOption}>
+                  <Text style={[styles.contextOptionText, { color: Colors.text }]}>↪  Forward message</Text>
+                </TouchableOpacity>
+              </>
+            )}
             {contextMsg?.sender === user?.id && (
               <>
                 <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
@@ -499,6 +619,62 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                   <Text style={[styles.contextOptionText, { color: Colors.error }]}>🗑  Delete message</Text>
                 </TouchableOpacity>
               </>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Forward picker */}
+      <Modal
+        visible={forwardMsg !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setForwardMsg(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setForwardMsg(null)}>
+          <Pressable
+            style={[styles.forwardPanel, {
+              backgroundColor: Colors.surface,
+              borderColor: Colors.neonBorder,
+            }]}
+            onPress={() => {}}
+          >
+            <Text style={[styles.forwardTitle, { color: Colors.text }]}>Forward to…</Text>
+            <Text style={[styles.forwardPreview, { color: Colors.textSecondary }]} numberOfLines={2}>
+              {forwardMsg?.content}
+            </Text>
+            <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
+            {forwardLoading ? (
+              <ActivityIndicator color={Colors.primary} style={{ paddingVertical: Spacing.lg }} />
+            ) : forwardRooms.length === 0 ? (
+              <Text style={[styles.forwardEmpty, { color: Colors.textTertiary }]}>
+                No other rooms available.
+              </Text>
+            ) : (
+              <FlatList
+                data={forwardRooms}
+                keyExtractor={(r) => r.id}
+                style={{ maxHeight: winHeight * 0.5 }}
+                renderItem={({ item }) => {
+                  const label = item.name
+                    ?? item.members_detail
+                      .filter((m) => m.id !== user?.id)
+                      .map((m) => m.username)
+                      .join(', ');
+                  return (
+                    <TouchableOpacity
+                      onPress={() => doForwardTo(item.id)}
+                      style={styles.forwardRow}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.forwardRowText, { color: Colors.text }]} numberOfLines={1}>
+                        {label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
             )}
           </Pressable>
         </Pressable>
@@ -565,12 +741,15 @@ const styles = StyleSheet.create({
   statusIcon: { fontSize: 10 },
 
   inputBar: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
+    flexDirection: 'column',
     paddingHorizontal: Spacing.sm,
     paddingTop: Spacing.sm,
     // paddingBottom is set dynamically via insets.bottom
     borderTopWidth: 1,
+  },
+  inputRowWrap: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
   },
   inputRow: {
     flex: 1,
@@ -665,4 +844,86 @@ const styles = StyleSheet.create({
   contextDivider: { height: 1, marginVertical: Spacing.sm },
   contextOption: { paddingVertical: Spacing.sm, alignItems: 'center' },
   contextOptionText: { fontSize: Font.size.md, fontWeight: '600', letterSpacing: 0.5 },
+
+  forwardPanel: {
+    position: 'absolute',
+    left: Spacing.lg,
+    right: Spacing.lg,
+    top: '20%',
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+  },
+  forwardTitle: {
+    fontSize: Font.size.md,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    marginBottom: Spacing.xs,
+  },
+  forwardPreview: {
+    fontSize: Font.size.sm,
+    fontStyle: 'italic',
+    marginBottom: Spacing.xs,
+  },
+  forwardEmpty: {
+    textAlign: 'center',
+    paddingVertical: Spacing.lg,
+    fontSize: Font.size.sm,
+  },
+  forwardRow: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.sm,
+  },
+  forwardRowText: {
+    fontSize: Font.size.md,
+    fontWeight: '500',
+  },
+
+  /* ---- Reply: swipe hint, quoted block in bubble, preview strip ---- */
+  swipeReplyHint: {
+    width: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingLeft: Spacing.sm,
+  },
+  quoteBlock: {
+    borderLeftWidth: 3,
+    paddingLeft: Spacing.sm,
+    paddingVertical: 4,
+    paddingRight: Spacing.sm,
+    marginBottom: 6,
+    borderRadius: 4,
+  },
+  quoteName: {
+    fontSize: Font.size.xs,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  quoteText: {
+    fontSize: Font.size.xs,
+    marginTop: 1,
+  },
+  replyPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderLeftWidth: 3,
+    borderWidth: 1,
+    borderRadius: Radius.sm,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.sm,
+    marginBottom: Spacing.xs,
+  },
+  replyPreviewName: {
+    fontSize: Font.size.xs,
+    fontWeight: '700',
+    letterSpacing: 0.3,
+  },
+  replyPreviewText: {
+    fontSize: Font.size.xs,
+    marginTop: 1,
+  },
+  replyPreviewClose: {
+    paddingLeft: Spacing.sm,
+  },
 });

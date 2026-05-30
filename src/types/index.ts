@@ -60,6 +60,13 @@ export interface Message {
   created_at: string;
   reactions?: Record<string, string[]>;
   is_deleted?: boolean;
+  /** When this message is a reply, a snapshot of the original. */
+  reply_to?: {
+    id: string;
+    sender_name: string;
+    content: string;
+    type?: string;
+  } | null;
 }
 
 // ---- Calls ----

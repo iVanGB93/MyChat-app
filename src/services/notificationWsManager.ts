@@ -430,6 +430,9 @@ async function connectWs() {
         if (payload.event === 'new_message' && payload.message_id && payload.sender_id !== undefined) {
           (async () => {
             const exists = await messageExists(String(payload.message_id));
+            const replyTo = (payload.reply_to ?? null) as
+              | { id: string; sender_name: string; content: string; type?: string }
+              | null;
             const wsMsg = {
               id: String(payload.message_id),
               sender: String(payload.sender || payload.from_username || ''),
@@ -438,6 +441,7 @@ async function connectWs() {
               message_type: String(payload.message_type ?? 'text'),
               created_at: String(payload.created_at ?? new Date().toISOString()),
               is_read: false,
+              reply_to: replyTo,
             };
             if (!exists) {
               await saveMessage({
@@ -452,6 +456,8 @@ async function connectWs() {
                 is_mine: false,
                 reactions: {},
                 is_deleted: false,
+                is_read: false,
+                reply_to: replyTo,
               });
             }
             // Inject into chatWsManager state if the room screen is open
@@ -462,9 +468,11 @@ async function connectWs() {
               const rid = String(payload.room_id ?? '');
               if (rid) {
                 store.setRoomLastMessage(rid, {
+                  id: wsMsg.id,
                   content: wsMsg.content ?? '',
                   created_at: wsMsg.created_at,
                   sender: wsMsg.sender,
+                  sender_id: wsMsg.sender_id,
                 });
                 // Skip unread bump if the user is currently viewing this room OR muted it.
                 if (store.activeRoomId !== rid && !store.mutedRooms[rid]) {

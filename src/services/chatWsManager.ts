@@ -54,6 +54,7 @@ export interface WsMessage {
   is_read?: boolean;
   reactions?: Record<string, string[]>;
   is_deleted?: boolean;
+  reply_to?: import('./localMessageStore').ReplyRef | null;
 }
 
 export type RoomStatus = 'connected' | 'connecting' | 'reconnecting' | 'disconnected';
@@ -483,6 +484,12 @@ export async function connectRoom(roomId: string): Promise<void> {
             s.pendingIds = new Set([...s.pendingIds].filter((id) => id !== data.message_id));
             notifyListeners(roomId, s);
           }
+          // Promote chat-list status from 'pending' → 'sent' if this was the most recent outgoing.
+          if (data.message_id) {
+            try {
+              useAppStore.getState().setRoomLastMessageStatus(roomId, String(data.message_id), 'sent');
+            } catch {}
+          }
           return;
         }
 
@@ -498,6 +505,11 @@ export async function connectRoom(roomId: string): Promise<void> {
           if (ids.length > 0) {
             s.readIds = new Set([...s.readIds, ...ids]);
             notifyListeners(roomId, s);
+            // Promote chat-list status → 'read' if any acked id is the most recent outgoing.
+            try {
+              const store = useAppStore.getState();
+              for (const id of ids) store.setRoomLastMessageStatus(roomId, id, 'read');
+            } catch {}
           }
           return;
         }
@@ -544,14 +556,17 @@ export async function connectRoom(roomId: string): Promise<void> {
                 reactions: {},
                 is_deleted: false,
                 is_read: false,
+                reply_to: msg.reply_to ?? null,
               });
               s.messages = [...s.messages, msg];
               notifyListeners(roomId, s);
               try {
                 useAppStore.getState().setRoomLastMessage(roomId, {
+                  id: msg.id,
                   content: msg.content ?? '',
                   created_at: msg.created_at,
                   sender: msg.sender,
+                  sender_id: msg.sender_id,
                 });
               } catch {}
             }
@@ -753,6 +768,7 @@ export async function sendChatMessage(
   roomId: string,
   content: string,
   messageType = 'text',
+  replyTo: import('./localMessageStore').ReplyRef | null = null,
 ): Promise<string | null> {
   console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId);
   const msgId = generateUUID();
@@ -770,6 +786,7 @@ export async function sendChatMessage(
       message_type: messageType,
       created_at: createdAt,
       is_read: false,
+      reply_to: replyTo,
     };
     s.pendingIds = new Set([...s.pendingIds, msgId]);
     s.messages = [...s.messages, optimisticMsg];
@@ -795,12 +812,16 @@ export async function sendChatMessage(
         reactions: {},
         is_deleted: false,
         is_read: false,
+        reply_to: replyTo,
       });
       try {
         useAppStore.getState().setRoomLastMessage(roomId, {
+          id: msgId,
           content,
           created_at: createdAt,
           sender: _myUsername ?? undefined,
+          sender_id: _myUserId,
+          status: 'pending',
         });
       } catch {}
     } catch (err) {
@@ -815,6 +836,7 @@ export async function sendChatMessage(
         message: content,
         message_type: messageType,
         created_at: createdAt,
+        ...(replyTo ? { reply_to: replyTo } : {}),
       }));
     } catch { /* message is saved locally, will be flushed on reconnect */ }
   }
@@ -837,6 +859,7 @@ async function _doFlush(roomId: string, s: RoomState, recipientId: number): Prom
           message: msg.content,
           message_type: msg.type,
           created_at: msg.created_at,
+          ...(msg.reply_to ? { reply_to: msg.reply_to } : {}),
         }));
       }
     }
@@ -862,6 +885,7 @@ async function _retryUndeliveredMessages(roomId: string, s: RoomState): Promise<
           message: msg.content,
           message_type: msg.type,
           created_at: msg.created_at,
+          ...(msg.reply_to ? { reply_to: msg.reply_to } : {}),
         }));
       }
     }
@@ -882,6 +906,10 @@ function _applyUpdatesToState(
     if (u.changes.is_read) {
       s.readIds = new Set([...s.readIds, u.message_id]);
       changed = true;
+      // Promote chat-list status to 'read' if the acked id is the latest outgoing.
+      try {
+        useAppStore.getState().setRoomLastMessageStatus(roomId, u.message_id, 'read');
+      } catch {}
     }
     if (
       u.changes.reactions !== undefined ||
@@ -917,6 +945,16 @@ export function applyRemoteMessageUpdates(
   updates: Array<{ message_id: string; changes: MessageChanges }>,
 ): void {
   const s = rooms.get(roomId);
+  // Promote chat-list status for any read-acks, regardless of whether the room
+  // WS is currently open (chat list needs this).
+  try {
+    const store = useAppStore.getState();
+    for (const u of updates) {
+      if (u.changes.is_read) {
+        store.setRoomLastMessageStatus(roomId, u.message_id, 'read');
+      }
+    }
+  } catch {}
   if (!s) {
     // Room not in memory — only persist to SQLite
     updates.forEach((u) => applyMessageChanges(u.message_id, u.changes).catch(() => {}));

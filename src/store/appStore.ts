@@ -77,8 +77,21 @@ export interface AppState {
   activeRoomId: string | null;
   /** Unread message counts per room (for badges) */
   unreadByRoom: Record<string, number>;
-  /** Last message preview per room (persisted — powers the chat list on cold start) */
-  lastMessageByRoom: Record<string, { content: string; created_at: string; sender?: string }>;
+  /** Last message preview per room (persisted — powers the chat list on cold start).
+   *  `status` is only meaningful for outgoing messages (`sender_id === current user`): 
+   *  'pending' = queued/not yet acked by server, 'sent' = server received it,
+   *  'read' = at least one recipient marked it read. */
+  lastMessageByRoom: Record<
+    string,
+    {
+      id?: string;
+      content: string;
+      created_at: string;
+      sender?: string;
+      sender_id?: number;
+      status?: 'pending' | 'sent' | 'read';
+    }
+  >;
   /** Active typers per room: roomId → array of { userId, username, expiresAt (ms) } */
   typingByRoom: Record<string, Array<{ userId: number; username: string; expiresAt: number }>>;
   /** Set of room IDs the user has muted (no local notif, no badge contribution) */
@@ -124,7 +137,21 @@ export interface AppState {
   clearAllUnread: () => void;
   setRoomLastMessage: (
     roomId: string,
-    msg: { content: string; created_at: string; sender?: string },
+    msg: {
+      id?: string;
+      content: string;
+      created_at: string;
+      sender?: string;
+      sender_id?: number;
+      status?: 'pending' | 'sent' | 'read';
+    },
+  ) => void;
+  /** Bump the status of the room's last outgoing message if its id matches.
+   *  No-op when the last message has changed (e.g. peer replied in the meantime). */
+  setRoomLastMessageStatus: (
+    roomId: string,
+    messageId: string,
+    status: 'pending' | 'sent' | 'read',
   ) => void;
   setRoomTyping: (
     roomId: string,
@@ -163,7 +190,17 @@ const initialState = {
   foregroundServiceRunning: false,
   activeRoomId: null as string | null,
   unreadByRoom: {} as Record<string, number>,
-  lastMessageByRoom: {} as Record<string, { content: string; created_at: string; sender?: string }>,
+  lastMessageByRoom: {} as Record<
+    string,
+    {
+      id?: string;
+      content: string;
+      created_at: string;
+      sender?: string;
+      sender_id?: number;
+      status?: 'pending' | 'sent' | 'read';
+    }
+  >,
   typingByRoom: {} as Record<string, Array<{ userId: number; username: string; expiresAt: number }>>,
   mutedRooms: {} as Record<string, true>,
   lastMutationAt: 0,
@@ -262,6 +299,20 @@ export const useAppStore = create<AppState>()(
       if (prev && new Date(prev.created_at) >= new Date(msg.created_at)) return s;
       return {
         lastMessageByRoom: { ...s.lastMessageByRoom, [roomId]: msg },
+      };
+    }),
+  setRoomLastMessageStatus: (roomId, messageId, status) =>
+    set((s) => {
+      const prev = s.lastMessageByRoom[roomId];
+      if (!prev || prev.id !== messageId) return s;
+      // Never downgrade: pending → sent → read
+      const order = { pending: 0, sent: 1, read: 2 } as const;
+      if (prev.status && order[prev.status] >= order[status]) return s;
+      return {
+        lastMessageByRoom: {
+          ...s.lastMessageByRoom,
+          [roomId]: { ...prev, status },
+        },
       };
     }),
   setRoomTyping: (roomId, userId, username, isTyping) =>

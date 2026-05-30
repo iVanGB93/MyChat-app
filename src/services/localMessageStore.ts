@@ -62,11 +62,24 @@ export async function initDB(): Promise<void> {
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reactions  TEXT    DEFAULT '{}'`); } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0`);    } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_read    INTEGER DEFAULT 0`);    } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reply_to   TEXT`);                 } catch {}
 }
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+/** Light reference embedded in a reply so the bubble can render a quoted snippet
+ *  without having to look up the original message. */
+export interface ReplyRef {
+  id: string;
+  sender_name: string;
+  /** Short preview of the original content (truncated client-side before sending). */
+  content: string;
+  /** Type of the original message ('text', 'image', etc.) — used to render an icon
+   *  hint for non-text replies. */
+  type?: string;
+}
 
 export interface LocalMessage {
   id: string;
@@ -81,6 +94,8 @@ export interface LocalMessage {
   reactions: Record<string, string[]>;
   is_deleted: boolean;
   is_read: boolean;
+  /** Set when this message is a reply to another. NULL otherwise. */
+  reply_to: ReplyRef | null;
 }
 
 /** Partial mutation that can be applied to a message and relayed to other devices. */
@@ -126,11 +141,12 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
   };
   if (msg.content != null)  params.$content  = String(msg.content);
   if (msg.file_uri != null) params.$file_uri = String(msg.file_uri);
+  if (msg.reply_to != null) params.$reply_to = JSON.stringify(msg.reply_to);
 
   await db.runAsync(
     `INSERT OR IGNORE INTO messages
-       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine)
-     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine)`,
+       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, reply_to)
+     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $reply_to)`,
     params,
   );
 }
@@ -164,6 +180,7 @@ export async function getMessages(roomId: string): Promise<LocalMessage[]> {
     created_at: string;
     is_mine: number;
     is_read: number;
+    reply_to: string | null;
   }>(
     `SELECT * FROM messages WHERE room_id = ? ORDER BY created_at ASC`,
     roomId
@@ -174,6 +191,7 @@ export async function getMessages(roomId: string): Promise<LocalMessage[]> {
     is_deleted: r.is_deleted === 1,
     is_read:    r.is_read    === 1,
     reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
+    reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
   }));
 }
 
@@ -203,6 +221,9 @@ export async function getPendingOutbox(
     file_uri: string | null;
     created_at: string;
     is_mine: number;
+    reactions: string | null;
+    is_deleted: number;
+    reply_to: string | null;
   }>(
     `SELECT m.*
      FROM messages m
@@ -219,6 +240,7 @@ export async function getPendingOutbox(
     is_mine:    r.is_mine    === 1,
     is_deleted: r.is_deleted === 1,
     reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
+    reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
   }));
 }
 
@@ -312,6 +334,7 @@ export async function getUndeliveredSentMessages(
     reactions: string;
     is_deleted: number;
     is_read: number;
+    reply_to: string | null;
   }>(
     `SELECT m.*
      FROM messages m
@@ -332,6 +355,7 @@ export async function getUndeliveredSentMessages(
     is_deleted: r.is_deleted === 1,
     is_read:    r.is_read    === 1,
     reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
+    reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
   }));
 }
 
@@ -400,6 +424,9 @@ export async function getLastMessagePerRoom(): Promise<
     file_uri: string | null;
     created_at: string;
     is_mine: number;
+    reactions: string | null;
+    is_deleted: number;
+    reply_to: string | null;
   }>(
     `SELECT m.*
      FROM messages m
@@ -416,6 +443,7 @@ export async function getLastMessagePerRoom(): Promise<
       is_mine:    r.is_mine    === 1,
       is_deleted: r.is_deleted === 1,
       reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
+      reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
     };
   }
   return result;

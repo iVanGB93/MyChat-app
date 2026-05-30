@@ -59,8 +59,12 @@ export function useChat(roomId: string, currentUserId?: number) {
   }, [snapshot.messages, roomId, currentUserId]);
 
   const sendMessage = useCallback(
-    (content: string, messageType = 'text') => {
-      sendChatMessage(roomId, content, messageType);
+    (
+      content: string,
+      messageType = 'text',
+      replyTo: import('../services/localMessageStore').ReplyRef | null = null,
+    ) => {
+      sendChatMessage(roomId, content, messageType, replyTo);
     },
     [roomId],
   );
