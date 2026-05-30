@@ -63,6 +63,7 @@ export async function initDB(): Promise<void> {
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0`);    } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_read    INTEGER DEFAULT 0`);    } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reply_to   TEXT`);                 } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN duration_ms INTEGER`);              } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +97,8 @@ export interface LocalMessage {
   is_read: boolean;
   /** Set when this message is a reply to another. NULL otherwise. */
   reply_to: ReplyRef | null;
+  /** Duration in milliseconds for voice/audio/video messages. NULL for text. */
+  duration_ms: number | null;
 }
 
 /** Partial mutation that can be applied to a message and relayed to other devices. */
@@ -142,11 +145,12 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
   if (msg.content != null)  params.$content  = String(msg.content);
   if (msg.file_uri != null) params.$file_uri = String(msg.file_uri);
   if (msg.reply_to != null) params.$reply_to = JSON.stringify(msg.reply_to);
+  if (msg.duration_ms != null) params.$duration_ms = Number(msg.duration_ms);
 
   await db.runAsync(
     `INSERT OR IGNORE INTO messages
-       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, reply_to)
-     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $reply_to)`,
+       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, reply_to, duration_ms)
+     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $reply_to, $duration_ms)`,
     params,
   );
 }
@@ -181,6 +185,7 @@ export async function getMessages(roomId: string): Promise<LocalMessage[]> {
     is_mine: number;
     is_read: number;
     reply_to: string | null;
+    duration_ms: number | null;
   }>(
     `SELECT * FROM messages WHERE room_id = ? ORDER BY created_at ASC`,
     roomId
@@ -224,6 +229,7 @@ export async function getPendingOutbox(
     reactions: string | null;
     is_deleted: number;
     reply_to: string | null;
+    duration_ms: number | null;
   }>(
     `SELECT m.*
      FROM messages m
@@ -335,6 +341,7 @@ export async function getUndeliveredSentMessages(
     is_deleted: number;
     is_read: number;
     reply_to: string | null;
+    duration_ms: number | null;
   }>(
     `SELECT m.*
      FROM messages m
@@ -427,6 +434,7 @@ export async function getLastMessagePerRoom(): Promise<
     reactions: string | null;
     is_deleted: number;
     reply_to: string | null;
+    duration_ms: number | null;
   }>(
     `SELECT m.*
      FROM messages m

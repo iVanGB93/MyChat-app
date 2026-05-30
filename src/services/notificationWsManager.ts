@@ -433,15 +433,39 @@ async function connectWs() {
             const replyTo = (payload.reply_to ?? null) as
               | { id: string; sender_name: string; content: string; type?: string }
               | null;
+            const durationMs = typeof payload.duration_ms === 'number' ? payload.duration_ms : null;
+            const incomingAudioB64 = typeof payload.audio_b64 === 'string' ? payload.audio_b64 : null;
+            const incomingAudioMime = typeof payload.audio_mime === 'string' ? payload.audio_mime : null;
+            const incomingImageB64 = typeof payload.image_b64 === 'string' ? payload.image_b64 : null;
+            const incomingImageMime = typeof payload.image_mime === 'string' ? payload.image_mime : null;
+            const messageType = String(payload.message_type ?? 'text');
+            let localFileUri: string | null = null;
+            if (messageType === 'voice' && incomingAudioB64) {
+              try {
+                const { saveIncomingAudio } = await import('./voiceMessageUtils');
+                localFileUri = await saveIncomingAudio(String(payload.message_id), incomingAudioB64, incomingAudioMime);
+              } catch (err) {
+                console.warn('[NotifWS] failed to save incoming voice audio:', err);
+              }
+            } else if (messageType === 'image' && incomingImageB64) {
+              try {
+                const { saveIncomingImage } = await import('./voiceMessageUtils');
+                localFileUri = await saveIncomingImage(String(payload.message_id), incomingImageB64, incomingImageMime);
+              } catch (err) {
+                console.warn('[NotifWS] failed to save incoming image:', err);
+              }
+            }
             const wsMsg = {
               id: String(payload.message_id),
               sender: String(payload.sender || payload.from_username || ''),
               sender_id: payload.sender_id as number,
               content: String(payload.content ?? ''),
-              message_type: String(payload.message_type ?? 'text'),
+              message_type: messageType,
               created_at: String(payload.created_at ?? new Date().toISOString()),
               is_read: false,
               reply_to: replyTo,
+              file_uri: localFileUri,
+              duration_ms: durationMs,
             };
             if (!exists) {
               await saveMessage({
@@ -451,13 +475,14 @@ async function connectWs() {
                 sender_name: wsMsg.sender,
                 content: wsMsg.content ?? null,
                 type: wsMsg.message_type,
-                file_uri: null,
+                file_uri: localFileUri,
                 created_at: wsMsg.created_at,
                 is_mine: false,
                 reactions: {},
                 is_deleted: false,
                 is_read: false,
                 reply_to: replyTo,
+                duration_ms: durationMs,
               });
             }
             // Inject into chatWsManager state if the room screen is open

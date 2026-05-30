@@ -24,6 +24,7 @@ import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
 import { saveMessage, messageExists, getPendingOutbox, getUndeliveredSentMessages, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, deleteOutboxUpdates, applyMessageChanges } from './localMessageStore';
+import { readAudioAsBase64, readFileAsBase64, saveIncomingAudio, saveIncomingImage } from './voiceMessageUtils';
 import { useAppStore } from '../store/appStore';
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
@@ -55,6 +56,22 @@ export interface WsMessage {
   reactions?: Record<string, string[]>;
   is_deleted?: boolean;
   reply_to?: import('./localMessageStore').ReplyRef | null;
+  /** Local file URI for media messages (voice / image / file). */
+  file_uri?: string | null;
+  /** Duration in milliseconds for voice / video messages. */
+  duration_ms?: number | null;
+}
+
+/** Optional extra payload accepted by sendChatMessage for media messages. */
+export interface SendExtras {
+  /** Local file URI of the media (persisted). */
+  file_uri?: string | null;
+  /** Duration in milliseconds for voice / video (persisted). */
+  duration_ms?: number | null;
+  /** Audio MIME type — used by the receiver to pick a file extension. */
+  audio_mime?: string | null;
+  /** Image MIME type — used by the receiver to pick a file extension. */
+  image_mime?: string | null;
 }
 
 export type RoomStatus = 'connected' | 'connecting' | 'reconnecting' | 'disconnected';
@@ -543,6 +560,26 @@ export async function connectRoom(roomId: string): Promise<void> {
             const exists = await messageExists(msg.id);
             const isOwn = msg.sender_id === _myUserId;
             if (!exists) {
+              // If this is a voice/image message with inline base64 data, decode
+              // it and persist to local cache so playback/display works offline.
+              let localFileUri: string | null = msg.file_uri ?? null;
+              const incomingAudioB64 = (data as { audio_b64?: string }).audio_b64;
+              const incomingAudioMime = (data as { audio_mime?: string }).audio_mime;
+              const incomingImageB64 = (data as { image_b64?: string }).image_b64;
+              const incomingImageMime = (data as { image_mime?: string }).image_mime;
+              if (msg.message_type === 'voice' && incomingAudioB64 && !localFileUri) {
+                try {
+                  localFileUri = await saveIncomingAudio(msg.id, incomingAudioB64, incomingAudioMime);
+                } catch (err) {
+                  console.warn('[ChatWsManager] failed to save incoming voice audio:', err);
+                }
+              } else if (msg.message_type === 'image' && incomingImageB64 && !localFileUri) {
+                try {
+                  localFileUri = await saveIncomingImage(msg.id, incomingImageB64, incomingImageMime);
+                } catch (err) {
+                  console.warn('[ChatWsManager] failed to save incoming image:', err);
+                }
+              }
               await saveMessage({
                 id: msg.id,
                 room_id: roomId,
@@ -550,15 +587,23 @@ export async function connectRoom(roomId: string): Promise<void> {
                 sender_name: msg.sender,
                 content: msg.content,
                 type: msg.message_type,
-                file_uri: null,
+                file_uri: localFileUri,
                 created_at: msg.created_at,
                 is_mine: isOwn,
                 reactions: {},
                 is_deleted: false,
                 is_read: false,
                 reply_to: msg.reply_to ?? null,
+                duration_ms: msg.duration_ms ?? null,
               });
-              s.messages = [...s.messages, msg];
+              // Strip the heavy base64 blob before keeping the message in memory.
+              const memoryMsg: WsMessage = {
+                ...msg,
+                file_uri: localFileUri,
+              };
+              delete (memoryMsg as { audio_b64?: string }).audio_b64;
+              delete (memoryMsg as { image_b64?: string }).image_b64;
+              s.messages = [...s.messages, memoryMsg];
               notifyListeners(roomId, s);
               try {
                 useAppStore.getState().setRoomLastMessage(roomId, {
@@ -769,10 +814,37 @@ export async function sendChatMessage(
   content: string,
   messageType = 'text',
   replyTo: import('./localMessageStore').ReplyRef | null = null,
+  extras: SendExtras | null = null,
 ): Promise<string | null> {
-  console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId);
+  console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId, 'type:', messageType);
   const msgId = generateUUID();
   const createdAt = new Date().toISOString();
+
+  const fileUri = extras?.file_uri ?? null;
+  const durationMs = extras?.duration_ms ?? null;
+  const audioMime = extras?.audio_mime ?? null;
+  const imageMime = extras?.image_mime ?? null;
+
+  // For voice messages, read the recorded file as base64 ONCE here so we can
+  // include it in the wire frame and (if needed) outbox-replay reads it again
+  // from `file_uri` on retry.
+  let audioB64: string | null = null;
+  if (messageType === 'voice' && fileUri) {
+    try {
+      audioB64 = await readAudioAsBase64(fileUri);
+    } catch (err) {
+      console.warn('[ChatWsManager] failed to read voice file:', err);
+    }
+  }
+  // Same pattern for images.
+  let imageB64: string | null = null;
+  if (messageType === 'image' && fileUri) {
+    try {
+      imageB64 = await readFileAsBase64(fileUri);
+    } catch (err) {
+      console.warn('[ChatWsManager] failed to read image file:', err);
+    }
+  }
 
   const s = rooms.get(roomId);
 
@@ -787,6 +859,8 @@ export async function sendChatMessage(
       created_at: createdAt,
       is_read: false,
       reply_to: replyTo,
+      file_uri: fileUri,
+      duration_ms: durationMs,
     };
     s.pendingIds = new Set([...s.pendingIds, msgId]);
     s.messages = [...s.messages, optimisticMsg];
@@ -806,13 +880,14 @@ export async function sendChatMessage(
         sender_name: _myUsername,
         content,
         type: messageType,
-        file_uri: null,
+        file_uri: fileUri,
         created_at: createdAt,
         is_mine: true,
         reactions: {},
         is_deleted: false,
         is_read: false,
         reply_to: replyTo,
+        duration_ms: durationMs,
       });
       try {
         useAppStore.getState().setRoomLastMessage(roomId, {
@@ -837,6 +912,9 @@ export async function sendChatMessage(
         message_type: messageType,
         created_at: createdAt,
         ...(replyTo ? { reply_to: replyTo } : {}),
+        ...(durationMs != null ? { duration_ms: durationMs } : {}),
+        ...(audioB64 ? { audio_b64: audioB64, audio_mime: audioMime ?? 'audio/m4a' } : {}),
+        ...(imageB64 ? { image_b64: imageB64, image_mime: imageMime ?? 'image/jpeg' } : {}),
       }));
     } catch { /* message is saved locally, will be flushed on reconnect */ }
   }
@@ -854,12 +932,22 @@ async function _doFlush(roomId: string, s: RoomState, recipientId: number): Prom
     const msgs = await getPendingOutbox(roomId, _myUserId, recipientId);
     for (const msg of msgs) {
       if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+        let audioB64: string | null = null;
+        let imageB64: string | null = null;
+        if (msg.type === 'voice' && msg.file_uri) {
+          try { audioB64 = await readAudioAsBase64(msg.file_uri); } catch {}
+        } else if (msg.type === 'image' && msg.file_uri) {
+          try { imageB64 = await readFileAsBase64(msg.file_uri); } catch {}
+        }
         s.ws.send(JSON.stringify({
           id: msg.id,
           message: msg.content,
           message_type: msg.type,
           created_at: msg.created_at,
           ...(msg.reply_to ? { reply_to: msg.reply_to } : {}),
+          ...(msg.duration_ms != null ? { duration_ms: msg.duration_ms } : {}),
+          ...(audioB64 ? { audio_b64: audioB64, audio_mime: 'audio/m4a' } : {}),
+          ...(imageB64 ? { image_b64: imageB64, image_mime: 'image/jpeg' } : {}),
         }));
       }
     }
@@ -880,12 +968,22 @@ async function _retryUndeliveredMessages(roomId: string, s: RoomState): Promise<
     console.log('[ChatWsManager] retrying', msgs.length, 'undelivered messages in room', roomId);
     for (const msg of msgs) {
       if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+        let audioB64: string | null = null;
+        let imageB64: string | null = null;
+        if (msg.type === 'voice' && msg.file_uri) {
+          try { audioB64 = await readAudioAsBase64(msg.file_uri); } catch {}
+        } else if (msg.type === 'image' && msg.file_uri) {
+          try { imageB64 = await readFileAsBase64(msg.file_uri); } catch {}
+        }
         s.ws.send(JSON.stringify({
           id: msg.id,
           message: msg.content,
           message_type: msg.type,
           created_at: msg.created_at,
           ...(msg.reply_to ? { reply_to: msg.reply_to } : {}),
+          ...(msg.duration_ms != null ? { duration_ms: msg.duration_ms } : {}),
+          ...(audioB64 ? { audio_b64: audioB64, audio_mime: 'audio/m4a' } : {}),
+          ...(imageB64 ? { image_b64: imageB64, image_mime: 'image/jpeg' } : {}),
         }));
       }
     }

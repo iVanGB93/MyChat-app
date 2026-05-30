@@ -18,6 +18,9 @@ import {
   Modal,
   Pressable,
   useWindowDimensions,
+  Animated,
+  PanResponder,
+  Image,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useHeaderHeight } from '@react-navigation/elements';
@@ -26,6 +29,13 @@ import { Swipeable } from 'react-native-gesture-handler';
 import dayjs from 'dayjs';
 import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
+import {
+  useAudioRecorder,
+  RecordingPresets,
+  AudioModule,
+  setAudioModeAsync,
+} from 'expo-audio';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
@@ -37,6 +47,8 @@ import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
+import VoiceMessageBubble from '../../components/VoiceMessageBubble';
+import { persistOutgoingImage } from '../../services/voiceMessageUtils';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
@@ -52,6 +64,8 @@ function toMsg(m: LocalMessage): Message {
     content: m.content ?? '',
     message_type: m.type as Message['message_type'],
     file: m.file_uri,
+    file_uri: m.file_uri,
+    duration_ms: m.duration_ms,
     is_read: false,
     created_at: m.created_at,
     reactions: m.reactions,
@@ -69,7 +83,9 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
     sender_username: m.sender,
     content: m.content,
     message_type: m.message_type as Message['message_type'],
-    file: null,
+    file: m.file_uri ?? null,
+    file_uri: m.file_uri ?? null,
+    duration_ms: m.duration_ms ?? null,
     is_read: m.is_read ?? false,
     created_at: m.created_at,
     reactions: m.reactions ?? {},
@@ -111,6 +127,24 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const { height: winHeight } = useWindowDimensions();
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
+
+  /* ---- Voice message recording state ---- */
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingMs, setRecordingMs] = useState(0);
+
+  /* ---- Image attachment state ---- */
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [fullscreenImageUri, setFullscreenImageUri] = useState<string | null>(null);
+  const recordingStartedAtRef = useRef<number>(0);
+  const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelRecordingRef = useRef(false);
+  /** Horizontal drag distance (negative = leftward) during a recording gesture. */
+  const slideX = useRef(new Animated.Value(0)).current;
+  /** Pulsing red dot scale. */
+  const pulseScale = useRef(new Animated.Value(1)).current;
+  /** Distance the user has to drag left before the recording is cancelled. */
+  const CANCEL_THRESHOLD_PX = 90;
   const flatListRef = useRef<FlatList>(null);
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
@@ -297,6 +331,209 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     playSound('message_sent');
   };
 
+  /* ---- Voice recording: start / stop / cancel ---- */
+  const startVoiceRecording = useCallback(async () => {
+    try {
+      const perm = await AudioModule.requestRecordingPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Microphone access denied', 'Enable microphone permission in system settings to record voice messages.');
+        return;
+      }
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+      await audioRecorder.prepareToRecordAsync();
+      audioRecorder.record();
+      cancelRecordingRef.current = false;
+      recordingStartedAtRef.current = Date.now();
+      setRecordingMs(0);
+      setIsRecording(true);
+      slideX.setValue(0);
+      // Pulse the red dot
+      const pulse = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseScale, { toValue: 1.4, duration: 500, useNativeDriver: true }),
+          Animated.timing(pulseScale, { toValue: 1.0, duration: 500, useNativeDriver: true }),
+        ]),
+      );
+      pulse.start();
+      // Tick timer
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingMs(Date.now() - recordingStartedAtRef.current);
+      }, 100);
+    } catch (err) {
+      console.warn('[ChatRoom] failed to start recording:', err);
+      setIsRecording(false);
+    }
+  }, [audioRecorder, slideX, pulseScale]);
+
+  const finishVoiceRecording = useCallback(async (cancelled: boolean) => {
+    // Stop UI immediately so user gets feedback
+    if (recordingTimerRef.current) {
+      clearInterval(recordingTimerRef.current);
+      recordingTimerRef.current = null;
+    }
+    pulseScale.stopAnimation();
+    pulseScale.setValue(1);
+    Animated.timing(slideX, { toValue: 0, duration: 150, useNativeDriver: true }).start();
+    const durationMs = Date.now() - recordingStartedAtRef.current;
+    setIsRecording(false);
+
+    try {
+      await audioRecorder.stop();
+    } catch (err) {
+      console.warn('[ChatRoom] recorder.stop failed:', err);
+    }
+    // Restore default audio session (no recording mode)
+    setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false }).catch(() => {});
+
+    const uri = audioRecorder.uri;
+    // Cancel — or clip was too short (<400ms) to be useful
+    if (cancelled || !uri || durationMs < 400) {
+      return;
+    }
+    const reply = replyingTo
+      ? {
+          id: replyingTo.id,
+          sender_name: replyingTo.sender_username || '',
+          content: (replyingTo.content ?? '').slice(0, 140),
+          type: replyingTo.message_type,
+        }
+      : null;
+    sendMessage('🎤 Voice message', 'voice', reply, {
+      file_uri: uri,
+      duration_ms: durationMs,
+      audio_mime: 'audio/m4a',
+    });
+    setReplyingTo(null);
+    playSound('message_sent');
+  }, [audioRecorder, slideX, pulseScale, replyingTo, sendMessage]);
+
+  /* ---- Image attachment handlers ---- */
+  /** Pick an asset from the camera or library, persist it, and send. */
+  const sendPickedImage = useCallback(async (asset: ImagePicker.ImagePickerAsset) => {
+    if (!asset?.uri) return;
+    const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let localUri = asset.uri;
+    try {
+      localUri = await persistOutgoingImage(msgId, asset.uri, asset.mimeType ?? 'image/jpeg');
+    } catch (err) {
+      console.warn('[ChatRoomScreen] failed to persist outgoing image:', err);
+    }
+    const reply = replyingTo
+      ? {
+          id: replyingTo.id,
+          sender_name: replyingTo.sender_username || '',
+          content: (replyingTo.content ?? '').slice(0, 140),
+          type: replyingTo.message_type,
+        }
+      : null;
+    await sendMessage('\uD83D\uDCF7 Photo', 'image', reply, {
+      file_uri: localUri,
+      image_mime: asset.mimeType ?? 'image/jpeg',
+    });
+    setReplyingTo(null);
+    playSound('message_sent');
+  }, [replyingTo, sendMessage]);
+
+  const handlePickFromCamera = useCallback(async () => {
+    setAttachMenuOpen(false);
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Camera permission required', 'Please enable camera access in Settings.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        quality: 0.7,
+      });
+      if (!result.canceled && result.assets?.[0]) {
+        await sendPickedImage(result.assets[0]);
+      }
+    } catch (err) {
+      console.warn('[ChatRoomScreen] camera error:', err);
+    }
+  }, [sendPickedImage]);
+
+  const handlePickFromGallery = useCallback(async () => {
+    setAttachMenuOpen(false);
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Photo library permission required', 'Please enable photo access in Settings.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        quality: 0.7,
+      });
+      if (!result.canceled && result.assets?.[0]) {
+        await sendPickedImage(result.assets[0]);
+      }
+    } catch (err) {
+      console.warn('[ChatRoomScreen] gallery error:', err);
+    }
+  }, [sendPickedImage]);
+
+  /* PanResponder bound to the mic button. Long-press → record. Drag left
+     past CANCEL_THRESHOLD_PX → cancel. Release → send. */
+  const isRecordingRef = useRef(false);
+  isRecordingRef.current = isRecording;
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const micPan = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: () => true,
+    onPanResponderGrant: () => {
+      // Start recording after a short long-press delay (300ms)
+      cancelRecordingRef.current = false;
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = setTimeout(() => {
+        startVoiceRecording();
+      }, 300);
+    },
+    onPanResponderMove: (_evt, gesture) => {
+      if (!isRecordingRef.current) return;
+      // Only track leftward drag, clamp to twice the cancel threshold so the icon
+      // doesn't fly off the screen if the user keeps dragging.
+      const dx = Math.min(0, Math.max(-CANCEL_THRESHOLD_PX * 2, gesture.dx));
+      slideX.setValue(dx);
+      if (dx <= -CANCEL_THRESHOLD_PX && !cancelRecordingRef.current) {
+        cancelRecordingRef.current = true;
+      } else if (dx > -CANCEL_THRESHOLD_PX && cancelRecordingRef.current) {
+        cancelRecordingRef.current = false;
+      }
+    },
+    onPanResponderRelease: () => {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      if (isRecordingRef.current) {
+        finishVoiceRecording(cancelRecordingRef.current);
+      }
+    },
+    onPanResponderTerminate: () => {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      if (isRecordingRef.current) {
+        finishVoiceRecording(true);
+      }
+    },
+  }), [startVoiceRecording, finishVoiceRecording, slideX]);
+
+  // Cleanup recorder on unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
+      if (isRecordingRef.current) {
+        try { audioRecorder.stop(); } catch {}
+      }
+    };
+  }, [audioRecorder]);
+
   const handleReaction = useCallback(async (emoji: string) => {
     if (!contextMsg || !user) return;
     const msgId = contextMsg.id;
@@ -433,6 +670,25 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>
                   🚫 This message was deleted.
                 </Text>
+              ) : item.message_type === 'voice' ? (
+                <VoiceMessageBubble
+                  fileUri={item.file_uri ?? item.file ?? null}
+                  durationMs={item.duration_ms ?? null}
+                  tint={Colors.primary}
+                  subtleColor={Colors.textSecondary}
+                  trackBg={Colors.surfaceVariant}
+                />
+              ) : item.message_type === 'image' && (item.file_uri || item.file) ? (
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setFullscreenImageUri(item.file_uri ?? item.file ?? null)}
+                >
+                  <Image
+                    source={{ uri: item.file_uri ?? item.file ?? '' }}
+                    style={styles.imageBubble}
+                    resizeMode="cover"
+                  />
+                </TouchableOpacity>
               ) : (
                 <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
               )}
@@ -538,37 +794,152 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           </View>
         )}
         <View style={styles.inputRowWrap}>
-          <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
-            <TextInput
-              style={[styles.textInput, { color: Colors.text }]}
-              value={text}
-              onChangeText={(t) => {
-                setText(t);
-                if (t.length > 0) notifyTyping();
-              }}
-              placeholder="Compose message…"
-              placeholderTextColor={Colors.textTertiary}
-              multiline
-              maxLength={2000}
-            />
-          </View>
-          <TouchableOpacity
-            style={[
-              styles.sendBtn,
+          {!isRecording && (
+            <TouchableOpacity
+              onPress={() => setAttachMenuOpen(true)}
+              activeOpacity={0.75}
+              accessibilityLabel="Attach"
+              style={[
+                styles.attachBtn,
+                {
+                  backgroundColor: Colors.surface,
+                  borderColor: Colors.neonBorder,
+                  shadowColor: Colors.primary,
+                },
+              ]}
+            >
+              <Ionicons name="add" size={24} color={Colors.text} />
+            </TouchableOpacity>
+          )}
+          {isRecording ? (
+            <Animated.View style={[
+              styles.recordingTray,
               {
-                backgroundColor: text.trim() ? Colors.primary : Colors.surface,
+                backgroundColor: Colors.surface,
                 borderColor: Colors.neonBorder,
-                shadowColor: Colors.primary,
+                transform: [{ translateX: slideX }],
               },
-            ]}
-            onPress={handleSend}
-            disabled={!text.trim()}
-            activeOpacity={0.75}
-          >
-            <Text style={[styles.sendIcon, { color: text.trim() ? Colors.textInverse : Colors.textTertiary }]}>▶</Text>
-          </TouchableOpacity>
+            ]}>
+              <Animated.View style={[
+                styles.recordingDot,
+                {
+                  backgroundColor: cancelRecordingRef.current ? Colors.textTertiary : '#FF3B30',
+                  transform: [{ scale: pulseScale }],
+                },
+              ]} />
+              <Text style={[styles.recordingTime, { color: Colors.text }]}>
+                {(() => {
+                  const total = Math.floor(recordingMs / 1000);
+                  const m = Math.floor(total / 60);
+                  const s = total % 60;
+                  return `${m}:${s.toString().padStart(2, '0')}`;
+                })()}
+              </Text>
+              <Text style={[styles.recordingHint, { color: Colors.textSecondary }]}>
+                <Ionicons name="chevron-back" size={14} color={Colors.textSecondary} />
+                {' '}Slide to cancel
+              </Text>
+            </Animated.View>
+          ) : (
+            <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+              <TextInput
+                style={[styles.textInput, { color: Colors.text }]}
+                value={text}
+                onChangeText={(t) => {
+                  setText(t);
+                  if (t.length > 0) notifyTyping();
+                }}
+                placeholder="Compose message…"
+                placeholderTextColor={Colors.textTertiary}
+                multiline
+                maxLength={2000}
+              />
+            </View>
+          )}
+          {text.trim().length > 0 ? (
+            <TouchableOpacity
+              style={[
+                styles.sendBtn,
+                {
+                  backgroundColor: Colors.primary,
+                  borderColor: Colors.neonBorder,
+                  shadowColor: Colors.primary,
+                },
+              ]}
+              onPress={handleSend}
+              activeOpacity={0.75}
+            >
+              <Text style={[styles.sendIcon, { color: Colors.textInverse }]}>▶</Text>
+            </TouchableOpacity>
+          ) : (
+            <View
+              {...micPan.panHandlers}
+              style={[
+                styles.sendBtn,
+                {
+                  backgroundColor: isRecording ? '#FF3B30' : Colors.surface,
+                  borderColor: isRecording ? '#FF3B30' : Colors.neonBorder,
+                  shadowColor: isRecording ? '#FF3B30' : Colors.primary,
+                },
+              ]}
+            >
+              <Ionicons
+                name="mic"
+                size={22}
+                color={isRecording ? Colors.textInverse : Colors.text}
+              />
+            </View>
+          )}
         </View>
       </View>
+      {/* Attachment menu */}
+      <Modal
+        visible={attachMenuOpen}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setAttachMenuOpen(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setAttachMenuOpen(false)}>
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            style={[styles.attachSheet, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}
+          >
+            <TouchableOpacity style={styles.attachRow} onPress={handlePickFromCamera} activeOpacity={0.7}>
+              <Ionicons name="camera" size={22} color={Colors.primary} />
+              <Text style={[styles.attachLabel, { color: Colors.text }]}>Camera</Text>
+            </TouchableOpacity>
+            <View style={[styles.attachDivider, { backgroundColor: Colors.border }]} />
+            <TouchableOpacity style={styles.attachRow} onPress={handlePickFromGallery} activeOpacity={0.7}>
+              <Ionicons name="images" size={22} color={Colors.primary} />
+              <Text style={[styles.attachLabel, { color: Colors.text }]}>Photo Library</Text>
+            </TouchableOpacity>
+            <View style={[styles.attachDivider, { backgroundColor: Colors.border }]} />
+            <TouchableOpacity style={styles.attachRow} onPress={() => setAttachMenuOpen(false)} activeOpacity={0.7}>
+              <Ionicons name="close" size={22} color={Colors.textTertiary} />
+              <Text style={[styles.attachLabel, { color: Colors.textTertiary }]}>Cancel</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+      {/* Fullscreen image viewer */}
+      <Modal
+        visible={fullscreenImageUri !== null}
+        transparent
+        animationType="fade"
+        statusBarTranslucent
+        onRequestClose={() => setFullscreenImageUri(null)}
+      >
+        <Pressable style={styles.fullscreenBackdrop} onPress={() => setFullscreenImageUri(null)}>
+          {fullscreenImageUri && (
+            <Image
+              source={{ uri: fullscreenImageUri }}
+              style={styles.fullscreenImage}
+              resizeMode="contain"
+            />
+          )}
+        </Pressable>
+      </Modal>
       {/* Long-press context menu */}
       <Modal
         visible={contextMsg !== null}
@@ -756,7 +1127,8 @@ const styles = StyleSheet.create({
     borderRadius: Radius.lg,
     paddingHorizontal: Spacing.md,
     minHeight: 44,
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
     borderWidth: 1,
   },
   typingHint: {
@@ -768,10 +1140,63 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   textInput: {
+    flex: 1,
     fontSize: Font.size.md,
     maxHeight: 100,
     paddingVertical: Platform.OS === 'ios' ? Spacing.md : Spacing.sm,
     letterSpacing: 0.2,
+  },
+  attachBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: Spacing.sm,
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 4,
+  },
+  attachSheet: {
+    marginTop: 'auto',
+    marginBottom: Spacing.xl,
+    marginHorizontal: Spacing.md,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    paddingVertical: Spacing.sm,
+  },
+  attachRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    gap: Spacing.md,
+  },
+  attachLabel: {
+    fontSize: Font.size.md,
+    letterSpacing: 0.3,
+  },
+  attachDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginHorizontal: Spacing.lg,
+  },
+  imageBubble: {
+    width: 220,
+    height: 220,
+    borderRadius: Radius.sm,
+    backgroundColor: '#0002',
+  },
+  fullscreenBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fullscreenImage: {
+    width: '100%',
+    height: '100%',
   },
   sendBtn: {
     width: 44,
@@ -925,5 +1350,34 @@ const styles = StyleSheet.create({
   },
   replyPreviewClose: {
     paddingLeft: Spacing.sm,
+  },
+
+  /* ---- Voice recording overlay (replaces inputRow while recording) ---- */
+  recordingTray: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    minHeight: 44,
+    borderWidth: 1,
+  },
+  recordingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: Spacing.sm,
+  },
+  recordingTime: {
+    fontSize: Font.size.md,
+    fontVariant: ['tabular-nums'],
+    fontWeight: '600',
+    marginRight: Spacing.md,
+  },
+  recordingHint: {
+    flex: 1,
+    textAlign: 'right',
+    fontSize: Font.size.xs,
+    letterSpacing: 0.3,
   },
 });

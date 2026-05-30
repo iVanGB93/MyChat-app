@@ -63,8 +63,9 @@ export function useChat(roomId: string, currentUserId?: number) {
       content: string,
       messageType = 'text',
       replyTo: import('../services/localMessageStore').ReplyRef | null = null,
+      extras: import('../services/chatWsManager').SendExtras | null = null,
     ) => {
-      sendChatMessage(roomId, content, messageType, replyTo);
+      sendChatMessage(roomId, content, messageType, replyTo, extras);
     },
     [roomId],
   );

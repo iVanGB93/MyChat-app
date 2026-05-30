@@ -54,8 +54,12 @@ export interface Message {
   sender: number;
   sender_username: string;
   content: string;
-  message_type: 'text' | 'image' | 'file';
+  message_type: 'text' | 'image' | 'file' | 'voice';
   file: string | null;
+  /** Local file URI for media messages (voice / image). */
+  file_uri?: string | null;
+  /** Duration in milliseconds for voice / video messages. */
+  duration_ms?: number | null;
   is_read: boolean;
   created_at: string;
   reactions?: Record<string, string[]>;
