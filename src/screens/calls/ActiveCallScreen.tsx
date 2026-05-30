@@ -9,6 +9,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { RTCView } from 'react-native-webrtc';
 import { Colors, Font, Spacing } from '../../theme';
+import { Ionicons } from '@expo/vector-icons';
 import { endCall, getCallStatus } from '../../services/callService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playSound, playLooping, stopLooping } from '../../services/soundService';
@@ -188,7 +189,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       <View style={[styles.overlay, isVideo && remoteStreamUrl ? styles.overlayTransparent : null]}>
         <View style={styles.top}>
           <Text style={styles.callType}>
-            {isVideo ? '📹 Video Call' : '📞 Voice Call'}
+            {isVideo ? 'Video Call' : 'Voice Call'}
           </Text>
           {(!isVideo || !remoteStreamUrl) && (
             <Avatar name={otherName} size={100} />
@@ -212,7 +213,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
             onPress={toggleMute}
             activeOpacity={0.7}
           >
-            <Text style={styles.actionIcon}>{isMuted ? '🔇' : '🎙️'}</Text>
+            <Ionicons name={isMuted ? 'mic-off' : 'mic'} size={22} color={Colors.textInverse} />
             <Text style={styles.actionLabel}>{isMuted ? 'Unmute' : 'Mute'}</Text>
           </TouchableOpacity>
 
@@ -222,13 +223,13 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
               onPress={toggleCamera}
               activeOpacity={0.7}
             >
-              <Text style={styles.actionIcon}>{isCameraOff ? '🚫' : '📷'}</Text>
+              <Ionicons name={isCameraOff ? 'videocam-off' : 'videocam'} size={22} color={Colors.textInverse} />
               <Text style={styles.actionLabel}>{isCameraOff ? 'Cam On' : 'Cam Off'}</Text>
             </TouchableOpacity>
           )}
 
           <TouchableOpacity style={styles.endBtn} onPress={handleEndCall} activeOpacity={0.7}>
-            <Text style={[styles.actionIcon, { fontSize: 30 }]}>📵</Text>
+            <Ionicons name="call" size={28} color={Colors.textInverse} style={{ transform: [{ rotate: '135deg' }] }} />
             <Text style={styles.actionLabel}>End</Text>
           </TouchableOpacity>
 
@@ -238,7 +239,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
               onPress={switchCamera}
               activeOpacity={0.7}
             >
-              <Text style={styles.actionIcon}>🔄</Text>
+              <Ionicons name="camera-reverse-outline" size={22} color={Colors.textInverse} />
               <Text style={styles.actionLabel}>Flip</Text>
             </TouchableOpacity>
           )}
@@ -248,7 +249,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
               style={styles.actionBtn}
               activeOpacity={0.7}
             >
-              <Text style={styles.actionIcon}>🔈</Text>
+              <Ionicons name="volume-high-outline" size={22} color={Colors.textInverse} />
               <Text style={styles.actionLabel}>Speaker</Text>
             </TouchableOpacity>
           )}

@@ -18,6 +18,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius } from '../../theme';
+import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getCallHistory, initiateCall } from '../../services/callService';
@@ -117,9 +118,11 @@ export default function CallsScreen() {
             {formatCallTime(item.started_at)}
           </Text>
           <View style={[styles.callbackBtn, { borderColor: Colors.primary }]}>
-            <Text style={[styles.callbackIcon, { color: Colors.primary }]}>
-              {item.call_type === 'video' ? '⊞' : '◉'}
-            </Text>
+            <Ionicons
+              name={item.call_type === 'video' ? 'videocam-outline' : 'call-outline'}
+              size={16}
+              color={Colors.primary}
+            />
           </View>
         </View>
       </TouchableOpacity>
@@ -142,7 +145,7 @@ export default function CallsScreen() {
         renderItem={renderItem}
         contentContainerStyle={calls.length === 0 ? styles.emptyContainer : styles.list}
         ListEmptyComponent={
-          <EmptyState icon="◉" title="No call history" subtitle="Start a call from a chat conversation" />
+          <EmptyState iconName="call-outline" title="No call history" subtitle="Start a call from a chat conversation" />
         }
         refreshControl={
           <RefreshControl

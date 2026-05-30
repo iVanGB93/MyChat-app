@@ -7,6 +7,7 @@ import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Vibration } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Colors, Font, Spacing } from '../../theme';
+import { Ionicons } from '@expo/vector-icons';
 import { joinCall, endCall } from '../../services/callService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playLooping, stopLooping, playSound } from '../../services/soundService';
@@ -98,7 +99,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
     <View style={styles.container}>
       <View style={styles.content}>
         <Text style={styles.label}>
-          {callType === 'video' ? '📹 Incoming Video Call' : '📞 Incoming Voice Call'}
+          {callType === 'video' ? 'Incoming Video Call' : 'Incoming Voice Call'}
         </Text>
         <Avatar name={callerName} size={100} />
         <Text style={styles.callerName}>{callerName}</Text>
@@ -107,11 +108,11 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
 
       <View style={styles.actions}>
         <TouchableOpacity style={styles.rejectBtn} onPress={handleReject} activeOpacity={0.7}>
-          <Text style={styles.actionIcon}>✕</Text>
+          <Ionicons name="close" size={28} color={Colors.textInverse} />
           <Text style={styles.actionLabel}>Decline</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.acceptBtn} onPress={handleAccept} activeOpacity={0.7}>
-          <Text style={styles.actionIcon}>{callType === 'video' ? '📹' : '📞'}</Text>
+          <Ionicons name={callType === 'video' ? 'videocam' : 'call'} size={28} color={Colors.textInverse} />
           <Text style={styles.actionLabel}>Accept</Text>
         </TouchableOpacity>
       </View>

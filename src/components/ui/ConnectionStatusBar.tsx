@@ -14,6 +14,7 @@ import {
   Platform,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Ionicons } from '@expo/vector-icons';
 import {
   useNotificationContext,
   ConnectionStatus,
@@ -23,41 +24,41 @@ import { useTheme } from '../../contexts/ThemeContext';
 
 function getStatusConfig(Colors: any): Record<
   ConnectionStatus,
-  { label: string; bg: string; icon: string; showRetry: boolean; showSpinner: boolean }
+  { label: string; bg: string; icon: React.ComponentProps<typeof Ionicons>['name']; showRetry: boolean; showSpinner: boolean }
 > {
   return {
     connected: {
       label: 'Connected',
       bg: Colors.success,
-      icon: '✓',
+      icon: 'checkmark-circle',
       showRetry: false,
       showSpinner: false,
     },
     connecting: {
       label: 'Connecting…',
       bg: Colors.warning,
-      icon: '⟳',
+      icon: 'sync',
       showRetry: false,
       showSpinner: true,
     },
     reconnecting: {
       label: 'Reconnecting…',
       bg: Colors.warning,
-      icon: '⟳',
+      icon: 'sync',
       showRetry: true,
       showSpinner: true,
     },
     disconnected: {
       label: 'Disconnected',
       bg: Colors.error,
-      icon: '✕',
+      icon: 'close-circle',
       showRetry: true,
       showSpinner: false,
     },
     'no-internet': {
       label: 'No internet connection',
       bg: '#64748B',
-      icon: '📡',
+      icon: 'cloud-offline-outline',
       showRetry: true,
       showSpinner: false,
     },
@@ -153,7 +154,7 @@ export default function ConnectionStatusBar() {
           {config.showSpinner ? (
             <ActivityIndicator size="small" color="#fff" style={styles.spinner} />
           ) : (
-            <Text style={styles.icon}>{config.icon}</Text>
+            <Ionicons name={config.icon} size={16} color="#fff" style={styles.spinner} />
           )}
           <Text style={styles.label}>
             {config.label}

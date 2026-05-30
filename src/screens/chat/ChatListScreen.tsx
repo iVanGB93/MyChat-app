@@ -22,6 +22,7 @@ import { getLastMessagePerRoom } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useNotificationContext } from '../../contexts/NotificationContext';
+import { Ionicons } from '@expo/vector-icons';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 import type { ChatRoom, RootStackParamList } from '../../types';
@@ -208,7 +209,7 @@ export default function ChatListScreen() {
         contentContainerStyle={rooms.length === 0 ? styles.emptyContainer : styles.list}
         ListEmptyComponent={
           <EmptyState
-            icon="📡"
+            iconName="chatbubbles-outline"
             title="No channels open"
             subtitle="Add contacts and start chatting"
           />
@@ -230,7 +231,7 @@ export default function ChatListScreen() {
         activeOpacity={0.8}
         onPress={() => navigation.navigate('Contacts')}
       >
-        <Text style={[styles.fabIcon, { color: Colors.primary }]}>+</Text>
+        <Ionicons name="add" size={32} color={Colors.primary} />
       </TouchableOpacity>
     </View>
   );

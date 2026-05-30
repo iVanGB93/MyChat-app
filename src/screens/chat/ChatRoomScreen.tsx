@@ -24,6 +24,7 @@ import { useHeaderHeight } from '@react-navigation/elements';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import dayjs from 'dayjs';
 import { Font, Spacing, Radius } from '../../theme';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
@@ -244,7 +245,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               alignItems: 'center', justifyContent: 'center',
             }}
           >
-            <Text style={{ fontSize: 16, lineHeight: 20 }}>🎥</Text>
+            <Ionicons name="videocam-outline" size={18} color="#00E5FF" />
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => handleCall('voice')}
@@ -256,7 +257,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               alignItems: 'center', justifyContent: 'center',
             }}
           >
-            <Text style={{ fontSize: 16, lineHeight: 20 }}>📞</Text>
+            <Ionicons name="call-outline" size={18} color="#00E5FF" />
           </TouchableOpacity>
         </View>
       ),

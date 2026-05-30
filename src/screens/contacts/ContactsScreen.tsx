@@ -16,6 +16,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Font, Spacing, Radius } from '../../theme';
+import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { getContacts, addContact, removeContact } from '../../services/contactService';
 import { searchUsers } from '../../services/authService';
@@ -207,7 +208,7 @@ export default function ContactsScreen() {
           renderItem={renderSearchItem}
           contentContainerStyle={filteredSearchResults.length === 0 ? styles.emptyContainer : styles.list}
           ListEmptyComponent={
-            !searching ? <EmptyState icon="🔍" title="No users found" /> : null
+            !searching ? <EmptyState iconName="search-outline" title="No users found" /> : null
           }
           ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: Colors.border }]} />}
         />
@@ -218,7 +219,7 @@ export default function ContactsScreen() {
           renderItem={renderContact}
           contentContainerStyle={filteredContacts.length === 0 ? styles.emptyContainer : styles.list}
           ListEmptyComponent={
-            <EmptyState icon="👥" title="No contacts" subtitle="Search for users above to add them" />
+            <EmptyState iconName="people-outline" title="No contacts" subtitle="Search for users above to add them" />
           }
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchContacts(); }} colors={[Colors.primary]} />

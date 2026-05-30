@@ -22,6 +22,7 @@ import {
   Platform,
 } from 'react-native';
 import { Font, Spacing, Radius } from '../theme';
+import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useNotificationContext, NotificationPayload } from '../contexts/NotificationContext';
@@ -47,33 +48,25 @@ export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 /* ---- Tab icons ---- */
 function TabIcon({ label, focused }: { label: string; focused: boolean }) {
   const { colors: Colors } = useTheme();
-  const icons: Record<string, string> = {
-    Chats:   '💬',
-    Calls:   '📞',
-    Profile: '👤',
+  // Outline when inactive, filled when focused — matches the rest of the UI
+  // and feels closer to the cyberpunk "glowing line" aesthetic.
+  const iconMap: Record<string, [React.ComponentProps<typeof Ionicons>['name'], React.ComponentProps<typeof Ionicons>['name']]> = {
+    Chats:   ['chatbubble-ellipses-outline', 'chatbubble-ellipses'],
+    Calls:   ['call-outline',                'call'],
+    Profile: ['person-outline',              'person'],
   };
+  const [outline, filled] = iconMap[label] ?? ['ellipse-outline', 'ellipse'];
   return (
     <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-      <Text style={{
-        fontSize: 22,
-        opacity: focused ? 1 : 0.38,
-        transform: [{ scale: focused ? 1.08 : 1 }],
-      }}>
-        {icons[label] ?? '•'}
-      </Text>
-      {focused && (
-        <View style={{
-          width: 4,
-          height: 4,
-          borderRadius: 2,
-          backgroundColor: Colors.primary,
-          marginTop: 2,
-          shadowColor: Colors.primary,
-          shadowOpacity: 0.9,
-          shadowRadius: 4,
-          shadowOffset: { width: 0, height: 0 },
-        }} />
-      )}
+      <Ionicons
+        name={focused ? filled : outline}
+        size={24}
+        color={focused ? Colors.primary : Colors.textTertiary}
+        style={{
+          opacity: focused ? 1 : 0.7,
+          transform: [{ scale: focused ? 1.05 : 1 }],
+        }}
+      />
     </View>
   );
 }
