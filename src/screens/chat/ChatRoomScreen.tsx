@@ -28,13 +28,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getRoomMessages } from '../../services/chatService';
 import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage } from '../../services/localMessageStore';
 import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom } from '../../services/chatWsManager';
 import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
+import { useAppStore } from '../../store/appStore';
 import type { Message, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
@@ -78,9 +77,22 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
   const { user } = useAuth();
-  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt } = useChat(roomId, user?.id);
+  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, typers, notifyTyping } = useChat(roomId, user?.id);
+  const isMuted = useAppStore((s) => !!s.mutedRooms[roomId]);
   const { subscribe } = useNotificationContext();
   const { colors: Colors } = useTheme();
+
+  // Mark this room as the active one in the global store while the screen is mounted.
+  // Other systems (notification routing, foreground service, etc.) read this to
+  // decide whether to show in-app vs. push notifications.
+  useEffect(() => {
+    useAppStore.getState().setActiveRoom(roomId);
+    return () => {
+      if (useAppStore.getState().activeRoomId === roomId) {
+        useAppStore.getState().setActiveRoom(null);
+      }
+    };
+  }, [roomId]);
 
   /* SQLite-sourced messages — only updated by load/reload calls */
   const [sqliteMessages, setSqliteMessages] = useState<Message[]>([]);
@@ -110,36 +122,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     }
   }, [roomId]);
 
-  /* ── Initial load from SQLite (+ one-time server-history migration) ── */
+  /* ── Initial load from SQLite ── */
   useEffect(() => {
     const cancel = { current: false };
     (async () => {
       try {
         await initDB();
-        // One-time migration: pull server history into local DB
-        const migrationKey = `history_migrated_${roomId}`;
-        const migrated = await AsyncStorage.getItem(migrationKey);
-        if (!migrated) {
-          try {
-            const res = await getRoomMessages(roomId);
-            for (const msg of (res.results ?? [])) {
-              await saveMessage({
-                id: msg.id,
-                room_id: roomId,
-                sender_id: msg.sender,
-                sender_name: msg.sender_username || '',
-                content: msg.content ?? null,
-                type: msg.message_type,
-                file_uri: msg.file ?? null,
-                created_at: msg.created_at,
-                is_mine: msg.sender === user?.id,
-                reactions: {},
-                is_deleted: false,
-              });
-            }
-            await AsyncStorage.setItem(migrationKey, '1');
-          } catch { /* ignore — will retry next open */ }
-        }
         await loadFromDB(cancel);
       } catch { /* ignore */ } finally {
         if (!cancel.current) setLoading(false);
@@ -236,6 +224,22 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       headerRight: () => (
         <View style={{ flexDirection: 'row', gap: 8, marginRight: 8 }}>
           <TouchableOpacity
+            onPress={() => useAppStore.getState().toggleRoomMuted(roomId)}
+            activeOpacity={0.7}
+            style={{
+              width: 36, height: 36, borderRadius: 18,
+              backgroundColor: isMuted ? 'rgba(255,80,80,0.15)' : 'rgba(0,229,255,0.10)',
+              borderWidth: 1, borderColor: isMuted ? 'rgba(255,80,80,0.35)' : 'rgba(0,229,255,0.30)',
+              alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <Ionicons
+              name={isMuted ? 'notifications-off-outline' : 'notifications-outline'}
+              size={18}
+              color={isMuted ? '#FF5050' : '#00E5FF'}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
             onPress={() => handleCall('video')}
             activeOpacity={0.7}
             style={{
@@ -262,7 +266,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         </View>
       ),
     });
-  }, [navigation, otherUserId]);
+  }, [navigation, otherUserId, roomId, isMuted]);
 
   const handleSend = () => {
     const trimmed = text.trim();
@@ -416,11 +420,21 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       />
 
       <View style={[styles.inputBar, { backgroundColor: Colors.chatBg, borderTopColor: Colors.neonBorder, paddingBottom: insets.bottom + Spacing.sm }]}>
+        {typers.length > 0 && (
+          <Text style={[styles.typingHint, { color: Colors.textSecondary }]}>
+            {typers.length === 1
+              ? `${typers[0].username} is typing…`
+              : `${typers.map(t => t.username).join(', ')} are typing…`}
+          </Text>
+        )}
         <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
           <TextInput
             style={[styles.textInput, { color: Colors.text }]}
             value={text}
-            onChangeText={setText}
+            onChangeText={(t) => {
+              setText(t);
+              if (t.length > 0) notifyTyping();
+            }}
             placeholder="Compose message…"
             placeholderTextColor={Colors.textTertiary}
             multiline
@@ -565,6 +579,14 @@ const styles = StyleSheet.create({
     minHeight: 44,
     justifyContent: 'center',
     borderWidth: 1,
+  },
+  typingHint: {
+    position: 'absolute',
+    top: -18,
+    left: Spacing.md,
+    fontSize: Font.size.xs,
+    fontStyle: 'italic',
+    letterSpacing: 0.3,
   },
   textInput: {
     fontSize: Font.size.md,

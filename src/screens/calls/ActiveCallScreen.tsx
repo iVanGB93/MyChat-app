@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { endCall, getCallStatus } from '../../services/callService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playSound, playLooping, stopLooping } from '../../services/soundService';
+import { useAppStore } from '../../store/appStore';
 import useWebRTC from '../../hooks/useWebRTC';
 import Avatar from '../../components/ui/Avatar';
 import type { RootStackParamList } from '../../types';
@@ -54,6 +55,33 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       console.log('[ActiveCall] WebRTC peer disconnected');
     },
   });
+
+  /* ---- mirror call into global store on mount + status changes ---- */
+  useEffect(() => {
+    useAppStore.getState().setActiveCall({
+      callId,
+      peerId: peerUserId ?? 0,
+      peerName: otherName,
+      state: isOutgoing ? 'ringing' : 'connected',
+      callType,
+    });
+    return () => {
+      const cur = useAppStore.getState().activeCall;
+      if (cur && cur.callId === callId) {
+        useAppStore.getState().setActiveCall(null);
+      }
+    };
+  }, [callId, otherName, callType, isOutgoing, peerUserId]);
+
+  useEffect(() => {
+    // Map the local status union onto ActiveCall['state'].
+    const mapped: 'ringing' | 'connecting' | 'connected' | 'ended' =
+      status === 'ringing' ? 'ringing'
+      : status === 'connecting' ? 'connecting'
+      : status === 'connected' ? 'connected'
+      : 'ended';
+    useAppStore.getState().updateActiveCallState(mapped);
+  }, [status]);
 
   /* ---- play ringback for outgoing calls ---- */
   useEffect(() => {

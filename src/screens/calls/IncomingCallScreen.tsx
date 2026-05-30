@@ -11,6 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { joinCall, endCall } from '../../services/callService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playLooping, stopLooping, playSound } from '../../services/soundService';
+import { useAppStore } from '../../store/appStore';
 import Avatar from '../../components/ui/Avatar';
 import type { RootStackParamList } from '../../types';
 
@@ -20,6 +21,24 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
   const { callId, callerName, callType, roomName } = route.params;
   const { subscribe } = useNotificationContext();
   const dismissed = useRef(false);
+
+  // Mirror the incoming call into the global store while this screen is mounted.
+  useEffect(() => {
+    useAppStore.getState().setActiveCall({
+      callId,
+      peerId: route.params.callerId,
+      peerName: callerName,
+      state: 'ringing',
+      callType,
+    });
+    return () => {
+      // Clear only if this is still the active call (caller may have transitioned to ActiveCallScreen).
+      const cur = useAppStore.getState().activeCall;
+      if (cur && cur.callId === callId && cur.state === 'ringing') {
+        useAppStore.getState().setActiveCall(null);
+      }
+    };
+  }, [callId, callerName, callType, route.params.callerId]);
 
   /* ---- ringtone + vibration ---- */
   useEffect(() => {

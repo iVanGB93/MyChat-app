@@ -27,7 +27,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useNotificationContext, NotificationPayload } from '../contexts/NotificationContext';
 import { playSound } from '../services/soundService';
-import ConnectionStatusBar from '../components/ui/ConnectionStatusBar';
+import { useAppStore } from '../store/appStore';
 
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -209,11 +209,9 @@ function MessageNotificationListener() {
       };
 
       // ── Guard: don't show if already on that chat room ────────────────
+      // Uses the global app store as the single source of truth.
       const isViewingRoom = (roomId: string) => {
-        if (!navigationRef.isReady()) return false;
-        const current = navigationRef.getCurrentRoute();
-        const params = current?.params as any;
-        return current?.name === 'ChatRoom' && params?.roomId === roomId;
+        return useAppStore.getState().activeRoomId === roomId;
       };
 
       // ── New message ───────────────────────────────────────────────────
@@ -332,7 +330,6 @@ export default function AppNavigator() {
   return (
     <>
       {isAuthenticated && <IncomingCallListener />}
-      {isAuthenticated && <ConnectionStatusBar />}
       <NavigationContainer ref={navigationRef} theme={navTheme}>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           {isAuthenticated ? (

@@ -12,6 +12,10 @@ import {
 } from './src/services/pushNotificationService';
 import { registerBackgroundTask } from './src/services/backgroundNotificationService';
 import * as Notifications from 'expo-notifications';
+import { AppLifecycleBridge } from './src/store/AppLifecycleBridge';
+import { DebugOverlay } from './src/store/DebugOverlay';
+import { ConnectionBanner } from './src/store/ConnectionBanner';
+import { ActiveCallBanner } from './src/store/ActiveCallBanner';
 
 export default function App() {
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
@@ -59,8 +63,12 @@ export default function App() {
         <ThemeProvider>
           <AuthProvider>
             <NotificationProvider>
+              <AppLifecycleBridge />
               <ThemedStatusBar />
               <AppNavigator />
+              <ConnectionBanner />
+              <ActiveCallBanner />
+              <DebugOverlay />
             </NotificationProvider>
           </AuthProvider>
         </ThemeProvider>

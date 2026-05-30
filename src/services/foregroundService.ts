@@ -12,6 +12,7 @@
 
 import { Platform, AppState, NativeModules } from 'react-native';
 import { ensureWsAlive } from './notificationWsManager';
+import { useAppStore } from '../store/appStore';
 
 const { MyChatService } = NativeModules;
 
@@ -34,6 +35,7 @@ export async function startForegroundService(): Promise<void> {
     // Start the native foreground service (MediaSession + MediaStyle notification)
     await MyChatService.start();
     _serviceRunning = true;
+    try { useAppStore.getState().setForegroundServiceRunning(true); } catch {}
     console.log('[ForegroundService] ✓ native service started');
 
     // Start JS keepalive timer
@@ -58,6 +60,7 @@ export async function stopForegroundService(): Promise<void> {
     console.warn('[ForegroundService] stop error:', err?.message ?? err);
   }
   _serviceRunning = false;
+  try { useAppStore.getState().setForegroundServiceRunning(false); } catch {}
 }
 
 /** Check if the service is running */

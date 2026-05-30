@@ -16,6 +16,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import api, { getTokens, saveTokens, BASE_URL } from './api';
 import { connectRoom, flushOutboxForRecipient, injectReceivedMessage, markIdsAsReadInRoom, applyRemoteMessageUpdates } from './chatWsManager';
 import { saveMessage, messageExists, markDelivered } from './localMessageStore';
+import { useAppStore } from '../store/appStore';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
@@ -100,6 +101,8 @@ const statusListeners = new Set<StatusListener>();
 
 function setStatus(s: ConnectionStatus) {
   _status = s;
+  // Mirror into global store so any component/service can observe.
+  try { useAppStore.getState().setNotifWsStatus(s); } catch {}
   statusListeners.forEach((fn) => {
     try { fn(s); } catch {}
   });
@@ -334,6 +337,7 @@ async function connectWs() {
           _wsAuthenticated = true;
           _connectedAt = Date.now();
           setStatus('connected');
+          try { useAppStore.getState().setNotifWsAuthenticated(true); } catch {}
           startPing();
           if (SEND_APP_STATE_ON_AUTH_OK) {
             const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';
@@ -406,6 +410,22 @@ async function connectWs() {
           // Fall through — notify listeners so the chat UI can update the delivery tick
         }
 
+        // ---- typing relay via notification channel ----
+        // Lets the chat list show "typing…" even for rooms whose chat-room WS
+        // is not currently open. Pure ephemeral mirror — no DB, no notification.
+        if (payload.event === 'typing' && payload.room_id && payload.sender_id) {
+          try {
+            useAppStore.getState().setRoomTyping(
+              String(payload.room_id),
+              Number(payload.sender_id),
+              String(payload.sender ?? ''),
+              Boolean(payload.is_typing),
+            );
+          } catch {}
+          // Skip local-notification path entirely for typing events
+          return;
+        }
+
         // ---- new_message via notification channel (user not in chat room WS) ----
         if (payload.event === 'new_message' && payload.message_id && payload.sender_id !== undefined) {
           (async () => {
@@ -436,6 +456,22 @@ async function connectWs() {
             }
             // Inject into chatWsManager state if the room screen is open
             injectReceivedMessage(String(payload.room_id ?? ''), wsMsg);
+            // Bump unread counter in the global store unless the user is currently viewing this room.
+            try {
+              const store = useAppStore.getState();
+              const rid = String(payload.room_id ?? '');
+              if (rid) {
+                store.setRoomLastMessage(rid, {
+                  content: wsMsg.content ?? '',
+                  created_at: wsMsg.created_at,
+                  sender: wsMsg.sender,
+                });
+                // Skip unread bump if the user is currently viewing this room OR muted it.
+                if (store.activeRoomId !== rid && !store.mutedRooms[rid]) {
+                  store.incrementRoomUnread(rid, 1);
+                }
+              }
+            } catch {}
             // Ack receipt so server deletes the PendingDelivery record
             if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
               ws.send(JSON.stringify({
@@ -454,7 +490,25 @@ async function connectWs() {
         // Solution: show a local notification from the WS message when not in foreground.
         // When foreground, in-app components (MessageNotificationListener, IncomingCallListener)
         // handle display — so we skip the local notification to avoid duplicates.
-        if (AppState.currentState !== 'active') {
+        //
+        // Source of truth for "is the app visible" + "is the user inside this room"
+        // is the global app store, mirrored from AppState by AppLifecycleBridge.
+        const storeState = (() => {
+          try { return useAppStore.getState(); } catch { return null; }
+        })();
+        const isAppActive = storeState ? storeState.appLifecycle === 'active' : (AppState.currentState === 'active');
+        const isViewingThisRoom =
+          payload.event === 'new_message' &&
+          storeState?.activeRoomId === String(payload.room_id ?? '');
+
+        if (!isAppActive && !isViewingThisRoom) {
+          // Honor per-room mute: skip local notifications for muted rooms entirely.
+          const isMutedRoom =
+            payload.event === 'new_message' &&
+            !!storeState?.mutedRooms[String(payload.room_id ?? '')];
+          if (isMutedRoom) {
+            // fall through — listeners still see the event; we just don't surface a banner
+          } else {
           try {
             const {
               showMessageNotification,
@@ -486,6 +540,7 @@ async function connectWs() {
               }).catch(() => {});
             }
           } catch { /* ignore — pushNotificationService unavailable */ }
+          }
         }
 
         // Dispatch to subscribers (in-app logic: toasts, navigation, badges, etc.)
@@ -516,6 +571,11 @@ async function connectWs() {
           _close1011Count = 0;
           _suspendReconnectUntil = 0;
         }
+        try {
+          const store = useAppStore.getState();
+          store.setNotifWsClose(ev.code);
+          store.setNotifWsSuspendedUntil(_suspendReconnectUntil);
+        } catch {}
         if (connectedMs >= 10_000) {
           _reconnectDelay = INITIAL_RECONNECT_MS;
           _close1011Count = 0;

@@ -1,9 +1,9 @@
 /* ------------------------------------------------------------------ */
-/*  Chat API — rooms & messages                                        */
+/*  Chat API — rooms                                                   */
 /* ------------------------------------------------------------------ */
 
 import api from './api';
-import type { ChatRoom, Message, PaginatedResponse } from '../types';
+import type { ChatRoom, PaginatedResponse } from '../types';
 
 export async function getRooms(): Promise<ChatRoom[]> {
   const { data } = await api.get<PaginatedResponse<ChatRoom>>('/api/chat/rooms/');
@@ -21,14 +21,6 @@ export async function createGroupRoom(name: string, memberIds: number[]): Promis
     room_type: 'group',
     members: memberIds,
   });
-  return data;
-}
-
-export async function getRoomMessages(roomId: string, page = 1): Promise<PaginatedResponse<Message>> {
-  const { data } = await api.get<PaginatedResponse<Message>>(
-    `/api/chat/rooms/${roomId}/messages/`,
-    { params: { page } },
-  );
   return data;
 }
 

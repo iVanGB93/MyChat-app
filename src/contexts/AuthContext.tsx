@@ -11,6 +11,7 @@ import { stopForegroundService } from '../services/foregroundService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { setCurrentUserId } from '../services/chatWsManager';
 import { initDB } from '../services/localMessageStore';
+import { useAppStore } from '../store/appStore';
 import type { User } from '../types';
 
 interface AuthState {
@@ -34,6 +35,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isLoading: true,
     isAuthenticated: false,
   });
+
+  // Mirror auth state into the global app store on every change.
+  useEffect(() => {
+    const store = useAppStore.getState();
+    store.setUser(state.user);
+    store.setAuthLoading(state.isLoading);
+  }, [state.user, state.isLoading]);
 
   /** Register push token with backend after authentication */
   const syncPushToken = useCallback(async () => {
@@ -94,6 +102,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearTokens();
     await unregisterBackgroundTask();
     setState({ user: null, isLoading: false, isAuthenticated: false });
+    useAppStore.getState().reset();
   }, []);
 
   const refreshUser = useCallback(async () => {

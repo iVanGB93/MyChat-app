@@ -15,14 +15,20 @@ import {
   markRoomAsRead,
   RoomSnapshot,
   sendChatMessage,
+  sendTyping,
   subscribeRoom,
 } from '../services/chatWsManager';
+import { useAppStore } from '../store/appStore';
 
 // Re-export WsMessage so existing imports (e.g. ChatRoomScreen) keep working
 export type { WsMessage } from '../services/chatWsManager';
 
 export function useChat(roomId: string, currentUserId?: number) {
   const [snapshot, setSnapshot] = useState<RoomSnapshot>(() => getSnapshot(roomId));
+
+  // Read store-level chat room status — single source of truth for connectivity.
+  const roomStatus = useAppStore((s) => s.chatRooms[roomId]?.status ?? 'disconnected');
+  const roomAuthenticated = useAppStore((s) => s.chatRooms[roomId]?.authenticated ?? false);
 
   // Subscribe to the singleton on mount; unsubscribe (NOT disconnect) on unmount
   useEffect(() => {
@@ -80,11 +86,61 @@ export function useChat(roomId: string, currentUserId?: number) {
     [roomId],
   );
 
+  // ---- Typing indicator ----
+  // List of OTHER users currently typing in this room (current user excluded).
+  // IMPORTANT: subscribe to the per-room slot directly (a stable reference when
+  // empty: `undefined`) and derive the array outside the selector. Using
+  // `(s) => s.typingByRoom[roomId] ?? []` returns a fresh `[]` every call and
+  // triggers infinite re-renders.
+  const typingEntry = useAppStore((s) => s.typingByRoom[roomId]);
+  const typers = (typingEntry ?? []).filter((t) => t.userId !== currentUserId);
+
+  // Throttled typing emitter. Caller can fire `notifyTyping()` on every keystroke;
+  // we send `is_typing=true` at most once every 3s, and schedule a `false` 4s after
+  // the last keystroke. The server-side TTL in the store is 5s, so missed `false`
+  // pings auto-expire too.
+  const typingStateRef = useRef<{
+    lastSentAt: number;
+    sentTrue: boolean;
+    stopTimer: ReturnType<typeof setTimeout> | null;
+  }>({ lastSentAt: 0, sentTrue: false, stopTimer: null });
+
+  const notifyTyping = useCallback(() => {
+    const st = typingStateRef.current;
+    const now = Date.now();
+    if (!st.sentTrue || now - st.lastSentAt > 3000) {
+      sendTyping(roomId, true);
+      st.sentTrue = true;
+      st.lastSentAt = now;
+    }
+    if (st.stopTimer) clearTimeout(st.stopTimer);
+    st.stopTimer = setTimeout(() => {
+      if (st.sentTrue) {
+        sendTyping(roomId, false);
+        st.sentTrue = false;
+      }
+    }, 4000);
+  }, [roomId]);
+
+  // Cleanup any pending stop-timer on unmount and emit a final 'false' so peers
+  // don't see a stuck typing indicator if we navigate away mid-typing.
+  useEffect(() => {
+    return () => {
+      const st = typingStateRef.current;
+      if (st.stopTimer) clearTimeout(st.stopTimer);
+      if (st.sentTrue) {
+        try { sendTyping(roomId, false); } catch {}
+      }
+    };
+  }, [roomId]);
+
   return {
     messages: snapshot.messages,
     // setMessages kept for API compatibility (no-op; state is managed by singleton)
     setMessages: (_: any) => {},
-    connected: snapshot.status === 'connected',
+    // `connected` reflects the global store's truth (status=connected AND authenticated).
+    // Falls back to the snapshot status while the store hasn't been populated yet.
+    connected: roomAuthenticated && roomStatus === 'connected',
     sendMessage,
     markAsRead,
     readIds: snapshot.readIds,
@@ -94,5 +150,7 @@ export function useChat(roomId: string, currentUserId?: number) {
     markIdsAsDelivered,
     reconnectCount: snapshot.reconnectCount,
     lastMutationAt: snapshot.lastMutationAt,
+    typers,
+    notifyTyping,
   };
 }

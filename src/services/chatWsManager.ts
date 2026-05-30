@@ -24,6 +24,7 @@ import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
 import { saveMessage, messageExists, getPendingOutbox, getUndeliveredSentMessages, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, deleteOutboxUpdates, applyMessageChanges } from './localMessageStore';
+import { useAppStore } from '../store/appStore';
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
 
@@ -186,6 +187,7 @@ function notifyListeners(roomId: string, state: RoomState) {
 
 function setStatus(roomId: string, state: RoomState, status: RoomStatus) {
   state.status = status;
+  try { useAppStore.getState().setChatRoomStatus(roomId, status); } catch {}
   notifyListeners(roomId, state);
 }
 
@@ -430,6 +432,7 @@ export async function connectRoom(roomId: string): Promise<void> {
           s.authenticated = true;
           s.connecting = false;
           s.connectedAt = Date.now();
+          try { useAppStore.getState().setChatRoomAuthenticated(roomId, true); } catch {}
           // Do NOT reset backoff here. If the socket flaps (auth_ok then close
           // immediately), resetting to 300ms creates a reconnect storm.
           // We reset after a stable open period in onclose.
@@ -508,6 +511,19 @@ export async function connectRoom(roomId: string): Promise<void> {
           return;
         }
 
+        // ---- Typing indicator (ephemeral, no persistence) ----
+        if (msgType === 'typing') {
+          const senderId = Number(data.sender_id);
+          const sender = String(data.sender ?? '');
+          const isTyping = Boolean(data.is_typing);
+          if (senderId && sender) {
+            try {
+              useAppStore.getState().setRoomTyping(roomId, senderId, sender, isTyping);
+            } catch {}
+          }
+          return;
+        }
+
         // ---- Chat message ----
         const msg: WsMessage = { ...data, is_read: false };
         if (msg.id && msg.sender_id !== undefined) {
@@ -531,6 +547,13 @@ export async function connectRoom(roomId: string): Promise<void> {
               });
               s.messages = [...s.messages, msg];
               notifyListeners(roomId, s);
+              try {
+                useAppStore.getState().setRoomLastMessage(roomId, {
+                  content: msg.content ?? '',
+                  created_at: msg.created_at,
+                  sender: msg.sender,
+                });
+              } catch {}
             }
             // Ack non-own messages so the server clears the PendingDelivery
             if (!isOwn && s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
@@ -557,6 +580,7 @@ export async function connectRoom(roomId: string): Promise<void> {
         s.ws = null;
         s.connecting = false;
         s.authenticated = false;
+        try { useAppStore.getState().setChatRoomAuthenticated(roomId, false); } catch {}
         if (ev.code === 1011) {
           s.close1011Count += 1;
           // Slow down immediately on first server internal-error close.
@@ -710,6 +734,7 @@ export function disconnectRoom(roomId: string): void {
   clearTimers(s);
   closeWs(s);
   rooms.delete(roomId);
+  try { useAppStore.getState().removeChatRoom(roomId); } catch {}
 }
 
 /** Disconnect all rooms. Call on logout. */
@@ -771,6 +796,13 @@ export async function sendChatMessage(
         is_deleted: false,
         is_read: false,
       });
+      try {
+        useAppStore.getState().setRoomLastMessage(roomId, {
+          content,
+          created_at: createdAt,
+          sender: _myUsername ?? undefined,
+        });
+      } catch {}
     } catch (err) {
       console.warn('[ChatWsManager] failed to save message locally:', err);
     }
@@ -990,4 +1022,16 @@ export function injectReceivedMessage(roomId: string, msg: WsMessage): void {
   if (s.messages.some((m) => m.id === msg.id)) return; // dedup
   s.messages = [...s.messages, msg];
   notifyListeners(roomId, s);
+}
+
+/**
+ * Broadcast a typing indicator to the room.
+ * Caller is responsible for throttling (e.g. once per keystroke burst).
+ */
+export function sendTyping(roomId: string, isTyping: boolean): void {
+  const s = rooms.get(roomId);
+  if (!s || s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
+  try {
+    s.ws.send(JSON.stringify({ type: 'typing', is_typing: isTyping }));
+  } catch { /* ignore */ }
 }
