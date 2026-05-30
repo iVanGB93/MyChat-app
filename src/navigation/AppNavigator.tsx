@@ -155,63 +155,110 @@ interface ToastData {
   roomName: string;
   sender: string;
   content: string;
+  /** Number of notifications grouped into this toast from the same sender. */
+  count: number;
 }
 
 function MessageNotificationListener() {
   const { colors: Colors } = useTheme();
   const { subscribe } = useNotificationContext();
   const [toast, setToast] = useState<ToastData | null>(null);
+  // Ref mirrors state so the subscribe closure never goes stale
+  const toastRef = useRef<ToastData | null>(null);
   const slideAnim = useRef(new Animated.Value(-120)).current;
   const dismissTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    const unsub = subscribe((payload) => {
-      if (payload.event !== 'new_message') return;
-
-      // Don't show if we're already viewing that chat
-      if (navigationRef.isReady()) {
-        const current = navigationRef.getCurrentRoute();
-        const params = current?.params as any;
-        if (current?.name === 'ChatRoom' && params?.roomId === payload.room_id) {
-          return;
-        }
-      }
-
-      // Play notification sound
-      playSound('message_received');
-
-      // Show toast
-      const data: ToastData = {
-        roomId: payload.room_id ?? '',
-        roomName: payload.room_name ?? payload.sender ?? 'Chat',
-        sender: payload.sender ?? 'Unknown',
-        content: payload.content ?? '',
-      };
-      setToast(data);
-
-      // Slide in
-      slideAnim.setValue(-120);
-      Animated.spring(slideAnim, {
-        toValue: 0,
-        useNativeDriver: true,
-        tension: 80,
-        friction: 12,
-      }).start();
-
-      // Auto-dismiss after 4 seconds
-      if (dismissTimer.current) clearTimeout(dismissTimer.current);
-      dismissTimer.current = setTimeout(() => dismiss(), 4000);
-    });
-    return unsub;
-  }, [subscribe]);
+  const updateToast = (data: ToastData) => {
+    toastRef.current = data;
+    setToast(data);
+  };
 
   const dismiss = () => {
+    if (dismissTimer.current) { clearTimeout(dismissTimer.current); dismissTimer.current = null; }
     Animated.timing(slideAnim, {
       toValue: -120,
       duration: 250,
       useNativeDriver: true,
-    }).start(() => setToast(null));
+    }).start(() => {
+      toastRef.current = null;
+      setToast(null);
+    });
   };
+
+  useEffect(() => {
+    const unsub = subscribe((payload) => {
+      // ── Helper: fresh slide-in toast ──────────────────────────────────
+      const showToast = (data: ToastData) => {
+        updateToast(data);
+        slideAnim.setValue(-120);
+        Animated.spring(slideAnim, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 80,
+          friction: 12,
+        }).start();
+        if (dismissTimer.current) clearTimeout(dismissTimer.current);
+        dismissTimer.current = setTimeout(() => dismiss(), 4000);
+      };
+
+      // ── Helper: group into existing toast (same sender, same room) ────
+      const groupOrShow = (data: Omit<ToastData, 'count'>) => {
+        const cur = toastRef.current;
+        if (cur && cur.roomId === data.roomId && cur.sender === data.sender) {
+          // Same sender already visible — update content + bump count, reset timer
+          const updated: ToastData = { ...cur, content: data.content, count: cur.count + 1 };
+          updateToast(updated);
+          if (dismissTimer.current) clearTimeout(dismissTimer.current);
+          dismissTimer.current = setTimeout(() => dismiss(), 4000);
+        } else {
+          showToast({ ...data, count: 1 });
+        }
+      };
+
+      // ── Guard: don't show if already on that chat room ────────────────
+      const isViewingRoom = (roomId: string) => {
+        if (!navigationRef.isReady()) return false;
+        const current = navigationRef.getCurrentRoute();
+        const params = current?.params as any;
+        return current?.name === 'ChatRoom' && params?.roomId === roomId;
+      };
+
+      // ── New message ───────────────────────────────────────────────────
+      if (payload.event === 'new_message') {
+        if (isViewingRoom(payload.room_id ?? '')) return;
+        playSound('message_received');
+        groupOrShow({
+          roomId:   payload.room_id ?? '',
+          roomName: payload.room_name ?? payload.sender ?? 'Chat',
+          sender:   payload.sender ?? 'Unknown',
+          content:  payload.content ?? '',
+        });
+        return;
+      }
+
+      // ── Message update (reaction / delete / edit) ─────────────────────
+      if (payload.event === 'message_update' && payload.from_username) {
+        if (isViewingRoom(payload.room_id ?? '')) return;
+        const updates: Array<{ message_id: string; changes: Record<string, any> }> =
+          (payload as any).updates ?? [];
+        let summary = '';
+        for (const u of updates) {
+          if (u.changes.reacted_emoji) { summary = `reacted ${u.changes.reacted_emoji}`; break; }
+          if (u.changes.is_deleted)    { summary = 'deleted a message';                  break; }
+          if (u.changes.content)       { summary = 'edited a message';                   break; }
+        }
+        if (!summary) return; // is_read only — no banner needed
+        groupOrShow({
+          roomId:   payload.room_id ?? '',
+          roomName: payload.room_name ?? String(payload.from_username),
+          sender:   String(payload.from_username),
+          content:  summary,
+        });
+        return;
+      }
+    });
+    return unsub;
+  }, [subscribe]);
 
   const handlePress = () => {
     if (!toast || !navigationRef.isReady()) return;
@@ -239,6 +286,11 @@ function MessageNotificationListener() {
         <View style={toastStyles.textCol}>
           <Text style={[toastStyles.sender, { color: Colors.primary }]} numberOfLines={1}>
             {toast.sender}
+            {toast.count > 1 && (
+              <Text style={{ color: Colors.textTertiary, fontWeight: '400' }}>
+                {' '}· {toast.count} notifications
+              </Text>
+            )}
           </Text>
           <Text style={[toastStyles.content, { color: Colors.textSecondary }]} numberOfLines={1}>
             {toast.content}

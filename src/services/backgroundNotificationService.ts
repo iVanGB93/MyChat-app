@@ -4,7 +4,7 @@
 /*  app is in the background or closed, and shows local notifications.  */
 /* ------------------------------------------------------------------ */
 
-import * as BackgroundFetch from 'expo-background-fetch';
+import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
 import api, { getTokens } from './api';
 import {
@@ -56,7 +56,7 @@ async function checkPendingNotifications(): Promise<boolean> {
   try {
     const tokens = await getTokens();
     if (!tokens?.access) {
-      console.log('[BackgroundFetch] No auth tokens, skipping');
+      console.log('[BackgroundTask] No auth tokens, skipping');
       return false;
     }
 
@@ -111,12 +111,12 @@ async function checkPendingNotifications(): Promise<boolean> {
     lastShownCallIds = currentCallIds;
 
     console.log(
-      `[BackgroundFetch] checked: ${data.messages.length} unread rooms, ${data.calls.length} calls, hasNew=${hasNew}`,
+      `[BackgroundTask] checked: ${data.messages.length} unread rooms, ${data.calls.length} calls, hasNew=${hasNew}`,
     );
 
     return hasNew;
   } catch (err) {
-    console.warn('[BackgroundFetch] error:', err);
+    console.warn('[BackgroundTask] error:', err);
     return false;
   }
 }
@@ -124,60 +124,58 @@ async function checkPendingNotifications(): Promise<boolean> {
 // ---- Define the background task ----
 TaskManager.defineTask(TASK_NAME, async () => {
   try {
-    const hasNew = await checkPendingNotifications();
-    return hasNew
-      ? BackgroundFetch.BackgroundFetchResult.NewData
-      : BackgroundFetch.BackgroundFetchResult.NoData;
+    await checkPendingNotifications();
+    return BackgroundTask.BackgroundTaskResult.Success;
   } catch {
-    return BackgroundFetch.BackgroundFetchResult.Failed;
+    return BackgroundTask.BackgroundTaskResult.Failed;
   }
 });
 
 /**
- * Register the background fetch task.
+ * Register the background task.
  * Should be called once when the app starts.
  */
-export async function registerBackgroundFetch(): Promise<void> {
+export async function registerBackgroundTask(): Promise<void> {
   try {
-    const status = await BackgroundFetch.getStatusAsync();
-    if (
-      status === BackgroundFetch.BackgroundFetchStatus.Restricted ||
-      status === BackgroundFetch.BackgroundFetchStatus.Denied
-    ) {
-      console.warn('[BackgroundFetch] Background fetch is restricted/denied');
+    const status = await BackgroundTask.getStatusAsync();
+    if (status === BackgroundTask.BackgroundTaskStatus.Restricted) {
+      console.warn('[BackgroundTask] Background task API is restricted');
       return;
     }
 
     const isRegistered = await TaskManager.isTaskRegisteredAsync(TASK_NAME);
     if (!isRegistered) {
-      await BackgroundFetch.registerTaskAsync(TASK_NAME, {
-        minimumInterval: 60, // Check every ~60 seconds (OS may throttle)
-        stopOnTerminate: false, // Continue after app is closed
-        startOnBoot: true, // Start after device reboot
+      await BackgroundTask.registerTaskAsync(TASK_NAME, {
+        // Interval is in MINUTES for expo-background-task.
+        minimumInterval: 15,
       });
-      console.log('[BackgroundFetch] Task registered successfully');
+      console.log('[BackgroundTask] Task registered successfully');
     } else {
-      console.log('[BackgroundFetch] Task already registered');
+      console.log('[BackgroundTask] Task already registered');
     }
   } catch (err) {
-    console.warn('[BackgroundFetch] Registration failed:', err);
+    console.warn('[BackgroundTask] Registration failed:', err);
   }
 }
 
 /**
- * Unregister the background fetch task (e.g. on logout).
+ * Unregister the background task (e.g. on logout).
  */
-export async function unregisterBackgroundFetch(): Promise<void> {
+export async function unregisterBackgroundTask(): Promise<void> {
   try {
     const isRegistered = await TaskManager.isTaskRegisteredAsync(TASK_NAME);
     if (isRegistered) {
-      await BackgroundFetch.unregisterTaskAsync(TASK_NAME);
-      console.log('[BackgroundFetch] Task unregistered');
+      await BackgroundTask.unregisterTaskAsync(TASK_NAME);
+      console.log('[BackgroundTask] Task unregistered');
     }
   } catch (err) {
-    console.warn('[BackgroundFetch] Unregister failed:', err);
+    console.warn('[BackgroundTask] Unregister failed:', err);
   }
 }
 
 /** Manually trigger a check (useful when app comes to foreground) */
 export { checkPendingNotifications };
+
+// Backward-compatible aliases for older imports.
+export const registerBackgroundFetch = registerBackgroundTask;
+export const unregisterBackgroundFetch = unregisterBackgroundTask;

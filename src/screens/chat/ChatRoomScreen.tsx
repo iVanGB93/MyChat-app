@@ -30,6 +30,7 @@ import { useChat, WsMessage } from '../../hooks/useChat';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getRoomMessages } from '../../services/chatService';
 import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage } from '../../services/localMessageStore';
+import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom } from '../../services/chatWsManager';
 import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
@@ -68,13 +69,15 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
     file: null,
     is_read: m.is_read ?? false,
     created_at: m.created_at,
+    reactions: m.reactions ?? {},
+    is_deleted: m.is_deleted ?? false,
   };
 }
 
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
   const { user } = useAuth();
-  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount } = useChat(roomId, user?.id);
+  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt } = useChat(roomId, user?.id);
   const { subscribe } = useNotificationContext();
   const { colors: Colors } = useTheme();
 
@@ -95,6 +98,15 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     console.log('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
     if (cancelled?.current) return;
     setSqliteMessages(dbMsgs.map(toMsg));
+    // Pre-populate readIds from is_read=1 rows persisted in SQLite (survives app restarts).
+    const persistedReadIds = dbMsgs.filter(m => m.is_mine && m.is_read).map(m => m.id);
+    if (persistedReadIds.length > 0) markIdsAsReadInRoom(roomId, persistedReadIds);
+    // Send read receipts only for messages not yet marked read in SQLite.
+    // Filtering out already-read messages prevents re-sending on every reload.
+    const idsFromOthers = dbMsgs.filter(m => !m.is_mine && !m.is_read).map(m => m.id);
+    if (idsFromOthers.length > 0) {
+      markRoomAsRead(roomId, idsFromOthers);
+    }
   }, [roomId]);
 
   /* ── Initial load from SQLite (+ one-time server-history migration) ── */
@@ -141,18 +153,30 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     loadFromDB().catch(() => {});
   }, [reconnectCount, loadFromDB]);
 
+  /* ── Reload SQLite when a remote message_update arrives (reactions, is_read, etc.) ── */
+  const prevMutationRef = useRef(0);
+  useEffect(() => {
+    if (!lastMutationAt || lastMutationAt === prevMutationRef.current) return;
+    prevMutationRef.current = lastMutationAt;
+    loadFromDB().catch(() => {});
+  }, [lastMutationAt, loadFromDB]);
+
   /* ── Merge SQLite messages + live WS messages (dedup by ID, WS wins for freshness) ── */
   const allMessages = useMemo(() => {
     const byId = new Map<string, Message>();
     const sqliteById = new Map(sqliteMessages.map((m) => [m.id, m]));
+    // IDs present in the live WS session — these carry the most current mutations
+    const wsIdSet = new Set(wsMessages.map(m => m.id));
     // SQLite messages first (historical base)
     for (const m of sqliteMessages) byId.set(m.id, m);
-    // WS messages overlay (includes optimistic sent + incoming received this session)
+    // WS messages overlay — wsToMsg now copies reactions and is_deleted
     for (const m of wsMessages) byId.set(m.id, wsToMsg(m, roomId));
-    // Re-apply sqlite-only fields (reactions, is_deleted) that WS messages don't carry
+    // For historical-only messages (not in WS session), re-apply SQLite reactions/is_deleted
+    // which may have been updated by a remote message_update received in a previous session.
     for (const [id, msg] of byId) {
+      if (wsIdSet.has(id)) continue; // WS copy is more current — skip
       const sql = sqliteById.get(id);
-      if (sql && (sql.is_deleted || (sql.reactions && Object.keys(sql.reactions).length > 0))) {
+      if (sql && (sql.is_deleted || Object.keys(sql.reactions ?? {}).length > 0)) {
         byId.set(id, { ...msg, reactions: sql.reactions, is_deleted: sql.is_deleted });
       }
     }
@@ -252,9 +276,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (!contextMsg || !user) return;
     const msgId = contextMsg.id;
     setContextMsg(null);
-    await toggleReaction(msgId, emoji, String(user.id));
-    loadFromDB().catch(() => {});
-  }, [contextMsg, user, loadFromDB]);
+    const newReactions = await toggleReaction(msgId, emoji, String(user.id));
+    // Update in-memory WS state + relay to other members (reacted_emoji is a display hint)
+    sendMessageUpdate(roomId, msgId, { reactions: newReactions, reacted_emoji: emoji });
+  }, [contextMsg, user, roomId, loadFromDB]);
 
   const handleDelete = useCallback(() => {
     if (!contextMsg) return;
@@ -267,17 +292,17 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: async () => {
           await deleteMessage(msgId);
-          loadFromDB().catch(() => {});
+          // Update in-memory WS state + relay to other members
+          sendMessageUpdate(roomId, msgId, { is_deleted: true });
         }},
       ],
     );
-  }, [contextMsg, loadFromDB]);
+  }, [contextMsg, roomId, loadFromDB]);
 
   const renderMessage = ({ item }: { item: Message }) => {
-    const isMine      = item.sender === user?.id;
-    const isPending   = isMine && pendingIds.has(item.id);
-    const isRead      = isMine && (item.is_read || readIds.has(item.id));
-    const isDelivered = isMine && !isPending && deliveredIds.has(item.id);
+    const isMine    = item.sender === user?.id;
+    const isPending = isMine && pendingIds.has(item.id);
+    const isRead    = isMine && (item.is_read || readIds.has(item.id));
 
     let statusIcon: string;
     let statusColor: string;
@@ -287,10 +312,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     } else if (isRead) {
       statusIcon  = '✓✓';
       statusColor = Colors.checkBlue;
-    } else if (isDelivered) {
-      statusIcon  = '✓✓';
-      statusColor = Colors.textTertiary;
     } else {
+      // single ✓ = sent/delivered (server received it, or receiver stored it)
       statusIcon  = '✓';
       statusColor = Colors.textTertiary;
     }
@@ -327,8 +350,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 {Object.entries(item.reactions).map(([emoji, users]) => (
                   <TouchableOpacity
                     key={emoji}
-                    onPress={() => {
-                      toggleReaction(item.id, emoji, String(user?.id ?? '')).then(() => loadFromDB());
+                    onPress={async () => {
+                      const newReactions = await toggleReaction(item.id, emoji, String(user?.id ?? ''));
+                      sendMessageUpdate(roomId, item.id, { reactions: newReactions, reacted_emoji: emoji });
                     }}
                     style={[styles.reactionBadge, {
                       backgroundColor: users.includes(String(user?.id))

@@ -12,7 +12,6 @@ import { Platform } from 'react-native';
 /* ---- Default notification handler (show when app is foreground) ---- */
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
     shouldShowBanner: true,

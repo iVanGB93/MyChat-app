@@ -20,7 +20,7 @@
     "dayjs": "^1.11.19",
     "expo": "~54.0.34",
     "expo-audio": "~1.1.1",
-    "expo-background-fetch": "~14.0.9",
+    "expo-background-task": "~1.0.10",
     "expo-constants": "~18.0.13",
     "expo-dev-client": "~6.0.21",
     "expo-device": "~8.0.10",

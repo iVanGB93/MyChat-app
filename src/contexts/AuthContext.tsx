@@ -6,7 +6,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { clearTokens, getTokens } from '../services/api';
 import { getProfile, login as loginApi, register as registerApi, registerPushToken } from '../services/authService';
 import { registerForPushNotifications } from '../services/pushNotificationService';
-import { unregisterBackgroundFetch } from '../services/backgroundNotificationService';
+import { unregisterBackgroundTask } from '../services/backgroundNotificationService';
 import { stopForegroundService } from '../services/foregroundService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { setCurrentUserId } from '../services/chatWsManager';
@@ -92,7 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     destroyWsManager();
     await stopForegroundService();
     await clearTokens();
-    await unregisterBackgroundFetch();
+    await unregisterBackgroundTask();
     setState({ user: null, isLoading: false, isAuthenticated: false });
   }, []);
 

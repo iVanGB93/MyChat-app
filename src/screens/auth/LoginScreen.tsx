@@ -45,9 +45,18 @@ export default function LoginScreen({ navigation }: Props) {
     try {
       await login(username.trim(), password);
     } catch (err: any) {
+      const isNetworkErr = !err?.response;
+      const statusCode = err?.response?.status;
+      const detail =
+        err?.response?.data?.detail ||
+        err?.response?.data?.non_field_errors?.[0] ||
+        err?.response?.data?.error;
       const msg =
-        err.response?.data?.detail ||
-        err.response?.data?.non_field_errors?.[0] ||
+        (isNetworkErr
+          ? 'Unable to reach server. Check app server URL and network.'
+          : (statusCode === 401
+              ? `Authentication rejected by server: ${detail ?? 'invalid credentials'}`
+              : detail)) ||
         'Login failed. Please check your credentials.';
       Alert.alert('Error', msg);
     } finally {

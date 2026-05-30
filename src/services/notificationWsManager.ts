@@ -14,7 +14,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api, { getTokens, saveTokens, BASE_URL } from './api';
-import { connectRoom, flushOutboxForRecipient, injectReceivedMessage } from './chatWsManager';
+import { connectRoom, flushOutboxForRecipient, injectReceivedMessage, markIdsAsReadInRoom, applyRemoteMessageUpdates } from './chatWsManager';
 import { saveMessage, messageExists, markDelivered } from './localMessageStore';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
@@ -71,13 +71,25 @@ let connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 let _hasConnectedBefore = false;
 let _wsAuthenticated = false; // received auth_ok from server
 let _connectingStartedAt = 0; // timestamp to detect stuck connecting state
+let _lastReportedAppState: 'active' | 'background' | null = null;
+let _close1011Count = 0;
+let _suspendReconnectUntil = 0;
 
-const INITIAL_RECONNECT_MS = 300;
+const INITIAL_RECONNECT_MS = 1500;
 const MAX_RECONNECT_MS = 60_000;
-const PING_INTERVAL_MS = 10_000;
-const PONG_TIMEOUT_MS = 5_000;
+const PING_INTERVAL_MS = 25_000;
+const PONG_TIMEOUT_MS = 15_000;
 const CONNECTION_TIMEOUT_MS = 8_000;
+const AUTH_TIMEOUT_MS = 10_000;
 const TOKEN_REFRESH_MARGIN_MS = 2 * 60_000; // refresh JWT only when <2 min left
+// Server is now hardened with try/except in NotificationConsumer.receive, so it's
+// safe to inform the server of our app state. The server uses this to decide whether
+// the user is "online" (foreground) or merely "connected" (background).
+const SEND_APP_STATE_ON_AUTH_OK = true;
+const WS_1011_COOLDOWN_MS = 30_000;
+
+let authTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+let _connectedAt = 0;
 
 const eventListeners = new Set<EventListener>();
 const statusListeners = new Set<StatusListener>();
@@ -98,6 +110,7 @@ function clearAllTimers() {
   if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
   if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
   if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
+  if (authTimeoutTimer) { clearTimeout(authTimeoutTimer); authTimeoutTimer = null; }
 }
 
 function closeWs() {
@@ -120,6 +133,8 @@ function startPing() {
     if (ws?.readyState === WebSocket.OPEN) {
       try { ws.send(JSON.stringify({ type: 'ping' })); } catch { /* ignore */ }
 
+      if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+
       pongTimer = setTimeout(() => {
         console.warn('[WsManager] pong timeout — connection stale');
         closeWs();
@@ -137,9 +152,14 @@ function startPing() {
  * Only sends after auth_ok is received.
  */
 function _sendAppState(state: 'active' | 'background') {
+  // Avoid re-sending the same state on every reconnect. This reduces
+  // backend churn and prevents reconnect loops if the server app_state
+  // handler is unstable under repeated identical updates.
+  if (_lastReportedAppState === state) return;
   if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
     try {
       ws.send(JSON.stringify({ type: 'app_state', state }));
+      _lastReportedAppState = state;
       console.log('[WsManager] sent app_state:', state);
     } catch { /* ignore */ }
   }
@@ -148,6 +168,21 @@ function _sendAppState(state: 'active' | 'background') {
 function scheduleReconnect() {
   if (!_authenticated) return;
   if (reconnectTimer) return; // already scheduled
+  if (connecting) return;
+  if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) return;
+
+  const now = Date.now();
+  if (_suspendReconnectUntil > now) {
+    const wait = _suspendReconnectUntil - now;
+    if (!reconnectTimer) {
+      console.warn('[WsManager] reconnect suspended for', wait, 'ms after repeated 1011');
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (_authenticated && _hasInternet) connectWs();
+      }, wait);
+    }
+    return;
+  }
 
   const delay = _reconnectDelay;
   console.log(`[WsManager] reconnect in ${delay}ms`);
@@ -164,7 +199,9 @@ function scheduleReconnect() {
 
 async function connectWs() {
   if (!_userId || !_authenticated) return;
-  if (ws?.readyState === WebSocket.OPEN) return; // already connected
+  if (_suspendReconnectUntil > Date.now()) return;
+  if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) return;
+  if (ws?.readyState === WebSocket.OPEN && !_wsAuthenticated) return;
 
   // Guard against stuck connecting state (>8s)
   if (connecting) {
@@ -191,7 +228,8 @@ async function connectWs() {
     if (currentTokens?.access && currentTokens?.refresh) {
       let needsRefresh = false;
       try {
-        const payloadB64 = currentTokens.access.split('.')[1];
+        // JWT payload is base64url; normalise for atob.
+        const payloadB64 = currentTokens.access.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
         const payload = JSON.parse(atob(payloadB64));
         const expiresAt = payload.exp * 1000;
         needsRefresh = expiresAt - Date.now() < TOKEN_REFRESH_MARGIN_MS;
@@ -254,23 +292,53 @@ async function connectWs() {
       if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       console.log('[WsManager] socket open — sending auth');
       connecting = false;
-      // Send auth as first message; all other logic waits for auth_ok
-      try { ws?.send(JSON.stringify({ type: 'auth', token: tokens.access })); } catch { /* ignore */ }
+      // CRITICAL: use the closure `socket` reference, not the module-level `ws`,
+      // because `ws` can be reassigned/closed by a competing connect/closeWs() call
+      // before this callback fires, which would silently drop the auth frame and
+      // trigger a server-side auth-timeout reconnect loop.
+      try {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'auth', token: tokens.access }));
+        }
+      } catch (err) {
+        console.warn('[WsManager] failed to send auth frame:', err);
+      }
+
+      authTimeoutTimer = setTimeout(() => {
+        if (ws === socket && !_wsAuthenticated) {
+          console.warn('[WsManager] auth_ok timeout — retrying');
+          closeWs();
+          setStatus('reconnecting');
+          scheduleReconnect();
+        }
+      }, AUTH_TIMEOUT_MS);
     };
 
     socket.onmessage = (e) => {
       try {
         const payload: NotificationPayload = JSON.parse(e.data);
 
+        // ---- Pending deliveries bootstrap can arrive before auth_ok ----
+        if ((payload as any).type === 'pending_deliveries') {
+          const deliveries: Array<{ room_id: string }> = (payload as any).deliveries ?? [];
+          for (const d of deliveries) {
+            if (d.room_id) connectRoom(d.room_id);
+          }
+          // Continue; auth_ok may follow in the same burst.
+        }
+
         // ---- Post-connect authentication ----
         if ((payload as any).type === 'auth_ok') {
           console.log('[WsManager] ✓ authenticated');
+          if (authTimeoutTimer) { clearTimeout(authTimeoutTimer); authTimeoutTimer = null; }
           _wsAuthenticated = true;
+          _connectedAt = Date.now();
           setStatus('connected');
-          _reconnectDelay = INITIAL_RECONNECT_MS;
           startPing();
-          const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';
-          _sendAppState(currentAppState as 'active' | 'background');
+          if (SEND_APP_STATE_ON_AUTH_OK) {
+            const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';
+            _sendAppState(currentAppState as 'active' | 'background');
+          }
           if (_hasConnectedBefore) {
             console.log('[WsManager] reconnected — checking missed notifications');
             try {
@@ -289,18 +357,13 @@ async function connectWs() {
           return;
         }
 
-        // Drop all messages until auth completes
-        if (!_wsAuthenticated) return;
-
-        // ---- Pending deliveries: server tells us which senders have queued messages ----
-        // Connect to those rooms so the ready_to_receive handshake can run.
-        if ((payload as any).type === 'pending_deliveries') {
-          const deliveries: Array<{ room_id: string }> = (payload as any).deliveries ?? [];
-          for (const d of deliveries) {
-            if (d.room_id) connectRoom(d.room_id);
-          }
+        if ((payload as any).type === 'server_error') {
+          console.warn('[WsManager] server_error op=', (payload as any).op ?? 'unknown');
           return;
         }
+
+        // Drop all messages until auth completes
+        if (!_wsAuthenticated) return;
 
         // ---- Peer sync: another session of this user can share its message history ----
         if ((payload as any).type === 'peer_sync_available') {
@@ -320,6 +383,21 @@ async function connectWs() {
         if (payload.event === 'receiver_ready' && payload.room_id && payload.user_id) {
           flushOutboxForRecipient(String(payload.room_id), payload.user_id as number);
           // Don't return — let listeners know too
+        }
+
+        // ---- message_update: unified mutation relay (is_read, reactions, is_deleted, …) ----
+        if (payload.event === 'message_update' && payload.room_id && payload.updates) {
+          applyRemoteMessageUpdates(
+            String(payload.room_id),
+            payload.updates as Array<{ message_id: string; changes: Record<string, unknown> }>,
+          );
+          // Fall through — notify listeners so ChatRoomScreen can react if mounted
+        }
+
+        // ---- messages_read (legacy, kept for server backward-compat) ----
+        if (payload.event === 'messages_read' && payload.room_id && payload.message_ids) {
+          markIdsAsReadInRoom(String(payload.room_id), payload.message_ids as string[]);
+          // Fall through — notify listeners so ChatRoomScreen can also update
         }
 
         // ---- message_delivery_ack: recipient confirmed they stored our message ----
@@ -418,12 +496,37 @@ async function connectWs() {
     };
 
     socket.onclose = (ev) => {
+      const wasCurrentSocket = ws === socket;
+      const connectedMs = _connectedAt ? Date.now() - _connectedAt : 0;
       if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
+      if (authTimeoutTimer) { clearTimeout(authTimeoutTimer); authTimeoutTimer = null; }
       console.log('[WsManager] closed', ev.code, ev.reason);
-      connecting = false;
-      _wsAuthenticated = false;
-      clearAllTimers();
-      if (_authenticated) {
+      if (wasCurrentSocket) {
+        connecting = false;
+        _wsAuthenticated = false;
+        ws = null;
+        if (ev.code === 1011) {
+          _close1011Count += 1;
+          // Slow down immediately on first server internal-error close.
+          _reconnectDelay = Math.max(_reconnectDelay, 5000);
+          if (_close1011Count >= 2) {
+            _suspendReconnectUntil = Date.now() + WS_1011_COOLDOWN_MS;
+          }
+        } else {
+          _close1011Count = 0;
+          _suspendReconnectUntil = 0;
+        }
+        if (connectedMs >= 10_000) {
+          _reconnectDelay = INITIAL_RECONNECT_MS;
+          _close1011Count = 0;
+          _suspendReconnectUntil = 0;
+        }
+        _connectedAt = 0;
+      }
+      if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
+      if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
+
+      if (wasCurrentSocket && _authenticated) {
         setStatus(_hasInternet ? 'reconnecting' : 'no-internet');
         scheduleReconnect();
       }
@@ -539,6 +642,9 @@ export function destroyWsManager(): void {
   _authenticated = false;
   _userId = null;
   _hasConnectedBefore = false;
+  _lastReportedAppState = null;
+  _close1011Count = 0;
+  _suspendReconnectUntil = 0;
   closeWs();
   clearAllTimers();
   stopNetworkListener();
@@ -604,6 +710,10 @@ export async function ensureWsAlive(): Promise<void> {
     return;
   }
 
+  if (_suspendReconnectUntil > Date.now()) {
+    return;
+  }
+
   // If not initialized, try to self-heal from stored credentials
   if (!_authenticated || !_userId) {
     try {
@@ -622,7 +732,7 @@ export async function ensureWsAlive(): Promise<void> {
         if (tokens.refresh) {
           let needsRefresh = false;
           try {
-            const payloadB64 = tokens.access.split('.')[1];
+            const payloadB64 = tokens.access.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
             const payload = JSON.parse(atob(payloadB64));
             needsRefresh = payload.exp * 1000 - Date.now() < TOKEN_REFRESH_MARGIN_MS;
           } catch {

@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -45,7 +45,7 @@
         "android.permission.RECEIVE_BOOT_COMPLETED"
       ],
       "package": "com.axonic",
-      "versionCode": 1
+      "versionCode": 2
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -61,13 +61,7 @@
           "defaultChannel": "messages"
         }
       ],
-      [
-        "expo-background-fetch",
-        {
-          "stopOnTerminate": false,
-          "startOnBoot": true
-        }
-      ],
+      "expo-background-task",
       "expo-task-manager",
       "./plugins/withForegroundService"
     ],

@@ -10,7 +10,7 @@ import {
   setupNotificationChannels,
   addNotificationResponseListener,
 } from './src/services/pushNotificationService';
-import { registerBackgroundFetch } from './src/services/backgroundNotificationService';
+import { registerBackgroundTask } from './src/services/backgroundNotificationService';
 import * as Notifications from 'expo-notifications';
 
 export default function App() {
@@ -20,8 +20,8 @@ export default function App() {
     // Setup notification channels (Android)
     setupNotificationChannels();
 
-    // Register background fetch for polling notifications when app is closed
-    registerBackgroundFetch();
+    // Register background task for polling notifications when app is closed
+    registerBackgroundTask();
 
     // Handle notification taps — navigate to the relevant screen
     responseListener.current = addNotificationResponseListener((response) => {

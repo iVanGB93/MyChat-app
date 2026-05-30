@@ -4,13 +4,11 @@
 
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { APP_CONFIG } from '../config/appConfig';
 
 const TOKEN_KEY = '@axonic_tokens';
 
-// Change this to your backend URL (use your machine's LAN IP for device testing)
-// export const BASE_URL = 'http://10.0.2.2:8000';  // Android emulator → host
-// export const BASE_URL = 'http://localhost:8000';  // iOS simulator
-export const BASE_URL = 'https://chat.qbared.com';
+export const BASE_URL = APP_CONFIG.SERVER_URL;
 
 const api = axios.create({
   baseURL: BASE_URL,
