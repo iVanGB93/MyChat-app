@@ -30,6 +30,12 @@ function withManifest(config) {
   return withAndroidManifest(config, (cfg) => {
     const manifest = cfg.modResults.manifest;
 
+    // Ensure the tools namespace is declared on <manifest>
+    if (!manifest.$) manifest.$ = {};
+    if (!manifest.$['xmlns:tools']) {
+      manifest.$['xmlns:tools'] = 'http://schemas.android.com/tools';
+    }
+
     // Permissions
     if (!manifest['uses-permission']) manifest['uses-permission'] = [];
     const perms = manifest['uses-permission'];
@@ -39,6 +45,29 @@ function withManifest(config) {
     };
     addPerm('android.permission.FOREGROUND_SERVICE');
     addPerm('android.permission.FOREGROUND_SERVICE_SPECIAL_USE');
+
+    // Strip permissions Google Play flags that we do NOT actually use.
+    // FOREGROUND_SERVICE_MEDIA_PLAYBACK is pulled in transitively by older
+    // versions of Firebase / Play Services even though we never play media
+    // from a foreground service. Remove via the manifest merger so it does
+    // not appear in the merged manifest uploaded to the Play Store.
+    const removePermViaMerger = (name) => {
+      const existing = perms.find(
+        (p) => p.$?.['android:name'] === name && p.$?.['tools:node'] === 'remove',
+      );
+      if (!existing) {
+        perms.push({
+          $: {
+            'android:name': name,
+            'tools:node': 'remove',
+          },
+        });
+      }
+    };
+    removePermViaMerger('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK');
+    // Older Firebase Messaging stubs sometimes inject these too — keep them
+    // explicitly stripped so the Play Console pre-launch check stays clean.
+    removePermViaMerger('android.permission.FOREGROUND_SERVICE_DATA_SYNC');
 
     // <service> inside <application>
     const app = manifest.application?.[0];
@@ -55,7 +84,14 @@ function withManifest(config) {
         (s) => !stale.includes(s.$?.['android:name'])
       );
 
-      // Add our service with specialUse foreground type + property
+      // Add our service with specialUse foreground type + property.
+      // The subtype value documents the use case for the Play Console
+      // "FOREGROUND_SERVICE_SPECIAL_USE" review form:
+      //   - Real-time chat & voice/video call signaling that needs to stay
+      //     connected (WebSocket + WebRTC ICE) while the app is in the
+      //     background, so incoming messages and calls are delivered with
+      //     low latency. Cannot be replaced by JobScheduler/WorkManager
+      //     because both impose minimum delays that break ringing/typing.
       app.service.push({
         $: {
           'android:name': '.MyChatForegroundService',
@@ -68,7 +104,8 @@ function withManifest(config) {
             $: {
               'android:name':
                 'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE',
-              'android:value': 'background_connectivity',
+              'android:value':
+                'Persistent realtime chat connection and incoming call signaling',
             },
           },
         ],

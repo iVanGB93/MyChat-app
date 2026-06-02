@@ -11,12 +11,12 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Font, Spacing, Radius } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
 import type { RootStackParamList } from '../../types';
@@ -26,6 +26,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Login'>;
 export default function LoginScreen({ navigation }: Props) {
   const { login } = useAuth();
   const { colors: Colors } = useTheme();
+  const { alert } = useConfirm();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -58,7 +59,7 @@ export default function LoginScreen({ navigation }: Props) {
               ? `Authentication rejected by server: ${detail ?? 'invalid credentials'}`
               : detail)) ||
         'Login failed. Please check your credentials.';
-      Alert.alert('Error', msg);
+      alert('Error', msg);
     } finally {
       setLoading(false);
     }

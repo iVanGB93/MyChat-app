@@ -127,12 +127,33 @@ function IncomingCallListener() {
       ) {
         console.log('[IncomingCallListener] incoming_call →', payload.call_id);
         handled.current = payload.call_id;
+
+        const callerName = payload.caller ?? 'Unknown';
+        const callerId = payload.caller_id ?? 0;
+        const callType = payload.call_type ?? 'voice';
+        const roomName = payload.room_name ?? '';
+
+        // If we're already on an active call, surface the new incoming call
+        // as an in-app banner instead of taking over the screen.
+        const cur = useAppStore.getState().activeCall;
+        const busy = !!cur && (cur.state === 'connected' || cur.state === 'connecting');
+        if (busy) {
+          useAppStore.getState().setIncomingCall({
+            callId: payload.call_id,
+            callerId,
+            callerName,
+            callType,
+            roomName,
+          });
+          return;
+        }
+
         navigationRef.navigate('IncomingCall', {
           callId: payload.call_id,
-          callerName: payload.caller ?? 'Unknown',
-          callerId: payload.caller_id ?? 0,
-          callType: payload.call_type ?? 'voice',
-          roomName: payload.room_name ?? '',
+          callerName,
+          callerId,
+          callType,
+          roomName,
         });
       }
     });
@@ -356,6 +377,39 @@ export default function AppNavigator() {
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
                   headerTintColor: Colors.headerText,
                 })}
+              />
+              <Stack.Screen
+                name="EditAccount"
+                component={require('../screens/profile/EditAccountScreen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Edit account',
+                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
+              />
+              <Stack.Screen
+                name="ChangePassword"
+                component={require('../screens/profile/ChangePasswordScreen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Change password',
+                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
+              />
+              <Stack.Screen
+                name="BlockedUsers"
+                component={require('../screens/profile/BlockedUsersScreen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Blocked users',
+                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
               />
               <Stack.Screen
                 name="IncomingCall"

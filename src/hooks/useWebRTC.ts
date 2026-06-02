@@ -110,8 +110,13 @@ export default function useWebRTC({
     });
   }, []);
 
-  /** Acquire camera + mic. */
+  /** Acquire camera + mic. Idempotent — returns the existing stream if one
+   *  has already been acquired (e.g. caller pre-warmed the preview while
+   *  ringing). */
   const acquireMedia = useCallback(async (): Promise<MediaStream> => {
+    if (localStreamRef.current) {
+      return localStreamRef.current;
+    }
     const constraints: any = {
       audio: true,
       video: callType === 'video'
@@ -355,11 +360,20 @@ export default function useWebRTC({
   /* ---- Kick off the right flow on mount ---- */
   useEffect(() => {
     if (isOutgoing) {
-      // Caller: wait for call_accepted → then startAsOfferer (handled in ActiveCallScreen)
+      // Caller: pre-warm the camera so the user sees their selfie preview
+      // immediately while ringing. The actual peer connection / offer is
+      // created later when call_accepted fires (startAsOfferer reuses this
+      // already-acquired stream).
+      if (callType === 'video') {
+        acquireMedia().catch((err) =>
+          console.warn('[WebRTC] caller preview acquireMedia failed:', err),
+        );
+      }
     } else {
       // Callee: acquire media immediately, wait for offer
       startAsAnswerer();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /* ---- Toggle mute ---- */

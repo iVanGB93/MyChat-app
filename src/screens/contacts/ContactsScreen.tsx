@@ -11,17 +11,18 @@ import {
   RefreshControl,
   ActivityIndicator,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { getContacts, addContact, removeContact } from '../../services/contactService';
 import { searchUsers } from '../../services/authService';
 import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAppStore } from '../../store/appStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import EmptyState from '../../components/ui/EmptyState';
@@ -31,6 +32,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function ContactsScreen() {
   const { colors: Colors } = useTheme();
+  const { confirm, alert } = useConfirm();
   const { user } = useAuth();
   const navigation = useNavigation<Nav>();
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -45,6 +47,9 @@ export default function ContactsScreen() {
     try {
       const [contactsData, rooms] = await Promise.all([getContacts(), getRooms()]);
       setContacts(contactsData);
+      // Mirror full set into the global store so chat screens know who is
+      // already accepted (vs. who is a pending message-request sender).
+      useAppStore.getState().setContactIds(contactsData.map((c) => c.contact));
 
       // Build set of user IDs that already have a direct chat
       const chatIds = new Set<number>();
@@ -88,25 +93,34 @@ export default function ContactsScreen() {
   const handleAddContact = async (userId: number) => {
     try {
       await addContact(userId);
-      Alert.alert('Done', 'Contact added!');
+      useAppStore.getState().addContactId(userId);
+      alert('Done', 'Contact added!');
       fetchContacts();
     } catch {
-      Alert.alert('Error', 'Could not add contact');
+      alert('Error', 'Could not add contact');
     }
   };
 
   const handleRemoveContact = (contact: Contact) => {
-    Alert.alert('Remove Contact', `Remove ${contact.contact_detail.username}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Remove', style: 'destructive', onPress: async () => {
-          try {
-            await removeContact(contact.id);
-            fetchContacts();
-          } catch { Alert.alert('Error', 'Failed to remove contact'); }
+    confirm({
+      title: 'Remove contact',
+      message: `Remove ${contact.contact_detail.username}?`,
+      icon: 'person-remove-outline',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await removeContact(contact.id);
+              useAppStore.getState().removeContactId(contact.contact);
+              fetchContacts();
+            } catch { alert('Error', 'Failed to remove contact'); }
+          },
         },
-      },
-    ]);
+      ],
+    });
   };
 
   const handleStartChat = async (userId: number, username: string) => {
@@ -114,7 +128,7 @@ export default function ContactsScreen() {
       const room = await getOrCreateDirect(userId);
       navigation.navigate('ChatRoom', { roomId: room.id, roomName: username, otherUserId: userId });
     } catch {
-      Alert.alert('Error', 'Could not open chat');
+      alert('Error', 'Could not open chat');
     }
   };
 

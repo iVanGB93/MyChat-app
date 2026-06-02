@@ -1,43 +1,78 @@
 /* ------------------------------------------------------------------ */
 /*  Profile Screen — futuristic cyberpunk theme                       */
+/*  Features:                                                          */
+/*    - Tap avatar to upload a new image                               */
+/*    - Edit bio                                                       */
+/*    - Account: navigates to EditAccount / ChangePassword screens     */
+/*    - Theme selector                                                 */
+/*    - Call connectivity selector                                     */
+/*    - Notification preferences (messages / calls / sound)            */
+/*    - Privacy: navigates to BlockedUsers                             */
+/*    - Sessions: "logout all devices"                                 */
+/*    - Danger zone: logout / delete account                           */
 /* ------------------------------------------------------------------ */
 
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
-  Alert,
   TouchableOpacity,
+  Switch,
+  Modal,
+  Animated,
+  Pressable,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Ionicons } from '@expo/vector-icons';
 import { Font, Spacing, Radius } from '../../theme';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
-import { updateProfile } from '../../services/authService';
+import { useConfirm } from '../../contexts/ConfirmContext';
+import {
+  logoutAllSessions,
+  updateProfile,
+  uploadAvatar,
+} from '../../services/authService';
+import { resolveMediaUrl } from '../../services/api';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
-import type { ConnectivityMode } from '../../types';
+import type { ConnectivityMode, RootStackParamList } from '../../types';
+
+type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function ProfileScreen() {
   const { user, logout, refreshUser } = useAuth();
   const { colors: Colors, preference, setPreference } = useTheme();
+  const { confirm, alert } = useConfirm();
+  const navigation = useNavigation<Nav>();
+
   const [bio, setBio] = useState(user?.bio ?? '');
   const [saving, setSaving] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [connectivityMode, setConnectivityModeState] = useState<ConnectivityMode>(
     user?.connectivity_mode ?? 'auto'
   );
   const [savingConnectivity, setSavingConnectivity] = useState(false);
+
+  // Notification prefs (mirrored locally for immediate toggle UI)
+  const [notifMessages, setNotifMessages] = useState<boolean>(user?.notif_messages_enabled ?? true);
+  const [notifCalls, setNotifCalls] = useState<boolean>(user?.notif_calls_enabled ?? true);
+  const [notifSound, setNotifSound] = useState<boolean>(user?.notif_sound_enabled ?? true);
 
   const handleSave = async () => {
     setSaving(true);
     try {
       await updateProfile({ bio });
       await refreshUser();
-      Alert.alert('Saved', 'Profile updated');
+      alert('Saved', 'Profile updated');
     } catch {
-      Alert.alert('Error', 'Failed to update profile');
+      alert('Error', 'Failed to update profile');
     } finally {
       setSaving(false);
     }
@@ -50,26 +85,139 @@ export default function ProfileScreen() {
       await updateProfile({ connectivity_mode: mode } as any);
       await refreshUser();
     } catch {
-      Alert.alert('Error', 'Failed to save connectivity preference');
+      alert('Error', 'Failed to save connectivity preference');
     } finally {
       setSavingConnectivity(false);
     }
   };
 
+  /* ------------------------ Notification toggles ------------------------ */
+  const persistNotifPref = async (
+    setter: (v: boolean) => void,
+    field: 'notif_messages_enabled' | 'notif_calls_enabled' | 'notif_sound_enabled',
+    prevValue: boolean,
+    nextValue: boolean,
+  ) => {
+    setter(nextValue);
+    try {
+      await updateProfile({ [field]: nextValue } as any);
+      await refreshUser();
+    } catch {
+      setter(prevValue);
+      alert('Error', 'Failed to update notification preference');
+    }
+  };
+
+  /* ------------------------ Avatar upload ------------------------ */
+  const pickFromLibrary = async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      alert('Permission needed', 'Please allow photo library access to change your avatar.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    await doUpload(result.assets[0]);
+  };
+
+  const takePhoto = async () => {
+    const perm = await ImagePicker.requestCameraPermissionsAsync();
+    if (!perm.granted) {
+      alert('Permission needed', 'Please allow camera access to take a photo.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+      cameraType: ImagePicker.CameraType.front,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    await doUpload(result.assets[0]);
+  };
+
+  const doUpload = async (asset: ImagePicker.ImagePickerAsset) => {
+    setUploadingAvatar(true);
+    try {
+      await uploadAvatar(asset.uri, asset.mimeType ?? 'image/jpeg');
+      await refreshUser();
+    } catch (err) {
+      console.warn('[Profile] avatar upload failed', err);
+      alert('Error', 'Failed to upload avatar. Please try again.');
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
+  const handleChangeAvatar = () => setAvatarPickerOpen(true);
+
+  /* ------------------------ Sessions / danger zone ------------------------ */
   const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Logout', style: 'destructive', onPress: logout },
-    ]);
+    confirm({
+      title: 'Disconnect',
+      message: 'Are you sure you want to sign out?',
+      icon: 'log-out-outline',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Logout', style: 'destructive', onPress: logout },
+      ],
+    });
+  };
+
+  const handleLogoutAll = () => {
+    confirm({
+      title: 'Logout everywhere',
+      message: 'This will sign you out on every device, including this one. Continue?',
+      icon: 'warning-outline',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign out all',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await logoutAllSessions();
+            } catch {
+              /* still log out locally even if server call fails */
+            }
+            await logout();
+          },
+        },
+      ],
+    });
+  };
+
+  const handleDeleteAccount = () => {
+    // Funnel everyone (iOS + Android) to the themed EditAccount
+    // screen so the password-confirmation UX matches the rest of the
+    // app and works identically on both platforms.
+    navigation.navigate('EditAccount');
   };
 
   if (!user) return null;
 
+  const avatarUri = resolveMediaUrl(user.avatar);
+
   return (
-    <ScrollView style={[styles.container, { backgroundColor: Colors.background }]} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: Colors.background }]}
+      contentContainerStyle={styles.content}
+    >
       {/* Avatar section */}
       <View style={[styles.avatarSection, { backgroundColor: Colors.surface, borderBottomColor: Colors.neonBorder }]}>
-        <Avatar name={user.username} uri={user.avatar} size={100} />
+        <TouchableOpacity onPress={handleChangeAvatar} activeOpacity={0.85} disabled={uploadingAvatar}>
+          <View style={{ opacity: uploadingAvatar ? 0.5 : 1 }}>
+            <Avatar name={user.username} uri={avatarUri} size={100} />
+            <View style={[styles.avatarEditBadge, { backgroundColor: Colors.surface, borderColor: Colors.primary, shadowColor: Colors.primary }]}>
+              <Ionicons name="camera" size={14} color={Colors.primary} />
+            </View>
+          </View>
+        </TouchableOpacity>
         <Text style={[styles.username, { color: Colors.primary }]}>{user.username.toUpperCase()}</Text>
         <Text style={[styles.email, { color: Colors.textSecondary }]}>{user.email}</Text>
         <View style={[styles.statusBadge, { backgroundColor: Colors.surface, borderColor: Colors.online, shadowColor: Colors.online }]}>
@@ -91,7 +239,7 @@ export default function ProfileScreen() {
         <Button title="SAVE" onPress={handleSave} loading={saving} style={styles.saveBtn} />
       </View>
 
-      {/* Account info card */}
+      {/* Account card */}
       <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
         <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ ACCOUNT</Text>
         <View style={[styles.infoRow, { borderBottomColor: Colors.divider }]}>
@@ -102,10 +250,23 @@ export default function ProfileScreen() {
           <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>EMAIL</Text>
           <Text style={[styles.infoValue, { color: Colors.text }]}>{user.email}</Text>
         </View>
-        <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
+        <View style={[styles.infoRow, { borderBottomColor: Colors.divider }]}>
           <Text style={[styles.infoLabel, { color: Colors.textSecondary }]}>NODE ID</Text>
           <Text style={[styles.infoValue, { color: Colors.text }]}>{user.id}</Text>
         </View>
+        <ActionRow
+          label="EDIT USERNAME / EMAIL"
+          icon="create-outline"
+          colors={Colors}
+          onPress={() => navigation.navigate('EditAccount')}
+        />
+        <ActionRow
+          label="CHANGE PASSWORD"
+          icon="key-outline"
+          colors={Colors}
+          onPress={() => navigation.navigate('ChangePassword')}
+          last
+        />
       </View>
 
       {/* Theme card */}
@@ -139,6 +300,33 @@ export default function ProfileScreen() {
             );
           })}
         </View>
+      </View>
+
+      {/* Notifications card */}
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ NOTIFICATIONS</Text>
+        <ToggleRow
+          label="MESSAGE PUSH"
+          desc="Receive a notification when someone messages you"
+          value={notifMessages}
+          colors={Colors}
+          onValueChange={(v) => persistNotifPref(setNotifMessages, 'notif_messages_enabled', notifMessages, v)}
+        />
+        <ToggleRow
+          label="CALL PUSH"
+          desc="Receive a notification for incoming calls"
+          value={notifCalls}
+          colors={Colors}
+          onValueChange={(v) => persistNotifPref(setNotifCalls, 'notif_calls_enabled', notifCalls, v)}
+        />
+        <ToggleRow
+          label="IN-APP SOUND"
+          desc="Play a sound for new messages and calls"
+          value={notifSound}
+          colors={Colors}
+          onValueChange={(v) => persistNotifPref(setNotifSound, 'notif_sound_enabled', notifSound, v)}
+          last
+        />
       </View>
 
       {/* Connectivity card */}
@@ -182,6 +370,30 @@ export default function ProfileScreen() {
         </View>
       </View>
 
+      {/* Privacy card */}
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ PRIVACY</Text>
+        <ActionRow
+          label="BLOCKED USERS"
+          icon="ban-outline"
+          colors={Colors}
+          onPress={() => navigation.navigate('BlockedUsers')}
+          last
+        />
+      </View>
+
+      {/* Sessions card */}
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ SESSIONS</Text>
+        <ActionRow
+          label="SIGN OUT ALL DEVICES"
+          icon="log-out-outline"
+          colors={Colors}
+          onPress={handleLogoutAll}
+          last
+        />
+      </View>
+
       {/* Logout */}
       <TouchableOpacity
         style={[styles.logoutBtn, { borderColor: Colors.error, shadowColor: Colors.error }]}
@@ -190,7 +402,220 @@ export default function ProfileScreen() {
       >
         <Text style={[styles.logoutText, { color: Colors.error }]}>◉ DISCONNECT</Text>
       </TouchableOpacity>
+
+      {/* Delete account */}
+      <TouchableOpacity
+        style={[styles.deleteBtn, { borderColor: Colors.error }]}
+        onPress={handleDeleteAccount}
+        activeOpacity={0.7}
+      >
+        <Text style={[styles.deleteText, { color: Colors.error }]}>DELETE ACCOUNT</Text>
+      </TouchableOpacity>
+
+      <AvatarPickerSheet
+        visible={avatarPickerOpen}
+        onClose={() => setAvatarPickerOpen(false)}
+        onTakePhoto={takePhoto}
+        onPickFromLibrary={pickFromLibrary}
+      />
     </ScrollView>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Avatar picker — themed bottom sheet                                */
+/* ------------------------------------------------------------------ */
+
+function AvatarPickerSheet({
+  visible,
+  onClose,
+  onTakePhoto,
+  onPickFromLibrary,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onTakePhoto: () => void;
+  onPickFromLibrary: () => void;
+}) {
+  const { colors: Colors } = useTheme();
+  const translateY = useRef(new Animated.Value(400)).current;
+  const backdrop = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (visible) {
+      Animated.parallel([
+        Animated.spring(translateY, { toValue: 0, useNativeDriver: true, tension: 80, friction: 11 }),
+        Animated.timing(backdrop, { toValue: 1, duration: 180, useNativeDriver: true }),
+      ]).start();
+    } else {
+      translateY.setValue(400);
+      backdrop.setValue(0);
+    }
+  }, [visible, translateY, backdrop]);
+
+  const dismiss = (after?: () => void) => {
+    Animated.parallel([
+      Animated.timing(translateY, { toValue: 400, duration: 200, useNativeDriver: true }),
+      Animated.timing(backdrop, { toValue: 0, duration: 180, useNativeDriver: true }),
+    ]).start(() => {
+      onClose();
+      if (after) after();
+    });
+  };
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="none"
+      onRequestClose={() => dismiss()}
+    >
+      <Animated.View style={[sheetStyles.backdrop, { opacity: backdrop }]}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={() => dismiss()} />
+      </Animated.View>
+      <Animated.View
+        style={[
+          sheetStyles.sheet,
+          {
+            backgroundColor: Colors.surface,
+            borderColor: Colors.neonBorder,
+            shadowColor: Colors.primary,
+            transform: [{ translateY }],
+          },
+        ]}
+      >
+        <View style={[sheetStyles.handle, { backgroundColor: Colors.neonBorder }]} />
+        <Text style={[sheetStyles.title, { color: Colors.primary }]}>◈ CHANGE AVATAR</Text>
+        <Text style={[sheetStyles.subtitle, { color: Colors.textSecondary }]}>
+          Pick a source for your new profile picture
+        </Text>
+
+        <SheetOption
+          icon="camera-outline"
+          label="TAKE PHOTO"
+          desc="Use your front camera"
+          colors={Colors}
+          onPress={() => dismiss(onTakePhoto)}
+        />
+        <SheetOption
+          icon="images-outline"
+          label="CHOOSE FROM LIBRARY"
+          desc="Pick an existing image"
+          colors={Colors}
+          onPress={() => dismiss(onPickFromLibrary)}
+        />
+
+        <TouchableOpacity
+          style={[sheetStyles.cancel, { borderColor: Colors.neonBorder }]}
+          onPress={() => dismiss()}
+          activeOpacity={0.7}
+        >
+          <Text style={[sheetStyles.cancelText, { color: Colors.textSecondary }]}>CANCEL</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    </Modal>
+  );
+}
+
+function SheetOption({
+  icon,
+  label,
+  desc,
+  colors,
+  onPress,
+}: {
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  label: string;
+  desc: string;
+  colors: any;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      style={[sheetStyles.option, { borderColor: colors.neonBorder, backgroundColor: colors.highlight }]}
+      onPress={onPress}
+      activeOpacity={0.75}
+    >
+      <View style={[sheetStyles.optionIcon, { borderColor: colors.primary, shadowColor: colors.primary }]}>
+        <Ionicons name={icon} size={20} color={colors.primary} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={[sheetStyles.optionLabel, { color: colors.text }]}>{label}</Text>
+        <Text style={[sheetStyles.optionDesc, { color: colors.textSecondary }]}>{desc}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+    </TouchableOpacity>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Small row helpers                                                  */
+/* ------------------------------------------------------------------ */
+
+function ActionRow({
+  label,
+  icon,
+  colors,
+  onPress,
+  last,
+}: {
+  label: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  colors: any;
+  onPress: () => void;
+  last?: boolean;
+}) {
+  return (
+    <TouchableOpacity
+      style={[
+        styles.actionRow,
+        { borderBottomColor: colors.divider, borderBottomWidth: last ? 0 : 1 },
+      ]}
+      onPress={onPress}
+      activeOpacity={0.7}
+    >
+      <View style={styles.actionLeft}>
+        <Ionicons name={icon} size={18} color={colors.primary} style={{ marginRight: Spacing.md }} />
+        <Text style={[styles.actionLabel, { color: colors.text }]}>{label}</Text>
+      </View>
+      <Ionicons name="chevron-forward" size={18} color={colors.textTertiary} />
+    </TouchableOpacity>
+  );
+}
+
+function ToggleRow({
+  label,
+  desc,
+  value,
+  onValueChange,
+  colors,
+  last,
+}: {
+  label: string;
+  desc: string;
+  value: boolean;
+  onValueChange: (v: boolean) => void;
+  colors: any;
+  last?: boolean;
+}) {
+  return (
+    <View
+      style={[
+        styles.toggleRow,
+        { borderBottomColor: colors.divider, borderBottomWidth: last ? 0 : 1 },
+      ]}
+    >
+      <View style={{ flex: 1, paddingRight: Spacing.sm }}>
+        <Text style={[styles.toggleLabel, { color: colors.text }]}>{label}</Text>
+        <Text style={[styles.toggleDesc, { color: colors.textSecondary }]}>{desc}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onValueChange}
+        trackColor={{ false: colors.divider, true: colors.primary }}
+        thumbColor={value ? colors.surface : colors.textTertiary}
+      />
+    </View>
   );
 }
 
@@ -203,6 +628,20 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xl,
     marginBottom: Spacing.sm,
     borderBottomWidth: 1,
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
   },
   username: { fontSize: Font.size.xl, marginTop: Spacing.md, fontWeight: '800', letterSpacing: 3 },
   email: { fontSize: Font.size.sm, marginTop: Spacing.xs, letterSpacing: 0.5 },
@@ -253,6 +692,24 @@ const styles = StyleSheet.create({
   infoLabel: { fontSize: Font.size.sm, letterSpacing: 1, fontWeight: '600' },
   infoValue: { fontSize: Font.size.sm, fontWeight: '500' },
 
+  actionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.md,
+  },
+  actionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  actionLabel: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1 },
+
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Spacing.md,
+  },
+  toggleLabel: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1 },
+  toggleDesc: { fontSize: Font.size.xs, marginTop: 2, letterSpacing: 0.2 },
+
   logoutBtn: {
     marginTop: Spacing.md,
     marginHorizontal: Spacing.lg,
@@ -265,6 +722,17 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
   },
   logoutText: { fontSize: Font.size.sm, fontWeight: '800', letterSpacing: 2 },
+
+  deleteBtn: {
+    marginTop: Spacing.sm,
+    marginHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+  },
+  deleteText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5 },
 
   themeRow: {
     flexDirection: 'row',
@@ -319,5 +787,94 @@ const styles = StyleSheet.create({
     marginTop: 2,
     textAlign: 'center',
     letterSpacing: 0.3,
+  },
+});
+
+const sheetStyles = StyleSheet.create({
+  backdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  sheet: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
+    borderTopLeftRadius: Radius.lg,
+    borderTopRightRadius: Radius.lg,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    shadowOpacity: 0.45,
+    shadowRadius: 24,
+    shadowOffset: { width: 0, height: -8 },
+    elevation: 16,
+  },
+  handle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 4,
+    borderRadius: 2,
+    marginBottom: Spacing.md,
+    opacity: 0.6,
+  },
+  title: {
+    fontSize: Font.size.xs,
+    fontWeight: '800',
+    letterSpacing: 2,
+    textAlign: 'center',
+  },
+  subtitle: {
+    fontSize: Font.size.xs,
+    textAlign: 'center',
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.lg,
+    letterSpacing: 0.3,
+  },
+  option: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    marginBottom: Spacing.sm,
+  },
+  optionIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: Spacing.md,
+    shadowOpacity: 0.5,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  optionLabel: {
+    fontSize: Font.size.sm,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+  optionDesc: {
+    fontSize: Font.size.xs,
+    marginTop: 2,
+    letterSpacing: 0.3,
+  },
+  cancel: {
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+  },
+  cancelText: {
+    fontSize: Font.size.xs,
+    fontWeight: '800',
+    letterSpacing: 1.5,
   },
 });

@@ -41,6 +41,19 @@ export interface ActiveCall {
   callType: 'voice' | 'video';
 }
 
+/**
+ * Distinct from `activeCall` — represents a *second* incoming call that
+ * arrives while another call is already in progress. Surfaced in-app via the
+ * IncomingCallBanner instead of the full-screen IncomingCallScreen.
+ */
+export interface IncomingCallPrompt {
+  callId: string;
+  callerId: number;
+  callerName: string;
+  callType: 'voice' | 'video';
+  roomName: string;
+}
+
 export interface NotifWsState {
   status: WsStatus;
   authenticated: boolean;
@@ -96,11 +109,18 @@ export interface AppState {
   typingByRoom: Record<string, Array<{ userId: number; username: string; expiresAt: number }>>;
   /** Set of room IDs the user has muted (no local notif, no badge contribution) */
   mutedRooms: Record<string, true>;
+  /** Map of user IDs the current user has added as contacts (acceptance set).
+   *  Senders NOT in this map are treated as message-request senders. */
+  contactIds: Record<number, true>;
+  /** Map of user IDs the current user has blocked. */
+  blockedIds: Record<number, true>;
   /** Monotonic counter bumped on any local mutation (used for UI refresh hints) */
   lastMutationAt: number;
 
   /* --- Calls --- */
   activeCall: ActiveCall | null;
+  /** Secondary incoming-call prompt shown while `activeCall` is in progress. */
+  incomingCall: IncomingCallPrompt | null;
 
   /* ============================================================
    * Actions — called by services (outside React) and components.
@@ -162,11 +182,21 @@ export interface AppState {
   pruneExpiredTyping: () => void;
   setRoomMuted: (roomId: string, muted: boolean) => void;
   toggleRoomMuted: (roomId: string) => void;
+
+  // Contact / blocked sets
+  setContactIds: (ids: number[]) => void;
+  addContactId: (id: number) => void;
+  removeContactId: (id: number) => void;
+  setBlockedIds: (ids: number[]) => void;
+  addBlockedId: (id: number) => void;
+  removeBlockedId: (id: number) => void;
+
   bumpMutation: () => void;
 
   // Calls
   setActiveCall: (call: ActiveCall | null) => void;
   updateActiveCallState: (state: ActiveCall['state']) => void;
+  setIncomingCall: (prompt: IncomingCallPrompt | null) => void;
 
   /** Hard reset (used on logout) */
   reset: () => void;
@@ -203,8 +233,11 @@ const initialState = {
   >,
   typingByRoom: {} as Record<string, Array<{ userId: number; username: string; expiresAt: number }>>,
   mutedRooms: {} as Record<string, true>,
+  contactIds: {} as Record<number, true>,
+  blockedIds: {} as Record<number, true>,
   lastMutationAt: 0,
   activeCall: null as ActiveCall | null,
+  incomingCall: null as IncomingCallPrompt | null,
 };
 
 export const useAppStore = create<AppState>()(
@@ -360,6 +393,39 @@ export const useAppStore = create<AppState>()(
       else next[roomId] = true;
       return { mutedRooms: next };
     }),
+
+  /* --- Contact / blocked sets --- */
+  setContactIds: (ids) =>
+    set(() => {
+      const next: Record<number, true> = {};
+      for (const id of ids) next[id] = true;
+      return { contactIds: next };
+    }),
+  addContactId: (id) =>
+    set((s) => (s.contactIds[id] ? s : { contactIds: { ...s.contactIds, [id]: true } })),
+  removeContactId: (id) =>
+    set((s) => {
+      if (!s.contactIds[id]) return s;
+      const next = { ...s.contactIds };
+      delete next[id];
+      return { contactIds: next };
+    }),
+  setBlockedIds: (ids) =>
+    set(() => {
+      const next: Record<number, true> = {};
+      for (const id of ids) next[id] = true;
+      return { blockedIds: next };
+    }),
+  addBlockedId: (id) =>
+    set((s) => (s.blockedIds[id] ? s : { blockedIds: { ...s.blockedIds, [id]: true } })),
+  removeBlockedId: (id) =>
+    set((s) => {
+      if (!s.blockedIds[id]) return s;
+      const next = { ...s.blockedIds };
+      delete next[id];
+      return { blockedIds: next };
+    }),
+
   bumpMutation: () => set({ lastMutationAt: Date.now() }),
 
   /* --- Calls --- */
@@ -368,6 +434,7 @@ export const useAppStore = create<AppState>()(
     set((s) =>
       s.activeCall ? { activeCall: { ...s.activeCall, state } } : s,
     ),
+  setIncomingCall: (incomingCall) => set({ incomingCall }),
 
   /* --- Reset --- */
   reset: () => set({ ...initialState }),
@@ -381,9 +448,11 @@ export const useAppStore = create<AppState>()(
         unreadByRoom: s.unreadByRoom,
         lastMessageByRoom: s.lastMessageByRoom,
         mutedRooms: s.mutedRooms,
+        contactIds: s.contactIds,
+        blockedIds: s.blockedIds,
       }) as Partial<AppState>,
       version: 1,
-    } as PersistOptions<AppState, Pick<AppState, 'unreadByRoom' | 'lastMessageByRoom' | 'mutedRooms'>>,
+    } as PersistOptions<AppState, Pick<AppState, 'unreadByRoom' | 'lastMessageByRoom' | 'mutedRooms' | 'contactIds' | 'blockedIds'>>,
   ),
 );
 

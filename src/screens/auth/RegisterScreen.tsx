@@ -11,12 +11,12 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Font, Spacing, Radius } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
 import type { RootStackParamList } from '../../types';
@@ -26,6 +26,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'Register'>;
 export default function RegisterScreen({ navigation }: Props) {
   const { register } = useAuth();
   const { colors: Colors } = useTheme();
+  const { alert } = useConfirm();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -52,9 +53,9 @@ export default function RegisterScreen({ navigation }: Props) {
       const data = err.response?.data;
       if (data && typeof data === 'object') {
         const msgs = Object.values(data).flat().join('\n');
-        Alert.alert('Registration Error', msgs || 'Something went wrong');
+        alert('Registration Error', msgs || 'Something went wrong');
       } else {
-        Alert.alert('Error', 'Registration failed');
+        alert('Error', 'Registration failed');
       }
     } finally {
       setLoading(false);

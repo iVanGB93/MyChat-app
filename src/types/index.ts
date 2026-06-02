@@ -14,6 +14,9 @@ export interface User {
   is_online: boolean;
   last_seen: string;
   connectivity_mode: ConnectivityMode;
+  notif_messages_enabled?: boolean;
+  notif_calls_enabled?: boolean;
+  notif_sound_enabled?: boolean;
 }
 
 export interface Contact {
@@ -35,6 +38,7 @@ export interface RoomMember {
   id: number;
   username: string;
   is_online: boolean;
+  avatar?: string | null;
 }
 
 export interface ChatRoom {
@@ -120,6 +124,9 @@ export type RootStackParamList = {
   Main: undefined;
   Contacts: undefined;
   ChatRoom: { roomId: string; roomName: string; otherUserId?: number };
+  EditAccount: undefined;
+  ChangePassword: undefined;
+  BlockedUsers: undefined;
   IncomingCall: {
     callId: string;
     callerName: string;

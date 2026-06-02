@@ -14,7 +14,6 @@ import {
   Platform,
   ActivityIndicator,
   Keyboard,
-  Alert,
   Modal,
   Pressable,
   useWindowDimensions,
@@ -38,6 +37,7 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
 import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage } from '../../services/localMessageStore';
 import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, sendChatMessage } from '../../services/chatWsManager';
@@ -46,6 +46,7 @@ import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
+import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import VoiceMessageBubble from '../../components/VoiceMessageBubble';
 import { persistOutgoingImage } from '../../services/voiceMessageUtils';
@@ -99,8 +100,18 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const { user } = useAuth();
   const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, typers, notifyTyping } = useChat(roomId, user?.id);
   const isMuted = useAppStore((s) => !!s.mutedRooms[roomId]);
+  /** True when the other user in a direct chat is not yet in our contacts.
+   *  Shows the "wants to talk to you" accept/block banner above the message list. */
+  const isMessageRequest = useAppStore((s) => {
+    if (!otherUserId) return false;
+    if (s.contactIds[otherUserId]) return false;
+    if (s.blockedIds[otherUserId]) return false;
+    return true;
+  });
+  const [requestBusy, setRequestBusy] = useState(false);
   const { subscribe } = useNotificationContext();
   const { colors: Colors } = useTheme();
+  const { confirm, alert } = useConfirm();
 
   // Mark this room as the active one in the global store while the screen is mounted.
   // Other systems (notification routing, foreground service, etc.) read this to
@@ -253,14 +264,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   /* ── Call header buttons ── */
   const handleCall = async (callType: 'voice' | 'video') => {
-    if (!otherUserId) { Alert.alert('Info', 'Calls are only available in direct chats'); return; }
+    if (!otherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
     try {
       const res = await initiateCall(otherUserId, callType);
       navigation.navigate('ActiveCall', {
         callId: res.call_id, otherName: route.params.roomName,
         callType, roomName: res.room_name, isOutgoing: true, peerUserId: otherUserId,
       });
-    } catch { Alert.alert('Error', 'Failed to start call'); }
+    } catch { alert('Error', 'Failed to start call'); }
   };
 
   useLayoutEffect(() => {
@@ -336,7 +347,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     try {
       const perm = await AudioModule.requestRecordingPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Microphone access denied', 'Enable microphone permission in system settings to record voice messages.');
+        alert('Microphone access denied', 'Enable microphone permission in system settings to record voice messages.');
         return;
       }
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
@@ -440,7 +451,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     try {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Camera permission required', 'Please enable camera access in Settings.');
+        alert('Camera permission required', 'Please enable camera access in Settings.');
         return;
       }
       const result = await ImagePicker.launchCameraAsync({
@@ -460,7 +471,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        Alert.alert('Photo library permission required', 'Please enable photo access in Settings.');
+        alert('Photo library permission required', 'Please enable photo access in Settings.');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -547,10 +558,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (!contextMsg) return;
     const msgId = contextMsg.id;
     setContextMsg(null);
-    Alert.alert(
-      'Delete message',
-      'This message will be removed for you only.',
-      [
+    confirm({
+      title: 'Delete message',
+      message: 'This message will be removed for you only.',
+      icon: 'trash-outline',
+      buttons: [
         { text: 'Cancel', style: 'cancel' },
         { text: 'Delete', style: 'destructive', onPress: async () => {
           await deleteMessage(msgId);
@@ -558,7 +570,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           sendMessageUpdate(roomId, msgId, { is_deleted: true });
         }},
       ],
-    );
+    });
   }, [contextMsg, roomId, loadFromDB]);
 
   /** Open the forward picker. Fetches the room list on demand. */
@@ -598,6 +610,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     const isMine    = item.sender === user?.id;
     const isPending = isMine && pendingIds.has(item.id);
     const isRead    = isMine && (item.is_read || readIds.has(item.id));
+    const hasReactions = !item.is_deleted
+      && !!item.reactions
+      && Object.keys(item.reactions).length > 0;
 
     let statusIcon: string;
     let statusColor: string;
@@ -641,6 +656,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             delayLongPress={350}
             activeOpacity={0.85}
           >
+            <View style={[
+              styles.bubbleWrap,
+              hasReactions && styles.bubbleWrapWithReactions,
+            ]}>
             <View style={[
               styles.bubble,
               isMine
@@ -692,27 +711,6 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               ) : (
                 <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
               )}
-              {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
-                <View style={styles.reactionsDisplay}>
-                  {Object.entries(item.reactions).map(([emoji, users]) => (
-                    <TouchableOpacity
-                      key={emoji}
-                      onPress={async () => {
-                        const newReactions = await toggleReaction(item.id, emoji, String(user?.id ?? ''));
-                        sendMessageUpdate(roomId, item.id, { reactions: newReactions, reacted_emoji: emoji });
-                      }}
-                      style={[styles.reactionBadge, {
-                        backgroundColor: users.includes(String(user?.id))
-                          ? Colors.neonGlow : Colors.surfaceVariant,
-                        borderColor: users.includes(String(user?.id))
-                          ? Colors.primary : Colors.border,
-                      }]}
-                    >
-                      <Text style={styles.reactionBadgeText}>{emoji} {users.length}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              )}
               <View style={styles.metaRow}>
                 <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
                   {dayjs(item.created_at).format('HH:mm')}
@@ -722,11 +720,82 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 )}
               </View>
             </View>
+            {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
+              <View
+                style={[styles.reactionsOverlay, styles.reactionsOverlayLeft]}
+              >
+                {Object.entries(item.reactions).map(([emoji, users]) => {
+                  const mine = users.includes(String(user?.id));
+                  return (
+                    <TouchableOpacity
+                      key={emoji}
+                      onPress={async () => {
+                        const newReactions = await toggleReaction(item.id, emoji, String(user?.id ?? ''));
+                        sendMessageUpdate(roomId, item.id, { reactions: newReactions, reacted_emoji: emoji });
+                      }}
+                      style={[styles.reactionBadge, {
+                        backgroundColor: mine ? Colors.neonGlow : Colors.surface,
+                        borderColor: mine ? Colors.primary : Colors.neonBorder,
+                        shadowColor: Colors.primary,
+                      }]}
+                    >
+                      <Text style={styles.reactionBadgeText}>{emoji} {users.length}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+            </View>
           </TouchableOpacity>
         </View>
       </Swipeable>
     );
   };
+
+  const handleAcceptRequest = useCallback(async () => {
+    if (!otherUserId || requestBusy) return;
+    setRequestBusy(true);
+    try {
+      await addContact(otherUserId);
+      useAppStore.getState().addContactId(otherUserId);
+    } catch (err: any) {
+      // Likely 400 because the contact already exists — treat that as accepted.
+      if (err?.response?.status === 400) {
+        useAppStore.getState().addContactId(otherUserId);
+      } else {
+        alert('Could not accept', 'Please try again.');
+      }
+    } finally {
+      setRequestBusy(false);
+    }
+  }, [otherUserId, requestBusy]);
+
+  const handleBlockRequest = useCallback(() => {
+    if (!otherUserId || requestBusy) return;
+    confirm({
+      title: 'Block this user?',
+      message: 'You will not receive any further messages or calls from them.',
+      icon: 'ban-outline',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Block',
+          style: 'destructive',
+          onPress: async () => {
+            setRequestBusy(true);
+            try {
+              await blockUser(otherUserId);
+              useAppStore.getState().addBlockedId(otherUserId);
+              navigation.goBack();
+            } catch {
+              alert('Could not block', 'Please try again.');
+              setRequestBusy(false);
+            }
+          },
+        },
+      ],
+    });
+  }, [otherUserId, requestBusy, navigation]);
 
   if (loading) {
     return (
@@ -747,6 +816,40 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       {!connected && (
         <View style={[styles.connectionBar, { backgroundColor: Colors.surface, borderBottomColor: Colors.warning }]}>
           <Text style={[styles.connectionText, { color: Colors.warning }]}>◈ SYNCING…</Text>
+        </View>
+      )}
+
+      {isMessageRequest && (
+        <View style={[styles.requestBanner, {
+          backgroundColor: Colors.surface,
+          borderColor: Colors.primary,
+        }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={[styles.requestTitle, { color: Colors.text }]} numberOfLines={1}>
+              {route.params.roomName || 'This user'} wants to talk to you
+            </Text>
+            <Text style={[styles.requestSubtitle, { color: Colors.textSecondary }]} numberOfLines={2}>
+              They are not in your contacts. Accept to chat, or block to stop messages.
+            </Text>
+          </View>
+          <View style={styles.requestActions}>
+            <TouchableOpacity
+              disabled={requestBusy}
+              onPress={handleBlockRequest}
+              style={[styles.requestBtn, { borderColor: Colors.error, opacity: requestBusy ? 0.5 : 1 }]}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.requestBtnText, { color: Colors.error }]}>Block</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              disabled={requestBusy}
+              onPress={handleAcceptRequest}
+              style={[styles.requestBtnPrimary, { backgroundColor: Colors.primary, opacity: requestBusy ? 0.5 : 1 }]}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.requestBtnText, { color: Colors.textInverse }]}>Accept</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
 
@@ -1065,15 +1168,53 @@ const styles = StyleSheet.create({
   },
   connectionText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 2 },
 
+  /* ---- Contact / message-request banner ---- */
+  requestBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    gap: Spacing.sm,
+  },
+  requestTitle: {
+    fontSize: Font.size.sm,
+    fontWeight: '700',
+  },
+  requestSubtitle: {
+    fontSize: Font.size.xs,
+    marginTop: 2,
+  },
+  requestActions: {
+    flexDirection: 'row',
+    gap: Spacing.xs,
+  },
+  requestBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+  },
+  requestBtnPrimary: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.md,
+  },
+  requestBtnText: {
+    fontSize: Font.size.xs,
+    fontWeight: '700',
+    letterSpacing: 1,
+  },
+
   messageList: { flex: 1 },
   messagesList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, flexGrow: 1 },
 
-  bubbleRow: { marginBottom: Spacing.sm },
+  bubbleRow: { marginBottom: Spacing.md },
   bubbleRowRight: { alignItems: 'flex-end' },
   bubbleRowLeft: { alignItems: 'flex-start' },
 
   bubble: {
-    maxWidth: '80%',
+    minWidth: 96,
     paddingHorizontal: Spacing.md,
     paddingTop: Spacing.sm,
     paddingBottom: Spacing.xs,
@@ -1225,6 +1366,31 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 2,
   },
+  /**
+   * Reactions chip strip is rendered AFTER the bubble inside `bubbleWrap` and
+   * pulled upward so it overlaps the bubble's bottom edge — like iMessage /
+   * WhatsApp. We only reserve the extra bottom space when reactions exist so
+   * empty bubbles don't get a phantom gap.
+   */
+  bubbleWrap: {
+    maxWidth: '80%',
+  },
+  bubbleWrapWithReactions: {
+    paddingBottom: 12,
+  },
+  reactionsOverlay: {
+    position: 'absolute',
+    bottom: 0,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+  },
+  reactionsOverlayRight: {
+    right: 8,
+  },
+  reactionsOverlayLeft: {
+    left: 8,
+  },
   reactionBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1232,6 +1398,10 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     borderRadius: Radius.pill,
     borderWidth: 1,
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
   },
   reactionBadgeText: { fontSize: 13, lineHeight: 18 },
 

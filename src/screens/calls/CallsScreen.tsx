@@ -11,7 +11,6 @@ import {
   RefreshControl,
   ActivityIndicator,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -20,6 +19,7 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getCallHistory, initiateCall } from '../../services/callService';
 import Avatar from '../../components/ui/Avatar';
@@ -34,6 +34,7 @@ export default function CallsScreen() {
   const navigation = useNavigation<Nav>();
   const { user } = useAuth();
   const { colors: Colors } = useTheme();
+  const { alert } = useConfirm();
   const [calls, setCalls] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -64,7 +65,7 @@ export default function CallsScreen() {
         peerUserId: otherId,
       });
     } catch {
-      Alert.alert('Error', 'Failed to start call');
+      alert('Error', 'Failed to start call');
     }
   };
 

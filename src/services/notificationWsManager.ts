@@ -428,6 +428,14 @@ async function connectWs() {
 
         // ---- new_message via notification channel (user not in chat room WS) ----
         if (payload.event === 'new_message' && payload.message_id && payload.sender_id !== undefined) {
+          // Client-side guard: drop messages from blocked senders entirely
+          // (server already filters, this is defense-in-depth).
+          try {
+            const blockedMap = useAppStore.getState().blockedIds;
+            if (blockedMap?.[Number(payload.sender_id)]) {
+              return;
+            }
+          } catch {}
           (async () => {
             const exists = await messageExists(String(payload.message_id));
             const replyTo = (payload.reply_to ?? null) as
@@ -545,35 +553,60 @@ async function connectWs() {
           try {
             const {
               showMessageNotification,
-              showCallNotification,
             } = require('./pushNotificationService');
+            const {
+              displayIncomingCallNotification,
+            } = require('./callNotificationService');
 
             if (
               payload.event === 'new_message' &&
               (payload.sender || payload.from_username) &&
               payload.content
             ) {
+              const senderName = String(payload.sender || payload.from_username || 'New message');
+              const senderId = typeof payload.sender_id === 'number' ? payload.sender_id : null;
+              // If sender is not in our contacts (and not us), reframe the
+              // local notification as a contact / message request.
+              const isStranger =
+                senderId !== null &&
+                !storeState?.contactIds?.[senderId];
+              const bodyText = isStranger
+                ? `wants to talk to you · tap to accept`
+                : String(payload.content);
               showMessageNotification({
-                senderName: payload.sender || payload.from_username || 'New message',
-                content: payload.content,
+                senderName,
+                content: bodyText,
                 roomId: String(payload.room_id ?? ''),
-                roomName: payload.room_name || payload.sender || payload.from_username || '',
+                roomName: payload.room_name || senderName,
               }).catch(() => {});
             } else if (
               payload.event === 'incoming_call' &&
               payload.caller &&
               payload.call_id
             ) {
-              showCallNotification({
-                callerName: payload.caller,
-                callType: payload.call_type ?? 'voice',
+              displayIncomingCallNotification({
                 callId: payload.call_id,
                 callerId: payload.caller_id ?? 0,
+                callerName: payload.caller,
+                callType: payload.call_type ?? 'voice',
                 roomName: payload.room_name ?? '',
               }).catch(() => {});
             }
-          } catch { /* ignore — pushNotificationService unavailable */ }
+          } catch { /* ignore — notification service unavailable */ }
           }
+        }
+
+        // Cancel any displayed incoming-call notification when the call ends
+        // or gets accepted elsewhere (the caller hung up, or the user picked
+        // it up on another device / inside the app).
+        if (
+          (payload.event === 'call_ended' || payload.event === 'call_rejected' || payload.event === 'call_accepted') &&
+          payload.call_id
+        ) {
+          try {
+            const { cancelIncomingCallNotification } = require('./callNotificationService');
+            cancelIncomingCallNotification(payload.call_id).catch(() => {});
+          } catch { /* ignore */ }
         }
 
         // Dispatch to subscribers (in-app logic: toasts, navigation, badges, etc.)

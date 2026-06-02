@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.3",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -42,7 +42,8 @@
         "android.permission.BLUETOOTH",
         "android.permission.POST_NOTIFICATIONS",
         "android.permission.VIBRATE",
-        "android.permission.RECEIVE_BOOT_COMPLETED"
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.USE_FULL_SCREEN_INTENT"
       ],
       "package": "com.axonic"
     },
@@ -51,6 +52,7 @@
     },
     "plugins": [
       "expo-audio",
+      "expo-font",
       "@config-plugins/react-native-webrtc",
       [
         "expo-notifications",
@@ -63,7 +65,8 @@
       "expo-background-task",
       "expo-task-manager",
       "expo-sqlite",
-      "./plugins/withForegroundService"
+      "./plugins/withForegroundService",
+      "./plugins/withRingtoneRaw"
     ],
     "extra": {
       "eas": {

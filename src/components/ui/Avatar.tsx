@@ -2,7 +2,7 @@
 /*  Avatar — futuristic neon-ring style                               */
 /* ------------------------------------------------------------------ */
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Image } from 'react-native';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -23,6 +23,9 @@ function stringToColor(str: string): string {
 
 export default function Avatar({ uri, name, size = 48, showOnline = false, isOnline = false }: Props) {
   const { colors: Colors } = useTheme();
+  const [failed, setFailed] = useState(false);
+  // Reset failure state when the source uri changes so a new url gets a fresh try.
+  useEffect(() => { setFailed(false); }, [uri]);
   const initials = name
     .split(' ')
     .map((w) => w[0] ?? '')
@@ -47,11 +50,12 @@ export default function Avatar({ uri, name, size = 48, showOnline = false, isOnl
           },
         ]}
       >
-        {uri ? (
+        {uri && !failed ? (
           <Image
             source={{ uri }}
             style={{ width: innerSize, height: innerSize, borderRadius: innerSize / 2 }}
             resizeMode="cover"
+            onError={() => setFailed(true)}
           />
         ) : (
           <View

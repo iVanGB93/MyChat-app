@@ -9,8 +9,8 @@ import * as TaskManager from 'expo-task-manager';
 import api, { getTokens } from './api';
 import {
   showMessageNotification,
-  showCallNotification,
 } from './pushNotificationService';
+import { displayIncomingCallNotification } from './callNotificationService';
 
 const TASK_NAME = 'BACKGROUND_NOTIFICATION_CHECK';
 
@@ -94,11 +94,11 @@ async function checkPendingNotifications(): Promise<boolean> {
     // Show notifications for incoming calls
     for (const call of data.calls) {
       if (!lastShownCallIds.has(call.call_id)) {
-        await showCallNotification({
-          callerName: call.caller,
-          callType: call.call_type,
+        await displayIncomingCallNotification({
           callId: call.call_id,
           callerId: call.caller_id,
+          callerName: call.caller,
+          callType: call.call_type,
           roomName: call.room_name,
         });
         lastShownCallIds.add(call.call_id);

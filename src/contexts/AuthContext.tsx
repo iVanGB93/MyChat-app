@@ -11,6 +11,7 @@ import { stopForegroundService } from '../services/foregroundService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { setCurrentUserId } from '../services/chatWsManager';
 import { initDB } from '../services/localMessageStore';
+import { getContacts, getBlockedUsers } from '../services/contactService';
 import { useAppStore } from '../store/appStore';
 import type { User } from '../types';
 
@@ -55,6 +56,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /** Refresh contact and blocked-user sets in the global store. */
+  const syncContactSets = useCallback(async () => {
+    try {
+      const [contacts, blocked] = await Promise.all([
+        getContacts().catch(() => []),
+        getBlockedUsers().catch(() => []),
+      ]);
+      const store = useAppStore.getState();
+      store.setContactIds(contacts.map((c) => c.contact));
+      store.setBlockedIds(blocked.map((b) => b.blocked));
+    } catch (err) {
+      console.warn('[Auth] contact set sync failed:', err);
+    }
+  }, []);
+
   // Try to restore session on mount
   useEffect(() => {
     (async () => {
@@ -67,6 +83,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setState({ user, isLoading: false, isAuthenticated: true });
           // Register push token with backend on session restore
           syncPushToken();
+          syncContactSets();
         } else {
           setState((s) => ({ ...s, isLoading: false }));
         }
@@ -84,7 +101,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ user, isLoading: false, isAuthenticated: true });
     // Register push token with backend after login
     syncPushToken();
-  }, [syncPushToken]);
+    syncContactSets();
+  }, [syncPushToken, syncContactSets]);
 
   const register = useCallback(async (username: string, email: string, password: string) => {
     await registerApi(username, email, password);
@@ -94,7 +112,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ user, isLoading: false, isAuthenticated: true });
     // Register push token with backend after registration
     syncPushToken();
-  }, [syncPushToken]);
+    syncContactSets();
+  }, [syncPushToken, syncContactSets]);
 
   const logout = useCallback(async () => {
     destroyWsManager();

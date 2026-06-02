@@ -18,6 +18,7 @@ import { Swipeable } from 'react-native-gesture-handler';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius } from '../../theme';
+import { resolveMediaUrl } from '../../services/api';
 import { getRooms } from '../../services/chatService';
 import { getLastMessagePerRoom } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
@@ -222,7 +223,7 @@ export default function ChatListScreen() {
         <View style={styles.avatarWrapper}>
           <Avatar
             name={displayName}
-            uri={null}
+            uri={resolveMediaUrl(other?.avatar ?? null)}
             size={50}
             showOnline={item.room_type === 'direct'}
             isOnline={other?.is_online ?? false}

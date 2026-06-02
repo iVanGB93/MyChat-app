@@ -30,6 +30,22 @@ export async function clearTokens() {
   await AsyncStorage.removeItem(TOKEN_KEY);
 }
 
+/**
+ * Resolve a relative media URL (e.g. "/media/avatars/foo.jpg" or
+ * "media/avatars/foo.jpg") returned by the Django backend into a full
+ * absolute URL the React Native Image component can load.
+ *
+ * Returns null/undefined unchanged, and full URLs (http(s)://...)
+ * unchanged.
+ */
+export function resolveMediaUrl(uri?: string | null): string | null {
+  if (!uri) return null;
+  if (/^https?:\/\//i.test(uri)) return uri;
+  // Add a leading slash if missing so we don't double-up
+  const path = uri.startsWith('/') ? uri : `/${uri}`;
+  return `${BASE_URL}${path}`;
+}
+
 // ---- Request interceptor — attach access token ----
 api.interceptors.request.use(async (config) => {
   const tokens = await getTokens();
