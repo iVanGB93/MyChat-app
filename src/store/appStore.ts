@@ -182,6 +182,9 @@ export interface AppState {
   pruneExpiredTyping: () => void;
   setRoomMuted: (roomId: string, muted: boolean) => void;
   toggleRoomMuted: (roomId: string) => void;
+  /** Wipe per-room derived state (unread / last-message / typing / mute).
+   *  Used when the user deletes a chat from the chat list. */
+  clearRoomState: (roomId: string) => void;
 
   // Contact / blocked sets
   setContactIds: (ids: number[]) => void;
@@ -392,6 +395,22 @@ export const useAppStore = create<AppState>()(
       if (next[roomId]) delete next[roomId];
       else next[roomId] = true;
       return { mutedRooms: next };
+    }),
+
+  clearRoomState: (roomId) =>
+    set((s) => {
+      const nextUnread = { ...s.unreadByRoom };       delete nextUnread[roomId];
+      const nextLast   = { ...s.lastMessageByRoom };  delete nextLast[roomId];
+      const nextTyping = { ...s.typingByRoom };       delete nextTyping[roomId];
+      const nextMuted  = { ...s.mutedRooms };         delete nextMuted[roomId];
+      const nextChat   = { ...s.chatRooms };          delete nextChat[roomId];
+      return {
+        unreadByRoom:      nextUnread,
+        lastMessageByRoom: nextLast,
+        typingByRoom:      nextTyping,
+        mutedRooms:        nextMuted,
+        chatRooms:         nextChat,
+      };
     }),
 
   /* --- Contact / blocked sets --- */

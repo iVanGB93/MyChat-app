@@ -739,7 +739,15 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                         shadowColor: Colors.primary,
                       }]}
                     >
-                      <Text style={styles.reactionBadgeText}>{emoji} {users.length}</Text>
+                      <Text style={styles.reactionEmojiInBadge}>{emoji}</Text>
+                      <Text
+                        style={[
+                          styles.reactionBadgeText,
+                          { color: mine ? Colors.primary : Colors.text },
+                        ]}
+                      >
+                        {users.length}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
@@ -1006,7 +1014,16 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         <Pressable style={styles.modalBackdrop} onPress={() => setAttachMenuOpen(false)}>
           <Pressable
             onPress={(e) => e.stopPropagation()}
-            style={[styles.attachSheet, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}
+            style={[
+              styles.attachSheet,
+              {
+                backgroundColor: Colors.surface,
+                borderColor: Colors.neonBorder,
+                // Push the sheet above the system nav bar (3-button bar /
+                // home indicator) so the Cancel row isn't covered.
+                marginBottom: Spacing.xl + insets.bottom,
+              },
+            ]}
           >
             <TouchableOpacity style={styles.attachRow} onPress={handlePickFromCamera} activeOpacity={0.7}>
               <Ionicons name="camera" size={22} color={Colors.primary} />
@@ -1403,7 +1420,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 1 },
     elevation: 2,
   },
-  reactionBadgeText: { fontSize: 13, lineHeight: 18 },
+  reactionBadgeText: { fontSize: 13, lineHeight: 18, fontWeight: '700', marginLeft: 3 },
+  reactionEmojiInBadge: { fontSize: 13, lineHeight: 18 },
 
   modalBackdrop: {
     flex: 1,

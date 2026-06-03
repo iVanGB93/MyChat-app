@@ -28,6 +28,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Font, Spacing, Radius } from '../../theme';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -438,6 +439,7 @@ function AvatarPickerSheet({
   onPickFromLibrary: () => void;
 }) {
   const { colors: Colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(400)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
 
@@ -480,6 +482,9 @@ function AvatarPickerSheet({
             backgroundColor: Colors.surface,
             borderColor: Colors.neonBorder,
             shadowColor: Colors.primary,
+            // Respect 3-button nav bar / home indicator inset so the
+            // cancel button isn't covered by the system bar.
+            paddingBottom: Spacing.xl + insets.bottom,
             transform: [{ translateY }],
           },
         ]}

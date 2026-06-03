@@ -19,12 +19,14 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius } from '../../theme';
 import { resolveMediaUrl } from '../../services/api';
-import { getRooms } from '../../services/chatService';
-import { getLastMessagePerRoom } from '../../services/localMessageStore';
+import { getRooms, deleteRoom } from '../../services/chatService';
+import { getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
+import { formatApiError } from '../../services/errorMessages';
 import { Ionicons } from '@expo/vector-icons';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
@@ -41,9 +43,13 @@ export default function ChatListScreen() {
   const unreadByRoom = useAppStore((s) => s.unreadByRoom);
   const clearAllUnread = useAppStore((s) => s.clearAllUnread);
   const clearRoomUnread = useAppStore((s) => s.clearRoomUnread);
+  const incrementRoomUnread = useAppStore((s) => s.incrementRoomUnread);
+  const clearRoomState = useAppStore((s) => s.clearRoomState);
+  const toggleRoomMuted = useAppStore((s) => s.toggleRoomMuted);
   const lastMessageByRoom = useAppStore((s) => s.lastMessageByRoom);
   const typingByRoom = useAppStore((s) => s.typingByRoom);
   const mutedRooms = useAppStore((s) => s.mutedRooms);
+  const { confirm, alert } = useConfirm();
   const totalUnread = Object.values(unreadByRoom).reduce((a, b) => a + b, 0);
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
@@ -194,6 +200,68 @@ export default function ChatListScreen() {
     const typers = (typingEntry ?? []).filter((t) => t.userId !== user?.id);
     const isMuted = !!mutedRooms[item.id];
 
+    const handleDeleteChat = () => {
+      confirm({
+        title: 'Delete chat',
+        message:
+          `This will permanently delete the conversation with ${displayName} ` +
+          `for everyone in it. Messages cannot be recovered.`,
+        icon: 'trash-outline',
+        buttons: [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await deleteRoom(item.id);
+              } catch (err: unknown) {
+                alert(
+                  'Could not delete chat',
+                  formatApiError(err, {
+                    fallback: 'The chat could not be deleted. Please try again.',
+                  }),
+                );
+                return;
+              }
+              try { await deleteRoomMessages(item.id); } catch { /* best-effort */ }
+              clearRoomState(item.id);
+              setLocalLastMessages((prev) => {
+                if (!(item.id in prev)) return prev;
+                const next = { ...prev };
+                delete next[item.id];
+                return next;
+              });
+              setRooms((prev) => prev.filter((r) => r.id !== item.id));
+            },
+          },
+        ],
+      });
+    };
+
+    const openRoomMenu = () => {
+      confirm({
+        title: displayName.toUpperCase(),
+        message: 'Choose an action for this chat.',
+        icon: 'ellipsis-horizontal-circle-outline',
+        buttons: [
+          {
+            text: unread > 0 ? 'Mark as read' : 'Mark as unread',
+            onPress: () => {
+              if (unread > 0) clearRoomUnread(item.id);
+              else incrementRoomUnread(item.id, 1);
+            },
+          },
+          {
+            text: isMuted ? 'Unmute notifications' : 'Mute notifications',
+            onPress: () => toggleRoomMuted(item.id),
+          },
+          { text: 'Delete chat', style: 'destructive', onPress: handleDeleteChat },
+          { text: 'Cancel', style: 'cancel' },
+        ],
+      });
+    };
+
     const renderRightActions = () => (
       <TouchableOpacity
         style={[styles.swipeAction, { backgroundColor: Colors.primary }]}
@@ -209,6 +277,8 @@ export default function ChatListScreen() {
       <TouchableOpacity
         style={[styles.chatItem, { borderColor: Colors.neonBorder, backgroundColor: Colors.background }]}
         activeOpacity={0.7}
+        onLongPress={openRoomMenu}
+        delayLongPress={350}
         onPress={() =>
           navigation.navigate('ChatRoom', {
             roomId: item.id,

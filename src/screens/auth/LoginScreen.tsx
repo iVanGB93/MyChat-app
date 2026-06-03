@@ -19,6 +19,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
+import { formatApiError } from '../../services/errorMessages';
 import type { RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Login'>;
@@ -45,21 +46,15 @@ export default function LoginScreen({ navigation }: Props) {
     setLoading(true);
     try {
       await login(username.trim(), password);
-    } catch (err: any) {
-      const isNetworkErr = !err?.response;
-      const statusCode = err?.response?.status;
-      const detail =
-        err?.response?.data?.detail ||
-        err?.response?.data?.non_field_errors?.[0] ||
-        err?.response?.data?.error;
-      const msg =
-        (isNetworkErr
-          ? 'Unable to reach server. Check app server URL and network.'
-          : (statusCode === 401
-              ? `Authentication rejected by server: ${detail ?? 'invalid credentials'}`
-              : detail)) ||
-        'Login failed. Please check your credentials.';
-      alert('Error', msg);
+    } catch (err: unknown) {
+      const msg = formatApiError(err, {
+        fallback: 'Login failed. Please try again.',
+        statusMessages: {
+          400: 'Invalid username or password.',
+          401: 'Invalid username or password.',
+        },
+      });
+      alert('Sign in failed', msg);
     } finally {
       setLoading(false);
     }

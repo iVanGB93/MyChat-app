@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useKeepAwake } from 'expo-keep-awake';
 import { RTCView } from 'react-native-webrtc';
 import { Font, Radius, Spacing } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -24,6 +25,12 @@ type Props = NativeStackScreenProps<RootStackParamList, 'ActiveCall'>;
 export default function ActiveCallScreen({ route, navigation }: Props) {
   const { callId, otherName, callType, isOutgoing, peerUserId } = route.params;
   const { colors: Colors } = useTheme();
+
+  // Keep the screen on for the entire duration of the call (voice and
+  // video). Without this Android dims and locks the screen after the
+  // user's normal timeout, which kills the video preview and forces the
+  // user to wake the device just to hang up.
+  useKeepAwake('axonic-active-call');
 
   const [seconds, setSeconds] = useState(0);
   const [status, setStatus] = useState<'connecting' | 'ringing' | 'connected' | 'ended'>(

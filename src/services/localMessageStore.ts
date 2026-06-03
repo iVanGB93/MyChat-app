@@ -416,6 +416,14 @@ export async function deleteMessage(messageId: string): Promise<void> {
   );
 }
 
+/** Delete every locally-cached message + outbox entry for a room.
+ *  Used when the user chooses "Delete chat" from the chat list. */
+export async function deleteRoomMessages(roomId: string): Promise<void> {
+  const db = await getDB();
+  await db.runAsync(`DELETE FROM messages WHERE room_id = $rid`, { $rid: roomId });
+  await db.runAsync(`DELETE FROM update_outbox WHERE room_id = $rid`, { $rid: roomId });
+}
+
 /** Returns the most recent message per room (for ChatList preview). */
 export async function getLastMessagePerRoom(): Promise<
   Record<string, LocalMessage>

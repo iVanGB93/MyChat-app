@@ -19,6 +19,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
+import { formatApiError } from '../../services/errorMessages';
 import type { RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Register'>;
@@ -49,14 +50,11 @@ export default function RegisterScreen({ navigation }: Props) {
     setLoading(true);
     try {
       await register(username.trim(), email.trim(), password);
-    } catch (err: any) {
-      const data = err.response?.data;
-      if (data && typeof data === 'object') {
-        const msgs = Object.values(data).flat().join('\n');
-        alert('Registration Error', msgs || 'Something went wrong');
-      } else {
-        alert('Error', 'Registration failed');
-      }
+    } catch (err: unknown) {
+      const msg = formatApiError(err, {
+        fallback: 'Registration failed. Please try again.',
+      });
+      alert('Registration failed', msg);
     } finally {
       setLoading(false);
     }

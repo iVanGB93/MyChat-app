@@ -30,3 +30,11 @@ export async function addMemberToRoom(roomId: string, userId: number): Promise<C
   });
   return data;
 }
+
+/**
+ * Permanently delete a chat room. The backend cascades message deletion
+ * and the room disappears for every member.
+ */
+export async function deleteRoom(roomId: string): Promise<void> {
+  await api.delete(`/api/chat/rooms/${roomId}/`);
+}

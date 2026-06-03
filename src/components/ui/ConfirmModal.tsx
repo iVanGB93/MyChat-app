@@ -22,6 +22,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Font, Radius, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -58,6 +59,7 @@ export default function ConfirmModal({
   dismissOnBackdrop = true,
 }: Props) {
   const { colors: Colors } = useTheme();
+  const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(400)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
 
@@ -134,6 +136,9 @@ export default function ConfirmModal({
             backgroundColor: Colors.surface,
             borderColor: Colors.neonBorder,
             shadowColor: Colors.primary,
+            // Add the system nav inset (3-button bar on Android, home
+            // indicator on iOS) so action buttons aren't hidden underneath.
+            paddingBottom: Spacing.xl + insets.bottom,
             transform: [{ translateY }],
           },
         ]}

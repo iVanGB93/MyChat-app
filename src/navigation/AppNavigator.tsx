@@ -23,6 +23,7 @@ import {
 } from 'react-native';
 import { Font, Spacing, Radius } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { useNotificationContext, NotificationPayload } from '../contexts/NotificationContext';
@@ -74,6 +75,7 @@ function TabIcon({ label, focused }: { label: string; focused: boolean }) {
 /* ---- Bottom Tab Navigator ---- */
 function MainTabs() {
   const { colors: Colors } = useTheme();
+  const insets = useSafeAreaInsets();
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -90,8 +92,11 @@ function MainTabs() {
           backgroundColor: Colors.tabBarBg,
           borderTopColor: Colors.neonBorder,
           borderTopWidth: 1,
-          height: 62,
-          paddingBottom: 10,
+          // Grow the bar to host the system nav inset (3-button bar on
+          // Android, home indicator on iOS) so labels/icons aren't
+          // covered by the OS bar on devices without gesture nav.
+          height: 62 + insets.bottom,
+          paddingBottom: 10 + insets.bottom,
           paddingTop: 6,
           elevation: 12,
           shadowColor: Colors.primary,
