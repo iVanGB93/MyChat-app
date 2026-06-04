@@ -23,7 +23,13 @@ interface AuthState {
 
 interface AuthContextValue extends AuthState {
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, email: string, password: string) => Promise<void>;
+  register: (username: string, email: string, password: string, displayName?: string) => Promise<void>;
+  /**
+   * Adopt a token pair that was minted server-side (e.g. by the
+   * email-verification flow) and hydrate the authenticated state from
+   * the profile endpoint.
+   */
+  loginWithTokens: () => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -104,8 +110,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     syncContactSets();
   }, [syncPushToken, syncContactSets]);
 
-  const register = useCallback(async (username: string, email: string, password: string) => {
-    await registerApi(username, email, password);
+  const register = useCallback(async (username: string, email: string, password: string, displayName?: string) => {
+    await registerApi(username, email, password, displayName);
     await loginApi(username, password);
     const user = await getProfile();
     setCurrentUserId(user.id, user.username);
@@ -131,8 +137,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch { /* ignore */ }
   }, []);
 
+  /** Hydrate auth state from tokens already persisted (e.g. by the
+   *  email-verification verify call which returns and saves a fresh
+   *  access/refresh pair). */
+  const loginWithTokens = useCallback(async () => {
+    const user = await getProfile();
+    setCurrentUserId(user.id, user.username);
+    setState({ user, isLoading: false, isAuthenticated: true });
+    syncPushToken();
+    syncContactSets();
+  }, [syncPushToken, syncContactSets]);
+
   return (
-    <AuthContext.Provider value={{ ...state, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ ...state, login, register, loginWithTokens, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

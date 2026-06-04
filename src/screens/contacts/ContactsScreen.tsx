@@ -12,7 +12,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,12 +29,15 @@ import EmptyState from '../../components/ui/EmptyState';
 import type { Contact, User, RootStackParamList } from '../../types';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
+type ContactsRoute = RouteProp<RootStackParamList, 'Contacts'>;
 
 export default function ContactsScreen() {
   const { colors: Colors } = useTheme();
   const { confirm, alert } = useConfirm();
   const { user } = useAuth();
   const navigation = useNavigation<Nav>();
+  const route = useRoute<ContactsRoute>();
+  const prefillTag = route.params?.prefillTag;
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [searchResults, setSearchResults] = useState<User[]>([]);
   const [existingChatUserIds, setExistingChatUserIds] = useState<Set<number>>(new Set());
@@ -68,6 +71,12 @@ export default function ContactsScreen() {
   }, [user?.id]);
 
   useEffect(() => { fetchContacts(); }, [fetchContacts]);
+
+  // Pre-fill the search input when the screen is opened via a deep link
+  // (e.g. `axonic://add/AXN-7K3P` from a shared tag).
+  useEffect(() => {
+    if (prefillTag) setQuery(prefillTag);
+  }, [prefillTag]);
 
   // Debounced search
   useEffect(() => {
@@ -142,53 +151,64 @@ export default function ContactsScreen() {
   // Show all search results including existing chats
   const filteredSearchResults = searchResults;
 
-  const renderSearchItem = ({ item }: { item: User }) => (
-    <View style={[styles.item, { backgroundColor: Colors.surface }]}>
-      <Avatar name={item.username} uri={item.avatar} size={44} showOnline isOnline={item.is_online} />
-      <View style={styles.info}>
-        <Text style={[styles.name, { color: Colors.text }]}>{item.username}</Text>
-        <Text style={[styles.sub, { color: Colors.textSecondary }]}>{item.email}</Text>
+  const renderSearchItem = ({ item }: { item: User }) => {
+    const primary = (item.display_name?.trim() || item.username);
+    return (
+      <View style={[styles.item, { backgroundColor: Colors.surface }]}>
+        <Avatar name={primary} uri={item.avatar} size={44} showOnline isOnline={item.is_online} />
+        <View style={styles.info}>
+          <Text style={[styles.name, { color: Colors.text }]} numberOfLines={1}>{primary}</Text>
+          <Text style={[styles.sub, { color: Colors.textSecondary }]} numberOfLines={1}>
+            @{item.username}
+            {item.user_tag ? `  ·  ${item.user_tag}` : ''}
+          </Text>
+        </View>
+        <View style={styles.actionBtns}>
+          {!contactIds.has(item.id) ? (
+            <TouchableOpacity style={[styles.addBtn, { backgroundColor: Colors.primary }]} onPress={() => handleAddContact(item.id)}>
+              <Text style={[styles.addBtnText, { color: Colors.textInverse }]}>+ Add</Text>
+            </TouchableOpacity>
+          ) : (
+            <>
+              <Text style={[styles.added, { color: Colors.success }]}>✓</Text>
+              <TouchableOpacity
+                style={[styles.chatBtn, { backgroundColor: Colors.surfaceVariant, borderColor: Colors.border }]}
+                onPress={() => handleStartChat(item.id, primary)}
+              >
+                <Text style={[styles.chatBtnText, { color: Colors.primary }]}>Chat</Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
       </View>
-      <View style={styles.actionBtns}>
-        {!contactIds.has(item.id) ? (
-          <TouchableOpacity style={[styles.addBtn, { backgroundColor: Colors.primary }]} onPress={() => handleAddContact(item.id)}>
-            <Text style={[styles.addBtnText, { color: Colors.textInverse }]}>+ Add</Text>
-          </TouchableOpacity>
-        ) : (
-          <Text style={[styles.added, { color: Colors.success }]}>✓</Text>
-        )}
-        <TouchableOpacity
-          style={[styles.chatBtn, { backgroundColor: Colors.surfaceVariant, borderColor: Colors.border }]}
-          onPress={() => handleStartChat(item.id, item.username)}
-        >
-          <Text style={[styles.chatBtnText, { color: Colors.primary }]}>Chat</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+    );
+  };
 
-  const renderContact = ({ item }: { item: Contact }) => (
-    <TouchableOpacity
-      style={[styles.item, { backgroundColor: Colors.surface }]}
-      activeOpacity={0.7}
-      onPress={() => handleStartChat(item.contact_detail.id, item.contact_detail.username)}
-      onLongPress={() => handleRemoveContact(item)}
-    >
-      <Avatar
-        name={item.contact_detail.username}
-        uri={item.contact_detail.avatar}
-        size={48}
-        showOnline
-        isOnline={item.contact_detail.is_online}
-      />
-      <View style={styles.info}>
-        <Text style={[styles.name, { color: Colors.text }]}>{item.contact_detail.username}</Text>
-        <Text style={[styles.sub, { color: Colors.textSecondary }]}>
-          {item.contact_detail.is_online ? '🟢 Online' : item.contact_detail.bio || 'Tap to chat'}
-        </Text>
-      </View>
-    </TouchableOpacity>
-  );
+  const renderContact = ({ item }: { item: Contact }) => {
+    const primary = (item.contact_detail.display_name?.trim() || item.contact_detail.username);
+    return (
+      <TouchableOpacity
+        style={[styles.item, { backgroundColor: Colors.surface }]}
+        activeOpacity={0.7}
+        onPress={() => handleStartChat(item.contact_detail.id, primary)}
+        onLongPress={() => handleRemoveContact(item)}
+      >
+        <Avatar
+          name={primary}
+          uri={item.contact_detail.avatar}
+          size={48}
+          showOnline
+          isOnline={item.contact_detail.is_online}
+        />
+        <View style={styles.info}>
+          <Text style={[styles.name, { color: Colors.text }]} numberOfLines={1}>{primary}</Text>
+          <Text style={[styles.sub, { color: Colors.textSecondary }]} numberOfLines={1}>
+            {item.contact_detail.is_online ? '🟢 Online' : `@${item.contact_detail.username}`}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   if (loading) {
     return (
@@ -204,12 +224,22 @@ export default function ContactsScreen() {
     <View style={[styles.container, { backgroundColor: Colors.background }]}>
       {/* Search bar */}
       <View style={styles.searchBar}>
-        <Input
-          placeholder="Search users to add…"
-          value={query}
-          onChangeText={setQuery}
-          style={styles.searchInput}
-        />
+        <View style={{ flex: 1 }}>
+          <Input
+            placeholder="Search by name, @username or tag…"
+            value={query}
+            onChangeText={setQuery}
+            style={styles.searchInput}
+          />
+        </View>
+        <TouchableOpacity
+          style={[styles.scanBtn, { borderColor: Colors.primary, backgroundColor: Colors.surface }]}
+          onPress={() => navigation.navigate('ScanTag')}
+          activeOpacity={0.7}
+          accessibilityLabel="Scan a friend's tag QR code"
+        >
+          <Ionicons name="qr-code-outline" size={22} color={Colors.primary} />
+        </TouchableOpacity>
       </View>
 
       {searching && <ActivityIndicator style={styles.searchSpinner} color={Colors.primary} />}
@@ -250,8 +280,22 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   list: { paddingBottom: Spacing.md },
   emptyContainer: { flexGrow: 1 },
-  searchBar: { paddingHorizontal: Spacing.md, paddingTop: Spacing.sm },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    gap: Spacing.sm,
+  },
   searchInput: { marginBottom: 0 },
+  scanBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   searchSpinner: { marginVertical: Spacing.sm },
   item: {
     flexDirection: 'row',

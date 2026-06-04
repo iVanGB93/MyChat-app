@@ -18,6 +18,7 @@ interface PendingMessage {
   room_id: string;
   room_name: string;
   sender: string;
+  sender_id?: number;
   content: string;
   created_at: string;
   id?: string; // available in newer API versions
@@ -74,6 +75,7 @@ async function checkPendingNotifications(): Promise<boolean> {
       if (!prevKey || key !== prevKey) {
         await showMessageNotification({
           senderName: msg.sender,
+          senderId: msg.sender_id ?? null,
           content: msg.content,
           roomId: msg.room_id,
           roomName: msg.room_name,

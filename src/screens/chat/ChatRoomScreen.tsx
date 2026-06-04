@@ -35,6 +35,7 @@ import {
   setAudioModeAsync,
 } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
@@ -553,6 +554,16 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     // Update in-memory WS state + relay to other members (reacted_emoji is a display hint)
     sendMessageUpdate(roomId, msgId, { reactions: newReactions, reacted_emoji: emoji });
   }, [contextMsg, user, roomId, loadFromDB]);
+
+  const handleCopy = useCallback(async () => {
+    if (!contextMsg) return;
+    const text = contextMsg.content ?? '';
+    setContextMsg(null);
+    if (!text) return;
+    try {
+      await Clipboard.setStringAsync(text);
+    } catch { /* ignore */ }
+  }, [contextMsg]);
 
   const handleDelete = useCallback(() => {
     if (!contextMsg) return;
@@ -1097,6 +1108,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             </View>
             {contextMsg && !contextMsg.is_deleted && (contextMsg.message_type === 'text' || !contextMsg.message_type) && (
               <>
+                <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
+                <TouchableOpacity onPress={handleCopy} style={styles.contextOption}>
+                  <Text style={[styles.contextOptionText, { color: Colors.text }]}>📋  Copy message</Text>
+                </TouchableOpacity>
                 <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
                 <TouchableOpacity onPress={handleForward} style={styles.contextOption}>
                   <Text style={[styles.contextOptionText, { color: Colors.text }]}>↪  Forward message</Text>

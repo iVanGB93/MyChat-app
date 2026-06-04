@@ -11,6 +11,13 @@ export interface User {
   email: string;
   avatar: string | null;
   bio: string;
+  /** Free-form label, defaults to username if empty. */
+  display_name?: string;
+  /** Short shareable handle assigned by the server, e.g. "AXN-7K3P". */
+  user_tag?: string | null;
+  /** Discoverability preferences (default: username on, email off). */
+  discoverable_by_username?: boolean;
+  discoverable_by_email?: boolean;
   is_online: boolean;
   last_seen: string;
   connectivity_mode: ConnectivityMode;
@@ -37,6 +44,8 @@ export interface LastMessage {
 export interface RoomMember {
   id: number;
   username: string;
+  display_name?: string;
+  user_tag?: string | null;
   is_online: boolean;
   avatar?: string | null;
 }
@@ -121,12 +130,20 @@ export interface PaginatedResponse<T> {
 export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
+  VerifyEmail: { email: string; expiresIn: number };
   Main: undefined;
-  Contacts: undefined;
+  Contacts: { prefillTag?: string } | undefined;
+  ScanTag: undefined;
   ChatRoom: { roomId: string; roomName: string; otherUserId?: number };
   EditAccount: undefined;
   ChangePassword: undefined;
   BlockedUsers: undefined;
+  /** Modal opened when the OS hands us a shared payload (text/url/image). */
+  ShareTarget: {
+    text?: string;
+    imageUri?: string;
+    imageMime?: string;
+  };
   IncomingCall: {
     callId: string;
     callerName: string;

@@ -5,8 +5,76 @@
 import api, { saveTokens } from './api';
 import type { TokenPair, User } from '../types';
 
-export async function register(username: string, email: string, password: string) {
-  const { data } = await api.post<User>('/api/users/register/', { username, email, password });
+export async function register(
+  username: string,
+  email: string,
+  password: string,
+  displayName?: string,
+) {
+  const payload: Record<string, string> = { username, email, password };
+  const trimmed = (displayName ?? '').trim();
+  if (trimmed) payload.display_name = trimmed;
+  const { data } = await api.post<User>('/api/users/register/', payload);
+  return data;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Email-verification registration flow                                */
+/* ------------------------------------------------------------------ */
+
+export interface RegistrationRequestResult {
+  email: string;
+  expires_in: number;
+}
+
+export interface RegistrationVerifyResult {
+  user: User;
+  access: string;
+  refresh: string;
+}
+
+/** Step 1: validate inputs and have the server email a 6-digit code. */
+export async function requestRegistration(
+  username: string,
+  email: string,
+  password: string,
+  displayName?: string,
+): Promise<RegistrationRequestResult> {
+  const payload: Record<string, string> = { username, email, password };
+  const trimmed = (displayName ?? '').trim();
+  if (trimmed) payload.display_name = trimmed;
+  const { data } = await api.post<RegistrationRequestResult>(
+    '/api/users/register/request/',
+    payload,
+  );
+  return data;
+}
+
+/** Step 1.5: ask the server to email a fresh code (cooldown enforced). */
+export async function resendRegistrationCode(
+  email: string,
+): Promise<RegistrationRequestResult> {
+  const { data } = await api.post<RegistrationRequestResult>(
+    '/api/users/register/resend/',
+    { email },
+  );
+  return data;
+}
+
+/**
+ * Step 2: confirm the 6-digit code. On success the server creates the
+ * User and returns a fresh access/refresh pair so we can sign in
+ * immediately without a follow-up password round-trip.
+ */
+export async function verifyRegistration(
+  email: string,
+  code: string,
+): Promise<RegistrationVerifyResult> {
+  const { data } = await api.post<RegistrationVerifyResult>(
+    '/api/users/register/verify/',
+    { email, code },
+  );
+  await saveTokens(data.access, data.refresh);
   return data;
 }
 

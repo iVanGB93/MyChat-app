@@ -153,9 +153,11 @@ export default function ChatListScreen() {
     if (room.name) return room.name;
     if (room.room_type === 'direct') {
       const other = room.members_detail.find((m) => m.id !== user?.id);
-      return other?.username ?? 'Chat';
+      return other?.display_name?.trim() || other?.username || 'Chat';
     }
-    return room.members_detail.map((m) => m.username).join(', ');
+    return room.members_detail
+      .map((m) => m.display_name?.trim() || m.username)
+      .join(', ');
   };
 
   const getOtherMember = (room: ChatRoom) => {

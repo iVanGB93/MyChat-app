@@ -33,6 +33,7 @@ import { useAppStore } from '../store/appStore';
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
 import RegisterScreen from '../screens/auth/RegisterScreen';
+import VerifyEmailScreen from '../screens/auth/VerifyEmailScreen';
 import ChatListScreen from '../screens/chat/ChatListScreen';
 import ChatRoomScreen from '../screens/chat/ChatRoomScreen';
 import CallsScreen from '../screens/calls/CallsScreen';
@@ -173,6 +174,7 @@ interface ToastData {
   roomId: string;
   roomName: string;
   sender: string;
+  senderId?: number;
   content: string;
   /** Number of notifications grouped into this toast from the same sender. */
   count: number;
@@ -248,6 +250,7 @@ function MessageNotificationListener() {
           roomId:   payload.room_id ?? '',
           roomName: payload.room_name ?? payload.sender ?? 'Chat',
           sender:   payload.sender ?? 'Unknown',
+          senderId: typeof payload.sender_id === 'number' ? payload.sender_id : undefined,
           content:  payload.content ?? '',
         });
         return;
@@ -279,9 +282,9 @@ function MessageNotificationListener() {
 
   const handlePress = () => {
     if (!toast || !navigationRef.isReady()) return;
-    const { roomId, roomName } = toast;
+    const { roomId, roomName, senderId } = toast;
     dismiss();
-    navigationRef.navigate('ChatRoom', { roomId, roomName });
+    navigationRef.navigate('ChatRoom', { roomId, roomName, otherUserId: senderId });
   };
 
   if (!toast) return null;
@@ -356,7 +359,24 @@ export default function AppNavigator() {
   return (
     <>
       {isAuthenticated && <IncomingCallListener />}
-      <NavigationContainer ref={navigationRef} theme={navTheme}>
+      <NavigationContainer
+        ref={navigationRef}
+        theme={navTheme}
+        linking={{
+          // Custom URL scheme declared in app.json (`scheme: "axonic"`).
+          // Supported deep links:
+          //   axonic://add/<user_tag>   → Contacts screen with the tag pre-filled
+          prefixes: ['axonic://'],
+          config: {
+            screens: {
+              Contacts: {
+                path: 'add/:prefillTag',
+                parse: { prefillTag: (t: string) => t.toUpperCase() },
+              },
+            },
+          },
+        }}
+      >
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           {isAuthenticated ? (
             <>
@@ -371,6 +391,11 @@ export default function AppNavigator() {
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
                   headerTintColor: Colors.headerText,
                 }}
+              />
+              <Stack.Screen
+                name="ScanTag"
+                component={require('../screens/contacts/ScanTagScreen').default}
+                options={{ headerShown: false, presentation: 'fullScreenModal' }}
               />
               <Stack.Screen
                 name="ChatRoom"
@@ -426,6 +451,11 @@ export default function AppNavigator() {
                 component={ActiveCallScreen}
                 options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'fade' }}
               />
+              <Stack.Screen
+                name="ShareTarget"
+                component={require('../screens/chat/ShareTargetScreen').default}
+                options={{ headerShown: false, presentation: 'modal' }}
+              />
             </>
           ) : (
             <>
@@ -433,6 +463,11 @@ export default function AppNavigator() {
               <Stack.Screen
                 name="Register"
                 component={RegisterScreen}
+                options={{ headerShown: true, headerTitle: '', headerTransparent: true, headerTintColor: Colors.primary }}
+              />
+              <Stack.Screen
+                name="VerifyEmail"
+                component={VerifyEmailScreen}
                 options={{ headerShown: true, headerTitle: '', headerTransparent: true, headerTintColor: Colors.primary }}
               />
             </>

@@ -12,6 +12,7 @@ import {
   addNotificationResponseListener,
 } from './src/services/pushNotificationService';
 import { registerBackgroundTask } from './src/services/backgroundNotificationService';
+import { startRingerModeListener } from './src/services/ringerService';
 import * as Notifications from 'expo-notifications';
 import {
   setupCallNotifications,
@@ -24,6 +25,7 @@ import { DebugOverlay } from './src/store/DebugOverlay';
 import { ConnectionBanner } from './src/store/ConnectionBanner';
 import { ActiveCallBanner } from './src/store/ActiveCallBanner';
 import { IncomingCallBanner } from './src/store/IncomingCallBanner';
+import ShareIntentBridge from './src/store/ShareIntentBridge';
 
 export default function App() {
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
@@ -31,6 +33,10 @@ export default function App() {
   useEffect(() => {
     // Setup notification channels (Android)
     setupNotificationChannels();
+
+    // Start listening for ringer / mute-switch changes so soundService
+    // and IncomingCallScreen can read the current mode synchronously.
+    startRingerModeListener();
 
     // Notifee call-style notification setup (channel, permission, iOS category,
     // foreground event listener for Accept / Decline).
@@ -111,9 +117,11 @@ export default function App() {
           roomName: String(data.roomName ?? ''),
         });
       } else if (data.type === 'new_message' && data.roomId) {
+        const senderIdNum = data.senderId != null ? Number(data.senderId) : undefined;
         navigationRef.navigate('ChatRoom', {
           roomId: String(data.roomId),
           roomName: String(data.roomName ?? ''),
+          otherUserId: senderIdNum && !Number.isNaN(senderIdNum) ? senderIdNum : undefined,
         });
       }
     });
@@ -139,6 +147,7 @@ export default function App() {
                 <ConnectionBanner />
                 <ActiveCallBanner />
                 <IncomingCallBanner />
+                <ShareIntentBridge />
                 <DebugOverlay />
               </ConfirmProvider>
             </NotificationProvider>

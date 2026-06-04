@@ -575,6 +575,7 @@ async function connectWs() {
                 : String(payload.content);
               showMessageNotification({
                 senderName,
+                senderId,
                 content: bodyText,
                 roomId: String(payload.room_id ?? ''),
                 roomName: payload.room_name || senderName,

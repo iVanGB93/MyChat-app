@@ -22,6 +22,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { joinCall, endCall } from '../../services/callService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playLooping, stopLooping, playSound } from '../../services/soundService';
+import { getRingerModeSync } from '../../services/ringerService';
 import { cancelIncomingCallNotification } from '../../services/callNotificationService';
 import { useAppStore } from '../../store/appStore';
 import Avatar from '../../components/ui/Avatar';
@@ -68,13 +69,26 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
     };
   }, [callId, callerName, callType, route.params.callerId]);
 
-  /* ---- ringtone + vibration ---- */
+  /* ---- ringtone + vibration (respects silent / vibrate switch) ---- */
   useEffect(() => {
+    // Snapshot the mode once when the call comes in; if the user
+    // flips the switch mid-ring we don't try to start/stop on the fly.
+    const mode = getRingerModeSync();
+
+    // playLooping() internally skips audio when mode !== 'normal', but
+    // we still call it so the no-op flow stays uniform.
     playLooping('ringtone');
-    const interval = setInterval(() => Vibration.vibrate(1000), 2000);
-    Vibration.vibrate(1000);
+
+    // Silent = totally quiet. Otherwise pulse the vibrator on a 2s cycle
+    // (matches typical OS ringer cadence).
+    let interval: ReturnType<typeof setInterval> | null = null;
+    if (mode !== 'silent') {
+      interval = setInterval(() => Vibration.vibrate(1000), 2000);
+      Vibration.vibrate(1000);
+    }
+
     return () => {
-      clearInterval(interval);
+      if (interval) clearInterval(interval);
       Vibration.cancel();
       stopLooping();
     };

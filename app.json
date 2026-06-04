@@ -2,7 +2,8 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.5",
+    "version": "1.0.6",
+    "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -55,6 +56,12 @@
       "expo-font",
       "@config-plugins/react-native-webrtc",
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Axonic uses the camera to scan friend tags so you can quickly add contacts."
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/adaptive-icon.png",
@@ -66,7 +73,19 @@
       "expo-task-manager",
       "expo-sqlite",
       "./plugins/withForegroundService",
-      "./plugins/withRingtoneRaw"
+      "./plugins/withRingtoneRaw",
+      "./plugins/withNotifeeRepo",
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsText": true,
+            "NSExtensionActivationSupportsWebURLWithMaxCount": 1,
+            "NSExtensionActivationSupportsImageWithMaxCount": 1
+          },
+          "androidIntentFilters": ["text/*", "image/*"]
+        }
+      ]
     ],
     "extra": {
       "eas": {

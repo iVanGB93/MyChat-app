@@ -23,6 +23,7 @@ import {
   Modal,
   Animated,
   Pressable,
+  Share,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
@@ -39,6 +40,7 @@ import {
   uploadAvatar,
 } from '../../services/authService';
 import { resolveMediaUrl } from '../../services/api';
+import QRCode from 'react-native-qrcode-svg';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
@@ -53,6 +55,14 @@ export default function ProfileScreen() {
   const navigation = useNavigation<Nav>();
 
   const [bio, setBio] = useState(user?.bio ?? '');
+  const [displayName, setDisplayName] = useState(user?.display_name ?? user?.username ?? '');
+  const [savingDisplayName, setSavingDisplayName] = useState(false);
+  const [discoverByUsername, setDiscoverByUsername] = useState<boolean>(
+    user?.discoverable_by_username ?? true,
+  );
+  const [discoverByEmail, setDiscoverByEmail] = useState<boolean>(
+    user?.discoverable_by_email ?? false,
+  );
   const [saving, setSaving] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
@@ -76,6 +86,52 @@ export default function ProfileScreen() {
       alert('Error', 'Failed to update profile');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveDisplayName = async () => {
+    const trimmed = displayName.trim();
+    if (!trimmed) {
+      alert('Validation', 'Display name cannot be empty.');
+      return;
+    }
+    setSavingDisplayName(true);
+    try {
+      await updateProfile({ display_name: trimmed });
+      await refreshUser();
+      alert('Saved', 'Display name updated');
+    } catch {
+      alert('Error', 'Failed to update display name');
+    } finally {
+      setSavingDisplayName(false);
+    }
+  };
+
+  const handleShareTag = async () => {
+    const tag = user?.user_tag;
+    if (!tag) return;
+    try {
+      await Share.share({
+        message: `Add me on Axonic — my tag is ${tag}`,
+      });
+    } catch {
+      /* user dismissed */
+    }
+  };
+
+  const persistDiscovery = async (
+    setter: (v: boolean) => void,
+    field: 'discoverable_by_username' | 'discoverable_by_email',
+    prevValue: boolean,
+    nextValue: boolean,
+  ) => {
+    setter(nextValue);
+    try {
+      await updateProfile({ [field]: nextValue } as any);
+      await refreshUser();
+    } catch {
+      setter(prevValue);
+      alert('Error', 'Failed to update discoverability preference');
     }
   };
 
@@ -219,12 +275,69 @@ export default function ProfileScreen() {
             </View>
           </View>
         </TouchableOpacity>
-        <Text style={[styles.username, { color: Colors.primary }]}>{user.username.toUpperCase()}</Text>
-        <Text style={[styles.email, { color: Colors.textSecondary }]}>{user.email}</Text>
+        <Text style={[styles.username, { color: Colors.primary }]}>
+          {(user.display_name?.trim() || user.username).toUpperCase()}
+        </Text>
+        <Text style={[styles.email, { color: Colors.textSecondary }]}>@{user.username}</Text>
         <View style={[styles.statusBadge, { backgroundColor: Colors.surface, borderColor: Colors.online, shadowColor: Colors.online }]}>
           <View style={[styles.statusDot, { backgroundColor: Colors.online, shadowColor: Colors.online }]} />
           <Text style={[styles.statusText, { color: Colors.online }]}>ONLINE</Text>
         </View>
+      </View>
+
+      {/* Identity card */}
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ IDENTITY</Text>
+        <Text style={[styles.label, { color: Colors.textSecondary }]}>DISPLAY NAME</Text>
+        <Input
+          placeholder="How others see your name"
+          value={displayName}
+          onChangeText={setDisplayName}
+          maxLength={50}
+          autoCapitalize="words"
+        />
+        <Button
+          title="SAVE NAME"
+          onPress={handleSaveDisplayName}
+          loading={savingDisplayName}
+          style={styles.saveBtn}
+        />
+
+        {user.user_tag ? (
+          <>
+            <TouchableOpacity
+              onPress={handleShareTag}
+              activeOpacity={0.75}
+              style={[
+                styles.tagBox,
+                { borderColor: Colors.accent, backgroundColor: Colors.highlight, shadowColor: Colors.accent },
+              ]}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.label, { color: Colors.textSecondary, marginBottom: 2 }]}>
+                  YOUR TAG
+                </Text>
+                <Text style={[styles.tagValue, { color: Colors.accent }]}>{user.user_tag}</Text>
+                <Text style={[styles.tagHint, { color: Colors.textTertiary }]}>
+                  Tap to share — friends can find you with this tag.
+                </Text>
+              </View>
+              <Ionicons name="share-outline" size={20} color={Colors.accent} />
+            </TouchableOpacity>
+
+            <View style={[styles.qrBox, { borderColor: Colors.neonBorder, backgroundColor: '#ffffff' }]}>
+              <QRCode
+                value={`axonic://add/${user.user_tag}`}
+                size={180}
+                backgroundColor="#ffffff"
+                color="#000000"
+              />
+            </View>
+            <Text style={[styles.qrHint, { color: Colors.textTertiary }]}>
+              Friends can scan this code to add you instantly.
+            </Text>
+          </>
+        ) : null}
       </View>
 
       {/* About card */}
@@ -374,6 +487,24 @@ export default function ProfileScreen() {
       {/* Privacy card */}
       <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
         <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ PRIVACY</Text>
+        <ToggleRow
+          label="DISCOVERABLE BY USERNAME"
+          desc="Allow others to find you by searching your username or display name"
+          value={discoverByUsername}
+          colors={Colors}
+          onValueChange={(v) =>
+            persistDiscovery(setDiscoverByUsername, 'discoverable_by_username', discoverByUsername, v)
+          }
+        />
+        <ToggleRow
+          label="DISCOVERABLE BY EMAIL"
+          desc="Allow others to find you by your exact email address"
+          value={discoverByEmail}
+          colors={Colors}
+          onValueChange={(v) =>
+            persistDiscovery(setDiscoverByEmail, 'discoverable_by_email', discoverByEmail, v)
+          }
+        />
         <ActionRow
           label="BLOCKED USERS"
           icon="ban-outline"
@@ -683,9 +814,46 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   cardTitle: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5, marginBottom: Spacing.md },
+  label: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1, marginBottom: Spacing.xs },
   saveBtn: {
     marginTop: Spacing.sm,
     borderRadius: Radius.md,
+  },
+  tagBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 3,
+  },
+  tagValue: {
+    fontSize: Font.size.lg,
+    fontWeight: '800',
+    letterSpacing: 3,
+  },
+  tagHint: {
+    fontSize: Font.size.xs,
+    marginTop: 4,
+    letterSpacing: 0.5,
+  },
+  qrBox: {
+    alignSelf: 'center',
+    marginTop: Spacing.lg,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+  },
+  qrHint: {
+    fontSize: Font.size.xs,
+    textAlign: 'center',
+    marginTop: Spacing.sm,
+    letterSpacing: 0.5,
   },
 
   infoRow: {

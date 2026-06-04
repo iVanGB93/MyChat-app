@@ -160,20 +160,24 @@ export async function showCallNotification({
 // rely on the system default for that platform.
 export async function showMessageNotification({
   senderName,
+  senderId,
   content,
   roomId,
   roomName,
 }: {
   senderName: string;
+  senderId?: number | null;
   content: string;
   roomId: string;
   roomName: string;
 }) {
   const safeRoomId = roomId || 'unknown';
+  const data: Record<string, string> = { type: 'new_message', roomId, roomName };
+  if (senderId != null) data.senderId = String(senderId);
   await showLocalNotification({
     title: senderName,
     body: content,
-    data: { type: 'new_message', roomId, roomName },
+    data,
     channelId: 'messages',
     identifier: `room-${safeRoomId}`,
     groupKey: `room-${safeRoomId}`,

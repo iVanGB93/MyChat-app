@@ -1,8 +1,17 @@
 /* ------------------------------------------------------------------ */
 /*  Sound Service — load & play app sounds using expo-audio             */
+/*                                                                       */
+/*  All playback respects the device ringer mode:                       */
+/*    silent  → no sound, no vibration                                  */
+/*    vibrate → short vibration instead of one-shot sound; ringtones    */
+/*              are skipped (callers handle the call-style vibration    */
+/*              pattern themselves)                                      */
+/*    normal  → play as usual                                           */
 /* ------------------------------------------------------------------ */
 
+import { Vibration } from 'react-native';
 import { createAudioPlayer, setAudioModeAsync, type AudioPlayer } from 'expo-audio';
+import { getRingerModeSync } from './ringerService';
 
 type SoundName =
   | 'message_sent'
@@ -41,8 +50,15 @@ async function ensureAudioMode() {
   } catch { /* ignore */ }
 }
 
-/** Play a one-shot sound effect (non-looping) */
+/** Play a one-shot sound effect (non-looping). Respects ringer mode. */
 export async function playSound(name: SoundName): Promise<void> {
+  const mode = getRingerModeSync();
+  if (mode === 'silent') return;
+  if (mode === 'vibrate') {
+    // Short blip so the user gets *some* feedback without audio.
+    try { Vibration.vibrate(40); } catch { /* ignore */ }
+    return;
+  }
   try {
     await ensureAudioMode();
     const player = createAudioPlayer(SOUND_FILES[name]);
@@ -52,8 +68,14 @@ export async function playSound(name: SoundName): Promise<void> {
   }
 }
 
-/** Start playing a sound in a loop (e.g. ringtone, ringback) */
+/** Start playing a sound in a loop (e.g. ringtone, ringback). Respects ringer mode. */
 export async function playLooping(name: SoundName): Promise<void> {
+  const mode = getRingerModeSync();
+  // In silent/vibrate we never play audio. The caller is responsible
+  // for vibrating in vibrate mode (so we don't double-vibrate when
+  // both ringtone + vibration interval are running).
+  if (mode !== 'normal') return;
+
   const myToken = ++loopingToken;
   try {
     await stopLooping();

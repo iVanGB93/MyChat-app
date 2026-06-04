@@ -15,8 +15,8 @@ import {
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Font, Spacing, Radius } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
-import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
+import { requestRegistration } from '../../services/authService';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
 import { formatApiError } from '../../services/errorMessages';
@@ -25,10 +25,10 @@ import type { RootStackParamList } from '../../types';
 type Props = NativeStackScreenProps<RootStackParamList, 'Register'>;
 
 export default function RegisterScreen({ navigation }: Props) {
-  const { register } = useAuth();
   const { colors: Colors } = useTheme();
   const { alert } = useConfirm();
   const [username, setUsername] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -49,10 +49,26 @@ export default function RegisterScreen({ navigation }: Props) {
     if (!validate()) return;
     setLoading(true);
     try {
-      await register(username.trim(), email.trim(), password);
+      // Strict gating: the server does NOT create the User yet — it
+      // only emails a 6-digit code. We hand off to VerifyEmailScreen
+      // where the account actually gets created on successful verify.
+      const trimmedEmail = email.trim().toLowerCase();
+      const result = await requestRegistration(
+        username.trim(),
+        trimmedEmail,
+        password,
+        displayName.trim(),
+      );
+      navigation.navigate('VerifyEmail', {
+        email: result.email,
+        expiresIn: result.expires_in,
+      });
     } catch (err: unknown) {
       const msg = formatApiError(err, {
         fallback: 'Registration failed. Please try again.',
+        statusMessages: {
+          503: 'We could not send a verification email right now. Please try again in a moment.',
+        },
       });
       alert('Registration failed', msg);
     } finally {
@@ -88,6 +104,14 @@ export default function RegisterScreen({ navigation }: Props) {
             onChangeText={setUsername}
             error={errors.username}
             autoComplete="username"
+          />
+          <Input
+            label="Display name"
+            placeholder="Shown to other users (optional)"
+            value={displayName}
+            onChangeText={setDisplayName}
+            autoCapitalize="words"
+            maxLength={50}
           />
           <Input
             label="Email"
