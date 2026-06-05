@@ -98,6 +98,7 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
 
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
+  const isDirectChat = !!otherUserId;
   const { user } = useAuth();
   const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, typers, notifyTyping } = useChat(roomId, user?.id);
   const isMuted = useAppStore((s) => !!s.mutedRooms[roomId]);
@@ -677,7 +678,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
                 : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
             ]}>
-              {!isMine && (
+              {!isMine && !isDirectChat && (
                 <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
               )}
               {item.reply_to && !item.is_deleted && (

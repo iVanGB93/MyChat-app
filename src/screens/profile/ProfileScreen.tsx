@@ -34,6 +34,7 @@ import { Font, Spacing, Radius } from '../../theme';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
+import { APP_CONFIG } from '../../config/appConfig';
 import {
   logoutAllSessions,
   updateProfile,
@@ -110,9 +111,12 @@ export default function ProfileScreen() {
   const handleShareTag = async () => {
     const tag = user?.user_tag;
     if (!tag) return;
+    const safeTag = encodeURIComponent(tag);
+    const inviteWebUrl = `${APP_CONFIG.SERVER_URL}/add/${safeTag}`;
+    const inviteDeepLink = `axonic://add/${safeTag}`;
     try {
       await Share.share({
-        message: `Add me on Axonic — my tag is ${tag}`,
+        message: `Add me on Axonic: ${inviteWebUrl}\n\nIf the link does not open the app, use: ${inviteDeepLink}`,
       });
     } catch {
       /* user dismissed */
@@ -327,7 +331,7 @@ export default function ProfileScreen() {
 
             <View style={[styles.qrBox, { borderColor: Colors.neonBorder, backgroundColor: '#ffffff' }]}>
               <QRCode
-                value={`axonic://add/${user.user_tag}`}
+                value={`${APP_CONFIG.SERVER_URL}/add/${encodeURIComponent(user.user_tag)}`}
                 size={180}
                 backgroundColor="#ffffff"
                 color="#000000"

@@ -12,7 +12,6 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
 
-import { useTheme } from '../contexts/ThemeContext';
 import { Spacing, Radius, Font } from '../theme';
 
 interface Props {
@@ -43,7 +42,6 @@ export default function VoiceMessageBubble({
   subtleColor,
   trackBg,
 }: Props) {
-  const { Colors } = useTheme();
   const player = useAudioPlayer(fileUri || null);
   const status = useAudioPlayerStatus(player);
 

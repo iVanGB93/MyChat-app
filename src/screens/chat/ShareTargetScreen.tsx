@@ -223,9 +223,9 @@ export default function ShareTargetScreen() {
         </View>
       ) : filtered.length === 0 ? (
         <EmptyState
-          icon="people-outline"
+          iconName="people-outline"
           title="No contacts"
-          message={query ? 'No contacts match your search.' : 'Add contacts first to share with them.'}
+          subtitle={query ? 'No contacts match your search.' : 'Add contacts first to share with them.'}
         />
       ) : (
         <FlatList

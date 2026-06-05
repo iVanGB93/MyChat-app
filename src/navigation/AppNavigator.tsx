@@ -387,7 +387,8 @@ export default function AppNavigator() {
                 options={{
                   headerShown: true,
                   headerTitle: 'New Chat',
-                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
                   headerTintColor: Colors.headerText,
                 }}
@@ -403,7 +404,8 @@ export default function AppNavigator() {
                 options={({ route }) => ({
                   headerShown: true,
                   headerTitle: route.params.roomName,
-                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
                   headerTintColor: Colors.headerText,
                 })}
@@ -414,7 +416,8 @@ export default function AppNavigator() {
                 options={{
                   headerShown: true,
                   headerTitle: 'Edit account',
-                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
                   headerTintColor: Colors.headerText,
                 }}
@@ -425,7 +428,8 @@ export default function AppNavigator() {
                 options={{
                   headerShown: true,
                   headerTitle: 'Change password',
-                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
                   headerTintColor: Colors.headerText,
                 }}
@@ -436,7 +440,8 @@ export default function AppNavigator() {
                 options={{
                   headerShown: true,
                   headerTitle: 'Blocked users',
-                  headerStyle: { backgroundColor: Colors.headerBg, elevation: 0, shadowOpacity: 0 },
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
                   headerTintColor: Colors.headerText,
                 }}

@@ -183,6 +183,8 @@ export async function getMessages(roomId: string): Promise<LocalMessage[]> {
     file_uri: string | null;
     created_at: string;
     is_mine: number;
+    reactions: string | null;
+    is_deleted: number;
     is_read: number;
     reply_to: string | null;
     duration_ms: number | null;
@@ -228,6 +230,7 @@ export async function getPendingOutbox(
     is_mine: number;
     reactions: string | null;
     is_deleted: number;
+    is_read: number;
     reply_to: string | null;
     duration_ms: number | null;
   }>(
@@ -245,6 +248,7 @@ export async function getPendingOutbox(
     ...r,
     is_mine:    r.is_mine    === 1,
     is_deleted: r.is_deleted === 1,
+    is_read:    r.is_read    === 1,
     reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
     reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
   }));
@@ -441,6 +445,7 @@ export async function getLastMessagePerRoom(): Promise<
     is_mine: number;
     reactions: string | null;
     is_deleted: number;
+    is_read: number;
     reply_to: string | null;
     duration_ms: number | null;
   }>(
@@ -458,6 +463,7 @@ export async function getLastMessagePerRoom(): Promise<
       ...r,
       is_mine:    r.is_mine    === 1,
       is_deleted: r.is_deleted === 1,
+      is_read:    r.is_read    === 1,
       reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
       reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
     };

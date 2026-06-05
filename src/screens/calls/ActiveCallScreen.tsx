@@ -431,8 +431,8 @@ function makeStyles(Colors: any) {
     },
     typePillText: {
       fontSize: 11,
-      letterSpacing: 1.5,
       ...Font.bold,
+      letterSpacing: 1.5,
     },
     avatarWrap: {
       marginTop: Spacing.xl,
@@ -450,15 +450,15 @@ function makeStyles(Colors: any) {
       color: '#fff',
       fontSize: Font.size.xxl,
       marginTop: Spacing.lg,
-      letterSpacing: 0.5,
       ...Font.bold,
+      letterSpacing: 0.5,
     },
     status: {
       color: 'rgba(255,255,255,0.75)',
       fontSize: Font.size.md,
       marginTop: Spacing.xs,
-      letterSpacing: 1,
       ...Font.medium,
+      letterSpacing: 1,
     },
     actions: {
       flexDirection: 'row',

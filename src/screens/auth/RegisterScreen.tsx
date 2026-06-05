@@ -11,6 +11,7 @@ import {
   Platform,
   ScrollView,
   TouchableOpacity,
+  Image,
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Font, Spacing, Radius } from '../../theme';
@@ -79,16 +80,20 @@ export default function RegisterScreen({ navigation }: Props) {
   return (
     <KeyboardAvoidingView
       style={[styles.flex, { backgroundColor: Colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      enabled={Platform.OS === 'ios'}
     >
       <ScrollView
-        contentContainerStyle={styles.container}
+        contentContainerStyle={[
+          styles.container,
+          Platform.OS === 'android' && styles.containerAndroid,
+        ]}
         keyboardShouldPersistTaps="handled"
       >
         {/* Header */}
         <View style={styles.header}>
           <View style={[styles.logoMark, { borderColor: Colors.accent, shadowColor: Colors.accent }]}>
-            <Text style={[styles.logoText, { color: Colors.accent }]}>+</Text>
+            <Image source={require('../../../assets/logo.png')} style={styles.logoImage} resizeMode="contain" />
           </View>
           <Text style={[styles.title, { color: Colors.primary }]}>CREATE ACCOUNT</Text>
           <View style={[styles.titleUnderline, { backgroundColor: Colors.primary }]} />
@@ -157,6 +162,7 @@ export default function RegisterScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flexGrow: 1, justifyContent: 'center', padding: Spacing.xl },
+  containerAndroid: { justifyContent: 'flex-start', paddingTop: Spacing.xxl },
   header: { alignItems: 'center', marginBottom: Spacing.xxl },
   logoMark: {
     width: 72,
@@ -171,11 +177,7 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 8,
   },
-  logoText: {
-    fontSize: 36,
-    fontWeight: '800',
-    letterSpacing: 0,
-  },
+  logoImage: { width: 46, height: 46 },
   title: {
     fontSize: Font.size.xxl,
     fontWeight: '800',

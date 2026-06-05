@@ -145,10 +145,14 @@ export default function VerifyEmailScreen({ route, navigation }: Props) {
   return (
     <KeyboardAvoidingView
       style={[styles.flex, { backgroundColor: Colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      enabled={Platform.OS === 'ios'}
     >
       <ScrollView
-        contentContainerStyle={styles.container}
+        contentContainerStyle={[
+          styles.container,
+          Platform.OS === 'android' && styles.containerAndroid,
+        ]}
         keyboardShouldPersistTaps="handled"
       >
         <View style={styles.header}>
@@ -289,6 +293,7 @@ export default function VerifyEmailScreen({ route, navigation }: Props) {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flexGrow: 1, justifyContent: 'center', padding: Spacing.xl },
+  containerAndroid: { justifyContent: 'flex-start', paddingTop: Spacing.xxl },
   header: { alignItems: 'center', marginBottom: Spacing.xl },
   logoMark: {
     width: 72,

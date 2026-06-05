@@ -202,43 +202,27 @@ export default function ChatListScreen() {
     const typers = (typingEntry ?? []).filter((t) => t.userId !== user?.id);
     const isMuted = !!mutedRooms[item.id];
 
-    const handleDeleteChat = () => {
-      confirm({
-        title: 'Delete chat',
-        message:
-          `This will permanently delete the conversation with ${displayName} ` +
-          `for everyone in it. Messages cannot be recovered.`,
-        icon: 'trash-outline',
-        buttons: [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                await deleteRoom(item.id);
-              } catch (err: unknown) {
-                alert(
-                  'Could not delete chat',
-                  formatApiError(err, {
-                    fallback: 'The chat could not be deleted. Please try again.',
-                  }),
-                );
-                return;
-              }
-              try { await deleteRoomMessages(item.id); } catch { /* best-effort */ }
-              clearRoomState(item.id);
-              setLocalLastMessages((prev) => {
-                if (!(item.id in prev)) return prev;
-                const next = { ...prev };
-                delete next[item.id];
-                return next;
-              });
-              setRooms((prev) => prev.filter((r) => r.id !== item.id));
-            },
-          },
-        ],
+    const handleDeleteChat = async () => {
+      try {
+        await deleteRoom(item.id);
+      } catch (err: unknown) {
+        alert(
+          'Could not delete chat',
+          formatApiError(err, {
+            fallback: 'The chat could not be deleted. Please try again.',
+          }),
+        );
+        return;
+      }
+      try { await deleteRoomMessages(item.id); } catch { /* best-effort */ }
+      clearRoomState(item.id);
+      setLocalLastMessages((prev) => {
+        if (!(item.id in prev)) return prev;
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
       });
+      setRooms((prev) => prev.filter((r) => r.id !== item.id));
     };
 
     const openRoomMenu = () => {
@@ -258,7 +242,13 @@ export default function ChatListScreen() {
             text: isMuted ? 'Unmute notifications' : 'Mute notifications',
             onPress: () => toggleRoomMuted(item.id),
           },
-          { text: 'Delete chat', style: 'destructive', onPress: handleDeleteChat },
+          {
+            text: 'Delete chat',
+            style: 'destructive',
+            onPress: async () => {
+              await handleDeleteChat();
+            },
+          },
           { text: 'Cancel', style: 'cancel' },
         ],
       });

@@ -280,8 +280,8 @@ function makeStyles(Colors: any) {
     },
     typePillText: {
       fontSize: 11,
-      letterSpacing: 1.5,
       ...Font.bold,
+      letterSpacing: 1.5,
     },
 
     avatarStack: {
@@ -323,8 +323,8 @@ function makeStyles(Colors: any) {
       fontSize: Font.size.xxl,
       color: '#fff',
       marginTop: Spacing.xl,
-      letterSpacing: 0.5,
       ...Font.bold,
+      letterSpacing: 0.5,
     },
     status: {
       fontSize: Font.size.md,
@@ -368,8 +368,8 @@ function makeStyles(Colors: any) {
       fontSize: Font.size.xs,
       marginTop: 8,
       opacity: 0.85,
-      letterSpacing: 1,
       ...Font.medium,
+      letterSpacing: 1,
     },
   });
 }
