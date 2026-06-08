@@ -6,9 +6,10 @@
 /* ------------------------------------------------------------------ */
 
 import React, { useEffect, useRef } from 'react';
-import { Animated, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAppStore } from './appStore';
+import { selectNotifWsConnected, useAppStore } from './appStore';
+import { reconnectWsNow } from '../services/notificationWsManager';
 
 interface BannerState {
   show: boolean;
@@ -20,6 +21,7 @@ function deriveBanner(
   net: string,
   notifStatus: string,
   authenticated: boolean,
+  verifiedConnected: boolean,
   suspendedUntil: number,
   appLifecycle: string,
 ): BannerState {
@@ -39,6 +41,9 @@ function deriveBanner(
   if (notifStatus === 'connected' && !authenticated) {
     return { show: true, text: 'Authenticating…', color: '#F59E0B' };
   }
+  if (notifStatus === 'connected' && authenticated && !verifiedConnected) {
+    return { show: true, text: 'Connection stale — recovering…', color: '#F59E0B' };
+  }
   if (notifStatus === 'disconnected') {
     return { show: true, text: 'Disconnected', color: '#6B7280' };
   }
@@ -50,10 +55,12 @@ export function ConnectionBanner() {
   const net = useAppStore((s) => s.net);
   const notifStatus = useAppStore((s) => s.notifWs.status);
   const authenticated = useAppStore((s) => s.notifWs.authenticated);
+  const verifiedConnected = useAppStore(selectNotifWsConnected);
   const suspendedUntil = useAppStore((s) => s.notifWs.suspendedUntil);
   const appLifecycle = useAppStore((s) => s.appLifecycle);
 
-  const banner = deriveBanner(net, notifStatus, authenticated, suspendedUntil, appLifecycle);
+  const banner = deriveBanner(net, notifStatus, authenticated, verifiedConnected, suspendedUntil, appLifecycle);
+  const canReconnect = notifStatus === 'disconnected' || notifStatus === 'reconnecting';
   const slide = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -68,7 +75,7 @@ export function ConnectionBanner() {
 
   return (
     <Animated.View
-      pointerEvents="none"
+      pointerEvents="box-none"
       style={[
         styles.container,
         {
@@ -86,7 +93,18 @@ export function ConnectionBanner() {
         },
       ]}
     >
-      <Text style={styles.text}>{banner.text}</Text>
+      <View style={styles.row}>
+        <Text style={styles.text}>{banner.text}</Text>
+        {canReconnect ? (
+          <Pressable
+            onPress={reconnectWsNow}
+            style={styles.reconnectBtn}
+            hitSlop={8}
+          >
+            <Text style={styles.reconnectText}>Reconnect</Text>
+          </Pressable>
+        ) : null}
+      </View>
     </Animated.View>
   );
 }
@@ -106,5 +124,22 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  reconnectBtn: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.75)',
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  reconnectText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
   },
 });

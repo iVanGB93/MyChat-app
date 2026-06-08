@@ -100,7 +100,12 @@ api.interceptors.response.use(
         return api(original);
       } catch (err) {
         processQueue(err, null);
-        await clearTokens();
+        const status = (err as any)?.response?.status;
+        // Keep session on transient failures (offline/timeouts/5xx).
+        // Only clear tokens when refresh token is explicitly rejected.
+        if (status === 400 || status === 401 || status === 403) {
+          await clearTokens();
+        }
         return Promise.reject(err);
       } finally {
         isRefreshing = false;

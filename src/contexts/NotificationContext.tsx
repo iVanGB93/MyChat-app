@@ -27,6 +27,7 @@ import {
   type ConnectionStatus,
   type NotificationPayload,
 } from '../services/notificationWsManager';
+import { useAppStore, selectNotifWsConnected } from '../store/appStore';
 
 type Listener = (payload: NotificationPayload) => void;
 
@@ -53,8 +54,7 @@ export type { ConnectionStatus, NotificationPayload };
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuth();
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
-
-  const connected = connectionStatus === 'connected';
+  const connected = useAppStore(selectNotifWsConnected);
 
   /* ---- Init / destroy WS manager based on auth ---- */
   useEffect(() => {

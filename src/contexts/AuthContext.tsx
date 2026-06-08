@@ -3,6 +3,7 @@
 /* ------------------------------------------------------------------ */
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearTokens, getTokens } from '../services/api';
 import { getProfile, login as loginApi, register as registerApi, registerPushToken } from '../services/authService';
 import { registerForPushNotifications } from '../services/pushNotificationService';
@@ -14,6 +15,30 @@ import { initDB } from '../services/localMessageStore';
 import { getContacts, getBlockedUsers } from '../services/contactService';
 import { useAppStore } from '../store/appStore';
 import type { User } from '../types';
+
+const USER_CACHE_KEY = '@axonic_user_cache';
+
+function isAuthFailure(err: any): boolean {
+  const status = err?.response?.status;
+  return status === 401 || status === 403;
+}
+
+async function getCachedUser(): Promise<User | null> {
+  try {
+    const raw = await AsyncStorage.getItem(USER_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as User) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function setCachedUser(user: User | null): Promise<void> {
+  if (!user) {
+    await AsyncStorage.removeItem(USER_CACHE_KEY);
+    return;
+  }
+  await AsyncStorage.setItem(USER_CACHE_KEY, JSON.stringify(user));
+}
 
 interface AuthState {
   user: User | null;
@@ -84,18 +109,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const tokens = await getTokens();
         if (tokens?.access) {
-          const user = await getProfile();
-          setCurrentUserId(user.id, user.username);
-          setState({ user, isLoading: false, isAuthenticated: true });
-          // Register push token with backend on session restore
-          syncPushToken();
-          syncContactSets();
+          const cachedUser = await getCachedUser();
+          if (cachedUser) {
+            setCurrentUserId(cachedUser.id, cachedUser.username);
+            setState({ user: cachedUser, isLoading: false, isAuthenticated: true });
+            syncPushToken();
+            syncContactSets();
+          }
+          try {
+            const user = await getProfile();
+            await setCachedUser(user);
+            setCurrentUserId(user.id, user.username);
+            setState({ user, isLoading: false, isAuthenticated: true });
+            // Register push token with backend on session restore
+            syncPushToken();
+            syncContactSets();
+          } catch (err) {
+            if (cachedUser && !isAuthFailure(err)) {
+              // Keep user logged in with cached profile on transient failures.
+              setState({ user: cachedUser, isLoading: false, isAuthenticated: true });
+            } else {
+              await clearTokens();
+              await setCachedUser(null);
+              setState({ user: null, isLoading: false, isAuthenticated: false });
+            }
+          }
         } else {
           setState((s) => ({ ...s, isLoading: false }));
         }
       } catch {
-        await clearTokens();
-        setState({ user: null, isLoading: false, isAuthenticated: false });
+        // Do not clear persisted auth on generic startup errors.
+        // If a cached user exists, keep the session and retry lazily later.
+        const cachedUser = await getCachedUser();
+        if (cachedUser) {
+          setCurrentUserId(cachedUser.id, cachedUser.username);
+          setState({ user: cachedUser, isLoading: false, isAuthenticated: true });
+        } else {
+          await clearTokens();
+          await setCachedUser(null);
+          setState({ user: null, isLoading: false, isAuthenticated: false });
+        }
       }
     })();
   }, []);
@@ -103,6 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     await loginApi(username, password);
     const user = await getProfile();
+    await setCachedUser(user);
     setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
     // Register push token with backend after login
@@ -114,6 +168,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await registerApi(username, email, password, displayName);
     await loginApi(username, password);
     const user = await getProfile();
+    await setCachedUser(user);
     setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
     // Register push token with backend after registration
@@ -125,6 +180,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     destroyWsManager();
     await stopForegroundService();
     await clearTokens();
+    await setCachedUser(null);
     await unregisterBackgroundTask();
     setState({ user: null, isLoading: false, isAuthenticated: false });
     useAppStore.getState().reset();
@@ -133,6 +189,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshUser = useCallback(async () => {
     try {
       const user = await getProfile();
+      await setCachedUser(user);
       setState((s) => ({ ...s, user }));
     } catch { /* ignore */ }
   }, []);
@@ -142,6 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
    *  access/refresh pair). */
   const loginWithTokens = useCallback(async () => {
     const user = await getProfile();
+    await setCachedUser(user);
     setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
     syncPushToken();

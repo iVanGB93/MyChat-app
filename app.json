@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.7",
+    "version": "1.0.8",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -64,7 +64,7 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/notification_icon.png",
+          "icon": "./assets/notification-icon.png",
           "color": "#5B21B6",
           "defaultChannel": "messages"
         }

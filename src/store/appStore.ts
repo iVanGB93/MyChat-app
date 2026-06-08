@@ -59,6 +59,8 @@ export interface NotifWsState {
   authenticated: boolean;
   /** UNIX ms — when the connection last transitioned to 'connected' */
   connectedAt: number;
+  /** UNIX ms — last time we received any inbound WS frame */
+  lastInboundAt: number;
   /** Last close code observed (e.g. 1011) */
   lastCloseCode: number | null;
   /** UNIX ms until which reconnect attempts are suspended (1011 breaker) */
@@ -137,6 +139,7 @@ export interface AppState {
   // Notification WS
   setNotifWsStatus: (status: WsStatus) => void;
   setNotifWsAuthenticated: (authenticated: boolean) => void;
+  setNotifWsInboundAt: (at?: number) => void;
   setNotifWsClose: (code: number | null) => void;
   setNotifWsSuspendedUntil: (until: number) => void;
 
@@ -209,6 +212,7 @@ const initialNotifWs: NotifWsState = {
   status: 'disconnected',
   authenticated: false,
   connectedAt: 0,
+  lastInboundAt: 0,
   lastCloseCode: null,
   suspendedUntil: 0,
 };
@@ -266,6 +270,8 @@ export const useAppStore = create<AppState>()(
     })),
   setNotifWsAuthenticated: (authenticated) =>
     set((s) => ({ notifWs: { ...s.notifWs, authenticated } })),
+  setNotifWsInboundAt: (at) =>
+    set((s) => ({ notifWs: { ...s.notifWs, lastInboundAt: at ?? Date.now() } })),
   setNotifWsClose: (code) =>
     set((s) => ({ notifWs: { ...s.notifWs, lastCloseCode: code, authenticated: false } })),
   setNotifWsSuspendedUntil: (until) =>
@@ -483,8 +489,17 @@ export const useAppStore = create<AppState>()(
 export const selectIsAuthenticated = (s: AppState) => s.user !== null;
 export const selectIsOnline = (s: AppState) => s.net === 'online';
 export const selectNotifWsStatus = (s: AppState) => s.notifWs.status;
+const NOTIF_WS_STALE_MS = 35_000;
+const NOTIF_WS_CONNECT_GRACE_MS = 12_000;
 export const selectNotifWsConnected = (s: AppState) =>
-  s.notifWs.status === 'connected' && s.notifWs.authenticated;
+  s.notifWs.status === 'connected' &&
+  s.notifWs.authenticated &&
+  (() => {
+    const now = Date.now();
+    const inboundFresh = s.notifWs.lastInboundAt > 0 && (now - s.notifWs.lastInboundAt) <= NOTIF_WS_STALE_MS;
+    const connectGrace = s.notifWs.connectedAt > 0 && (now - s.notifWs.connectedAt) <= NOTIF_WS_CONNECT_GRACE_MS;
+    return inboundFresh || connectGrace;
+  })();
 export const selectActiveRoomId = (s: AppState) => s.activeRoomId;
 export const selectTotalUnread = (s: AppState) =>
   Object.entries(s.unreadByRoom).reduce(

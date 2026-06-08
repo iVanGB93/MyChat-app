@@ -622,6 +622,7 @@ export async function connectRoom(roomId: string): Promise<void> {
                   type: 'message_ack',
                   message_id: msg.id,
                   sender_id: msg.sender_id,
+                  room_id: roomId,
                 }));
               } catch { /* ignore */ }
             }

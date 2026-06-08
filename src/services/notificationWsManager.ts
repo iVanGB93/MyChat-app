@@ -91,6 +91,7 @@ const WS_1011_COOLDOWN_MS = 30_000;
 
 let authTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 let _connectedAt = 0;
+let selfHealTimer: ReturnType<typeof setInterval> | null = null;
 
 const eventListeners = new Set<EventListener>();
 const statusListeners = new Set<StatusListener>();
@@ -320,6 +321,7 @@ async function connectWs() {
     socket.onmessage = (e) => {
       try {
         const payload: NotificationPayload = JSON.parse(e.data);
+        try { useAppStore.getState().setNotifWsInboundAt(Date.now()); } catch {}
 
         // ---- Pending deliveries bootstrap can arrive before auth_ok ----
         if ((payload as any).type === 'pending_deliveries') {
@@ -338,6 +340,7 @@ async function connectWs() {
           _connectedAt = Date.now();
           setStatus('connected');
           try { useAppStore.getState().setNotifWsAuthenticated(true); } catch {}
+          try { useAppStore.getState().setNotifWsInboundAt(Date.now()); } catch {}
           startPing();
           if (SEND_APP_STATE_ON_AUTH_OK) {
             const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';
@@ -357,7 +360,12 @@ async function connectWs() {
         if ((payload as any).type === 'auth_failed') {
           console.warn('[WsManager] auth_failed — closing');
           closeWs();
-          setStatus('disconnected');
+          if (_authenticated && _hasInternet) {
+            setStatus('reconnecting');
+            scheduleReconnect();
+          } else {
+            setStatus('disconnected');
+          }
           return;
         }
 
@@ -382,6 +390,18 @@ async function connectWs() {
         }
 
         console.log('[WsManager] event:', payload.event, payload.call_id ?? '');
+
+        // ---- incoming_call ack: mark call invite as received by this session ----
+        if (payload.event === 'incoming_call' && payload.call_id) {
+          if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'call_invite_ack',
+                call_id: String(payload.call_id),
+              }));
+            } catch { /* ignore */ }
+          }
+        }
 
         // ---- receiver_ready: an offline user just connected — flush our outbox for them ----
         if (payload.event === 'receiver_ready' && payload.room_id && payload.user_id) {
@@ -746,6 +766,26 @@ function stopAppStateListener() {
   }
 }
 
+function startSelfHealWatchdog() {
+  if (selfHealTimer) return;
+  selfHealTimer = setInterval(() => {
+    if (!_authenticated || !_hasInternet) return;
+    if (_suspendReconnectUntil > Date.now()) return;
+    if (_status === 'connected' || _status === 'connecting' || _status === 'reconnecting') return;
+    if (connecting) return;
+    console.log('[WsManager] watchdog reconnect from disconnected state');
+    _reconnectDelay = INITIAL_RECONNECT_MS;
+    connectWs();
+  }, 12_000);
+}
+
+function stopSelfHealWatchdog() {
+  if (selfHealTimer) {
+    clearInterval(selfHealTimer);
+    selfHealTimer = null;
+  }
+}
+
 /* ================================================================== */
 /*  Public API                                                         */
 /* ================================================================== */
@@ -764,6 +804,7 @@ export function initWsManager(userId: number): void {
   AsyncStorage.setItem(USER_ID_KEY, String(userId)).catch(() => {});
   startNetworkListener();
   startAppStateListener();
+  startSelfHealWatchdog();
   connectWs();
 }
 
@@ -782,6 +823,7 @@ export function destroyWsManager(): void {
   clearAllTimers();
   stopNetworkListener();
   stopAppStateListener();
+  stopSelfHealWatchdog();
   setStatus('disconnected');
   // Remove persisted userId so background won't auto-reconnect
   AsyncStorage.removeItem(USER_ID_KEY).catch(() => {});
