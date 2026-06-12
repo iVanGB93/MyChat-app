@@ -23,7 +23,6 @@ import { joinCall, endCall } from './src/services/callService';
 import { AppLifecycleBridge } from './src/store/AppLifecycleBridge';
 import { DebugOverlay } from './src/store/DebugOverlay';
 import { ConnectionBanner } from './src/store/ConnectionBanner';
-import { ActiveCallBanner } from './src/store/ActiveCallBanner';
 import { IncomingCallBanner } from './src/store/IncomingCallBanner';
 import ShareIntentBridge from './src/store/ShareIntentBridge';
 
@@ -145,7 +144,6 @@ export default function App() {
                 <ThemedStatusBar />
                 <AppNavigator />
                 <ConnectionBanner />
-                <ActiveCallBanner />
                 <IncomingCallBanner />
                 <ShareIntentBridge />
                 <DebugOverlay />

@@ -17,6 +17,8 @@ import api, { getTokens, saveTokens, BASE_URL } from './api';
 import { connectRoom, flushOutboxForRecipient, injectReceivedMessage, markIdsAsReadInRoom, applyRemoteMessageUpdates, ackMessageUpdates } from './chatWsManager';
 import { saveMessage, messageExists, markDelivered } from './localMessageStore';
 import { useAppStore } from '../store/appStore';
+import { shouldShowLocalIncomingCallNotification, shouldShowLocalMessageNotification } from './notificationPresentationPolicy';
+import { decideLocalIncomingCallNotification, decideLocalMessageNotification } from './notificationPresentationPolicy';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
@@ -582,65 +584,71 @@ async function connectWs() {
         const storeState = (() => {
           try { return useAppStore.getState(); } catch { return null; }
         })();
-        const isAppActive = storeState ? storeState.appLifecycle === 'active' : (AppState.currentState === 'active');
-        const isViewingThisRoom =
-          payload.event === 'new_message' &&
-          storeState?.activeRoomId === String(payload.room_id ?? '');
+        try {
+          const {
+            showMessageNotification,
+          } = require('./pushNotificationService');
+          const {
+            displayIncomingCallNotification,
+          } = require('./callNotificationService');
 
-        if (!isAppActive && !isViewingThisRoom) {
-          // Honor per-room mute: skip local notifications for muted rooms entirely.
-          const isMutedRoom =
-            payload.event === 'new_message' &&
-            !!storeState?.mutedRooms[String(payload.room_id ?? '')];
-          if (isMutedRoom) {
-            // fall through — listeners still see the event; we just don't surface a banner
-          } else {
-          try {
-            const {
-              showMessageNotification,
-            } = require('./pushNotificationService');
-            const {
-              displayIncomingCallNotification,
-            } = require('./callNotificationService');
-
-            if (
-              payload.event === 'new_message' &&
-              (payload.sender || payload.from_username) &&
-              payload.content
-            ) {
-              const senderName = String(payload.sender || payload.from_username || 'New message');
-              const senderId = typeof payload.sender_id === 'number' ? payload.sender_id : null;
-              // If sender is not in our contacts (and not us), reframe the
-              // local notification as a contact / message request.
-              const isStranger =
-                senderId !== null &&
-                !storeState?.contactIds?.[senderId];
-              const bodyText = isStranger
-                ? `wants to talk to you · tap to accept`
-                : String(payload.content);
-              showMessageNotification({
-                senderName,
-                senderId,
-                content: bodyText,
-                roomId: String(payload.room_id ?? ''),
-                roomName: payload.room_name || senderName,
-              }).catch(() => {});
-            } else if (
-              payload.event === 'incoming_call' &&
-              payload.caller &&
-              payload.call_id
-            ) {
-              displayIncomingCallNotification({
-                callId: payload.call_id,
-                callerId: payload.caller_id ?? 0,
-                callerName: payload.caller,
-                callType: payload.call_type ?? 'voice',
-                roomName: payload.room_name ?? '',
-              }).catch(() => {});
-            }
-          } catch { /* ignore — notification service unavailable */ }
+          const localMsgDecision = decideLocalMessageNotification(payload, storeState);
+          if (payload.event === 'new_message') {
+            console.log('[NotifPolicy] local_message', {
+              allow: localMsgDecision.allow,
+              reason: localMsgDecision.reason,
+              room_id: String(payload.room_id ?? ''),
+              message_id: String(payload.message_id ?? ''),
+            });
           }
-        }
+
+          if (
+            shouldShowLocalMessageNotification(payload, storeState) &&
+            (payload.sender || payload.from_username) &&
+            payload.content
+          ) {
+            const senderName = String(payload.sender || payload.from_username || 'New message');
+            const senderId = typeof payload.sender_id === 'number' ? payload.sender_id : null;
+            // If sender is not in our contacts (and not us), reframe the
+            // local notification as a contact / message request.
+            const isStranger =
+              senderId !== null &&
+              !storeState?.contactIds?.[senderId];
+            const bodyText = isStranger
+              ? `wants to talk to you · tap to accept`
+              : String(payload.content);
+            showMessageNotification({
+              senderName,
+              senderId,
+              content: bodyText,
+              roomId: String(payload.room_id ?? ''),
+              roomName: payload.room_name || senderName,
+            }).catch(() => {});
+          }
+
+          const localCallDecision = decideLocalIncomingCallNotification(payload, storeState);
+          if (payload.event === 'incoming_call') {
+            console.log('[NotifPolicy] local_call', {
+              allow: localCallDecision.allow,
+              reason: localCallDecision.reason,
+              call_id: String(payload.call_id ?? ''),
+            });
+          }
+
+          if (
+            shouldShowLocalIncomingCallNotification(payload, storeState) &&
+            payload.caller &&
+            payload.call_id
+          ) {
+            displayIncomingCallNotification({
+              callId: payload.call_id,
+              callerId: payload.caller_id ?? 0,
+              callerName: payload.caller,
+              callType: payload.call_type ?? 'voice',
+              roomName: payload.room_name ?? '',
+            }).catch(() => {});
+          }
+        } catch { /* ignore — notification service unavailable */ }
 
         // Cancel any displayed incoming-call notification when the call ends
         // or gets accepted elsewhere (the caller hung up, or the user picked

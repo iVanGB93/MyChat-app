@@ -26,6 +26,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'ActiveCall'>;
 export default function ActiveCallScreen({ route, navigation }: Props) {
   const { callId, otherName, callType, isOutgoing, peerUserId } = route.params;
   const { colors: Colors } = useTheme();
+  const CALLER_RINGBACK_CYCLE_MS = 10_200;
 
   // Keep the screen on for the entire duration of the call (voice and
   // video). Without this Android dims and locks the screen after the
@@ -35,9 +36,11 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
   const [seconds, setSeconds] = useState(0);
   const [status, setStatus] = useState<'connecting' | 'ringing' | 'connected' | 'ended'>(
-    isOutgoing ? 'ringing' : 'connected',
+    isOutgoing ? 'connecting' : 'connected',
   );
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const ringPulseRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const offerStartedRef = useRef(false);
   const hasEnded = useRef(false);
 
   const { subscribe } = useNotificationContext();
@@ -78,7 +81,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       callId,
       peerId: peerUserId ?? 0,
       peerName: otherName,
-      state: isOutgoing ? 'ringing' : 'connected',
+      state: isOutgoing ? 'connecting' : 'connected',
       callType,
     });
     return () => {
@@ -101,21 +104,31 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   /* ---- play ringback for outgoing calls ---- */
   useEffect(() => {
     if (isOutgoing && status === 'ringing') {
-      playLooping('ringback', {
-        ignoreRinger: true,
-        fallbackName: 'ringtone',
-      });
+      // Dedicated outbound ringback tone (different from incoming ringtone).
+      // We intentionally avoid stacked loop+pulse playback to prevent overlap.
+      stopLooping();
+      playSound('caller_ringback', { ignoreRinger: true }).catch(() => {});
+      if (!ringPulseRef.current) {
+        ringPulseRef.current = setInterval(() => {
+          playSound('caller_ringback', { ignoreRinger: true }).catch(() => {});
+        }, CALLER_RINGBACK_CYCLE_MS);
+      }
     }
     if (status === 'connected') {
       stopLooping();
+      if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
       playSound('call_connect');
     }
     if (status === 'ended') {
       stopLooping();
+      if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
       playSound('call_end');
     }
-    return () => { stopLooping(); };
-  }, [status]);
+    return () => {
+      stopLooping();
+      if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
+    };
+  }, [status, isOutgoing]);
 
   /* ---- listen for signaling events (filtered by call_id) ---- */
   useEffect(() => {
@@ -127,9 +140,14 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       if (event === 'call_accepted') {
         console.log('[ActiveCall] call_accepted → starting WebRTC offer');
         setStatus('connected');
-        startAsOfferer();
+        if (!offerStartedRef.current) {
+          offerStartedRef.current = true;
+          startAsOfferer();
+        }
       } else if (event === 'call_ended' || event === 'call_rejected') {
         console.log('[ActiveCall] call ended/rejected');
+        stopLooping();
+        if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
         setStatus('ended');
         hasEnded.current = true;
         cleanupWebRTC();
@@ -141,22 +159,29 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
   /* ---- poll call status as fallback ---- */
   useEffect(() => {
-    if (!isOutgoing || status !== 'ringing') return;
+    if (!isOutgoing || status === 'connected' || status === 'ended') return;
     const poll = setInterval(async () => {
       if (hasEnded.current) return;
       try {
         const s = await getCallStatus(callId);
-        if (s === 'ongoing' && status === 'ringing') {
+        if (s === 'ringing') {
+          setStatus((prev) => (prev === 'connected' || prev === 'ended' ? prev : 'ringing'));
+        } else if (s === 'ongoing') {
           setStatus('connected');
-          startAsOfferer();
+          if (!offerStartedRef.current) {
+            offerStartedRef.current = true;
+            startAsOfferer();
+          }
         } else if (s === 'ended' || s === 'rejected' || s === 'missed') {
+          stopLooping();
+          if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
           setStatus('ended');
           hasEnded.current = true;
           cleanupWebRTC();
           setTimeout(() => navigation.goBack(), 1200);
         }
       } catch { /* ignore */ }
-    }, 3000);
+    }, 1200);
     return () => clearInterval(poll);
   }, [isOutgoing, status, callId, startAsOfferer, cleanupWebRTC]);
 
@@ -194,9 +219,11 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   const handleEndCall = async () => {
     if (hasEnded.current) return;
     hasEnded.current = true;
+    stopLooping();
+    if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
+    setStatus('ended');
     try { await endCall(callId); } catch {}
     cleanupWebRTC();
-    setStatus('ended');
     setTimeout(() => navigation.goBack(), 800);
   };
 

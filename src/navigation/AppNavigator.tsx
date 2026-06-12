@@ -29,6 +29,8 @@ import { useTheme } from '../contexts/ThemeContext';
 import { useNotificationContext, NotificationPayload } from '../contexts/NotificationContext';
 import { playSound } from '../services/soundService';
 import { useAppStore } from '../store/appStore';
+import { shouldHandleIncomingCallInApp, shouldShowInAppMessageToast } from '../services/notificationPresentationPolicy';
+import { decideIncomingCallInApp, decideInAppMessageToast } from '../services/notificationPresentationPolicy';
 
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -126,11 +128,25 @@ function IncomingCallListener() {
   useEffect(() => {
     const unsub = subscribe((payload) => {
       if (!navigationRef.isReady()) return;
+      const store = useAppStore.getState();
+      const incomingDecision = decideIncomingCallInApp(payload, store);
+      if (payload.event === 'incoming_call') {
+        console.log('[NotifPolicy] in_app_call', {
+          allow: incomingDecision.allow,
+          reason: incomingDecision.reason,
+          call_id: String(payload.call_id ?? ''),
+        });
+      }
+      if (!shouldHandleIncomingCallInApp(payload, store)) return;
       if (
         payload.event === 'incoming_call' &&
         payload.call_id &&
         payload.call_id !== handled.current
       ) {
+        const cur = useAppStore.getState().activeCall;
+        if (cur && cur.callId === payload.call_id && cur.state !== 'ended') {
+          return;
+        }
         console.log('[IncomingCallListener] incoming_call →', payload.call_id);
         handled.current = payload.call_id;
 
@@ -141,7 +157,6 @@ function IncomingCallListener() {
 
         // If we're already on an active call, surface the new incoming call
         // as an in-app banner instead of taking over the screen.
-        const cur = useAppStore.getState().activeCall;
         const busy = !!cur && (cur.state === 'connected' || cur.state === 'connecting');
         if (busy) {
           useAppStore.getState().setIncomingCall({
@@ -236,15 +251,17 @@ function MessageNotificationListener() {
         }
       };
 
-      // ── Guard: don't show if already on that chat room ────────────────
-      // Uses the global app store as the single source of truth.
-      const isViewingRoom = (roomId: string) => {
-        return useAppStore.getState().activeRoomId === roomId;
-      };
-
       // ── New message ───────────────────────────────────────────────────
       if (payload.event === 'new_message') {
-        if (isViewingRoom(payload.room_id ?? '')) return;
+        const store = useAppStore.getState();
+        const toastDecision = decideInAppMessageToast(payload, store);
+        console.log('[NotifPolicy] in_app_message', {
+          allow: toastDecision.allow,
+          reason: toastDecision.reason,
+          room_id: String(payload.room_id ?? ''),
+          message_id: String(payload.message_id ?? ''),
+        });
+        if (!shouldShowInAppMessageToast(payload, store)) return;
         playSound('message_received');
         groupOrShow({
           roomId:   payload.room_id ?? '',
@@ -258,7 +275,14 @@ function MessageNotificationListener() {
 
       // ── Message update (reaction / delete / edit) ─────────────────────
       if (payload.event === 'message_update' && payload.from_username) {
-        if (isViewingRoom(payload.room_id ?? '')) return;
+        const store = useAppStore.getState();
+        const toastDecision = decideInAppMessageToast(payload, store);
+        console.log('[NotifPolicy] in_app_message_update', {
+          allow: toastDecision.allow,
+          reason: toastDecision.reason,
+          room_id: String(payload.room_id ?? ''),
+        });
+        if (!shouldShowInAppMessageToast(payload, store)) return;
         const updates: Array<{ message_id: string; changes: Record<string, any> }> =
           (payload as any).updates ?? [];
         let summary = '';

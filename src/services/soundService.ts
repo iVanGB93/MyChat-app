@@ -17,6 +17,7 @@ type SoundName =
   | 'message_sent'
   | 'message_received'
   | 'ringtone'
+  | 'caller_ringback'
   | 'ringback'
   | 'call_connect'
   | 'call_end';
@@ -28,11 +29,17 @@ interface LoopOptions {
   fallbackName?: SoundName;
 }
 
+interface PlayOptions {
+  /** Ignore ringer-mode suppression (useful for caller ringback). */
+  ignoreRinger?: boolean;
+}
+
 /* eslint-disable @typescript-eslint/no-var-requires */
 const SOUND_FILES: Record<SoundName, number> = {
   message_sent: require('../../assets/sounds/message_sent.wav'),
   message_received: require('../../assets/sounds/message_received.wav'),
   ringtone: require('../../assets/sounds/ringtone.mp3'),
+  caller_ringback: require('../../assets/sounds/caller_ringback.wav'),
   ringback: require('../../assets/sounds/ringback.wav'),
   call_connect: require('../../assets/sounds/call_connect.wav'),
   call_end: require('../../assets/sounds/call_end.wav'),
@@ -58,10 +65,10 @@ async function ensureAudioMode() {
 }
 
 /** Play a one-shot sound effect (non-looping). Respects ringer mode. */
-export async function playSound(name: SoundName): Promise<void> {
+export async function playSound(name: SoundName, opts: PlayOptions = {}): Promise<void> {
   const mode = getRingerModeSync();
-  if (mode === 'silent') return;
-  if (mode === 'vibrate') {
+  if (!opts.ignoreRinger && mode === 'silent') return;
+  if (!opts.ignoreRinger && mode === 'vibrate') {
     // Short blip so the user gets *some* feedback without audio.
     try { Vibration.vibrate(40); } catch { /* ignore */ }
     return;

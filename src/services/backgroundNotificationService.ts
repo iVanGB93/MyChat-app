@@ -11,6 +11,7 @@ import {
   showMessageNotification,
 } from './pushNotificationService';
 import { displayIncomingCallNotification } from './callNotificationService';
+import { useAppStore } from '../store/appStore';
 
 const TASK_NAME = 'BACKGROUND_NOTIFICATION_CHECK';
 
@@ -95,6 +96,12 @@ async function checkPendingNotifications(): Promise<boolean> {
 
     // Show notifications for incoming calls
     for (const call of data.calls) {
+      const active = useAppStore.getState().activeCall;
+      const alreadyInThisCall = !!active && active.callId === call.call_id && active.state !== 'ended';
+      const callInProgress = !!active && (active.state === 'connecting' || active.state === 'connected');
+      if (alreadyInThisCall || callInProgress) {
+        continue;
+      }
       if (!lastShownCallIds.has(call.call_id)) {
         await displayIncomingCallNotification({
           callId: call.call_id,

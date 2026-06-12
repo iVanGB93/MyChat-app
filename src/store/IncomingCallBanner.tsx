@@ -152,7 +152,7 @@ export function IncomingCallBanner() {
       style={[
         styles.wrapper,
         {
-          top: insets.top + 60, // sit just below the ActiveCallBanner
+          top: insets.top + 8,
           opacity: slide,
           transform: [
             { translateY: slide.interpolate({ inputRange: [0, 1], outputRange: [-30, 0] }) },
