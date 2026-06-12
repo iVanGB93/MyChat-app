@@ -1,116 +1,79 @@
 /* ------------------------------------------------------------------ */
-/*  Foreground Service — keeps the app process alive so the WebSocket  */
-/*  stays connected even when the app is in the background / closed.   */
+/*  Call Foreground Service                                            */
 /*                                                                     */
-/*  Uses a custom native service (MyChatForegroundService) that        */
-/*  creates a MediaSession + MediaStyle notification so Android 14+/16 */
-/*  accepts the "mediaPlayback" foreground service type.               */
+/*  Started only while a voice/video call is active so Android does   */
+/*  not kill the process mid-call. The notification shows the peer    */
+/*  name + call type and tapping it reopens the ActiveCall screen.    */
 /*                                                                     */
-/*  The JS keepalive runs via setInterval, which works because the     */
-/*  native service keeps the process alive.                            */
+/*  The persistent background service for WS keepalive has been       */
+/*  removed. The WS reconnects itself via FCM wake-ups and the        */
+/*  built-in reconnect logic in notificationWsManager.                */
 /* ------------------------------------------------------------------ */
 
-import { Platform, AppState, NativeModules } from 'react-native';
-import { ensureWsAlive } from './notificationWsManager';
+import { Platform, NativeModules } from 'react-native';
 import { useAppStore } from '../store/appStore';
 
 const { MyChatService } = NativeModules;
 
-const KEEPALIVE_INTERVAL_MS = 8_000;  // check WS health every 8 s
-const POLL_SAFETY_MS = 15_000;        // background poll safety net every 15 s
+let _callServiceRunning = false;
+let _storeUnsub: (() => void) | null = null;
 
-let _serviceRunning = false;
-let _keepaliveTimer: ReturnType<typeof setInterval> | null = null;
-let _keepaliveRunning = false; // prevents overlapping interval ticks
-let _lastPollTime = 0;
+/* ---- Build notification text from store ---- */
+function buildCallContent(): { title: string; text: string } {
+  const call = useAppStore.getState().activeCall;
+  if (call) {
+    const icon = call.callType === 'video' ? '📹' : '📞';
+    return { title: 'Axonic — On a call', text: `${icon} ${call.peerName}` };
+  }
+  return { title: 'Axonic', text: 'In a call' };
+}
+
+function _pushCallUpdate(): void {
+  if (!_callServiceRunning) return;
+  try {
+    const { title, text } = buildCallContent();
+    MyChatService.update(title, text).catch(() => {});
+  } catch { /* ignore */ }
+}
 
 /**
- * Start the foreground service and keepalive timer.
+ * Start the foreground service for the duration of a call.
+ * Safe to call multiple times — only starts once.
  */
 export async function startForegroundService(): Promise<void> {
   if (Platform.OS !== 'android') return;
-  if (_serviceRunning) return;
-
+  if (_callServiceRunning) return;
   try {
-    // Start the native foreground service (MediaSession + MediaStyle notification)
     await MyChatService.start();
-    _serviceRunning = true;
+    _callServiceRunning = true;
     try { useAppStore.getState().setForegroundServiceRunning(true); } catch {}
-    console.log('[ForegroundService] ✓ native service started');
-
-    // Start JS keepalive timer
-    startKeepaliveTimer();
+    _pushCallUpdate();
+    // Keep the notification in sync if the call state changes
+    _storeUnsub = useAppStore.subscribe((s, prev) => {
+      if (s.activeCall !== prev.activeCall) _pushCallUpdate();
+    });
+    console.log('[ForegroundService] started for call');
   } catch (err: any) {
     console.warn('[ForegroundService] start error:', err?.message ?? err);
   }
 }
 
 /**
- * Stop the foreground service and keepalive timer.
+ * Stop the foreground service when the call ends.
  */
 export async function stopForegroundService(): Promise<void> {
   if (Platform.OS !== 'android') return;
-
-  stopKeepaliveTimer();
-
+  if (_storeUnsub) { _storeUnsub(); _storeUnsub = null; }
   try {
     await MyChatService.stop();
-    console.log('[ForegroundService] stopped');
+    console.log('[ForegroundService] stopped after call');
   } catch (err: any) {
     console.warn('[ForegroundService] stop error:', err?.message ?? err);
   }
-  _serviceRunning = false;
+  _callServiceRunning = false;
   try { useAppStore.getState().setForegroundServiceRunning(false); } catch {}
 }
 
-/** Check if the service is running */
 export function isForegroundServiceRunning(): boolean {
-  return _serviceRunning;
-}
-
-/* ================================================================== */
-/*  JS keepalive timer — runs because the native service keeps the     */
-/*  process alive even when the Activity is destroyed.                 */
-/* ================================================================== */
-
-function startKeepaliveTimer() {
-  if (_keepaliveTimer) return;
-
-  _keepaliveTimer = setInterval(async () => {
-    // Skip this tick if the previous one is still running (slow network / server)
-    if (_keepaliveRunning) {
-      console.warn('[ForegroundService] keepalive tick overlapping — skipping');
-      return;
-    }
-    _keepaliveRunning = true;
-    try {
-      // Ensure the WebSocket is alive
-      await ensureWsAlive();
-
-      // Safety-net poll when in background
-      if (AppState.currentState !== 'active') {
-        const now = Date.now();
-        if (now - _lastPollTime >= POLL_SAFETY_MS) {
-          _lastPollTime = now;
-          try {
-            const { checkPendingNotifications } = require('./backgroundNotificationService');
-            await checkPendingNotifications();
-          } catch { /* ignore */ }
-        }
-      }
-    } catch (err) {
-      console.warn('[ForegroundService] keepalive error:', err);
-    } finally {
-      _keepaliveRunning = false;
-    }
-  }, KEEPALIVE_INTERVAL_MS);
-
-  console.log('[ForegroundService] keepalive timer started');
-}
-
-function stopKeepaliveTimer() {
-  if (_keepaliveTimer) {
-    clearInterval(_keepaliveTimer);
-    _keepaliveTimer = null;
-  }
+  return _callServiceRunning;
 }

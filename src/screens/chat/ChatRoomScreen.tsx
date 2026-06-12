@@ -68,6 +68,7 @@ function toMsg(m: LocalMessage): Message {
     file: m.file_uri,
     file_uri: m.file_uri,
     duration_ms: m.duration_ms,
+    sync: m.sync,
     is_read: false,
     created_at: m.created_at,
     reactions: m.reactions,
@@ -88,6 +89,7 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
     file: m.file_uri ?? null,
     file_uri: m.file_uri ?? null,
     duration_ms: m.duration_ms ?? null,
+    sync: undefined,
     is_read: m.is_read ?? false,
     created_at: m.created_at,
     reactions: m.reactions ?? {},
@@ -217,13 +219,28 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     for (const m of sqliteMessages) byId.set(m.id, m);
     // WS messages overlay — wsToMsg now copies reactions and is_deleted
     for (const m of wsMessages) byId.set(m.id, wsToMsg(m, roomId));
-    // For historical-only messages (not in WS session), re-apply SQLite reactions/is_deleted
-    // which may have been updated by a remote message_update received in a previous session.
+    // Re-apply local SQLite metadata that WS snapshots don't carry (sync), and
+    // for historical-only messages also preserve reactions/deletes.
     for (const [id, msg] of byId) {
-      if (wsIdSet.has(id)) continue; // WS copy is more current — skip
       const sql = sqliteById.get(id);
-      if (sql && (sql.is_deleted || Object.keys(sql.reactions ?? {}).length > 0)) {
-        byId.set(id, { ...msg, reactions: sql.reactions, is_deleted: sql.is_deleted });
+      if (!sql) continue;
+      if (wsIdSet.has(id)) {
+        if (msg.sync === undefined) {
+          byId.set(id, { ...msg, sync: sql.sync });
+        }
+        continue;
+      }
+      if (
+        msg.sync === undefined ||
+        sql.is_deleted ||
+        Object.keys(sql.reactions ?? {}).length > 0
+      ) {
+        byId.set(id, {
+          ...msg,
+          sync: msg.sync ?? sql.sync,
+          reactions: sql.reactions,
+          is_deleted: sql.is_deleted,
+        });
       }
     }
     console.log('[ChatRoom] allMessages:', byId.size, '(sqlite:', sqliteMessages.length, 'ws:', wsMessages.length, ')');
@@ -722,6 +739,16 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 </TouchableOpacity>
               ) : (
                 <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
+              )}
+              {__DEV__ && isMine && !item.is_deleted && (
+                <Text
+                  style={[
+                    styles.syncDebugText,
+                    { color: item.sync ? Colors.success : Colors.warning },
+                  ]}
+                >
+                  {item.sync ? 'SYNC OK' : 'SYNC PENDING'}
+                </Text>
               )}
               <View style={styles.metaRow}>
                 <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
@@ -1273,6 +1300,13 @@ const styles = StyleSheet.create({
     fontSize: Font.size.md,
     lineHeight: 22,
     letterSpacing: 0.2,
+  },
+  syncDebugText: {
+    marginTop: 4,
+    fontSize: 9,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textAlign: 'right',
   },
 
   metaRow: {

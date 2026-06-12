@@ -1,6 +1,3 @@
-// Register foreground service headless task BEFORE anything else (must be module-level)
-import './src/services/foregroundService';
-
 // Notifee REQUIRES the background event handler to be registered at the
 // module top-level of the entry file so it can fire when the app is killed
 // or backgrounded (e.g. when the user taps Accept / Decline on the call

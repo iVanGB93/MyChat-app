@@ -23,7 +23,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
-import { saveMessage, messageExists, getPendingOutbox, getUndeliveredSentMessages, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, deleteOutboxUpdates, applyMessageChanges } from './localMessageStore';
+import { saveMessage, messageExists, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState } from './localMessageStore';
 import { readAudioAsBase64, readFileAsBase64, saveIncomingAudio, saveIncomingImage } from './voiceMessageUtils';
 import { useAppStore } from '../store/appStore';
 
@@ -246,22 +246,19 @@ function startPing(roomId: string, s: RoomState) {
   }, PING_INTERVAL_MS);
 }
 
-/** Send in-memory pending updates now (if connected). Drains the in-memory queue. */
+/** Send in-memory pending updates now (if connected). ACK deletes outbox rows. */
 function _flushPendingUpdates(roomId: string, s: RoomState): void {
   if (s.pendingUpdates.length === 0) return;
   if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
-  const batch = s.pendingUpdates.splice(0);
+  const batch = [...s.pendingUpdates];
   try {
     s.ws.send(JSON.stringify({
       type: 'message_update',
-      updates: batch.map((u) => ({ message_id: u.message_id, changes: u.changes })),
+      updates: batch.map((u) => ({ id: u.id, message_id: u.message_id, changes: u.changes })),
     }));
-    // Remove from SQLite outbox after successful send
-    deleteOutboxUpdates(batch.map((u) => u.id)).catch(() => {});
-    console.log('[ChatWsManager] flushed', batch.length, 'pending updates for room', roomId);
+    console.log('[ChatWsManager] sent', batch.length, 'pending updates for room', roomId);
   } catch {
-    // Put back on failure — will retry on next reconnect
-    s.pendingUpdates.unshift(...batch);
+    // Keep queued entries; they will be retried on next reconnect/flush.
   }
 }
 
@@ -271,13 +268,31 @@ async function _flushSQLiteOutbox(roomId: string, s: RoomState): Promise<void> {
     const entries = await getPendingOutboxUpdates(roomId);
     if (!entries.length) return;
     if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
-    s.ws.send(JSON.stringify({
-      type: 'message_update',
-      updates: entries.map((e) => ({ message_id: e.message_id, changes: e.changes })),
-    }));
-    await deleteOutboxUpdates(entries.map((e) => e.id));
-    console.log('[ChatWsManager] flushed', entries.length, 'SQLite outbox entries for room', roomId);
+    const have = new Set(s.pendingUpdates.map((u) => u.id));
+    for (const e of entries) {
+      if (!have.has(e.id)) s.pendingUpdates.push({ id: e.id, message_id: e.message_id, changes: e.changes });
+    }
+    _flushPendingUpdates(roomId, s);
   } catch { /* ignore */ }
+}
+
+function _ackPendingUpdates(roomId: string, s: RoomState, ids: string[]): void {
+  if (!ids.length) return;
+  const idSet = new Set(ids);
+  s.pendingUpdates = s.pendingUpdates.filter((u) => !idSet.has(u.id));
+  ackOutboxUpdates(ids).catch(() => {});
+  console.log('[ChatWsManager] acked', ids.length, 'message updates for room', roomId);
+}
+
+export function ackMessageUpdates(roomId: string, ids: string[]): void {
+  if (!ids.length) return;
+  const s = rooms.get(roomId);
+  if (s) {
+    _ackPendingUpdates(roomId, s, ids);
+    return;
+  }
+  // Room not in memory (screen closed). Still clear SQLite outbox + sync flags.
+  ackOutboxUpdates(ids).catch(() => {});
 }
 
 function scheduleReconnect(roomId: string, s: RoomState) {
@@ -304,6 +319,14 @@ function scheduleReconnect(roomId: string, s: RoomState) {
   }, delay);
   // Advance backoff (capped at MAX) — only reset on auth_ok, not here
   s.reconnectDelay = Math.min(delay * 2, MAX_RECONNECT_MS);
+}
+
+function _syncRoomPendingNow(roomId: string, s: RoomState): void {
+  if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
+  _flushPendingUpdates(roomId, s);
+  _flushSQLiteOutbox(roomId, s).catch(() => {});
+  _retryUndeliveredMessages(roomId, s).catch(() => {});
+  _retryPendingUnsyncedMessages(roomId, s).catch(() => {});
 }
 
 /** Refresh the JWT access token with a 5-second hard timeout. */
@@ -359,7 +382,12 @@ export async function connectRoom(roomId: string): Promise<void> {
 
   if (s.suspendReconnectUntil > Date.now()) return;
 
-  if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) return;
+  if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+    // Room already connected: still force a sync pass so pending local messages
+    // are retried every time the user opens the chat.
+    _syncRoomPendingNow(roomId, s);
+    return;
+  }
   // If the socket is already OPEN but auth handshake is still in progress,
   // don't start another connect attempt.
   if (s.ws?.readyState === WebSocket.OPEN && !s.authenticated) return;
@@ -501,10 +529,10 @@ export async function connectRoom(roomId: string): Promise<void> {
             s.pendingIds = new Set([...s.pendingIds].filter((id) => id !== data.message_id));
             notifyListeners(roomId, s);
           }
-          // Promote chat-list status from 'pending' → 'sent' if this was the most recent outgoing.
+          // Promote chat-list status from 'pending' → 'delivered' if this was the most recent outgoing.
           if (data.message_id) {
             try {
-              useAppStore.getState().setRoomLastMessageStatus(roomId, String(data.message_id), 'sent');
+              useAppStore.getState().setRoomLastMessageStatus(roomId, String(data.message_id), 'delivered');
             } catch {}
           }
           return;
@@ -533,10 +561,29 @@ export async function connectRoom(roomId: string): Promise<void> {
 
         // ---- Unified mutation relay: is_read, reactions, is_deleted, content ----
         if (msgType === 'message_update') {
-          const updates: Array<{ message_id: string; changes: MessageChanges }> = data.updates ?? [];
+          const updates: Array<{ id?: string; message_id: string; changes: MessageChanges }> = data.updates ?? [];
           if (updates.length > 0) {
-            _applyUpdatesToState(roomId, s, updates);
+            _applyUpdatesToState(roomId, s, updates.map((u) => ({ message_id: u.message_id, changes: u.changes })));
+            // Confirm to sender that these mutations were applied locally.
+            const ackIds = updates.map((u) => String(u.id ?? '')).filter((id) => !!id);
+            const senderId = Number(data.sender_id ?? 0);
+            if (ackIds.length > 0 && senderId > 0) {
+              try {
+                s.ws?.send(JSON.stringify({
+                  type: 'message_update_ack',
+                  room_id: roomId,
+                  sender_id: senderId,
+                  update_ids: ackIds,
+                }));
+              } catch {}
+            }
           }
+          return;
+        }
+
+        if (msgType === 'message_update_ack') {
+          const ids: string[] = (data.update_ids ?? []).map((x: unknown) => String(x));
+          if (ids.length > 0) _ackPendingUpdates(roomId, s, ids);
           return;
         }
 
@@ -590,6 +637,8 @@ export async function connectRoom(roomId: string): Promise<void> {
                 file_uri: localFileUri,
                 created_at: msg.created_at,
                 is_mine: isOwn,
+                sync: !isOwn,
+                status: isOwn ? 'pending' : 'delivered',
                 reactions: {},
                 is_deleted: false,
                 is_read: false,
@@ -717,15 +766,32 @@ function ensureNetworkListener() {
 function ensureAppStateListener() {
   if (_appStateUnsub) return;
   _appStateUnsub = AppState.addEventListener('change', (appState) => {
-    if (appState !== 'active') return;
-    // Debounce: notificationWsManager fires on the same AppState event.
-    // Stagger by 60ms so only one manager reconnects at a time.
+    if (appState !== 'active') {
+      // App going to background — close all room sockets so the Django consumer
+      // stops treating this device as "in-room". Subsequent messages will be
+      // delivered via the notification WS channel (and show as local push
+      // notifications) instead of being silently dropped into the backgrounded
+      // chat socket where no UI is listening.
+      rooms.forEach((s, roomId) => {
+        if (s.ws) {
+          console.log('[ChatWsManager] app backgrounded — closing room WS', roomId);
+          clearTimers(s);
+          closeWs(s);
+          setStatus(roomId, s, 'disconnected');
+          // Reset backoff so the reconnect on foreground is instant.
+          s.reconnectDelay = INITIAL_RECONNECT_MS;
+        }
+      });
+      return;
+    }
+
+    // App came to foreground — debounce, then reconnect any room with listeners.
     if (_appStateDebouncing) return;
     _appStateDebouncing = true;
     setTimeout(() => { _appStateDebouncing = false; }, 60);
 
     rooms.forEach((s, roomId) => {
-      if (s.listeners.size > 0 && s.status !== 'connected') {
+      if (s.listeners.size > 0) {
         console.log('[ChatWsManager] app foregrounded — reconnecting room', roomId);
         s.reconnectDelay = INITIAL_RECONNECT_MS;
         connectRoom(roomId);
@@ -766,6 +832,9 @@ export function subscribeRoom(roomId: string, listener: RoomListener): () => voi
   // Connect if not already open
   if (!s.ws || s.ws.readyState !== WebSocket.OPEN || !s.authenticated) {
     connectRoom(roomId);
+  } else {
+    // User re-opened an already-connected room: re-run pending sync now.
+    _syncRoomPendingNow(roomId, s);
   }
   return () => {
     s.listeners.delete(listener);
@@ -884,6 +953,8 @@ export async function sendChatMessage(
         file_uri: fileUri,
         created_at: createdAt,
         is_mine: true,
+        sync: false,
+        status: 'pending',
         reactions: {},
         is_deleted: false,
         is_read: false,
@@ -967,6 +1038,39 @@ async function _retryUndeliveredMessages(roomId: string, s: RoomState): Promise<
     const msgs = await getUndeliveredSentMessages(roomId, _myUserId);
     if (msgs.length === 0) return;
     console.log('[ChatWsManager] retrying', msgs.length, 'undelivered messages in room', roomId);
+    for (const msg of msgs) {
+      if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+        let audioB64: string | null = null;
+        let imageB64: string | null = null;
+        if (msg.type === 'voice' && msg.file_uri) {
+          try { audioB64 = await readAudioAsBase64(msg.file_uri); } catch {}
+        } else if (msg.type === 'image' && msg.file_uri) {
+          try { imageB64 = await readFileAsBase64(msg.file_uri); } catch {}
+        }
+        s.ws.send(JSON.stringify({
+          id: msg.id,
+          message: msg.content,
+          message_type: msg.type,
+          created_at: msg.created_at,
+          ...(msg.reply_to ? { reply_to: msg.reply_to } : {}),
+          ...(msg.duration_ms != null ? { duration_ms: msg.duration_ms } : {}),
+          ...(audioB64 ? { audio_b64: audioB64, audio_mime: 'audio/m4a' } : {}),
+          ...(imageB64 ? { image_b64: imageB64, image_mime: 'image/jpeg' } : {}),
+        }));
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+/**
+ * Fallback resend path for local rows that are explicitly pending+unsynced.
+ * Covers edge-cases where delivery_tracking metadata is incomplete.
+ */
+async function _retryPendingUnsyncedMessages(roomId: string, s: RoomState): Promise<void> {
+  if (_myUserId === null) return;
+  try {
+    const msgs = await getPendingUnsyncedOutgoingMessages(roomId, _myUserId);
+    if (msgs.length === 0) return;
     for (const msg of msgs) {
       if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
         let audioB64: string | null = null;
@@ -1096,6 +1200,8 @@ export function sendMessageUpdate(
   s.pendingUpdates.push({ id, message_id: messageId, changes });
   // Persist so it survives an app restart before the WS connects
   queueMessageUpdate(roomId, messageId, changes).catch(() => {});
+  // Local mutation diverged from peer until ACK is received.
+  setMessageSyncState(messageId, false).catch(() => {});
   // Attempt immediate send
   _flushPendingUpdates(roomId, s);
 }
@@ -1113,6 +1219,7 @@ export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
     s.pendingUpdates.push({ id, message_id: msgId, changes: { is_read: true } });
     // Persist to outbox for retry on reconnect
     queueMessageUpdate(roomId, msgId, { is_read: true }).catch(() => {});
+    setMessageSyncState(msgId, false).catch(() => {});
     // Mark read locally so loadFromDB filters this message out on the next reload
     applyMessageChanges(msgId, { is_read: true }).catch(() => {});
   }

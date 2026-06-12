@@ -21,6 +21,13 @@ type SoundName =
   | 'call_connect'
   | 'call_end';
 
+interface LoopOptions {
+  /** Ignore ringer-mode suppression (useful for caller ringback). */
+  ignoreRinger?: boolean;
+  /** Fallback clip if the primary asset fails to load/play. */
+  fallbackName?: SoundName;
+}
+
 /* eslint-disable @typescript-eslint/no-var-requires */
 const SOUND_FILES: Record<SoundName, number> = {
   message_sent: require('../../assets/sounds/message_sent.wav'),
@@ -69,12 +76,12 @@ export async function playSound(name: SoundName): Promise<void> {
 }
 
 /** Start playing a sound in a loop (e.g. ringtone, ringback). Respects ringer mode. */
-export async function playLooping(name: SoundName): Promise<void> {
+export async function playLooping(name: SoundName, opts: LoopOptions = {}): Promise<void> {
   const mode = getRingerModeSync();
   // In silent/vibrate we never play audio. The caller is responsible
   // for vibrating in vibrate mode (so we don't double-vibrate when
   // both ringtone + vibration interval are running).
-  if (mode !== 'normal') return;
+  if (!opts.ignoreRinger && mode !== 'normal') return;
 
   const myToken = ++loopingToken;
   try {
@@ -82,7 +89,16 @@ export async function playLooping(name: SoundName): Promise<void> {
     await ensureAudioMode();
     // If a stopLooping() happened during the awaits above, abandon this start.
     if (myToken !== loopingToken) return;
-    const player = createAudioPlayer(SOUND_FILES[name]);
+    let player: AudioPlayer | null = null;
+    try {
+      player = createAudioPlayer(SOUND_FILES[name]);
+    } catch {
+      if (opts.fallbackName) {
+        player = createAudioPlayer(SOUND_FILES[opts.fallbackName]);
+      } else {
+        throw new Error(`Unable to load looping sound: ${name}`);
+      }
+    }
     player.loop = true;
     player.play();
     // Final race check — if stop landed between createAudioPlayer and now,

@@ -32,4 +32,14 @@ class MyChatServiceModule(private val reactContext: ReactApplicationContext) :
             promise.reject("STOP_ERROR", e.message, e)
         }
     }
+
+    @ReactMethod
+    fun update(title: String, text: String, promise: Promise) {
+        try {
+            MyChatForegroundService.updateNotification(reactContext, title, text)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("UPDATE_ERROR", e.message, e)
+        }
+    }
 }

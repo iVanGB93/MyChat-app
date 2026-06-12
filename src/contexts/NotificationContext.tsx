@@ -16,7 +16,6 @@ import React, {
 } from 'react';
 import { useAuth } from './AuthContext';
 import { checkPendingNotifications } from '../services/backgroundNotificationService';
-import { startForegroundService, stopForegroundService } from '../services/foregroundService';
 import {
   initWsManager,
   destroyWsManager,
@@ -60,10 +59,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   useEffect(() => {
     if (isAuthenticated && user?.id) {
       initWsManager(user.id);
-      startForegroundService();
     } else {
       destroyWsManager();
-      stopForegroundService();
     }
     // NOTE: NO cleanup that destroys the WS — we want it to survive unmounts.
     // destroyWsManager is only called when isAuthenticated becomes false (logout).

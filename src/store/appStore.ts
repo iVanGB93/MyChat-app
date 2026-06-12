@@ -93,8 +93,8 @@ export interface AppState {
   /** Unread message counts per room (for badges) */
   unreadByRoom: Record<string, number>;
   /** Last message preview per room (persisted — powers the chat list on cold start).
-   *  `status` is only meaningful for outgoing messages (`sender_id === current user`): 
-   *  'pending' = queued/not yet acked by server, 'sent' = server received it,
+   *  `status` is only meaningful for outgoing messages (`sender_id === current user`):
+   *  'pending' = queued/not yet acked by server, 'delivered' = server/peer received it,
    *  'read' = at least one recipient marked it read. */
   lastMessageByRoom: Record<
     string,
@@ -104,7 +104,7 @@ export interface AppState {
       created_at: string;
       sender?: string;
       sender_id?: number;
-      status?: 'pending' | 'sent' | 'read';
+      status?: 'pending' | 'delivered' | 'read';
     }
   >;
   /** Active typers per room: roomId → array of { userId, username, expiresAt (ms) } */
@@ -166,7 +166,7 @@ export interface AppState {
       created_at: string;
       sender?: string;
       sender_id?: number;
-      status?: 'pending' | 'sent' | 'read';
+      status?: 'pending' | 'delivered' | 'read';
     },
   ) => void;
   /** Bump the status of the room's last outgoing message if its id matches.
@@ -174,7 +174,7 @@ export interface AppState {
   setRoomLastMessageStatus: (
     roomId: string,
     messageId: string,
-    status: 'pending' | 'sent' | 'read',
+    status: 'pending' | 'delivered' | 'read',
   ) => void;
   setRoomTyping: (
     roomId: string,
@@ -235,7 +235,7 @@ const initialState = {
       created_at: string;
       sender?: string;
       sender_id?: number;
-      status?: 'pending' | 'sent' | 'read';
+      status?: 'pending' | 'delivered' | 'read';
     }
   >,
   typingByRoom: {} as Record<string, Array<{ userId: number; username: string; expiresAt: number }>>,
@@ -348,7 +348,7 @@ export const useAppStore = create<AppState>()(
       const prev = s.lastMessageByRoom[roomId];
       if (!prev || prev.id !== messageId) return s;
       // Never downgrade: pending → sent → read
-      const order = { pending: 0, sent: 1, read: 2 } as const;
+      const order = { pending: 0, delivered: 1, read: 2 } as const;
       if (prev.status && order[prev.status] >= order[status]) return s;
       return {
         lastMessageByRoom: {

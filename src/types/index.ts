@@ -73,6 +73,8 @@ export interface Message {
   file_uri?: string | null;
   /** Duration in milliseconds for voice / video messages. */
   duration_ms?: number | null;
+  /** Local consistency flag: true when both ends have acknowledged the latest state. */
+  sync?: boolean;
   is_read: boolean;
   created_at: string;
   reactions?: Record<string, string[]>;

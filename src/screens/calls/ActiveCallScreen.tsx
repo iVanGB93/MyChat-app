@@ -15,6 +15,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { endCall, getCallStatus } from '../../services/callService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playSound, playLooping, stopLooping } from '../../services/soundService';
+import { startForegroundService, stopForegroundService } from '../../services/foregroundService';
 import { useAppStore } from '../../store/appStore';
 import useWebRTC from '../../hooks/useWebRTC';
 import Avatar from '../../components/ui/Avatar';
@@ -65,6 +66,12 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     },
   });
 
+  /* ---- Start foreground service for the duration of this call ---- */
+  useEffect(() => {
+    startForegroundService();
+    return () => { stopForegroundService(); };
+  }, []);
+
   /* ---- mirror call into global store on mount + status changes ---- */
   useEffect(() => {
     useAppStore.getState().setActiveCall({
@@ -94,7 +101,10 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   /* ---- play ringback for outgoing calls ---- */
   useEffect(() => {
     if (isOutgoing && status === 'ringing') {
-      playLooping('ringback');
+      playLooping('ringback', {
+        ignoreRinger: true,
+        fallbackName: 'ringtone',
+      });
     }
     if (status === 'connected') {
       stopLooping();

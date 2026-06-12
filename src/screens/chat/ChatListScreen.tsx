@@ -61,7 +61,7 @@ export default function ChatListScreen() {
         content: string;
         created_at: string;
         sender_id?: number;
-        status?: 'pending' | 'sent' | 'read';
+        status?: 'pending' | 'delivered' | 'read';
       } | null
     >
   >({});
@@ -78,7 +78,7 @@ export default function ChatListScreen() {
           content: string;
           created_at: string;
           sender_id?: number;
-          status?: 'pending' | 'sent' | 'read';
+          status?: 'pending' | 'delivered' | 'read';
         } | null
       > = {};
       for (const [roomId, msg] of Object.entries(localMsgsMap)) {
@@ -86,8 +86,7 @@ export default function ChatListScreen() {
           content: msg.content ?? '',
           created_at: msg.created_at,
           sender_id: msg.sender_id,
-          // SQLite has no pending tracking — if it's mine and stored, assume at least 'sent'.
-          status: msg.is_mine ? (msg.is_read ? 'read' : 'sent') : undefined,
+          status: msg.status,
         };
       }
       setLocalLastMessages(map);
@@ -180,7 +179,7 @@ export default function ChatListScreen() {
       content: string;
       created_at: string;
       sender_id?: number;
-      status?: 'pending' | 'sent' | 'read';
+      status?: 'pending' | 'delivered' | 'read';
     };
     const candidates: LastMsg[] = [
       lastMessageByRoom[room.id] ?? null,

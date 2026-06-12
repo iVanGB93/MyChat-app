@@ -36,6 +36,8 @@ export async function initDB(): Promise<void> {
       file_uri    TEXT,
       created_at  TEXT    NOT NULL,
       is_mine     INTEGER DEFAULT 0,
+      sync        INTEGER DEFAULT 0,
+      status      TEXT    DEFAULT 'pending',
       reactions   TEXT    DEFAULT '{}',
       is_deleted  INTEGER DEFAULT 0,
       is_read     INTEGER DEFAULT 0
@@ -62,6 +64,8 @@ export async function initDB(): Promise<void> {
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reactions  TEXT    DEFAULT '{}'`); } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0`);    } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_read    INTEGER DEFAULT 0`);    } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN sync       INTEGER DEFAULT 0`);    } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN status     TEXT    DEFAULT 'pending'`); } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reply_to   TEXT`);                 } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN duration_ms INTEGER`);              } catch {}
 }
@@ -92,6 +96,8 @@ export interface LocalMessage {
   file_uri: string | null;
   created_at: string;
   is_mine: boolean;
+  sync: boolean;
+  status: 'pending' | 'delivered' | 'read';
   reactions: Record<string, string[]>;
   is_deleted: boolean;
   is_read: boolean;
@@ -141,6 +147,8 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
     $type:        String(msg.type ?? 'text'),
     $created_at:  String(msg.created_at),
     $is_mine:     msg.is_mine ? 1 : 0,
+    $sync:        msg.sync ? 1 : 0,
+    $status:      String(msg.status ?? 'pending'),
   };
   if (msg.content != null)  params.$content  = String(msg.content);
   if (msg.file_uri != null) params.$file_uri = String(msg.file_uri);
@@ -149,8 +157,8 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
 
   await db.runAsync(
     `INSERT OR IGNORE INTO messages
-       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, reply_to, duration_ms)
-     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $reply_to, $duration_ms)`,
+       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, sync, status, reply_to, duration_ms)
+     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $sync, $status, $reply_to, $duration_ms)`,
     params,
   );
 }
@@ -165,6 +173,21 @@ export async function markDelivered(
      VALUES (?, ?, 1)`,
     messageId, recipientId,
   );
+
+  const rows = await db.getAllAsync<{ total: number; delivered: number }>(
+    `SELECT
+       COUNT(*) AS total,
+       COALESCE(SUM(CASE WHEN delivered = 1 THEN 1 ELSE 0 END), 0) AS delivered
+     FROM delivery_tracking
+     WHERE message_id = ?`,
+    messageId,
+  );
+  const first = rows.length > 0 ? rows[0] : null;
+  if (!first) return;
+  const { total, delivered } = first;
+  if (total > 0 && total === delivered) {
+    await db.runAsync(`UPDATE messages SET sync = 1, status = 'delivered' WHERE id = ?`, messageId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +206,8 @@ export async function getMessages(roomId: string): Promise<LocalMessage[]> {
     file_uri: string | null;
     created_at: string;
     is_mine: number;
+    sync: number;
+    status: string | null;
     reactions: string | null;
     is_deleted: number;
     is_read: number;
@@ -195,6 +220,8 @@ export async function getMessages(roomId: string): Promise<LocalMessage[]> {
   return rows.map((r) => ({
     ...r,
     is_mine:    r.is_mine    === 1,
+    sync:       r.sync       === 1,
+    status:     (r.status === 'read' ? 'read' : r.status === 'delivered' ? 'delivered' : 'pending'),
     is_deleted: r.is_deleted === 1,
     is_read:    r.is_read    === 1,
     reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
@@ -228,6 +255,8 @@ export async function getPendingOutbox(
     file_uri: string | null;
     created_at: string;
     is_mine: number;
+    sync: number;
+    status: string | null;
     reactions: string | null;
     is_deleted: number;
     is_read: number;
@@ -247,6 +276,8 @@ export async function getPendingOutbox(
   return rows.map((r) => ({
     ...r,
     is_mine:    r.is_mine    === 1,
+    sync:       r.sync       === 1,
+    status:     (r.status === 'read' ? 'read' : r.status === 'delivered' ? 'delivered' : 'pending'),
     is_deleted: r.is_deleted === 1,
     is_read:    r.is_read    === 1,
     reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
@@ -307,6 +338,8 @@ export async function queueMessageUpdate(
     `INSERT INTO update_outbox (id, room_id, message_id, changes, created_at) VALUES (?, ?, ?, ?, ?)`,
     genOutboxId(), roomId, messageId, JSON.stringify(changes), Date.now(),
   );
+  // Any local mutation means this row is no longer guaranteed to match the peer.
+  await db.runAsync(`UPDATE messages SET sync = 0 WHERE id = ?`, messageId);
 }
 
 /** Load all pending outbox entries for a room (or all rooms if omitted). */
@@ -341,6 +374,8 @@ export async function getUndeliveredSentMessages(
     file_uri: string | null;
     created_at: string;
     is_mine: number;
+    sync: number;
+    status: string | null;
     reactions: string;
     is_deleted: number;
     is_read: number;
@@ -363,6 +398,60 @@ export async function getUndeliveredSentMessages(
   return rows.map((r) => ({
     ...r,
     is_mine:    r.is_mine    === 1,
+    sync:       r.sync       === 1,
+    status:     (r.status === 'read' ? 'read' : r.status === 'delivered' ? 'delivered' : 'pending'),
+    is_deleted: r.is_deleted === 1,
+    is_read:    r.is_read    === 1,
+    reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
+    reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
+  }));
+}
+
+/**
+ * Fallback resend query: outgoing rows that are still pending and unsynced.
+ * Useful when delivery_tracking metadata is missing or out-of-sync.
+ */
+export async function getPendingUnsyncedOutgoingMessages(
+  roomId: string,
+  myUserId: number,
+  sinceMs = 30 * 24 * 60 * 60 * 1000,
+): Promise<LocalMessage[]> {
+  const db = await getDB();
+  const since = new Date(Date.now() - sinceMs).toISOString();
+  const rows = await db.getAllAsync<{
+    id: string;
+    room_id: string;
+    sender_id: number;
+    sender_name: string;
+    content: string | null;
+    type: string;
+    file_uri: string | null;
+    created_at: string;
+    is_mine: number;
+    sync: number;
+    status: string | null;
+    reactions: string;
+    is_deleted: number;
+    is_read: number;
+    reply_to: string | null;
+    duration_ms: number | null;
+  }>(
+    `SELECT *
+     FROM messages
+     WHERE room_id = ?
+       AND sender_id = ?
+       AND is_deleted = 0
+       AND created_at >= ?
+       AND sync = 0
+       AND status = 'pending'
+     ORDER BY created_at ASC`,
+    roomId, myUserId, since,
+  );
+  return rows.map((r) => ({
+    ...r,
+    is_mine:    r.is_mine    === 1,
+    sync:       r.sync       === 1,
+    status:     (r.status === 'read' ? 'read' : r.status === 'delivered' ? 'delivered' : 'pending'),
     is_deleted: r.is_deleted === 1,
     is_read:    r.is_read    === 1,
     reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
@@ -379,6 +468,42 @@ export async function deleteOutboxUpdates(ids: string[]): Promise<void> {
   }
 }
 
+/** Force a message row sync state. */
+export async function setMessageSyncState(messageId: string, synced: boolean): Promise<void> {
+  const db = await getDB();
+  await db.runAsync(`UPDATE messages SET sync = ? WHERE id = ?`, synced ? 1 : 0, messageId);
+}
+
+/**
+ * Acknowledge outbox updates by ID:
+ * - delete matching update_outbox rows
+ * - set sync=1 only for messages with no remaining pending update rows
+ */
+export async function ackOutboxUpdates(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const db = await getDB();
+
+  const msgRows = await db.getAllAsync<{ message_id: string }>(
+    `SELECT DISTINCT message_id FROM update_outbox WHERE id IN (${ids.map(() => '?').join(',')})`,
+    ...ids,
+  );
+  const messageIds = msgRows.map((r) => r.message_id);
+
+  for (const id of ids) {
+    await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
+  }
+
+  for (const messageId of messageIds) {
+    const row = await db.getFirstAsync<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM update_outbox WHERE message_id = ?`,
+      messageId,
+    );
+    if ((row?.c ?? 0) === 0) {
+      await db.runAsync(`UPDATE messages SET sync = 1 WHERE id = ?`, messageId);
+    }
+  }
+}
+
 /**
  * Apply a remote mutation to the local messages table.
  * Called when a message_update event is received from another device.
@@ -390,6 +515,9 @@ export async function applyMessageChanges(
   const db = await getDB();
   if (changes.is_read !== undefined) {
     await db.runAsync(`UPDATE messages SET is_read = ? WHERE id = ?`, changes.is_read ? 1 : 0, messageId);
+    if (changes.is_read) {
+      await db.runAsync(`UPDATE messages SET status = 'read' WHERE id = ?`, messageId);
+    }
   }
   if (changes.reactions !== undefined) {
     await db.runAsync(
@@ -443,6 +571,8 @@ export async function getLastMessagePerRoom(): Promise<
     file_uri: string | null;
     created_at: string;
     is_mine: number;
+    sync: number;
+    status: string | null;
     reactions: string | null;
     is_deleted: number;
     is_read: number;
@@ -462,6 +592,8 @@ export async function getLastMessagePerRoom(): Promise<
     result[r.room_id] = {
       ...r,
       is_mine:    r.is_mine    === 1,
+      sync:       r.sync       === 1,
+      status:     (r.status === 'read' ? 'read' : r.status === 'delivered' ? 'delivered' : 'pending'),
       is_deleted: r.is_deleted === 1,
       is_read:    r.is_read    === 1,
       reactions:  r.reactions  ? JSON.parse(r.reactions) : {},

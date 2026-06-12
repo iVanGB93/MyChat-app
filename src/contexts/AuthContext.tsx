@@ -8,7 +8,6 @@ import { clearTokens, getTokens } from '../services/api';
 import { getProfile, login as loginApi, register as registerApi, registerPushToken } from '../services/authService';
 import { registerForPushNotifications } from '../services/pushNotificationService';
 import { unregisterBackgroundTask } from '../services/backgroundNotificationService';
-import { stopForegroundService } from '../services/foregroundService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { setCurrentUserId } from '../services/chatWsManager';
 import { initDB } from '../services/localMessageStore';
@@ -178,7 +177,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     destroyWsManager();
-    await stopForegroundService();
     await clearTokens();
     await setCachedUser(null);
     await unregisterBackgroundTask();

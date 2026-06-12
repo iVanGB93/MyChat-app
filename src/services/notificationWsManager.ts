@@ -14,7 +14,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api, { getTokens, saveTokens, BASE_URL } from './api';
-import { connectRoom, flushOutboxForRecipient, injectReceivedMessage, markIdsAsReadInRoom, applyRemoteMessageUpdates } from './chatWsManager';
+import { connectRoom, flushOutboxForRecipient, injectReceivedMessage, markIdsAsReadInRoom, applyRemoteMessageUpdates, ackMessageUpdates } from './chatWsManager';
 import { saveMessage, messageExists, markDelivered } from './localMessageStore';
 import { useAppStore } from '../store/appStore';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
@@ -411,11 +411,34 @@ async function connectWs() {
 
         // ---- message_update: unified mutation relay (is_read, reactions, is_deleted, …) ----
         if (payload.event === 'message_update' && payload.room_id && payload.updates) {
+          const roomId = String(payload.room_id);
+          const updates = payload.updates as Array<{ id?: string; message_id: string; changes: Record<string, unknown> }>;
           applyRemoteMessageUpdates(
-            String(payload.room_id),
-            payload.updates as Array<{ message_id: string; changes: Record<string, unknown> }>,
+            roomId,
+            updates as Array<{ message_id: string; changes: Record<string, unknown> }>,
           );
+          const updateIds = updates
+            .map((u) => String(u.id ?? ''))
+            .filter((id) => !!id);
+          const senderId = Number(payload.from_user_id ?? 0);
+          if (updateIds.length > 0 && senderId > 0 && ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'message_update_ack',
+                room_id: roomId,
+                sender_id: senderId,
+                update_ids: updateIds,
+              }));
+            } catch {}
+          }
           // Fall through — notify listeners so ChatRoomScreen can react if mounted
+        }
+
+        if (payload.event === 'message_update_ack' && payload.room_id && payload.update_ids) {
+          ackMessageUpdates(
+            String(payload.room_id),
+            (payload.update_ids as Array<unknown>).map((x) => String(x)),
+          );
         }
 
         // ---- messages_read (legacy, kept for server backward-compat) ----
@@ -506,6 +529,8 @@ async function connectWs() {
                 file_uri: localFileUri,
                 created_at: wsMsg.created_at,
                 is_mine: false,
+                sync: true,
+                status: 'delivered',
                 reactions: {},
                 is_deleted: false,
                 is_read: false,
@@ -786,6 +811,23 @@ function stopSelfHealWatchdog() {
   }
 }
 
+// ---- Background keepalive (replaces the old foreground service timer) ----
+// Runs every 20s; nudges ensureWsAlive so the WS reconnects after FCM wakes
+// the process. Much cheaper than a persistent foreground service.
+let _bgKeepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+function startBgKeepalive() {
+  if (_bgKeepaliveTimer) return;
+  _bgKeepaliveTimer = setInterval(() => {
+    if (!_authenticated) return;
+    ensureWsAlive().catch(() => {});
+  }, 20_000);
+}
+
+function stopBgKeepalive() {
+  if (_bgKeepaliveTimer) { clearInterval(_bgKeepaliveTimer); _bgKeepaliveTimer = null; }
+}
+
 /* ================================================================== */
 /*  Public API                                                         */
 /* ================================================================== */
@@ -805,6 +847,7 @@ export function initWsManager(userId: number): void {
   startNetworkListener();
   startAppStateListener();
   startSelfHealWatchdog();
+  startBgKeepalive();
   connectWs();
 }
 
@@ -824,6 +867,7 @@ export function destroyWsManager(): void {
   stopNetworkListener();
   stopAppStateListener();
   stopSelfHealWatchdog();
+  stopBgKeepalive();
   setStatus('disconnected');
   // Remove persisted userId so background won't auto-reconnect
   AsyncStorage.removeItem(USER_ID_KEY).catch(() => {});
