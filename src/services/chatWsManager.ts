@@ -525,16 +525,6 @@ export async function connectRoom(roomId: string): Promise<void> {
         // ---- Server delivery ack (no UI action needed) ----
         if (msgType === 'message_server_ack') {
           console.log('[ChatWsManager] server_ack', data.message_id, 'room', roomId);
-          if (data.message_id && s.pendingIds.has(data.message_id)) {
-            s.pendingIds = new Set([...s.pendingIds].filter((id) => id !== data.message_id));
-            notifyListeners(roomId, s);
-          }
-          // Promote chat-list status from 'pending' → 'delivered' if this was the most recent outgoing.
-          if (data.message_id) {
-            try {
-              useAppStore.getState().setRoomLastMessageStatus(roomId, String(data.message_id), 'delivered');
-            } catch {}
-          }
           return;
         }
 
@@ -1252,7 +1242,14 @@ export function getSnapshot(roomId: string): RoomSnapshot {
 export function markIdsAsDeliveredInRoom(roomId: string, ids: string[]): void {
   const s = rooms.get(roomId);
   if (!s || ids.length === 0) return;
+  s.pendingIds = new Set([...s.pendingIds].filter((id) => !ids.includes(id)));
   s.deliveredIds = new Set([...s.deliveredIds, ...ids]);
+  try {
+    const store = useAppStore.getState();
+    for (const id of ids) {
+      store.setRoomLastMessageStatus(roomId, id, 'delivered');
+    }
+  } catch {}
   notifyListeners(roomId, s);
 }
 

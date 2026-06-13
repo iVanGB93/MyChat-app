@@ -45,6 +45,10 @@ export interface NotificationPayload {
   content?: string;
   message_id?: string;
   created_at?: string;
+  correlation_id?: string;
+  correlationId?: string;
+  route_reason?: string;
+  routeReason?: string;
   [key: string]: any;
 }
 
@@ -391,7 +395,12 @@ async function connectWs() {
           return;
         }
 
-        console.log('[WsManager] event:', payload.event, payload.call_id ?? '');
+        const correlationId = String(payload.correlation_id ?? payload.correlationId ?? '');
+        const routeReason = String(payload.route_reason ?? payload.routeReason ?? '');
+        console.log('[WsManager] event:', payload.event, payload.call_id ?? '', {
+          correlation_id: correlationId,
+          route_reason: routeReason,
+        });
 
         // ---- incoming_call ack: mark call invite as received by this session ----
         if (payload.event === 'incoming_call' && payload.call_id) {
@@ -599,6 +608,8 @@ async function connectWs() {
               reason: localMsgDecision.reason,
               room_id: String(payload.room_id ?? ''),
               message_id: String(payload.message_id ?? ''),
+              correlation_id: correlationId,
+              route_reason: routeReason,
             });
           }
 
@@ -632,6 +643,8 @@ async function connectWs() {
               allow: localCallDecision.allow,
               reason: localCallDecision.reason,
               call_id: String(payload.call_id ?? ''),
+              correlation_id: correlationId,
+              route_reason: routeReason,
             });
           }
 

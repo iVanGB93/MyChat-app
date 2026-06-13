@@ -7,7 +7,37 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+
+const INSTALLATION_ID_KEY = '@axonic_installation_id';
+
+export type PushRegistrationPayload = {
+  token: string;
+  installation_id: string;
+  platform: 'android' | 'ios' | 'web' | 'unknown';
+  device_name: string;
+  app_version: string;
+};
+
+function generateInstallationId(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+}
+
+export async function getInstallationId(): Promise<string> {
+  const existing = await AsyncStorage.getItem(INSTALLATION_ID_KEY);
+  if (existing) return existing;
+  const created = generateInstallationId();
+  await AsyncStorage.setItem(INSTALLATION_ID_KEY, created);
+  return created;
+}
 
 /* ---- Default notification handler (show when app is foreground) ---- */
 Notifications.setNotificationHandler({
@@ -81,6 +111,28 @@ export async function registerForPushNotifications(): Promise<string | null> {
     console.warn('[PushNotifications] Failed to get push token:', error);
     return null;
   }
+}
+
+export async function getPushRegistrationPayload(): Promise<PushRegistrationPayload | null> {
+  const token = await registerForPushNotifications();
+  if (!token) return null;
+
+  const installation_id = await getInstallationId();
+  const platform = Platform.OS === 'android'
+    ? 'android'
+    : Platform.OS === 'ios'
+      ? 'ios'
+      : Platform.OS === 'web'
+        ? 'web'
+        : 'unknown';
+
+  return {
+    token,
+    installation_id,
+    platform,
+    device_name: Device.deviceName ?? `${Device.brand ?? 'Unknown'} ${Device.modelName ?? ''}`.trim(),
+    app_version: Constants.expoConfig?.version ?? Constants.nativeAppVersion ?? '',
+  };
 }
 
 /* ---- Schedule a local notification (used for incoming WS events) ---- */

@@ -3,6 +3,8 @@
 /* ------------------------------------------------------------------ */
 
 import api, { saveTokens } from './api';
+import { getInstallationId } from './pushNotificationService';
+import type { PushRegistrationPayload } from './pushNotificationService';
 import type { TokenPair, User } from '../types';
 
 export async function register(
@@ -161,11 +163,21 @@ export async function searchUsers(query: string): Promise<User[]> {
  * Register the device's Expo push token with the backend.
  * Should be called after every login/register and when the token refreshes.
  */
-export async function registerPushToken(token: string): Promise<void> {
+export async function registerPushToken(payload: PushRegistrationPayload): Promise<void> {
   try {
-    await api.post('/api/users/push-token/', { token });
+    await api.post('/api/users/push-token/', payload);
     console.log('[Auth] Push token registered with backend');
   } catch (err) {
     console.warn('[Auth] Failed to register push token:', err);
+  }
+}
+
+export async function unregisterPushToken(): Promise<void> {
+  try {
+    const installation_id = await getInstallationId();
+    await api.post('/api/users/push-token/unregister/', { installation_id });
+    console.log('[Auth] Push token unregistered from backend');
+  } catch (err) {
+    console.warn('[Auth] Failed to unregister push token:', err);
   }
 }

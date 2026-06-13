@@ -69,6 +69,7 @@ function toMsg(m: LocalMessage): Message {
     file_uri: m.file_uri,
     duration_ms: m.duration_ms,
     sync: m.sync,
+    status: m.status,
     is_read: false,
     created_at: m.created_at,
     reactions: m.reactions,
@@ -90,6 +91,7 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
     file_uri: m.file_uri ?? null,
     duration_ms: m.duration_ms ?? null,
     sync: undefined,
+    status: undefined,
     is_read: m.is_read ?? false,
     created_at: m.created_at,
     reactions: m.reactions ?? {},
@@ -226,7 +228,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       if (!sql) continue;
       if (wsIdSet.has(id)) {
         if (msg.sync === undefined) {
-          byId.set(id, { ...msg, sync: sql.sync });
+          byId.set(id, { ...msg, sync: sql.sync, status: msg.status ?? sql.status });
+        } else if (msg.status === undefined) {
+          byId.set(id, { ...msg, status: sql.status });
         }
         continue;
       }
@@ -238,6 +242,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         byId.set(id, {
           ...msg,
           sync: msg.sync ?? sql.sync,
+          status: msg.status ?? sql.status,
           reactions: sql.reactions,
           is_deleted: sql.is_deleted,
         });
@@ -283,6 +288,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   /* ── Call header buttons ── */
   const handleCall = async (callType: 'voice' | 'video') => {
+    Keyboard.dismiss();
     if (!otherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
     try {
       const res = await initiateCall(otherUserId, callType);
@@ -638,7 +644,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const renderMessage = ({ item }: { item: Message }) => {
     const isMine    = item.sender === user?.id;
     const isPending = isMine && pendingIds.has(item.id);
-    const isRead    = isMine && (item.is_read || readIds.has(item.id));
+    const isDelivered = isMine && deliveredIds.has(item.id);
+    const persistedStatus = item.status;
+    const isDeliveredPersisted = isMine && persistedStatus === 'delivered';
+    const isRead    = isMine && (item.is_read || readIds.has(item.id) || persistedStatus === 'read');
     const hasReactions = !item.is_deleted
       && !!item.reactions
       && Object.keys(item.reactions).length > 0;
@@ -651,9 +660,15 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     } else if (isRead) {
       statusIcon  = '✓✓';
       statusColor = Colors.checkBlue;
-    } else {
-      // single ✓ = sent/delivered (server received it, or receiver stored it)
+    } else if (isDelivered) {
       statusIcon  = '✓';
+      statusColor = Colors.textTertiary;
+    } else if (isDeliveredPersisted) {
+      statusIcon  = '✓';
+      statusColor = Colors.textTertiary;
+    } else {
+      // Unknown local state defaults to pending to avoid false delivery ticks.
+      statusIcon  = '⏱';
       statusColor = Colors.textTertiary;
     }
     return (

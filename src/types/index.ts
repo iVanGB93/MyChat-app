@@ -75,6 +75,8 @@ export interface Message {
   duration_ms?: number | null;
   /** Local consistency flag: true when both ends have acknowledged the latest state. */
   sync?: boolean;
+  /** Persisted message status for the sender-side UI. */
+  status?: 'pending' | 'delivered' | 'read';
   is_read: boolean;
   created_at: string;
   reactions?: Record<string, string[]>;

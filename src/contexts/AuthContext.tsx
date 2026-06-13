@@ -5,8 +5,8 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearTokens, getTokens } from '../services/api';
-import { getProfile, login as loginApi, register as registerApi, registerPushToken } from '../services/authService';
-import { registerForPushNotifications } from '../services/pushNotificationService';
+import { getProfile, login as loginApi, register as registerApi, registerPushToken, unregisterPushToken } from '../services/authService';
+import { getPushRegistrationPayload } from '../services/pushNotificationService';
 import { unregisterBackgroundTask } from '../services/backgroundNotificationService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { setCurrentUserId } from '../services/chatWsManager';
@@ -77,9 +77,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   /** Register push token with backend after authentication */
   const syncPushToken = useCallback(async () => {
     try {
-      const token = await registerForPushNotifications();
-      if (token) {
-        await registerPushToken(token);
+      const payload = await getPushRegistrationPayload();
+      if (payload) {
+        await registerPushToken(payload);
       }
     } catch (err) {
       console.warn('[Auth] push token sync failed:', err);
@@ -177,6 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = useCallback(async () => {
     destroyWsManager();
+    await unregisterPushToken();
     await clearTokens();
     await setCachedUser(null);
     await unregisterBackgroundTask();

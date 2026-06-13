@@ -23,6 +23,8 @@ interface PendingMessage {
   content: string;
   created_at: string;
   id?: string; // available in newer API versions
+  correlation_id?: string;
+  route_reason?: string;
 }
 
 interface PendingCall {
@@ -31,6 +33,8 @@ interface PendingCall {
   caller_id: number;
   call_type: 'voice' | 'video';
   room_name: string;
+  correlation_id?: string;
+  route_reason?: string;
 }
 
 interface PendingNotifications {
@@ -74,6 +78,11 @@ async function checkPendingNotifications(): Promise<boolean> {
       const key = makeMessageKey(msg);
       const prevKey = lastNotifiedRoomKey.get(msg.room_id);
       if (!prevKey || key !== prevKey) {
+        console.log('[BackgroundTask] local_message', {
+          room_id: msg.room_id,
+          correlation_id: msg.correlation_id ?? '',
+          route_reason: msg.route_reason ?? '',
+        });
         await showMessageNotification({
           senderName: msg.sender,
           senderId: msg.sender_id ?? null,
@@ -103,6 +112,11 @@ async function checkPendingNotifications(): Promise<boolean> {
         continue;
       }
       if (!lastShownCallIds.has(call.call_id)) {
+        console.log('[BackgroundTask] local_call', {
+          call_id: call.call_id,
+          correlation_id: call.correlation_id ?? '',
+          route_reason: call.route_reason ?? '',
+        });
         await displayIncomingCallNotification({
           callId: call.call_id,
           callerId: call.caller_id,
