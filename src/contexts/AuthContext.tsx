@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearTokens, getTokens } from '../services/api';
 import { getProfile, login as loginApi, register as registerApi, registerPushToken, unregisterPushToken } from '../services/authService';
 import { getPushRegistrationPayload } from '../services/pushNotificationService';
-import { unregisterBackgroundTask } from '../services/backgroundNotificationService';
+import { unregisterBackgroundTask, unregisterPushReceiveTask } from '../services/backgroundNotificationService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { setCurrentUserId } from '../services/chatWsManager';
 import { initDB } from '../services/localMessageStore';
@@ -181,6 +181,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await clearTokens();
     await setCachedUser(null);
     await unregisterBackgroundTask();
+    await unregisterPushReceiveTask();
     setState({ user: null, isLoading: false, isAuthenticated: false });
     useAppStore.getState().reset();
   }, []);

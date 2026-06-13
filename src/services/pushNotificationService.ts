@@ -200,16 +200,10 @@ export async function showCallNotification({
 
 /* ---- Show message notification ---- */
 //
-// On Android we want multiple messages from the same room to *collapse* into a
-// single notification entry rather than stack as N separate items in the tray.
-// We achieve that with two tricks:
-//   1. `identifier` is derived from the roomId, so each new message from the
-//      same room *replaces* the previous notification for that room.
-//   2. `groupKey` is set to the roomId too, so even across rooms the messages
-//      sit under a single "Axonic" group that the OS can summarise.
-//
-// iOS automatically groups notifications by thread; we set `data.roomId` and
-// rely on the system default for that platform.
+// Each notification gets a unique sender+timestamp identifier so messages from
+// the same sender stack as separate entries in the tray. Different senders are
+// naturally separated by their name in the notification title.
+// iOS groups by threadIdentifier (sender-based); Android stacks per channel.
 export async function showMessageNotification({
   senderName,
   senderId,
@@ -224,15 +218,23 @@ export async function showMessageNotification({
   roomName: string;
 }) {
   const safeRoomId = roomId || 'unknown';
+  const safeSenderId = senderId != null ? String(senderId) : '';
   const data: Record<string, string> = { type: 'new_message', roomId, roomName };
   if (senderId != null) data.senderId = String(senderId);
+
+  // Unique ID per message so notifications stack without replacing each other.
+  // The sender ID prefix keeps each sender's messages visually associated and
+  // prevents collision between senders.
+  const uniqueId = safeSenderId
+    ? `msg-${safeSenderId}-${Date.now()}`
+    : `msg-${safeRoomId}-${Date.now()}`;
+
   await showLocalNotification({
     title: senderName,
     body: content,
     data,
     channelId: 'messages',
-    identifier: `room-${safeRoomId}`,
-    groupKey: `room-${safeRoomId}`,
+    identifier: uniqueId,
   });
 }
 

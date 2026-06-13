@@ -5,11 +5,12 @@
 /*  wrong with connectivity. Hidden when everything is fine.           */
 /* ------------------------------------------------------------------ */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { selectNotifWsConnected, useAppStore } from './appStore';
 import { reconnectWsNow } from '../services/notificationWsManager';
+import { navigationRef } from '../navigation/AppNavigator';
 
 interface BannerState {
   show: boolean;
@@ -52,12 +53,46 @@ function deriveBanner(
 
 export function ConnectionBanner() {
   const insets = useSafeAreaInsets();
+  const [currentRoute, setCurrentRoute] = useState<string | undefined>();
   const net = useAppStore((s) => s.net);
   const notifStatus = useAppStore((s) => s.notifWs.status);
   const authenticated = useAppStore((s) => s.notifWs.authenticated);
   const verifiedConnected = useAppStore(selectNotifWsConnected);
   const suspendedUntil = useAppStore((s) => s.notifWs.suspendedUntil);
   const appLifecycle = useAppStore((s) => s.appLifecycle);
+
+  // Track current route to hide banner on auth screens.
+  // Navigation may not be ready on first render, so attach lazily.
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+
+    const syncCurrentRoute = () => {
+      if (!navigationRef.isReady()) return;
+      const route = navigationRef.getCurrentRoute()?.name;
+      setCurrentRoute(route);
+    };
+
+    const attachStateListener = () => {
+      if (unsubscribe || !navigationRef.isReady()) return;
+      unsubscribe = navigationRef.addListener('state', syncCurrentRoute);
+      syncCurrentRoute();
+    };
+
+    attachStateListener();
+
+    const retryTimer = setInterval(() => {
+      if (!unsubscribe) {
+        attachStateListener();
+      } else {
+        clearInterval(retryTimer);
+      }
+    }, 120);
+
+    return () => {
+      clearInterval(retryTimer);
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
 
   const banner = deriveBanner(net, notifStatus, authenticated, verifiedConnected, suspendedUntil, appLifecycle);
   const canReconnect = notifStatus === 'disconnected' || notifStatus === 'reconnecting';
@@ -70,6 +105,10 @@ export function ConnectionBanner() {
       useNativeDriver: true,
     }).start();
   }, [banner.show, slide]);
+
+  // Don't show banner on login/register/verify screens
+  const isAuthScreen = currentRoute === 'Login' || currentRoute === 'Register' || currentRoute === 'VerifyEmail';
+  if (isAuthScreen) return null;
 
   if (!banner.show) return null;
 

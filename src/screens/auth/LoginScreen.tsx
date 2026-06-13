@@ -64,8 +64,9 @@ export default function LoginScreen({ navigation }: Props) {
   return (
     <KeyboardAvoidingView
       style={[styles.flex, { backgroundColor: Colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      enabled={Platform.OS === 'ios'}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      enabled
     >
       <ScrollView
         contentContainerStyle={[
@@ -73,6 +74,7 @@ export default function LoginScreen({ navigation }: Props) {
           Platform.OS === 'android' && styles.containerAndroid,
         ]}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
       >
         {/* Header */}
         <View style={styles.header}>
@@ -136,6 +138,7 @@ const styles = StyleSheet.create({
   containerAndroid: {
     justifyContent: 'flex-start',
     paddingTop: Spacing.xxl,
+    paddingBottom: Spacing.xxxl,
   },
   header: { alignItems: 'center', marginBottom: Spacing.xxl },
   logoMark: {

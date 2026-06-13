@@ -6,6 +6,7 @@
 
 import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
+import * as Notifications from 'expo-notifications';
 import api, { getTokens } from './api';
 import {
   showMessageNotification,
@@ -14,6 +15,7 @@ import { displayIncomingCallNotification } from './callNotificationService';
 import { useAppStore } from '../store/appStore';
 
 const TASK_NAME = 'BACKGROUND_NOTIFICATION_CHECK';
+const PUSH_RECEIVE_TASK = 'PUSH_NOTIFICATION_RECEIVE';
 
 interface PendingMessage {
   room_id: string;
@@ -198,6 +200,50 @@ export async function unregisterBackgroundTask(): Promise<void> {
 
 /** Manually trigger a check (useful when app comes to foreground) */
 export { checkPendingNotifications };
+
+// ---- Background push-receive task -------------------------------------------
+// Registered with Expo Notifications so it fires immediately when FCM delivers
+// a push, even when the app is completely killed.  The message is saved to
+// SQLite right away — the user gets the content whether they tap the
+// notification, dismiss it, or never see it at all.
+TaskManager.defineTask(PUSH_RECEIVE_TASK, async ({ data, error }: { data: any; error: any }) => {
+  if (error) {
+    console.warn('[PushReceiveTask] error:', error);
+    return;
+  }
+  try {
+    const notification: Notifications.Notification | undefined = data?.notification;
+    const pushData = notification?.request?.content?.data as Record<string, string> | undefined;
+    if (pushData?.type === 'new_message') {
+      const { savePushMessage } = await import('./pushMessageStore');
+      await savePushMessage(pushData);
+    }
+  } catch (err) {
+    console.warn('[PushReceiveTask] failed to save message:', err);
+  }
+});
+
+export async function registerPushReceiveTask(): Promise<void> {
+  try {
+    await Notifications.registerTaskAsync(PUSH_RECEIVE_TASK);
+    console.log('[PushReceiveTask] registered');
+  } catch (err) {
+    // Fails silently on platforms that don\'t support it (web, old SDK)
+    console.warn('[PushReceiveTask] registration failed (may not be supported):', err);
+  }
+}
+
+export async function unregisterPushReceiveTask(): Promise<void> {
+  try {
+    const isRegistered = await TaskManager.isTaskRegisteredAsync(PUSH_RECEIVE_TASK);
+    if (isRegistered) {
+      await Notifications.unregisterTaskAsync(PUSH_RECEIVE_TASK);
+      console.log('[PushReceiveTask] unregistered');
+    }
+  } catch (err) {
+    console.warn('[PushReceiveTask] unregister failed:', err);
+  }
+}
 
 // Backward-compatible aliases for older imports.
 export const registerBackgroundFetch = registerBackgroundTask;

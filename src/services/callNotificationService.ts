@@ -115,12 +115,14 @@ export async function ensureCallChannel() {
   await notifee.createChannel({
     id: CHANNEL_ID,
     name: 'Incoming Calls',
-    importance: AndroidImportance.HIGH,
+    importance: AndroidImportance.HIGH, // highest Notifee level; triggers heads-up display
     visibility: AndroidVisibility.PUBLIC,
     sound: 'ringtone', // resolves to res/raw/ringtone.mp3 (bundled in /assets/sounds)
     vibration: true,
-    vibrationPattern: [300, 500, 300, 500],
+    // Phone ring-like pattern: 1s on, 0.5s off, 1s on, 0.5s off
+    vibrationPattern: [1000, 500, 1000, 500],
     bypassDnd: true,
+    lightColor: '#FF0000', // Red LED light for call urgency
   });
 }
 
@@ -180,6 +182,7 @@ export async function displayIncomingCallNotification(data: IncomingCallData) {
       ongoing: true,
       autoCancel: false,
       smallIcon: 'ic_launcher',
+      color: '#FF0000', // Red for call visibility
       // Wake the screen and route to the app when the user taps the body.
       pressAction: { id: 'default', launchActivity: 'default' },
       // Full-screen takeover on locked devices. Requires

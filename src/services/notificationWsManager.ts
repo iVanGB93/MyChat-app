@@ -23,6 +23,13 @@ import { decideLocalIncomingCallNotification, decideLocalMessageNotification } f
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
 const USER_ID_KEY = '@axonic_ws_userid';
+const PENDING_ACKS_KEY = '@axonic_pending_acks';
+
+interface QueuedAck {
+  message_id: string;
+  sender_id: number;
+  room_id: string;
+}
 
 /* ---- Types ---- */
 export interface NotificationPayload {
@@ -172,6 +179,59 @@ function _sendAppState(state: 'active' | 'background') {
       _lastReportedAppState = state;
       console.log('[WsManager] sent app_state:', state);
     } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Send a message_ack immediately if the WS is open, otherwise persist it
+ * to AsyncStorage so it's flushed on the next successful auth_ok.
+ */
+export async function sendOrQueueMessageAck(ack: QueuedAck): Promise<void> {
+  if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
+    try {
+      ws.send(JSON.stringify({ type: 'message_ack', ...ack }));
+      console.log('[WsManager] ack sent immediately', ack.message_id);
+      return;
+    } catch { /* fall through to queue */ }
+  }
+  // WS not ready — persist to queue
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_ACKS_KEY);
+    const queue: QueuedAck[] = raw ? JSON.parse(raw) : [];
+    // Avoid duplicates
+    if (!queue.some((q) => q.message_id === ack.message_id && q.room_id === ack.room_id)) {
+      queue.push(ack);
+      await AsyncStorage.setItem(PENDING_ACKS_KEY, JSON.stringify(queue));
+      console.log('[WsManager] ack queued for later', ack.message_id, '(queue size:', queue.length, ')');
+    }
+  } catch (err) {
+    console.warn('[WsManager] failed to queue ack:', err);
+  }
+}
+
+async function _flushPendingAcks(): Promise<void> {
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_ACKS_KEY);
+    if (!raw) return;
+    const queue: QueuedAck[] = JSON.parse(raw);
+    if (!queue.length) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !_wsAuthenticated) return;
+    const failed: QueuedAck[] = [];
+    for (const ack of queue) {
+      try {
+        ws.send(JSON.stringify({ type: 'message_ack', ...ack }));
+        console.log('[WsManager] flushed queued ack', ack.message_id);
+      } catch {
+        failed.push(ack);
+      }
+    }
+    if (failed.length) {
+      await AsyncStorage.setItem(PENDING_ACKS_KEY, JSON.stringify(failed));
+    } else {
+      await AsyncStorage.removeItem(PENDING_ACKS_KEY);
+    }
+  } catch (err) {
+    console.warn('[WsManager] _flushPendingAcks failed:', err);
   }
 }
 
@@ -348,6 +408,8 @@ async function connectWs() {
           try { useAppStore.getState().setNotifWsAuthenticated(true); } catch {}
           try { useAppStore.getState().setNotifWsInboundAt(Date.now()); } catch {}
           startPing();
+          // Flush any message acks that were queued while WS was offline
+          _flushPendingAcks().catch(() => {});
           if (SEND_APP_STATE_ON_AUTH_OK) {
             const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';
             _sendAppState(currentAppState as 'active' | 'background');

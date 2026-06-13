@@ -80,8 +80,9 @@ export default function RegisterScreen({ navigation }: Props) {
   return (
     <KeyboardAvoidingView
       style={[styles.flex, { backgroundColor: Colors.background }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      enabled={Platform.OS === 'ios'}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      enabled
     >
       <ScrollView
         contentContainerStyle={[
@@ -89,6 +90,7 @@ export default function RegisterScreen({ navigation }: Props) {
           Platform.OS === 'android' && styles.containerAndroid,
         ]}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
       >
         {/* Header */}
         <View style={styles.header}>
@@ -162,7 +164,11 @@ export default function RegisterScreen({ navigation }: Props) {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flexGrow: 1, justifyContent: 'center', padding: Spacing.xl },
-  containerAndroid: { justifyContent: 'flex-start', paddingTop: Spacing.xxl },
+  containerAndroid: {
+    justifyContent: 'flex-start',
+    paddingTop: Spacing.xxl,
+    paddingBottom: Spacing.xxxl,
+  },
   header: { alignItems: 'center', marginBottom: Spacing.xxl },
   logoMark: {
     width: 72,

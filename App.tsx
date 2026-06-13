@@ -10,8 +10,9 @@ import AppNavigator, { navigationRef } from './src/navigation/AppNavigator';
 import {
   setupNotificationChannels,
   addNotificationResponseListener,
+  addNotificationReceivedListener,
 } from './src/services/pushNotificationService';
-import { registerBackgroundTask } from './src/services/backgroundNotificationService';
+import { registerBackgroundTask, registerPushReceiveTask } from './src/services/backgroundNotificationService';
 import { startRingerModeListener } from './src/services/ringerService';
 import * as Notifications from 'expo-notifications';
 import {
@@ -25,9 +26,11 @@ import { DebugOverlay } from './src/store/DebugOverlay';
 import { ConnectionBanner } from './src/store/ConnectionBanner';
 import { IncomingCallBanner } from './src/store/IncomingCallBanner';
 import ShareIntentBridge from './src/store/ShareIntentBridge';
+import { savePushMessage } from './src/services/pushMessageStore';
 
 export default function App() {
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
+  const receivedListener = useRef<Notifications.EventSubscription | null>(null);
 
   useEffect(() => {
     // Setup notification channels (Android)
@@ -99,11 +102,19 @@ export default function App() {
 
     // Register background task for polling notifications when app is closed
     registerBackgroundTask();
+    // Register push-receive task: saves message to SQLite the moment FCM
+    // delivers the push, even if the user never taps the notification.
+    registerPushReceiveTask();
 
-    // Handle notification taps — navigate to the relevant screen
+    // Handle notification taps — navigate to the relevant screen and save msg
     responseListener.current = addNotificationResponseListener((response) => {
       const data = response.notification.request.content.data as Record<string, string> | undefined;
       console.log('[App] Notification tapped:', data);
+
+      // Save message to SQLite whenever a new_message push is tapped
+      if (data?.type === 'new_message') {
+        savePushMessage(data).catch(() => {});
+      }
 
       if (!navigationRef.isReady() || !data) return;
 
@@ -125,9 +136,21 @@ export default function App() {
       }
     });
 
+    // Save message to SQLite when push arrives while app is in background
+    // (foreground service / background JS context keeps the app alive)
+    receivedListener.current = addNotificationReceivedListener((notification) => {
+      const data = notification.request.content.data as Record<string, string> | undefined;
+      if (data?.type === 'new_message') {
+        savePushMessage(data).catch(() => {});
+      }
+    });
+
     return () => {
       if (responseListener.current) {
         responseListener.current.remove();
+      }
+      if (receivedListener.current) {
+        receivedListener.current.remove();
       }
       unsubCallActions();
     };
