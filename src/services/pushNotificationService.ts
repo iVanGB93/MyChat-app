@@ -78,9 +78,17 @@ export async function setupNotificationChannels() {
 
 /* ---- Register for push notifications ---- */
 export async function registerForPushNotifications(): Promise<string | null> {
+  // NOTE (emulator testing): we intentionally allow non-physical devices here.
+  // Google Play system images (e.g. sdk_gphone64) can receive FCM pushes, so we
+  // attempt token registration anyway. getExpoPushTokenAsync() below is wrapped
+  // in try/catch and fails gracefully on images without FCM support.
+  // TODO: restore the strict guard if emulator push tokens cause issues:
+  //   if (!Device.isDevice) {
+  //     console.log('[PushNotifications] Must use physical device for push');
+  //     return null;
+  //   }
   if (!Device.isDevice) {
-    console.log('[PushNotifications] Must use physical device for push');
-    return null;
+    console.log('[PushNotifications] Non-physical device — attempting push registration anyway (emulator FCM)');
   }
 
   // Check / request permissions
@@ -204,38 +212,101 @@ export async function showCallNotification({
 // the same sender stack as separate entries in the tray. Different senders are
 // naturally separated by their name in the notification title.
 // iOS groups by threadIdentifier (sender-based); Android stacks per channel.
+/**
+ * Per-conversation notification accumulator (in-memory).
+ *
+ * WhatsApp-style grouping: instead of stacking one OS notification per message,
+ * we keep a SINGLE notification per room and update it in place. We remember the
+ * recent message lines + a running unread count so the collapsed notification
+ * shows the latest message and the count, while the expanded ("dropdown") view
+ * shows the last few messages.
+ *
+ * Reset via `dismissRoomNotification(roomId)` when the user opens/reads the room.
+ */
+type RoomNotifState = { count: number; lines: string[]; roomName: string; seen: Set<string> };
+const _roomNotifState = new Map<string, RoomNotifState>();
+const MAX_NOTIF_LINES = 6;
+const MAX_SEEN_IDS = 50;
+
+/** Stable identifier so repeated messages update one notification per room. */
+function roomNotificationId(roomId: string): string {
+  return `msg-room-${roomId || 'unknown'}`;
+}
+
 export async function showMessageNotification({
   senderName,
   senderId,
   content,
   roomId,
   roomName,
+  messageId,
 }: {
   senderName: string;
   senderId?: number | null;
   content: string;
   roomId: string;
   roomName: string;
+  /** When provided, prevents double-counting if the same message is delivered
+   *  via more than one path (e.g. WS + push). */
+  messageId?: string | null;
 }) {
   const safeRoomId = roomId || 'unknown';
-  const safeSenderId = senderId != null ? String(senderId) : '';
   const data: Record<string, string> = { type: 'new_message', roomId, roomName };
   if (senderId != null) data.senderId = String(senderId);
 
-  // Unique ID per message so notifications stack without replacing each other.
-  // The sender ID prefix keeps each sender's messages visually associated and
-  // prevents collision between senders.
-  const uniqueId = safeSenderId
-    ? `msg-${safeSenderId}-${Date.now()}`
-    : `msg-${safeRoomId}-${Date.now()}`;
+  const displayRoomName = roomName || senderName;
+
+  // Accumulate this message into the room's notification state.
+  const prev = _roomNotifState.get(safeRoomId)
+    ?? { count: 0, lines: [], roomName: displayRoomName, seen: new Set<string>() };
+
+  // Skip if we've already shown this exact message (deduplicate across paths).
+  if (messageId) {
+    if (prev.seen.has(messageId)) return;
+    prev.seen.add(messageId);
+    if (prev.seen.size > MAX_SEEN_IDS) {
+      // Trim oldest entries to bound memory.
+      const trimmed = Array.from(prev.seen).slice(-MAX_SEEN_IDS);
+      prev.seen = new Set(trimmed);
+    }
+  }
+
+  // In a group chat the room name differs from the sender — prefix the line so
+  // the dropdown shows who said what (WhatsApp style). For 1:1 chats the names
+  // match, so we keep the line clean.
+  const isGroup = displayRoomName !== senderName;
+  const line = isGroup ? `${senderName}: ${content}` : content;
+  // Newest line first so the COLLAPSED notification (single truncated line)
+  // shows the latest message, while the EXPANDED view lists recent history.
+  const lines = [line, ...prev.lines].slice(0, MAX_NOTIF_LINES);
+  const count = prev.count + 1;
+  _roomNotifState.set(safeRoomId, { count, lines, roomName: displayRoomName, seen: prev.seen });
+
+  // Title carries the conversation name + unread count (e.g. "Alice (3)").
+  const title = count > 1 ? `${displayRoomName} (${count})` : displayRoomName;
+  // Body: latest message collapsed; full recent list when expanded.
+  const body = lines.join('\n');
 
   await showLocalNotification({
-    title: senderName,
-    body: content,
+    title,
+    body,
     data,
     channelId: 'messages',
-    identifier: uniqueId,
+    // Stable id → updates the SAME notification instead of stacking.
+    identifier: roomNotificationId(safeRoomId),
   });
+}
+
+/**
+ * Clear the grouped notification for a room (call when the user opens/reads it)
+ * and reset its accumulator so the next message starts a fresh count.
+ */
+export async function dismissRoomNotification(roomId: string) {
+  const safeRoomId = roomId || 'unknown';
+  _roomNotifState.delete(safeRoomId);
+  try {
+    await Notifications.dismissNotificationAsync(roomNotificationId(safeRoomId));
+  } catch { /* notification may already be gone */ }
 }
 
 /* ---- Get badge count ---- */

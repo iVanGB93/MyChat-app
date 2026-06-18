@@ -23,11 +23,35 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
-import { saveMessage, messageExists, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState } from './localMessageStore';
-import { readAudioAsBase64, readFileAsBase64, saveIncomingAudio, saveIncomingImage } from './voiceMessageUtils';
+import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState } from './localMessageStore';
+import { readAudioAsBase64, readFileAsBase64 } from './voiceMessageUtils';
 import { useAppStore } from '../store/appStore';
+import type { InboundResult } from './ingressRouter';
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
+
+/* ------------------------------------------------------------------ */
+/*  Unified inbound router binding                                     */
+/*                                                                     */
+/*  All inbound DATA frames (chat messages, read receipts, reactions/  */
+/*  edits, typing) are handed to the single `routeInbound` dispatcher  */
+/*  so every transport funnels through one place. Bound lazily to      */
+/*  avoid a static import cycle (ingressRouter statically imports many  */
+/*  helpers from this module).                                         */
+/* ------------------------------------------------------------------ */
+let _routeInbound:
+  | ((raw: Record<string, any>, source: 'ws') => Promise<InboundResult>)
+  | null = null;
+async function routeInboundFrame(raw: Record<string, any>): Promise<InboundResult | null> {
+  if (!_routeInbound) {
+    try {
+      _routeInbound = (await import('./ingressRouter')).routeInbound;
+    } catch {
+      return null;
+    }
+  }
+  return _routeInbound(raw, 'ws');
+}
 
 /* ---- Timing constants ---- */
 const INITIAL_RECONNECT_MS = 1500;
@@ -522,9 +546,19 @@ export async function connectRoom(roomId: string): Promise<void> {
         // Drop all messages until auth handshake completes
         if (!s.authenticated) return;
 
-        // ---- Server delivery ack (no UI action needed) ----
+        // ---- Server received & relayed the message: mark it synced locally ----
         if (msgType === 'message_server_ack') {
-          console.log('[ChatWsManager] server_ack', data.message_id, 'room', roomId);
+          const ackId = data.message_id;
+          console.log('[ChatWsManager] server_ack', ackId, 'room', roomId);
+          if (ackId) {
+            setMessageSyncState(ackId, true)
+              .then(() => {
+                // Trigger a SQLite reload so the bubble flips SYNC PENDING → SYNC OK.
+                s.lastMutationAt = Date.now();
+                notifyListeners(roomId, s);
+              })
+              .catch(() => { /* ignore */ });
+          }
           return;
         }
 
@@ -534,139 +568,26 @@ export async function connectRoom(roomId: string): Promise<void> {
           return;
         }
 
-        // ---- Read receipt broadcast (legacy, kept for server backwards-compat) ----
-        if (msgType === 'messages_read') {
-          const ids: string[] = data.message_ids ?? [];
-          if (ids.length > 0) {
-            s.readIds = new Set([...s.readIds, ...ids]);
-            notifyListeners(roomId, s);
-            // Promote chat-list status → 'read' if any acked id is the most recent outgoing.
-            try {
-              const store = useAppStore.getState();
-              for (const id of ids) store.setRoomLastMessageStatus(roomId, id, 'read');
-            } catch {}
-          }
-          return;
-        }
-
-        // ---- Unified mutation relay: is_read, reactions, is_deleted, content ----
-        if (msgType === 'message_update') {
-          const updates: Array<{ id?: string; message_id: string; changes: MessageChanges }> = data.updates ?? [];
-          if (updates.length > 0) {
-            _applyUpdatesToState(roomId, s, updates.map((u) => ({ message_id: u.message_id, changes: u.changes })));
-            // Confirm to sender that these mutations were applied locally.
-            const ackIds = updates.map((u) => String(u.id ?? '')).filter((id) => !!id);
-            const senderId = Number(data.sender_id ?? 0);
-            if (ackIds.length > 0 && senderId > 0) {
+        // ---- All inbound DATA frames go through the single inbound router ----
+        // The room WS is room-scoped, so the server omits room_id on its relays;
+        // stamp it on so the router can address state. The router owns
+        // persistence, dedupe, delivery-ack, read/reaction state and typing.
+        routeInboundFrame({ ...data, room_id: data.room_id ?? roomId })
+          .then((res) => {
+            if (!res) return;
+            // message.update → confirm the applied mutations back over THIS socket.
+            if (res.ackUpdateIds && res.ackUpdateIds.length > 0 && res.ackSenderId && res.ackSenderId > 0) {
               try {
                 s.ws?.send(JSON.stringify({
                   type: 'message_update_ack',
                   room_id: roomId,
-                  sender_id: senderId,
-                  update_ids: ackIds,
-                }));
-              } catch {}
-            }
-          }
-          return;
-        }
-
-        if (msgType === 'message_update_ack') {
-          const ids: string[] = (data.update_ids ?? []).map((x: unknown) => String(x));
-          if (ids.length > 0) _ackPendingUpdates(roomId, s, ids);
-          return;
-        }
-
-        // ---- Typing indicator (ephemeral, no persistence) ----
-        if (msgType === 'typing') {
-          const senderId = Number(data.sender_id);
-          const sender = String(data.sender ?? '');
-          const isTyping = Boolean(data.is_typing);
-          if (senderId && sender) {
-            try {
-              useAppStore.getState().setRoomTyping(roomId, senderId, sender, isTyping);
-            } catch {}
-          }
-          return;
-        }
-
-        // ---- Chat message ----
-        const msg: WsMessage = { ...data, is_read: false };
-        if (msg.id && msg.sender_id !== undefined) {
-          (async () => {
-            const exists = await messageExists(msg.id);
-            const isOwn = msg.sender_id === _myUserId;
-            if (!exists) {
-              // If this is a voice/image message with inline base64 data, decode
-              // it and persist to local cache so playback/display works offline.
-              let localFileUri: string | null = msg.file_uri ?? null;
-              const incomingAudioB64 = (data as { audio_b64?: string }).audio_b64;
-              const incomingAudioMime = (data as { audio_mime?: string }).audio_mime;
-              const incomingImageB64 = (data as { image_b64?: string }).image_b64;
-              const incomingImageMime = (data as { image_mime?: string }).image_mime;
-              if (msg.message_type === 'voice' && incomingAudioB64 && !localFileUri) {
-                try {
-                  localFileUri = await saveIncomingAudio(msg.id, incomingAudioB64, incomingAudioMime);
-                } catch (err) {
-                  console.warn('[ChatWsManager] failed to save incoming voice audio:', err);
-                }
-              } else if (msg.message_type === 'image' && incomingImageB64 && !localFileUri) {
-                try {
-                  localFileUri = await saveIncomingImage(msg.id, incomingImageB64, incomingImageMime);
-                } catch (err) {
-                  console.warn('[ChatWsManager] failed to save incoming image:', err);
-                }
-              }
-              await saveMessage({
-                id: msg.id,
-                room_id: roomId,
-                sender_id: msg.sender_id,
-                sender_name: msg.sender,
-                content: msg.content,
-                type: msg.message_type,
-                file_uri: localFileUri,
-                created_at: msg.created_at,
-                is_mine: isOwn,
-                sync: !isOwn,
-                status: isOwn ? 'pending' : 'delivered',
-                reactions: {},
-                is_deleted: false,
-                is_read: false,
-                reply_to: msg.reply_to ?? null,
-                duration_ms: msg.duration_ms ?? null,
-              });
-              // Strip the heavy base64 blob before keeping the message in memory.
-              const memoryMsg: WsMessage = {
-                ...msg,
-                file_uri: localFileUri,
-              };
-              delete (memoryMsg as { audio_b64?: string }).audio_b64;
-              delete (memoryMsg as { image_b64?: string }).image_b64;
-              s.messages = [...s.messages, memoryMsg];
-              notifyListeners(roomId, s);
-              try {
-                useAppStore.getState().setRoomLastMessage(roomId, {
-                  id: msg.id,
-                  content: msg.content ?? '',
-                  created_at: msg.created_at,
-                  sender: msg.sender,
-                  sender_id: msg.sender_id,
-                });
-              } catch {}
-            }
-            // Ack non-own messages so the server clears the PendingDelivery
-            if (!isOwn && s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
-              try {
-                s.ws.send(JSON.stringify({
-                  type: 'message_ack',
-                  message_id: msg.id,
-                  sender_id: msg.sender_id,
-                  room_id: roomId,
+                  sender_id: res.ackSenderId,
+                  update_ids: res.ackUpdateIds,
                 }));
               } catch { /* ignore */ }
             }
-          })().catch(() => { /* ignore DB errors */ });
-        }
+          })
+          .catch(() => { /* ignore */ });
       } catch { /* ignore malformed frames */ }
     };
 

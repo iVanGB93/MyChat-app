@@ -8,11 +8,9 @@ import * as BackgroundTask from 'expo-background-task';
 import * as TaskManager from 'expo-task-manager';
 import * as Notifications from 'expo-notifications';
 import api, { getTokens } from './api';
-import {
-  showMessageNotification,
-} from './pushNotificationService';
 import { displayIncomingCallNotification } from './callNotificationService';
 import { useAppStore } from '../store/appStore';
+import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
 
 const TASK_NAME = 'BACKGROUND_NOTIFICATION_CHECK';
 const PUSH_RECEIVE_TASK = 'PUSH_NOTIFICATION_RECEIVE';
@@ -44,17 +42,8 @@ interface PendingNotifications {
   calls: PendingCall[];
 }
 
-// Track which notifications we've already shown to avoid duplicates.
-// Key: room_id  Value: composite deduplication key (id or created_at|sender|content-prefix)
-// Using a composite key avoids false-skips when two messages share the same timestamp.
-let lastNotifiedRoomKey = new Map<string, string>();
+// Track which call notifications we've already shown to avoid duplicates.
 let lastShownCallIds = new Set<string>();
-
-function makeMessageKey(msg: PendingMessage): string {
-  // Prefer message ID when the API provides it; fall back to composite
-  if (msg.id) return msg.id;
-  return `${msg.created_at}|${msg.sender}|${msg.content.slice(0, 40)}`;
-}
 
 /**
  * Fetch pending notifications from the server and show local notifications.
@@ -74,36 +63,13 @@ async function checkPendingNotifications(): Promise<boolean> {
 
     let hasNew = false;
 
-    // Show notifications for unread messages (one per room, re-notify if
-    // the deduplication key changed — i.e. a NEW message arrived).
-    for (const msg of data.messages) {
-      const key = makeMessageKey(msg);
-      const prevKey = lastNotifiedRoomKey.get(msg.room_id);
-      if (!prevKey || key !== prevKey) {
-        console.log('[BackgroundTask] local_message', {
-          room_id: msg.room_id,
-          correlation_id: msg.correlation_id ?? '',
-          route_reason: msg.route_reason ?? '',
-        });
-        await showMessageNotification({
-          senderName: msg.sender,
-          senderId: msg.sender_id ?? null,
-          content: msg.content,
-          roomId: msg.room_id,
-          roomName: msg.room_name,
-        });
-        lastNotifiedRoomKey.set(msg.room_id, key);
-        hasNew = true;
-      }
-    }
-
-    // Clear rooms that no longer have unread messages
-    const currentRoomIds = new Set(data.messages.map((m) => m.room_id));
-    for (const key of lastNotifiedRoomKey.keys()) {
-      if (!currentRoomIds.has(key)) {
-        lastNotifiedRoomKey.delete(key);
-      }
-    }
+    // NOTE: We intentionally do NOT show local notifications for unread
+    // messages here. The backend is a WS relay with no stored content, so this
+    // endpoint can only return a generic "New messages waiting" placeholder —
+    // showing that would overwrite the real per-conversation notification (from
+    // the Expo push / WS path) with text-less noise. Real message notifications
+    // come from the push (killed app) or the notification-WS path (alive app).
+    void data.messages;
 
     // Show notifications for incoming calls
     for (const call of data.calls) {
@@ -217,6 +183,8 @@ TaskManager.defineTask(PUSH_RECEIVE_TASK, async ({ data, error }: { data: any; e
     if (pushData?.type === 'new_message') {
       const { savePushMessage } = await import('./pushMessageStore');
       await savePushMessage(pushData);
+      // After saving, try to flush any pending ACK retries (over HTTP or WS)
+      flushHttpAckRetryQueue().catch(() => {});
     }
   } catch (err) {
     console.warn('[PushReceiveTask] failed to save message:', err);

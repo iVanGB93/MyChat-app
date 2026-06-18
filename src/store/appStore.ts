@@ -20,6 +20,14 @@ import { persist, createJSONStorage, PersistOptions } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { User } from '../types';
 
+/* Lazily dismiss the grouped OS notification for a room without coupling the
+   store to the notifications module at load time (avoids heavy/circular deps). */
+function dismissRoomNotificationSafe(roomId: string): void {
+  import('../services/pushNotificationService')
+    .then((m) => m.dismissRoomNotification(roomId))
+    .catch(() => {});
+}
+
 /* ---- Connection status (mirrors notificationWsManager.ConnectionStatus
         and chatWsManager.RoomStatus, kept as a string union to avoid a
         circular import) ---- */
@@ -328,12 +336,18 @@ export const useAppStore = create<AppState>()(
     })),
   clearRoomUnread: (roomId) =>
     set((s) => {
+      // Also clear the grouped OS notification for this conversation.
+      dismissRoomNotificationSafe(roomId);
       if (!(roomId in s.unreadByRoom)) return s;
       const next = { ...s.unreadByRoom };
       delete next[roomId];
       return { unreadByRoom: next };
     }),
-  clearAllUnread: () => set({ unreadByRoom: {} }),
+  clearAllUnread: () =>
+    set((s) => {
+      Object.keys(s.unreadByRoom).forEach(dismissRoomNotificationSafe);
+      return { unreadByRoom: {} };
+    }),
   setRoomLastMessage: (roomId, msg) =>
     set((s) => {
       const prev = s.lastMessageByRoom[roomId];

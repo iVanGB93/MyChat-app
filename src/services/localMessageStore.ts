@@ -59,6 +59,15 @@ export async function initDB(): Promise<void> {
       changes    TEXT    NOT NULL,
       created_at INTEGER NOT NULL
     );
+
+    -- RRP: persistent idempotency ledger. Every inbound protocol event whose
+    -- id has been fully processed is recorded here so the same event arriving
+    -- over a second transport (or after a cold restart) is a no-op.
+    CREATE TABLE IF NOT EXISTS processed_events (
+      id   TEXT    PRIMARY KEY,
+      type TEXT,
+      ts   INTEGER NOT NULL
+    );
   `);
   // Migrations for DBs created before new columns existed
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reactions  TEXT    DEFAULT '{}'`); } catch {}
@@ -190,12 +199,31 @@ export async function markDelivered(
   }
 }
 
+/**
+ * Return IDs (+ room) of messages sent by me that are still locally marked
+ * 'pending' (i.e. not yet confirmed delivered or read). Used to reconcile
+ * delivery ticks after the sender was offline when the recipient acked.
+ * Capped and limited to recent messages to keep the payload small.
+ */
+export async function getPendingSentMessageIds(
+  limit = 200,
+): Promise<{ id: string; room_id: string }[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<{ id: string; room_id: string }>(
+    `SELECT id, room_id FROM messages
+       WHERE is_mine = 1 AND status = 'pending' AND is_deleted = 0
+       ORDER BY created_at DESC
+       LIMIT ?`,
+    limit,
+  );
+  return rows;
+}
+
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
 
-export async function getMessages(roomId: string): Promise<LocalMessage[]> {
-  const db = await getDB();
+export async function getMessages(roomId: string): Promise<LocalMessage[]> {  const db = await getDB();
   const rows = await db.getAllAsync<{
     id: string;
     room_id: string;
@@ -236,6 +264,90 @@ export async function messageExists(id: string): Promise<boolean> {
     id
   );
   return (row?.c ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------------------
+// RRP idempotency ledger (processed_events)
+// ---------------------------------------------------------------------------
+
+const PROCESSED_EVENT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/** Has this protocol-event id already been fully processed? */
+export async function isEventProcessed(id: string): Promise<boolean> {
+  if (!id) return false;
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM processed_events WHERE id = ?`,
+    id
+  );
+  return (row?.c ?? 0) > 0;
+}
+
+/** Record a protocol-event id as fully processed (idempotent). */
+export async function markEventProcessed(id: string, type?: string): Promise<void> {
+  if (!id) return;
+  const db = await getDB();
+  await db.runAsync(
+    `INSERT OR IGNORE INTO processed_events (id, type, ts) VALUES (?, ?, ?)`,
+    id,
+    type ?? null,
+    Date.now()
+  );
+}
+
+/** Drop ledger rows older than the retention window. Call occasionally. */
+export async function pruneProcessedEvents(): Promise<void> {
+  const db = await getDB();
+  await db.runAsync(
+    `DELETE FROM processed_events WHERE ts < ?`,
+    Date.now() - PROCESSED_EVENT_TTL_MS
+  );
+}
+
+// ---------------------------------------------------------------------------
+// RRP sync.digest helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a per-room digest of the most recent message ids we hold locally.
+ * Used on (re)connect to let the peer router detect and request any gaps.
+ */
+export async function getRecentMessageDigest(
+  perRoom = 40,
+  lookbackDays = 14,
+): Promise<Array<{ room_id: string; ids: string[] }>> {
+  const db = await getDB();
+  const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
+  const rows = await db.getAllAsync<{ id: string; room_id: string }>(
+    `SELECT id, room_id FROM messages WHERE created_at >= ? ORDER BY created_at DESC`,
+    since
+  );
+  const byRoom = new Map<string, string[]>();
+  for (const r of rows) {
+    const arr = byRoom.get(r.room_id) ?? [];
+    if (arr.length < perRoom) {
+      arr.push(r.id);
+      byRoom.set(r.room_id, arr);
+    }
+  }
+  return Array.from(byRoom.entries()).map(([room_id, ids]) => ({ room_id, ids }));
+}
+
+/** Of the given candidate ids, return the subset we do NOT have for this room. */
+export async function filterMissingMessageIds(
+  roomId: string,
+  ids: string[],
+): Promise<string[]> {
+  if (!ids.length) return [];
+  const db = await getDB();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync<{ id: string }>(
+    `SELECT id FROM messages WHERE room_id = ? AND id IN (${placeholders})`,
+    roomId,
+    ...ids
+  );
+  const have = new Set(rows.map((r) => r.id));
+  return ids.filter((id) => !have.has(id));
 }
 
 /** Returns undelivered outbound messages for a specific recipient in a room. */

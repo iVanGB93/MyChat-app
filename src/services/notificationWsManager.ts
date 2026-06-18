@@ -14,11 +14,15 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api, { getTokens, saveTokens, BASE_URL } from './api';
-import { connectRoom, flushOutboxForRecipient, injectReceivedMessage, markIdsAsReadInRoom, applyRemoteMessageUpdates, ackMessageUpdates } from './chatWsManager';
-import { saveMessage, messageExists, markDelivered } from './localMessageStore';
+import { connectRoom } from './chatWsManager';
 import { useAppStore } from '../store/appStore';
-import { shouldShowLocalIncomingCallNotification, shouldShowLocalMessageNotification } from './notificationPresentationPolicy';
-import { decideLocalIncomingCallNotification, decideLocalMessageNotification } from './notificationPresentationPolicy';
+import { shouldShowLocalIncomingCallNotification } from './notificationPresentationPolicy';
+import { decideLocalIncomingCallNotification } from './notificationPresentationPolicy';
+import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
+import { reconcileSentDeliveryStatus } from './deliveryReconciler';
+import { routeInbound } from './ingressRouter';
+import type { InboundResult } from './ingressRouter';
+import { classify } from './rrp/envelope';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
@@ -186,6 +190,26 @@ function _sendAppState(state: 'active' | 'background') {
  * Send a message_ack immediately if the WS is open, otherwise persist it
  * to AsyncStorage so it's flushed on the next successful auth_ok.
  */
+/** Is the always-on notification WS connected AND authenticated right now? */
+export function isNotifWsReady(): boolean {
+  return ws?.readyState === WebSocket.OPEN && _wsAuthenticated;
+}
+
+/**
+ * Send a raw frame over the always-on notification WS. Returns true if it was
+ * handed to the socket, false if the socket is not ready (caller decides how to
+ * queue / fall back). The outbound router uses this as its primary transport.
+ */
+export function sendRawNotif(frame: Record<string, any>): boolean {
+  if (!isNotifWsReady() || !ws) return false;
+  try {
+    ws.send(JSON.stringify(frame));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function sendOrQueueMessageAck(ack: QueuedAck): Promise<void> {
   if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
     try {
@@ -408,8 +432,16 @@ async function connectWs() {
           try { useAppStore.getState().setNotifWsAuthenticated(true); } catch {}
           try { useAppStore.getState().setNotifWsInboundAt(Date.now()); } catch {}
           startPing();
-          // Flush any message acks that were queued while WS was offline
+          // Flush any message acks that were queued while WS was offline (both WS and HTTP retry queues)
           _flushPendingAcks().catch(() => {});
+          flushHttpAckRetryQueue().catch(() => {});
+          // Catch up on delivery ticks we may have missed while disconnected.
+          reconcileSentDeliveryStatus().catch(() => {});
+          // RRP sync.digest: advertise the message ids we hold so the peer can
+          // detect and request any gaps (best-effort, re-emitted each connect).
+          import('./outboundRouter')
+            .then((m) => m.emitRoomDigests())
+            .catch(() => {});
           if (SEND_APP_STATE_ON_AUTH_OK) {
             const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';
             _sendAppState(currentAppState as 'active' | 'background');
@@ -476,173 +508,33 @@ async function connectWs() {
           }
         }
 
-        // ---- receiver_ready: an offline user just connected — flush our outbox for them ----
-        if (payload.event === 'receiver_ready' && payload.room_id && payload.user_id) {
-          flushOutboxForRecipient(String(payload.room_id), payload.user_id as number);
-          // Don't return — let listeners know too
-        }
-
-        // ---- message_update: unified mutation relay (is_read, reactions, is_deleted, …) ----
-        if (payload.event === 'message_update' && payload.room_id && payload.updates) {
-          const roomId = String(payload.room_id);
-          const updates = payload.updates as Array<{ id?: string; message_id: string; changes: Record<string, unknown> }>;
-          applyRemoteMessageUpdates(
-            roomId,
-            updates as Array<{ message_id: string; changes: Record<string, unknown> }>,
-          );
-          const updateIds = updates
-            .map((u) => String(u.id ?? ''))
-            .filter((id) => !!id);
-          const senderId = Number(payload.from_user_id ?? 0);
-          if (updateIds.length > 0 && senderId > 0 && ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
-            try {
-              ws.send(JSON.stringify({
-                type: 'message_update_ack',
-                room_id: roomId,
-                sender_id: senderId,
-                update_ids: updateIds,
-              }));
-            } catch {}
-          }
-          // Fall through — notify listeners so ChatRoomScreen can react if mounted
-        }
-
-        if (payload.event === 'message_update_ack' && payload.room_id && payload.update_ids) {
-          ackMessageUpdates(
-            String(payload.room_id),
-            (payload.update_ids as Array<unknown>).map((x) => String(x)),
-          );
-        }
-
-        // ---- messages_read (legacy, kept for server backward-compat) ----
-        if (payload.event === 'messages_read' && payload.room_id && payload.message_ids) {
-          markIdsAsReadInRoom(String(payload.room_id), payload.message_ids as string[]);
-          // Fall through — notify listeners so ChatRoomScreen can also update
-        }
-
-        // ---- message_delivery_ack: recipient confirmed they stored our message ----
-        if (payload.event === 'message_delivery_ack' && payload.message_id && payload.by_user_id) {
-          markDelivered(String(payload.message_id), payload.by_user_id as number).catch(() => {});
-          // Fall through — notify listeners so the chat UI can update the delivery tick
-        }
-
-        // ---- typing relay via notification channel ----
-        // Lets the chat list show "typing…" even for rooms whose chat-room WS
-        // is not currently open. Pure ephemeral mirror — no DB, no notification.
-        if (payload.event === 'typing' && payload.room_id && payload.sender_id) {
-          try {
-            useAppStore.getState().setRoomTyping(
-              String(payload.room_id),
-              Number(payload.sender_id),
-              String(payload.sender ?? ''),
-              Boolean(payload.is_typing),
-            );
-          } catch {}
-          // Skip local-notification path entirely for typing events
-          return;
-        }
-
-        // ---- new_message via notification channel (user not in chat room WS) ----
-        if (payload.event === 'new_message' && payload.message_id && payload.sender_id !== undefined) {
-          // Client-side guard: drop messages from blocked senders entirely
-          // (server already filters, this is defense-in-depth).
-          try {
-            const blockedMap = useAppStore.getState().blockedIds;
-            if (blockedMap?.[Number(payload.sender_id)]) {
-              return;
-            }
-          } catch {}
-          (async () => {
-            const exists = await messageExists(String(payload.message_id));
-            const replyTo = (payload.reply_to ?? null) as
-              | { id: string; sender_name: string; content: string; type?: string }
-              | null;
-            const durationMs = typeof payload.duration_ms === 'number' ? payload.duration_ms : null;
-            const incomingAudioB64 = typeof payload.audio_b64 === 'string' ? payload.audio_b64 : null;
-            const incomingAudioMime = typeof payload.audio_mime === 'string' ? payload.audio_mime : null;
-            const incomingImageB64 = typeof payload.image_b64 === 'string' ? payload.image_b64 : null;
-            const incomingImageMime = typeof payload.image_mime === 'string' ? payload.image_mime : null;
-            const messageType = String(payload.message_type ?? 'text');
-            let localFileUri: string | null = null;
-            if (messageType === 'voice' && incomingAudioB64) {
+        // ---- RRP: central inbound dispatch for ALL data events ----
+        // One router owns the state side effects (persist, dedupe, delivery
+        // ticks, read receipts, update apply, typing, outbox flush) regardless
+        // of transport. Transport-LOCAL follow-ups that need THIS socket (the
+        // message_update_ack) are returned and sent here.
+        const rrpType = classify(payload);
+        routeInbound(payload, 'ws')
+          .then((res: InboundResult) => {
+            if (
+              res.ackUpdateIds && res.ackUpdateIds.length > 0 && res.ackSenderId &&
+              ws?.readyState === WebSocket.OPEN && _wsAuthenticated
+            ) {
               try {
-                const { saveIncomingAudio } = await import('./voiceMessageUtils');
-                localFileUri = await saveIncomingAudio(String(payload.message_id), incomingAudioB64, incomingAudioMime);
-              } catch (err) {
-                console.warn('[NotifWS] failed to save incoming voice audio:', err);
-              }
-            } else if (messageType === 'image' && incomingImageB64) {
-              try {
-                const { saveIncomingImage } = await import('./voiceMessageUtils');
-                localFileUri = await saveIncomingImage(String(payload.message_id), incomingImageB64, incomingImageMime);
-              } catch (err) {
-                console.warn('[NotifWS] failed to save incoming image:', err);
-              }
+                ws.send(JSON.stringify({
+                  type: 'message_update_ack',
+                  room_id: payload.room_id,
+                  sender_id: res.ackSenderId,
+                  update_ids: res.ackUpdateIds,
+                }));
+              } catch {}
             }
-            const wsMsg = {
-              id: String(payload.message_id),
-              sender: String(payload.sender || payload.from_username || ''),
-              sender_id: payload.sender_id as number,
-              content: String(payload.content ?? ''),
-              message_type: messageType,
-              created_at: String(payload.created_at ?? new Date().toISOString()),
-              is_read: false,
-              reply_to: replyTo,
-              file_uri: localFileUri,
-              duration_ms: durationMs,
-            };
-            if (!exists) {
-              await saveMessage({
-                id: wsMsg.id,
-                room_id: String(payload.room_id ?? ''),
-                sender_id: wsMsg.sender_id,
-                sender_name: wsMsg.sender,
-                content: wsMsg.content ?? null,
-                type: wsMsg.message_type,
-                file_uri: localFileUri,
-                created_at: wsMsg.created_at,
-                is_mine: false,
-                sync: true,
-                status: 'delivered',
-                reactions: {},
-                is_deleted: false,
-                is_read: false,
-                reply_to: replyTo,
-                duration_ms: durationMs,
-              });
-            }
-            // Inject into chatWsManager state if the room screen is open
-            injectReceivedMessage(String(payload.room_id ?? ''), wsMsg);
-            // Bump unread counter in the global store unless the user is currently viewing this room.
-            try {
-              const store = useAppStore.getState();
-              const rid = String(payload.room_id ?? '');
-              if (rid) {
-                store.setRoomLastMessage(rid, {
-                  id: wsMsg.id,
-                  content: wsMsg.content ?? '',
-                  created_at: wsMsg.created_at,
-                  sender: wsMsg.sender,
-                  sender_id: wsMsg.sender_id,
-                });
-                // Skip unread bump if the user is currently viewing this room OR muted it.
-                if (store.activeRoomId !== rid && !store.mutedRooms[rid]) {
-                  store.incrementRoomUnread(rid, 1);
-                }
-              }
-            } catch {}
-            // Ack receipt so server deletes the PendingDelivery record
-            if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
-              ws.send(JSON.stringify({
-                type: 'message_ack',
-                message_id: payload.message_id,
-                sender_id: payload.sender_id,
-                room_id: String(payload.room_id ?? ''),
-              }));
-            }
-          })().catch(() => {});
-          // Fall through — local notification and listeners still receive the event
-        }
+          })
+          .catch(() => {});
+
+        // Typing is ephemeral and fully owned by the router — no local
+        // notification, and (matching prior behavior) no listener dispatch.
+        if (rrpType === 'typing') return;
 
         // When app is in background the WS is still alive (ForegroundService keeps it connected),
         // but in-app UI components are not rendered. FCM may race with app_state reporting.
@@ -657,47 +549,12 @@ async function connectWs() {
         })();
         try {
           const {
-            showMessageNotification,
-          } = require('./pushNotificationService');
-          const {
             displayIncomingCallNotification,
           } = require('./callNotificationService');
 
-          const localMsgDecision = decideLocalMessageNotification(payload, storeState);
-          if (payload.event === 'new_message') {
-            console.log('[NotifPolicy] local_message', {
-              allow: localMsgDecision.allow,
-              reason: localMsgDecision.reason,
-              room_id: String(payload.room_id ?? ''),
-              message_id: String(payload.message_id ?? ''),
-              correlation_id: correlationId,
-              route_reason: routeReason,
-            });
-          }
-
-          if (
-            shouldShowLocalMessageNotification(payload, storeState) &&
-            (payload.sender || payload.from_username) &&
-            payload.content
-          ) {
-            const senderName = String(payload.sender || payload.from_username || 'New message');
-            const senderId = typeof payload.sender_id === 'number' ? payload.sender_id : null;
-            // If sender is not in our contacts (and not us), reframe the
-            // local notification as a contact / message request.
-            const isStranger =
-              senderId !== null &&
-              !storeState?.contactIds?.[senderId];
-            const bodyText = isStranger
-              ? `wants to talk to you · tap to accept`
-              : String(payload.content);
-            showMessageNotification({
-              senderName,
-              senderId,
-              content: bodyText,
-              roomId: String(payload.room_id ?? ''),
-              roomName: payload.room_name || senderName,
-            }).catch(() => {});
-          }
+          // NOTE: the local notification for `new_message` is rendered by the
+          // ingress router (ingestMessage), so it is intentionally NOT handled
+          // here — doing both would show the notification twice.
 
           const localCallDecision = decideLocalIncomingCallNotification(payload, storeState);
           if (payload.event === 'incoming_call') {
@@ -828,9 +685,13 @@ function startNetworkListener() {
       closeWs();
       clearAllTimers();
     } else if (wasOffline && online) {
-      console.log('[WsManager] internet restored — reconnecting');
+      console.log('[WsManager] internet restored — reconnecting and flushing retry queues');
       _reconnectDelay = INITIAL_RECONNECT_MS;
       connectWs();
+      // Flush HTTP retry queue now that network is back
+      flushHttpAckRetryQueue().catch(() => {});
+      // Reconcile delivery ticks missed while offline
+      reconcileSentDeliveryStatus().catch(() => {});
     }
   });
 }
@@ -1078,4 +939,9 @@ export async function ensureWsAlive(): Promise<void> {
     _reconnectDelay = INITIAL_RECONNECT_MS;
     connectWs();
   }
+
+  // Periodic flush of HTTP retry queue (background keepalive scenario)
+  flushHttpAckRetryQueue().catch(() => {});
+  // Periodic delivery-tick reconciliation (covers acks missed while WS was down)
+  reconcileSentDeliveryStatus().catch(() => {});
 }

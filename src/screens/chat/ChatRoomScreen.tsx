@@ -47,6 +47,7 @@ import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
+import { dismissRoomNotification } from '../../services/pushNotificationService';
 import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import VoiceMessageBubble from '../../components/VoiceMessageBubble';
@@ -124,6 +125,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   // decide whether to show in-app vs. push notifications.
   useEffect(() => {
     useAppStore.getState().setActiveRoom(roomId);
+    // Clear any grouped notification for this conversation now that it's open.
+    dismissRoomNotification(roomId).catch(() => {});
     return () => {
       if (useAppStore.getState().activeRoomId === roomId) {
         useAppStore.getState().setActiveRoom(null);
