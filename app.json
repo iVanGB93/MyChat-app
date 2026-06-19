@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.13",
+    "version": "1.0.14",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -52,6 +52,8 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
       "expo-audio",
       "expo-font",
       "@config-plugins/react-native-webrtc",
@@ -75,6 +77,7 @@
       "./plugins/withForegroundService",
       "./plugins/withRingtoneRaw",
       "./plugins/withNotifeeRepo",
+      "./plugins/withFirebaseManifestFix",
       [
         "expo-share-intent",
         {

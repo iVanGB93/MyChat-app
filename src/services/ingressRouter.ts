@@ -25,6 +25,8 @@ import {
   isEventProcessed,
   markEventProcessed,
   filterMissingMessageIds,
+  getMessageFileUri,
+  setMessageFileUri,
 } from './localMessageStore';
 import type { ReplyRef } from './localMessageStore';
 import {
@@ -34,6 +36,7 @@ import {
   applyRemoteMessageUpdates,
   ackMessageUpdates,
   flushOutboxForRecipient,
+  resendMessagesByIds,
 } from './chatWsManager';
 import type { WsMessage } from './chatWsManager';
 import { useAppStore } from '../store/appStore';
@@ -280,7 +283,16 @@ export async function ingestMessage(
   // 2. Content/media gate. A truncated push (ack-critical ids but no content)
   //    is acked above; we then wait for the full WS delivery to persist it.
   const hasMedia = !!(evt.audioB64 || evt.imageB64);
-  if (!evt.content && !hasMedia) {
+  // A media message whose base64 blob was stripped from the push still has a
+  // media `messageType`. We persist a PLACEHOLDER row for it (file_uri null) so
+  // it shows in the chat immediately and the media-hydration path
+  // (getIncompleteMediaDigest → sync.request) backfills the file once both
+  // peers are online. Without this the row never exists, so it can never
+  // self-heal — and a killed receiver would silently lose the message.
+  const isMediaType = evt.messageType === 'image'
+    || evt.messageType === 'voice'
+    || evt.messageType === 'video';
+  if (!evt.content && !hasMedia && !isMediaType) {
     console.log('[Ingress] acked but not persisted — content missing (truncated)', evt.messageId);
     return;
   }
@@ -288,7 +300,30 @@ export async function ingestMessage(
   // 3. Persistent + in-flight dedupe (single write of side effects).
   const exists = await messageExists(evt.messageId);
   if (exists || _persisting.has(evt.messageId)) {
-    // Already stored (or being stored) — just make sure an open room shows it.
+    // Already stored (or being stored). If this delivery carries media and the
+    // stored row is still missing its file (e.g. first saved from a push that
+    // stripped the base64 blob), decode + backfill the file_uri now so the
+    // bubble finally renders. Skip if another decode for this id is in flight.
+    if (hasMedia && !_persisting.has(evt.messageId)) {
+      try {
+        const existingUri = await getMessageFileUri(evt.messageId);
+        if (!existingUri) {
+          track(_persisting, evt.messageId);
+          try {
+            const hydratedUri = await decodeMedia(evt);
+            if (hydratedUri) {
+              await setMessageFileUri(evt.messageId, hydratedUri);
+              injectReceivedMessage(evt.roomId, toWsMessage(evt, hydratedUri), { updateExisting: true });
+              console.log('[Ingress] hydrated media for', evt.messageId);
+              return;
+            }
+          } finally {
+            _persisting.delete(evt.messageId);
+          }
+        }
+      } catch { /* fall through to plain hydrate */ }
+    }
+    // Already stored — just make sure an open room shows it.
     injectReceivedMessage(evt.roomId, toWsMessage(evt, null));
     return;
   }
@@ -506,6 +541,13 @@ export async function routeInbound(
       // Reuse receiver_ready semantics: flush any undelivered messages for the
       // requester (preserves original ids + media) and reconcile delivery ticks.
       try { flushOutboxForRecipient(env.room_id, requesterId); } catch {}
+      // Explicitly re-send the requested ids WITH media even if already
+      // delivered — covers media rows the peer saved from a b64-stripped push
+      // and now needs hydrated (outbox flush skips delivered messages).
+      const reqIds = (p.ids as unknown[] | undefined)?.map((x) => String(x)) ?? [];
+      if (reqIds.length > 0) {
+        try { await resendMessagesByIds(env.room_id, requesterId, reqIds); } catch {}
+      }
       try {
         const { reconcileSentDeliveryStatus } = await import('./deliveryReconciler');
         await reconcileSentDeliveryStatus().catch(() => {});

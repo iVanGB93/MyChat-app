@@ -126,7 +126,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   useEffect(() => {
     useAppStore.getState().setActiveRoom(roomId);
     // Clear any grouped notification for this conversation now that it's open.
+    // Both the Expo (WS path) and Notifee MessagingStyle (killed-app FCM path).
     dismissRoomNotification(roomId).catch(() => {});
+    import('../../services/messageNotificationService')
+      .then((m) => m.cancelMessageNotification(roomId))
+      .catch(() => {});
     return () => {
       if (useAppStore.getState().activeRoomId === roomId) {
         useAppStore.getState().setActiveRoom(null);

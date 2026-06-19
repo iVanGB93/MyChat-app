@@ -397,6 +397,106 @@ export async function getPendingOutbox(
   }));
 }
 
+/** Return the stored file_uri for a message (null if none / row absent). */
+export async function getMessageFileUri(messageId: string): Promise<string | null> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ file_uri: string | null }>(
+    `SELECT file_uri FROM messages WHERE id = ?`,
+    messageId,
+  );
+  return row?.file_uri ?? null;
+}
+
+/** Backfill a message's media file_uri (e.g. after hydrating a push-only row). */
+export async function setMessageFileUri(messageId: string, fileUri: string): Promise<void> {
+  const db = await getDB();
+  await db.runAsync(`UPDATE messages SET file_uri = ? WHERE id = ?`, fileUri, messageId);
+}
+
+/**
+ * Per-room digest of RECEIVED media messages whose media never landed locally
+ * (row exists but file_uri IS NULL) — e.g. saved from a push that stripped the
+ * base64 blob. Used to ask the sender to re-send the media over the WS.
+ */
+export async function getIncompleteMediaDigest(
+  perRoom = 40,
+  lookbackDays = 14,
+): Promise<Array<{ room_id: string; ids: string[] }>> {
+  const db = await getDB();
+  const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
+  const rows = await db.getAllAsync<{ id: string; room_id: string }>(
+    `SELECT id, room_id FROM messages
+     WHERE is_mine = 0
+       AND is_deleted = 0
+       AND type IN ('voice', 'image')
+       AND (file_uri IS NULL OR file_uri = '')
+       AND created_at >= ?
+     ORDER BY created_at DESC`,
+    since,
+  );
+  const byRoom = new Map<string, string[]>();
+  for (const r of rows) {
+    const arr = byRoom.get(r.room_id) ?? [];
+    if (arr.length < perRoom) {
+      arr.push(r.id);
+      byRoom.set(r.room_id, arr);
+    }
+  }
+  return Array.from(byRoom.entries()).map(([room_id, ids]) => ({ room_id, ids }));
+}
+
+/**
+ * Load specific messages I authored (by id) so they can be re-sent on demand
+ * (e.g. a peer asked to hydrate media it received via a b64-stripped push).
+ * Unlike getPendingOutbox this ignores delivery state — a delivered media
+ * message must still be resendable when its media was never received.
+ */
+export async function getMessagesByIdsForResend(
+  roomId: string,
+  myUserId: number,
+  ids: string[],
+): Promise<LocalMessage[]> {
+  if (!ids.length) return [];
+  const db = await getDB();
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync<{
+    id: string;
+    room_id: string;
+    sender_id: number;
+    sender_name: string;
+    content: string | null;
+    type: string;
+    file_uri: string | null;
+    created_at: string;
+    is_mine: number;
+    sync: number;
+    status: string | null;
+    reactions: string | null;
+    is_deleted: number;
+    is_read: number;
+    reply_to: string | null;
+    duration_ms: number | null;
+  }>(
+    `SELECT * FROM messages
+     WHERE room_id = ?
+       AND sender_id = ?
+       AND is_deleted = 0
+       AND id IN (${placeholders})
+     ORDER BY created_at ASC`,
+    roomId, myUserId, ...ids,
+  );
+  return rows.map((r) => ({
+    ...r,
+    is_mine:    r.is_mine    === 1,
+    sync:       r.sync       === 1,
+    status:     (r.status === 'read' ? 'read' : r.status === 'delivered' ? 'delivered' : 'pending'),
+    is_deleted: r.is_deleted === 1,
+    is_read:    r.is_read    === 1,
+    reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
+    reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
+  }));
+}
+
 /**
  * Toggle a reaction on a message (one reaction per user across all emoji).
  * Tapping the same emoji again removes it; tapping a different one replaces it.

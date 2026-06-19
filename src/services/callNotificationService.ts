@@ -79,7 +79,6 @@ function handleEvent({ type, detail }: Event) {
   if (type !== EventType.ACTION_PRESS && type !== EventType.PRESS) return;
   const data = parseData(detail.notification?.data as any);
   if (!data) return;
-
   if (type === EventType.PRESS) {
     emit({ type: 'press', data });
     return;
@@ -88,6 +87,11 @@ function handleEvent({ type, detail }: Event) {
   const actionId = detail.pressAction?.id;
   if (actionId === ACTION_ACCEPT) emit({ type: 'accept', data });
   else if (actionId === ACTION_DECLINE) emit({ type: 'decline', data });
+}
+
+/** Public wrapper so the unified background dispatcher can route call events. */
+export function handleCallNotificationEvent(event: Event) {
+  handleEvent(event);
 }
 
 /**

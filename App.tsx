@@ -21,6 +21,9 @@ import {
   cancelIncomingCallNotification,
 } from './src/services/callNotificationService';
 import { joinCall, endCall } from './src/services/callService';
+import { registerFcmForegroundHandler } from './src/services/fcmService';
+import { ensureMessageChannel } from './src/services/messageNotificationService';
+import notifee, { EventType } from '@notifee/react-native';
 import { AppLifecycleBridge } from './src/store/AppLifecycleBridge';
 import { DebugOverlay } from './src/store/DebugOverlay';
 import { ConnectionBanner } from './src/store/ConnectionBanner';
@@ -106,6 +109,51 @@ export default function App() {
     // delivers the push, even if the user never taps the notification.
     registerPushReceiveTask();
 
+    // FCM (WhatsApp-style) message notifications: ensure the channel exists and
+    // persist data messages that arrive while the app is in the foreground.
+    ensureMessageChannel().catch(() => {});
+    const unsubFcmForeground = registerFcmForegroundHandler();
+
+    // Navigate to the chat when a MessagingStyle (Notifee) message notification
+    // is tapped while the app is alive.
+    const navigateToRoomWhenReady = (
+      d: Record<string, string>,
+      attempt = 0,
+    ) => {
+      if (!navigationRef.isReady()) {
+        if (attempt > 100) return;
+        setTimeout(() => navigateToRoomWhenReady(d, attempt + 1), 100);
+        return;
+      }
+      const senderIdNum = d.senderId != null ? Number(d.senderId) : undefined;
+      navigationRef.navigate('ChatRoom', {
+        roomId: String(d.roomId),
+        roomName: String(d.roomName ?? ''),
+        otherUserId: senderIdNum && !Number.isNaN(senderIdNum) ? senderIdNum : undefined,
+      });
+    };
+    const unsubNotifeeMsg = notifee.onForegroundEvent(({ type, detail }) => {
+      // Direct-reply action typed on a message notification while the app is
+      // foregrounded — relay it the same way the background dispatcher does.
+      if (type === EventType.ACTION_PRESS && detail.pressAction?.id === 'reply') {
+        import('./src/services/notificationReplyService')
+          .then((m) => m.handleMessageReplyEvent({ type, detail }))
+          .catch(() => {});
+        return;
+      }
+      if (type !== EventType.PRESS) return;
+      const d = detail.notification?.data as Record<string, string> | undefined;
+      if (!d || d.type !== 'new_message' || !d.roomId) return;
+      navigateToRoomWhenReady(d);
+    });
+
+    // Cold start: if the app was launched by tapping a message notification,
+    // route straight to the room.
+    notifee.getInitialNotification().then((initial) => {
+      const d = initial?.notification?.data as Record<string, string> | undefined;
+      if (d?.type === 'new_message' && d.roomId) navigateToRoomWhenReady(d);
+    }).catch(() => {});
+
     // Handle notification taps — navigate to the relevant screen and save msg
     responseListener.current = addNotificationResponseListener((response) => {
       const data = response.notification.request.content.data as Record<string, string> | undefined;
@@ -116,22 +164,38 @@ export default function App() {
         savePushMessage(data).catch(() => {});
       }
 
-      if (!navigationRef.isReady() || !data) return;
+      if (!data) return;
+
+      // On a cold launch from a killed app the navigation container isn't ready
+      // yet when this fires — retry until it is, otherwise the navigate is a
+      // no-op and the user lands on the default (chat list) instead of the room.
+      const navigateWhenReady = (run: () => void, attempt = 0) => {
+        if (!navigationRef.isReady()) {
+          if (attempt > 100) return; // ~10s safety cap
+          setTimeout(() => navigateWhenReady(run, attempt + 1), 100);
+          return;
+        }
+        run();
+      };
 
       if (data.type === 'incoming_call') {
-        navigationRef.navigate('IncomingCall', {
-          callId: String(data.callId ?? ''),
-          callerName: String(data.callerName ?? 'Unknown'),
-          callerId: Number(data.callerId ?? 0),
-          callType: (data.callType as 'voice' | 'video') ?? 'voice',
-          roomName: String(data.roomName ?? ''),
+        navigateWhenReady(() => {
+          navigationRef.navigate('IncomingCall', {
+            callId: String(data.callId ?? ''),
+            callerName: String(data.callerName ?? 'Unknown'),
+            callerId: Number(data.callerId ?? 0),
+            callType: (data.callType as 'voice' | 'video') ?? 'voice',
+            roomName: String(data.roomName ?? ''),
+          });
         });
       } else if (data.type === 'new_message' && data.roomId) {
         const senderIdNum = data.senderId != null ? Number(data.senderId) : undefined;
-        navigationRef.navigate('ChatRoom', {
-          roomId: String(data.roomId),
-          roomName: String(data.roomName ?? ''),
-          otherUserId: senderIdNum && !Number.isNaN(senderIdNum) ? senderIdNum : undefined,
+        navigateWhenReady(() => {
+          navigationRef.navigate('ChatRoom', {
+            roomId: String(data.roomId),
+            roomName: String(data.roomName ?? ''),
+            otherUserId: senderIdNum && !Number.isNaN(senderIdNum) ? senderIdNum : undefined,
+          });
         });
       }
     });
@@ -153,6 +217,8 @@ export default function App() {
         receivedListener.current.remove();
       }
       unsubCallActions();
+      unsubFcmForeground();
+      unsubNotifeeMsg();
     };
   }, []);
 

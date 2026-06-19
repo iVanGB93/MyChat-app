@@ -440,7 +440,12 @@ async function connectWs() {
           // RRP sync.digest: advertise the message ids we hold so the peer can
           // detect and request any gaps (best-effort, re-emitted each connect).
           import('./outboundRouter')
-            .then((m) => m.emitRoomDigests())
+            .then((m) => {
+              m.emitRoomDigests().catch(() => {});
+              // Also ask peers to re-send media we received without its blob
+              // (e.g. saved from a push that stripped the base64).
+              m.requestIncompleteMedia().catch(() => {});
+            })
             .catch(() => {});
           if (SEND_APP_STATE_ON_AUTH_OK) {
             const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';

@@ -20,7 +20,7 @@
 
 import { makeEnvelope, toWire } from './rrp/envelope';
 import type { RrpEnvelope, RrpType } from './rrp/envelope';
-import { getRecentMessageDigest } from './localMessageStore';
+import { getRecentMessageDigest, getIncompleteMediaDigest } from './localMessageStore';
 
 /** Canonical RrpType → the backend `type` field for an OUTBOUND frame. */
 const TYPE_TO_SEND_TYPE: Partial<Record<RrpType, string>> = {
@@ -94,4 +94,31 @@ export async function requestMissing(roomId: string, ids: string[]): Promise<voi
     { room_id: roomId },
   );
   await sendEvent(env).catch(() => {});
+}
+
+/**
+ * Ask peers to re-send media for messages whose row exists locally but whose
+ * media never landed (file_uri IS NULL) — typically saved from a push that
+ * stripped the base64 blob. Best-effort, re-issued on every (re)connect.
+ */
+export async function requestIncompleteMedia(): Promise<void> {
+  try {
+    const { isNotifWsReady } = await import('./notificationWsManager');
+    if (!isNotifWsReady()) return;
+  } catch {
+    return;
+  }
+
+  let digest: Array<{ room_id: string; ids: string[] }> = [];
+  try {
+    digest = await getIncompleteMediaDigest();
+  } catch {
+    return;
+  }
+
+  for (const room of digest) {
+    if (!room.ids.length) continue;
+    await requestMissing(room.room_id, room.ids).catch(() => {});
+    console.log('[OutboundRouter] requested media hydration for', room.ids.length, 'in', room.room_id);
+  }
 }

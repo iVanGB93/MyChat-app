@@ -21,10 +21,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { User } from '../types';
 
 /* Lazily dismiss the grouped OS notification for a room without coupling the
-   store to the notifications module at load time (avoids heavy/circular deps). */
+   store to the notifications module at load time (avoids heavy/circular deps).
+   Cancels BOTH the Expo (alive/backgrounded WS path) and the Notifee
+   MessagingStyle (killed-app FCM path) notifications for the room. */
 function dismissRoomNotificationSafe(roomId: string): void {
   import('../services/pushNotificationService')
     .then((m) => m.dismissRoomNotification(roomId))
+    .catch(() => {});
+  import('../services/messageNotificationService')
+    .then((m) => m.cancelMessageNotification(roomId))
     .catch(() => {});
 }
 

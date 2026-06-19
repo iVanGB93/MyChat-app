@@ -9,11 +9,13 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
+import { getFcmToken } from './fcmService';
 
 const INSTALLATION_ID_KEY = '@axonic_installation_id';
 
 export type PushRegistrationPayload = {
   token: string;
+  fcm_token?: string;
   installation_id: string;
   platform: 'android' | 'ios' | 'web' | 'unknown';
   device_name: string;
@@ -123,7 +125,11 @@ export async function registerForPushNotifications(): Promise<string | null> {
 
 export async function getPushRegistrationPayload(): Promise<PushRegistrationPayload | null> {
   const token = await registerForPushNotifications();
-  if (!token) return null;
+  // Raw FCM token powers the WhatsApp-style background data pipeline. It can
+  // succeed even when the Expo token does not (and vice-versa), so fetch it
+  // independently and register whichever token(s) we obtained.
+  const fcm_token = await getFcmToken();
+  if (!token && !fcm_token) return null;
 
   const installation_id = await getInstallationId();
   const platform = Platform.OS === 'android'
@@ -135,7 +141,8 @@ export async function getPushRegistrationPayload(): Promise<PushRegistrationPayl
         : 'unknown';
 
   return {
-    token,
+    token: token ?? '',
+    fcm_token: fcm_token ?? undefined,
     installation_id,
     platform,
     device_name: Device.deviceName ?? `${Device.brand ?? 'Unknown'} ${Device.modelName ?? ''}`.trim(),

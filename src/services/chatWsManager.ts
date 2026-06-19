@@ -23,7 +23,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
-import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState } from './localMessageStore';
+import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState } from './localMessageStore';
 import { readAudioAsBase64, readFileAsBase64 } from './voiceMessageUtils';
 import { useAppStore } from '../store/appStore';
 import type { InboundResult } from './ingressRouter';
@@ -137,6 +137,8 @@ interface RoomState {
   connectionTimeoutTimer: ReturnType<typeof setTimeout> | null;
   authTimeoutTimer: ReturnType<typeof setTimeout> | null;
   pendingFlushes: number[];
+  /** Queued media-hydration resends (specific ids) for a recipient, awaiting WS open. */
+  pendingResends: Array<{ recipientId: number; ids: string[] }>;
   lastMutationAt: number;
   listeners: Set<RoomListener>;
   /** Pending teardown timer scheduled by subscribeRoom when listeners reach 0. */
@@ -201,6 +203,7 @@ function createRoomState(): RoomState {
     connectionTimeoutTimer: null,
     authTimeoutTimer: null,
     pendingFlushes: [],
+    pendingResends: [],
     lastMutationAt: 0,
     listeners: new Set(),
     disconnectTimer: null,
@@ -527,6 +530,15 @@ export async function connectRoom(roomId: string): Promise<void> {
             const toFlush = [...s.pendingFlushes];
             s.pendingFlushes = [];
             toFlush.forEach((recipientId) => _doFlush(roomId, s, recipientId));
+          }
+          // Process any media-hydration resends queued while the WS was offline
+          // (peer asked us to re-send media for a b64-stripped push delivery).
+          if (s.pendingResends.length > 0) {
+            const toResend = [...s.pendingResends];
+            s.pendingResends = [];
+            toResend.forEach(({ recipientId, ids }) => {
+              resendMessagesByIds(roomId, recipientId, ids).catch(() => {});
+            });
           }
           return;
         }
@@ -1094,6 +1106,60 @@ export function flushOutboxForRecipient(roomId: string, recipientId: number): vo
 }
 
 /**
+ * Re-send specific messages I authored (by id) to a room, WITH their media,
+ * regardless of delivery status. Used to hydrate a peer that received a media
+ * message via a b64-stripped push and now explicitly requests the media.
+ * Only messages where I'm the sender are eligible (the query enforces this).
+ */
+export async function resendMessagesByIds(
+  roomId: string,
+  recipientId: number,
+  ids: string[],
+): Promise<void> {
+  if (_myUserId === null || !ids.length) return;
+  const s = rooms.get(roomId);
+  if (!s || s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) {
+    // Not connected to this room yet — queue the resend and open the socket.
+    // The auth_ok handler drains pendingResends once the WS is authenticated.
+    const rs = getOrCreate(roomId);
+    rs.pendingResends.push({ recipientId, ids });
+    connectRoom(roomId);
+    return;
+  }
+  try {
+    const msgs = await getMessagesByIdsForResend(roomId, _myUserId, ids);
+    for (const msg of msgs) {
+      if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) break;
+      let audioB64: string | null = null;
+      let imageB64: string | null = null;
+      if (msg.type === 'voice' && msg.file_uri) {
+        try { audioB64 = await readAudioAsBase64(msg.file_uri); } catch {}
+      } else if (msg.type === 'image' && msg.file_uri) {
+        try { imageB64 = await readFileAsBase64(msg.file_uri); } catch {}
+      }
+      // Nothing to hydrate if we have no media to attach.
+      if (!audioB64 && !imageB64) continue;
+      s.ws.send(JSON.stringify({
+        id: msg.id,
+        message: msg.content,
+        message_type: msg.type,
+        created_at: msg.created_at,
+        // Media-hydration re-send: the recipient already has the message row +
+        // its notification (it arrived via a b64-stripped push). This flag tells
+        // the relay to deliver over the room WS only and NOT fire a second
+        // push/notification for the same message.
+        hydration: true,
+        ...(msg.reply_to ? { reply_to: msg.reply_to } : {}),
+        ...(msg.duration_ms != null ? { duration_ms: msg.duration_ms } : {}),
+        ...(audioB64 ? { audio_b64: audioB64, audio_mime: 'audio/m4a' } : {}),
+        ...(imageB64 ? { image_b64: imageB64, image_mime: 'image/jpeg' } : {}),
+      }));
+      console.log('[ChatWsManager] re-sent media for', msg.id, 'to', recipientId);
+    }
+  } catch { /* best-effort */ }
+}
+
+/**
  * Queue a mutation to be synced to all other room members.
  * Adds to the in-memory queue + persists to SQLite outbox, then attempts immediate send.
  * Also applies the change locally right away so loadFromDB won't re-queue it.
@@ -1177,11 +1243,30 @@ export function markIdsAsDeliveredInRoom(roomId: string, ids: string[]): void {
 /**
  * Inject a received message into the room's in-memory state from an external source
  * (e.g. notification WS relay). No-op if the room has no active listeners.
+ *
+ * When `opts.updateExisting` is set and a message with the same id is already
+ * present, its fields are merged (used to backfill a hydrated media `file_uri`
+ * onto a row that first arrived via a b64-stripped push). Otherwise a duplicate
+ * id is ignored.
  */
-export function injectReceivedMessage(roomId: string, msg: WsMessage): void {
+export function injectReceivedMessage(
+  roomId: string,
+  msg: WsMessage,
+  opts?: { updateExisting?: boolean },
+): void {
   const s = rooms.get(roomId);
   if (!s || s.listeners.size === 0) return;
-  if (s.messages.some((m) => m.id === msg.id)) return; // dedup
+  const idx = s.messages.findIndex((m) => m.id === msg.id);
+  if (idx !== -1) {
+    if (opts?.updateExisting) {
+      const prev = s.messages[idx];
+      const merged: WsMessage = { ...prev, ...msg, file_uri: msg.file_uri ?? prev.file_uri };
+      s.messages = [...s.messages.slice(0, idx), merged, ...s.messages.slice(idx + 1)];
+      s.lastMutationAt = Date.now();
+      notifyListeners(roomId, s);
+    }
+    return; // dedup
+  }
   s.messages = [...s.messages, msg];
   notifyListeners(roomId, s);
 }
