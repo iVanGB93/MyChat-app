@@ -60,6 +60,9 @@ export interface NotificationPayload {
   correlationId?: string;
   route_reason?: string;
   routeReason?: string;
+  /** Server also queued an FCM/Expo push for this delivery. The WS path defers
+   *  the OS banner to that push to avoid double-notifying. */
+  push_floor?: boolean;
   [key: string]: any;
 }
 

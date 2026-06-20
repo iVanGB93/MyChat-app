@@ -68,6 +68,11 @@ export interface CanonicalMessage {
   audioMime: string | null;
   imageB64: string | null;
   imageMime: string | null;
+  /** Did the server also queue a push floor (FCM/Expo) for this delivery?
+   *  When true, the WS path defers the OS banner to FCM to avoid double-
+   *  notifying; when false/null the app's local notification is the only
+   *  surface (e.g. the recipient has no push token). */
+  pushFloor: boolean | null;
 }
 
 /* ---- Dedupe bookkeeping (in-memory, bounded) ----
@@ -100,6 +105,14 @@ function asNum(v: unknown): number | null {
   if (v == null || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+function asBool(v: unknown): boolean | null {
+  if (v == null || v === '') return null;
+  if (typeof v === 'boolean') return v;
+  const s = String(v).toLowerCase();
+  if (s === 'true' || s === '1') return true;
+  if (s === 'false' || s === '0') return false;
+  return null;
 }
 
 /**
@@ -141,6 +154,7 @@ export function normalizeMessage(
     audioMime: asStr(raw.audio_mime),
     imageB64: asStr(raw.image_b64),
     imageMime: asStr(raw.image_mime),
+    pushFloor: asBool(raw.push_floor ?? raw.pushFloor),
   };
 }
 
@@ -227,6 +241,7 @@ async function maybeNotify(evt: CanonicalMessage): Promise<void> {
     sender_id: evt.senderId,
     content: evt.content ?? '',
     message_id: evt.messageId,
+    push_floor: evt.pushFloor ?? undefined,
   };
   const decision = decideLocalMessageNotification(payload, store);
   console.log('[Ingress] notify decision', { allow: decision.allow, reason: decision.reason, room_id: evt.roomId, message_id: evt.messageId });

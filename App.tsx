@@ -22,6 +22,7 @@ import {
 } from './src/services/callNotificationService';
 import { joinCall, endCall } from './src/services/callService';
 import { registerFcmForegroundHandler } from './src/services/fcmService';
+import messaging from '@react-native-firebase/messaging';
 import { ensureMessageChannel } from './src/services/messageNotificationService';
 import notifee, { EventType } from '@notifee/react-native';
 import { AppLifecycleBridge } from './src/store/AppLifecycleBridge';
@@ -154,6 +155,48 @@ export default function App() {
       if (d?.type === 'new_message' && d.roomId) navigateToRoomWhenReady(d);
     }).catch(() => {});
 
+    // FCM notification taps (hybrid push backup floor). When the app is
+    // killed/backgrounded the OS renders the FCM `notification` block directly;
+    // tapping it is delivered HERE (not via the Expo/Notifee listeners), so we
+    // ingest the message and navigate the same way. `data` carries both
+    // camelCase and snake_case keys from the backend.
+    const handleFcmOpen = (remoteMessage: any) => {
+      const data = (remoteMessage?.data ?? {}) as Record<string, string>;
+      if (!data || !data.type) return;
+      if (data.type === 'new_message') {
+        savePushMessage(data).catch(() => {});
+        const roomId = data.roomId ?? data.room_id;
+        if (roomId) {
+          navigateToRoomWhenReady({
+            ...data,
+            roomId: String(roomId),
+            roomName: String(data.roomName ?? data.room_name ?? ''),
+            senderId: String(data.senderId ?? data.sender_id ?? ''),
+          });
+        }
+      } else if (data.type === 'incoming_call') {
+        const navCall = (attempt = 0) => {
+          if (!navigationRef.isReady()) {
+            if (attempt > 100) return;
+            setTimeout(() => navCall(attempt + 1), 100);
+            return;
+          }
+          navigationRef.navigate('IncomingCall', {
+            callId: String(data.callId ?? data.call_id ?? ''),
+            callerName: String(data.callerName ?? data.caller_name ?? 'Unknown'),
+            callerId: Number(data.callerId ?? data.caller_id ?? 0),
+            callType: (data.callType as 'voice' | 'video') ?? 'voice',
+            roomName: String(data.roomName ?? data.room_name ?? ''),
+          });
+        };
+        navCall();
+      }
+    };
+    // Background → foreground tap.
+    const unsubFcmOpened = messaging().onNotificationOpenedApp(handleFcmOpen);
+    // Cold start from a fully quit state.
+    messaging().getInitialNotification().then((m) => { if (m) handleFcmOpen(m); }).catch(() => {});
+
     // Handle notification taps — navigate to the relevant screen and save msg
     responseListener.current = addNotificationResponseListener((response) => {
       const data = response.notification.request.content.data as Record<string, string> | undefined;
@@ -219,6 +262,7 @@ export default function App() {
       unsubCallActions();
       unsubFcmForeground();
       unsubNotifeeMsg();
+      unsubFcmOpened();
     };
   }, []);
 

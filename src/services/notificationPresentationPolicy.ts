@@ -9,7 +9,8 @@ export type NotificationDecisionReason =
   | 'app_inactive'
   | 'already_in_call'
   | 'viewing_room'
-  | 'room_muted';
+  | 'room_muted'
+  | 'push_floor';
 
 export interface NotificationDecision {
   allow: boolean;
@@ -121,5 +122,10 @@ export function decideLocalMessageNotification(
   if (isAppActive(store)) return { allow: false, reason: 'app_active' };
   if (isViewingRoom(payload, store)) return { allow: false, reason: 'viewing_room' };
   if (isMutedRoom(payload, store)) return { allow: false, reason: 'room_muted' };
+  // The server also queued an FCM/Expo push for this delivery. The OS renders
+  // that banner when we're backgrounded/killed, so rendering our own here would
+  // double-notify. Defer to the push. We still render locally as a FALLBACK
+  // when no push floor was sent (recipient has no push token).
+  if (payload.push_floor) return { allow: false, reason: 'push_floor' };
   return { allow: true, reason: 'eligible' };
 }

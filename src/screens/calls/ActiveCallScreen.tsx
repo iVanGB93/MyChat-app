@@ -71,8 +71,8 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
   /* ---- Start foreground service for the duration of this call ---- */
   useEffect(() => {
-    startForegroundService();
-    return () => { stopForegroundService(); };
+    startForegroundService('call');
+    return () => { stopForegroundService('call'); };
   }, []);
 
   /* ---- mirror call into global store on mount + status changes ---- */
