@@ -31,7 +31,6 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   useAudioRecorder,
   RecordingPresets,
-  AudioModule,
   setAudioModeAsync,
 } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
@@ -51,11 +50,22 @@ import { dismissRoomNotification } from '../../services/pushNotificationService'
 import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import VoiceMessageBubble from '../../components/VoiceMessageBubble';
-import { persistOutgoingImage } from '../../services/voiceMessageUtils';
+import { persistOutgoingImage, compressImageForSend } from '../../services/voiceMessageUtils';
+import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
+
+/* Voice recording tuned for speech (mono, low bitrate) so clips stay small
+ * enough to ride in a single WS frame. A high-bitrate stereo clip can exceed
+ * the media size cap and would otherwise get skipped by the outbox. */
+const VOICE_RECORDING_OPTIONS = {
+  ...RecordingPresets.HIGH_QUALITY,
+  sampleRate: 22050,
+  numberOfChannels: 1,
+  bitRate: 48000,
+};
 
 /* Convert a LocalMessage row to the shared Message type */
 function toMsg(m: LocalMessage): Message {
@@ -91,6 +101,7 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
     file: m.file_uri ?? null,
     file_uri: m.file_uri ?? null,
     duration_ms: m.duration_ms ?? null,
+    uploading: m.uploading ?? undefined,
     sync: undefined,
     status: undefined,
     is_read: m.is_read ?? false,
@@ -119,6 +130,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const { subscribe } = useNotificationContext();
   const { colors: Colors } = useTheme();
   const { confirm, alert } = useConfirm();
+  const { ensure: ensurePermission } = usePermissionPrompt();
 
   // Mark this room as the active one in the global store while the screen is mounted.
   // Other systems (notification routing, foreground service, etc.) read this to
@@ -153,7 +165,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
 
   /* ---- Voice message recording state ---- */
-  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const audioRecorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingMs, setRecordingMs] = useState(0);
 
@@ -184,7 +196,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (persistedReadIds.length > 0) markIdsAsReadInRoom(roomId, persistedReadIds);
     // Send read receipts only for messages not yet marked read in SQLite.
     // Filtering out already-read messages prevents re-sending on every reload.
-    const idsFromOthers = dbMsgs.filter(m => !m.is_mine && !m.is_read).map(m => m.id);
+    // Media whose file hasn't been downloaded yet is NOT marked read — the
+    // sender's ✓✓ (read) should only appear once the receiver actually has the
+    // file. Once the media hydrates, loadFromDB re-runs and sends the receipt.
+    const isIncompleteMedia = (m: LocalMessage) =>
+      (m.type === 'voice' || m.type === 'image' || m.type === 'video') && !m.file_uri;
+    const idsFromOthers = dbMsgs
+      .filter(m => !m.is_mine && !m.is_read && !isIncompleteMedia(m))
+      .map(m => m.id);
     if (idsFromOthers.length > 0) {
       markRoomAsRead(roomId, idsFromOthers);
     }
@@ -234,10 +253,22 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       const sql = sqliteById.get(id);
       if (!sql) continue;
       if (wsIdSet.has(id)) {
-        if (msg.sync === undefined) {
-          byId.set(id, { ...msg, sync: sql.sync, status: msg.status ?? sql.status });
-        } else if (msg.status === undefined) {
-          byId.set(id, { ...msg, status: sql.status });
+        // The live WS snapshot wins for freshness, but it can lack media fields
+        // that only exist on disk (e.g. a received media file decoded/hydrated
+        // AFTER the snapshot was taken). Fall back to the SQLite values so the
+        // image/voice bubble keeps rendering instead of showing a placeholder.
+        const withMedia: Message = {
+          ...msg,
+          file: msg.file ?? sql.file,
+          file_uri: msg.file_uri ?? sql.file_uri,
+          duration_ms: msg.duration_ms ?? sql.duration_ms,
+        };
+        if (withMedia.sync === undefined) {
+          byId.set(id, { ...withMedia, sync: sql.sync, status: withMedia.status ?? sql.status });
+        } else if (withMedia.status === undefined) {
+          byId.set(id, { ...withMedia, status: sql.status });
+        } else {
+          byId.set(id, withMedia);
         }
         continue;
       }
@@ -297,6 +328,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const handleCall = async (callType: 'voice' | 'video') => {
     Keyboard.dismiss();
     if (!otherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
+    // A call needs the mic (always) and the camera (video). Ask up front so the
+    // call doesn't silently fail when WebRTC can't get the media tracks.
+    const ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
+    if (!ok) return;
     try {
       const res = await initiateCall(otherUserId, callType);
       navigation.navigate('ActiveCall', {
@@ -377,11 +412,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /* ---- Voice recording: start / stop / cancel ---- */
   const startVoiceRecording = useCallback(async () => {
     try {
-      const perm = await AudioModule.requestRecordingPermissionsAsync();
-      if (!perm.granted) {
-        alert('Microphone access denied', 'Enable microphone permission in system settings to record voice messages.');
-        return;
-      }
+      const granted = await ensurePermission('microphone');
+      if (!granted) return;
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
@@ -407,7 +439,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       console.warn('[ChatRoom] failed to start recording:', err);
       setIsRecording(false);
     }
-  }, [audioRecorder, slideX, pulseScale]);
+  }, [audioRecorder, slideX, pulseScale, ensurePermission]);
 
   const finishVoiceRecording = useCallback(async (cancelled: boolean) => {
     // Stop UI immediately so user gets feedback
@@ -456,9 +488,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const sendPickedImage = useCallback(async (asset: ImagePicker.ImagePickerAsset) => {
     if (!asset?.uri) return;
     const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    let localUri = asset.uri;
+    // Compress/resize first so the photo rides in a single WS frame reliably,
+    // then persist our own copy so it survives picker cleanup and retries.
+    const compressed = await compressImageForSend(asset.uri, asset.width, asset.height);
+    let localUri = compressed.uri;
     try {
-      localUri = await persistOutgoingImage(msgId, asset.uri, asset.mimeType ?? 'image/jpeg');
+      localUri = await persistOutgoingImage(msgId, compressed.uri, compressed.mime);
     } catch (err) {
       console.warn('[ChatRoomScreen] failed to persist outgoing image:', err);
     }
@@ -472,7 +507,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       : null;
     await sendMessage('\uD83D\uDCF7 Photo', 'image', reply, {
       file_uri: localUri,
-      image_mime: asset.mimeType ?? 'image/jpeg',
+      image_mime: compressed.mime,
     });
     setReplyingTo(null);
     playSound('message_sent');
@@ -481,11 +516,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const handlePickFromCamera = useCallback(async () => {
     setAttachMenuOpen(false);
     try {
-      const perm = await ImagePicker.requestCameraPermissionsAsync();
-      if (!perm.granted) {
-        alert('Camera permission required', 'Please enable camera access in Settings.');
-        return;
-      }
+      const granted = await ensurePermission('camera');
+      if (!granted) return;
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
         quality: 0.7,
@@ -496,7 +528,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     } catch (err) {
       console.warn('[ChatRoomScreen] camera error:', err);
     }
-  }, [sendPickedImage]);
+  }, [sendPickedImage, ensurePermission]);
 
   const handlePickFromGallery = useCallback(async () => {
     setAttachMenuOpen(false);
@@ -639,11 +671,16 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     const msg = forwardMsg;
     setForwardMsg(null);
     try {
-      await sendChatMessage(
-        targetRoomId,
-        msg.content ?? '',
-        (msg.message_type as string) || 'text',
-      );
+      const type = (msg.message_type as string) || 'text';
+      // For media, carry the local file so the forward actually re-sends the
+      // picture / voice (re-read + relayed inline or chunked as needed).
+      const extras =
+        type === 'image'
+          ? { file_uri: msg.file_uri ?? msg.file ?? null, image_mime: 'image/jpeg' }
+          : type === 'voice'
+            ? { file_uri: msg.file_uri ?? msg.file ?? null, duration_ms: msg.duration_ms ?? null, audio_mime: 'audio/m4a' }
+            : null;
+      await sendChatMessage(targetRoomId, msg.content ?? '', type, null, extras);
       playSound('message_sent');
     } catch { /* ignore — saved locally */ }
   }, [forwardMsg]);
@@ -744,6 +781,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 <VoiceMessageBubble
                   fileUri={item.file_uri ?? item.file ?? null}
                   durationMs={item.duration_ms ?? null}
+                  loading={!(item.file_uri || item.file)}
                   tint={Colors.primary}
                   subtleColor={Colors.textSecondary}
                   trackBg={Colors.surfaceVariant}
@@ -752,13 +790,33 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 <TouchableOpacity
                   activeOpacity={0.85}
                   onPress={() => setFullscreenImageUri(item.file_uri ?? item.file ?? null)}
+                  onLongPress={(e) => {
+                    if (!item.is_deleted) {
+                      setContextY(e.nativeEvent.pageY);
+                      setContextMsg(item);
+                    }
+                  }}
+                  delayLongPress={350}
                 >
                   <Image
                     source={{ uri: item.file_uri ?? item.file ?? '' }}
                     style={styles.imageBubble}
                     resizeMode="cover"
                   />
+                  {item.uploading && (
+                    <View style={styles.mediaOverlay}>
+                      <ActivityIndicator color="#fff" />
+                      <Text style={styles.mediaOverlayText}>Uploading…</Text>
+                    </View>
+                  )}
                 </TouchableOpacity>
+              ) : item.message_type === 'image' ? (
+                // Received image whose bytes haven't arrived yet (streaming over
+                // chunks). Show a receiving placeholder until it hydrates.
+                <View style={[styles.imageBubble, styles.mediaPlaceholder, { backgroundColor: Colors.surfaceVariant }]}>
+                  <ActivityIndicator color={Colors.primary} />
+                  <Text style={[styles.mediaPlaceholderText, { color: Colors.textSecondary }]}>Receiving…</Text>
+                </View>
               ) : (
                 <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
               )}
@@ -1162,6 +1220,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 <TouchableOpacity onPress={handleCopy} style={styles.contextOption}>
                   <Text style={[styles.contextOptionText, { color: Colors.text }]}>📋  Copy message</Text>
                 </TouchableOpacity>
+              </>
+            )}
+            {contextMsg && !contextMsg.is_deleted && (
+              contextMsg.message_type === 'text' || !contextMsg.message_type
+              || ((contextMsg.message_type === 'image' || contextMsg.message_type === 'voice')
+                  && !!(contextMsg.file_uri || contextMsg.file))
+            ) && (
+              <>
                 <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
                 <TouchableOpacity onPress={handleForward} style={styles.contextOption}>
                   <Text style={[styles.contextOptionText, { color: Colors.text }]}>↪  Forward message</Text>
@@ -1417,6 +1483,28 @@ const styles = StyleSheet.create({
     height: 220,
     borderRadius: Radius.sm,
     backgroundColor: '#0002',
+  },
+  mediaPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+  },
+  mediaPlaceholderText: {
+    fontSize: Font.size.sm,
+    letterSpacing: 0.3,
+  },
+  mediaOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderRadius: Radius.sm,
+  },
+  mediaOverlayText: {
+    color: '#fff',
+    fontSize: Font.size.sm,
+    letterSpacing: 0.3,
   },
   fullscreenBackdrop: {
     flex: 1,

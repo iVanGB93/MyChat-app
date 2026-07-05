@@ -124,6 +124,10 @@ export interface AppState {
   typingByRoom: Record<string, Array<{ userId: number; username: string; expiresAt: number }>>;
   /** Set of room IDs the user has muted (no local notif, no badge contribution) */
   mutedRooms: Record<string, true>;
+  /** roomId → epoch ms when the user "deleted" (cleared) the chat locally. The
+   *  room is hidden from the list until a message NEWER than this arrives, at
+   *  which point it reappears as a fresh chat (its old messages were wiped). */
+  clearedRooms: Record<string, number>;
   /** Map of user IDs the current user has added as contacts (acceptance set).
    *  Senders NOT in this map are treated as message-request senders. */
   contactIds: Record<number, true>;
@@ -198,6 +202,8 @@ export interface AppState {
   pruneExpiredTyping: () => void;
   setRoomMuted: (roomId: string, muted: boolean) => void;
   toggleRoomMuted: (roomId: string) => void;
+  /** Mark a chat as locally deleted/cleared (hidden until newer activity). */
+  markRoomCleared: (roomId: string) => void;
   /** Wipe per-room derived state (unread / last-message / typing / mute).
    *  Used when the user deletes a chat from the chat list. */
   clearRoomState: (roomId: string) => void;
@@ -253,6 +259,7 @@ const initialState = {
   >,
   typingByRoom: {} as Record<string, Array<{ userId: number; username: string; expiresAt: number }>>,
   mutedRooms: {} as Record<string, true>,
+  clearedRooms: {} as Record<string, number>,
   contactIds: {} as Record<number, true>,
   blockedIds: {} as Record<number, true>,
   lastMutationAt: 0,
@@ -422,6 +429,9 @@ export const useAppStore = create<AppState>()(
       return { mutedRooms: next };
     }),
 
+  markRoomCleared: (roomId) =>
+    set((s) => ({ clearedRooms: { ...s.clearedRooms, [roomId]: Date.now() } })),
+
   clearRoomState: (roomId) =>
     set((s) => {
       const nextUnread = { ...s.unreadByRoom };       delete nextUnread[roomId];
@@ -492,11 +502,12 @@ export const useAppStore = create<AppState>()(
         unreadByRoom: s.unreadByRoom,
         lastMessageByRoom: s.lastMessageByRoom,
         mutedRooms: s.mutedRooms,
+        clearedRooms: s.clearedRooms,
         contactIds: s.contactIds,
         blockedIds: s.blockedIds,
       }) as Partial<AppState>,
       version: 1,
-    } as PersistOptions<AppState, Pick<AppState, 'unreadByRoom' | 'lastMessageByRoom' | 'mutedRooms' | 'contactIds' | 'blockedIds'>>,
+    } as PersistOptions<AppState, Pick<AppState, 'unreadByRoom' | 'lastMessageByRoom' | 'mutedRooms' | 'clearedRooms' | 'contactIds' | 'blockedIds'>>,
   ),
 );
 

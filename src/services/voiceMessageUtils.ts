@@ -11,9 +11,48 @@
 /* ------------------------------------------------------------------ */
 
 import { Directory, File, Paths } from 'expo-file-system';
+import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 
 const VOICE_DIR_NAME = 'voice';
 const IMAGES_DIR_NAME = 'images';
+
+/** Longest edge (px) an outgoing photo is scaled down to before sending. */
+const MAX_IMAGE_DIMENSION = 1600;
+/** JPEG quality (0–1) for outgoing photos. */
+const IMAGE_COMPRESS_QUALITY = 0.6;
+
+/**
+ * Downscale + re-encode a picked/captured photo so it stays small enough to
+ * ride in a single WS frame (media is sent inline as base64). A full-resolution
+ * phone photo can be several MB, which produces an oversized frame the server/
+ * proxy rejects — dropping the message and blocking the rest of the outbox.
+ * Returns a new local URI + mime; falls back to the original on any failure.
+ */
+export async function compressImageForSend(
+  uri: string,
+  width?: number | null,
+  height?: number | null,
+): Promise<{ uri: string; mime: string }> {
+  try {
+    const maxDim = Math.max(width ?? 0, height ?? 0);
+    const actions =
+      maxDim > MAX_IMAGE_DIMENSION
+        ? [
+            (width ?? 0) >= (height ?? 0)
+              ? { resize: { width: MAX_IMAGE_DIMENSION } }
+              : { resize: { height: MAX_IMAGE_DIMENSION } },
+          ]
+        : [];
+    const result = await manipulateAsync(uri, actions, {
+      compress: IMAGE_COMPRESS_QUALITY,
+      format: SaveFormat.JPEG,
+    });
+    return { uri: result.uri, mime: 'image/jpeg' };
+  } catch (err) {
+    console.warn('[media] image compression failed, sending original:', err);
+    return { uri, mime: 'image/jpeg' };
+  }
+}
 
 function cachedDir(name: string): Directory {
   const dir = new Directory(Paths.cache, name);

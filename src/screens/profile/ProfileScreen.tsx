@@ -26,6 +26,7 @@ import {
   Share,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import Constants from 'expo-constants';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -554,6 +555,11 @@ export default function ProfileScreen() {
         onTakePhoto={takePhoto}
         onPickFromLibrary={pickFromLibrary}
       />
+
+      {/* App version */}
+      <Text style={[styles.versionText, { color: Colors.textTertiary }]}>
+        Axonic v{Constants.expoConfig?.version ?? '—'}
+      </Text>
     </ScrollView>
   );
 }
@@ -910,6 +916,14 @@ const styles = StyleSheet.create({
     borderStyle: 'dashed',
   },
   deleteText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5 },
+
+  versionText: {
+    textAlign: 'center',
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.md,
+    fontSize: Font.size.xs,
+    letterSpacing: 1,
+  },
 
   themeRow: {
     flexDirection: 'row',

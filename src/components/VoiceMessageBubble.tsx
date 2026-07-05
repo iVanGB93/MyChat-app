@@ -8,7 +8,7 @@
 /* ------------------------------------------------------------------ */
 
 import React, { useEffect, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
 
@@ -19,6 +19,8 @@ interface Props {
   fileUri: string | null | undefined;
   /** Duration in milliseconds. Used as a fallback when the player hasn't loaded yet. */
   durationMs: number | null | undefined;
+  /** True while the audio bytes are still being downloaded (chunked transfer). */
+  loading?: boolean;
   /** Render the play icon and progress in this color (e.g. inverse for sent bubbles). */
   tint: string;
   /** Render the duration text in this color. */
@@ -38,6 +40,7 @@ function fmtTime(ms: number): string {
 export default function VoiceMessageBubble({
   fileUri,
   durationMs,
+  loading,
   tint,
   subtleColor,
   trackBg,
@@ -84,6 +87,26 @@ export default function VoiceMessageBubble({
   }, [fileUri, isPlaying, player]);
 
   const disabled = !fileUri;
+
+  // Audio hasn't arrived yet (still downloading over chunked transfer).
+  if (loading && !fileUri) {
+    return (
+      <View style={styles.container}>
+        <View
+          style={[
+            styles.playBtn,
+            { borderColor: tint, backgroundColor: tint + '22', opacity: 0.6 },
+          ]}
+        >
+          <ActivityIndicator size="small" color={tint} />
+        </View>
+        <View style={styles.right}>
+          <View style={[styles.track, { backgroundColor: trackBg }]} />
+          <Text style={[styles.duration, { color: subtleColor }]}>Receiving…</Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>

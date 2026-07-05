@@ -73,6 +73,8 @@ export interface Message {
   file_uri?: string | null;
   /** Duration in milliseconds for voice / video messages. */
   duration_ms?: number | null;
+  /** Sender-side: true while this message's media is still uploading (chunked). */
+  uploading?: boolean;
   /** Local consistency flag: true when both ends have acknowledged the latest state. */
   sync?: boolean;
   /** Persisted message status for the sender-side UI. */

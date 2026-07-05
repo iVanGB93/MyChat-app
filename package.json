@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -33,6 +33,7 @@
     "expo-device": "~8.0.10",
     "expo-file-system": "~19.0.23",
     "expo-font": "~14.0.12",
+    "expo-image-manipulator": "~14.0.8",
     "expo-image-picker": "~17.0.11",
     "expo-keep-awake": "~15.0.8",
     "expo-linking": "~8.0.12",

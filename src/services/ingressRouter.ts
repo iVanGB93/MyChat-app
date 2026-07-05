@@ -291,22 +291,26 @@ export async function ingestMessage(
     return;
   }
 
-  // 1. Delivery ACK — needs only identity fields, so it fires even when the
-  //    push payload was truncated and dropped `content`. Idempotent.
-  await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+  // 1. Delivery ACK. For NON-media messages, identity is enough so it fires even
+  //    when a push truncated `content`. MEDIA is acked ONLY once the actual file
+  //    bytes have been received/decoded (see steps 3b + 4b), so the sender's
+  //    single check reflects the real file — not just the placeholder message.
+  const hasMedia = !!(evt.audioB64 || evt.imageB64);
+  const isMediaType = evt.messageType === 'image'
+    || evt.messageType === 'voice'
+    || evt.messageType === 'video';
+  if (!isMediaType) {
+    await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+  }
 
   // 2. Content/media gate. A truncated push (ack-critical ids but no content)
   //    is acked above; we then wait for the full WS delivery to persist it.
-  const hasMedia = !!(evt.audioB64 || evt.imageB64);
   // A media message whose base64 blob was stripped from the push still has a
   // media `messageType`. We persist a PLACEHOLDER row for it (file_uri null) so
   // it shows in the chat immediately and the media-hydration path
   // (getIncompleteMediaDigest → sync.request) backfills the file once both
   // peers are online. Without this the row never exists, so it can never
   // self-heal — and a killed receiver would silently lose the message.
-  const isMediaType = evt.messageType === 'image'
-    || evt.messageType === 'voice'
-    || evt.messageType === 'video';
   if (!evt.content && !hasMedia && !isMediaType) {
     console.log('[Ingress] acked but not persisted — content missing (truncated)', evt.messageId);
     return;
@@ -329,6 +333,9 @@ export async function ingestMessage(
             if (hydratedUri) {
               await setMessageFileUri(evt.messageId, hydratedUri);
               injectReceivedMessage(evt.roomId, toWsMessage(evt, hydratedUri), { updateExisting: true });
+              // 3b. Media bytes are now fully present → ack delivery NOW so the
+              //     sender's ✓ appears only once the real file has been received.
+              await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
               console.log('[Ingress] hydrated media for', evt.messageId);
               return;
             }
@@ -365,8 +372,31 @@ export async function ingestMessage(
     duration_ms: evt.durationMs,
   });
 
+  // 4b. Delivery ACK for media: only now that we persisted a row WITH its file
+  //     do we tell the sender it's delivered. A media placeholder (fileUri null)
+  //     stays un-acked until its bytes arrive, so the sender's ✓ is accurate.
+  if (isMediaType && fileUri) {
+    await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+  }
+
   // 5. Hydrate an open chat room (no-op if the room screen isn't mounted).
   injectReceivedMessage(evt.roomId, toWsMessage(evt, fileUri));
+
+  // 5b. Media placeholder (a media message whose bytes didn't ride along — the
+  //     push stripped them, or it's a large chunked transfer still in flight).
+  //     Give the normal chunk stream a few seconds to complete; if the media is
+  //     still missing, signal the sender to (re)send it so the "Downloading…"
+  //     bubble can finish. Best-effort; also retried on room/notif auth_ok.
+  if (isMediaType && !fileUri) {
+    setTimeout(async () => {
+      try {
+        const uri = await getMessageFileUri(evt.messageId);
+        if (uri) return; // media already arrived (e.g. via chunks) — no resend needed
+        const { requestMissing } = await import('./outboundRouter');
+        await requestMissing(evt.roomId, [evt.messageId]);
+      } catch { /* best-effort */ }
+    }, 4000);
+  }
 
   // 6. Update the global store (chat-list preview + unread badge). Done once,
   //    because steps 3+ only run on the FIRST delivery of a given message.

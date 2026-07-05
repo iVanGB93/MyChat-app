@@ -19,14 +19,13 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius } from '../../theme';
 import { resolveMediaUrl } from '../../services/api';
-import { getRooms, deleteRoom } from '../../services/chatService';
+import { getRooms } from '../../services/chatService';
 import { getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
-import { formatApiError } from '../../services/errorMessages';
 import { Ionicons } from '@expo/vector-icons';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
@@ -46,10 +45,12 @@ export default function ChatListScreen() {
   const incrementRoomUnread = useAppStore((s) => s.incrementRoomUnread);
   const clearRoomState = useAppStore((s) => s.clearRoomState);
   const toggleRoomMuted = useAppStore((s) => s.toggleRoomMuted);
+  const markRoomCleared = useAppStore((s) => s.markRoomCleared);
+  const clearedRooms = useAppStore((s) => s.clearedRooms);
   const lastMessageByRoom = useAppStore((s) => s.lastMessageByRoom);
   const typingByRoom = useAppStore((s) => s.typingByRoom);
   const mutedRooms = useAppStore((s) => s.mutedRooms);
-  const { confirm, alert } = useConfirm();
+  const { confirm } = useConfirm();
   const totalUnread = Object.values(unreadByRoom).reduce((a, b) => a + b, 0);
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
@@ -192,6 +193,16 @@ export default function ChatListScreen() {
     );
   };
 
+  // Hide chats the user "deleted" (cleared) locally until a message NEWER than
+  // the clear exists — then the room reappears as a fresh chat (its old messages
+  // were already wiped from this device).
+  const visibleRooms = rooms.filter((room) => {
+    const clearedAt = clearedRooms[room.id];
+    if (clearedAt == null) return true;
+    const last = getLastMessage(room);
+    return !!last && new Date(last.created_at).getTime() > clearedAt;
+  });
+
   const renderItem = ({ item }: { item: ChatRoom }) => {
     const displayName = getRoomDisplayName(item);
     const other = getOtherMember(item);
@@ -201,27 +212,34 @@ export default function ChatListScreen() {
     const typers = (typingEntry ?? []).filter((t) => t.userId !== user?.id);
     const isMuted = !!mutedRooms[item.id];
 
-    const handleDeleteChat = async () => {
-      try {
-        await deleteRoom(item.id);
-      } catch (err: unknown) {
-        alert(
-          'Could not delete chat',
-          formatApiError(err, {
-            fallback: 'The chat could not be deleted. Please try again.',
-          }),
-        );
-        return;
-      }
-      try { await deleteRoomMessages(item.id); } catch { /* best-effort */ }
-      clearRoomState(item.id);
-      setLocalLastMessages((prev) => {
-        if (!(item.id in prev)) return prev;
-        const next = { ...prev };
-        delete next[item.id];
-        return next;
+    const handleDeleteChat = () => {
+      // "Delete for me only": the server room + the other user's copy stay
+      // intact. We just wipe this device's messages and hide the room until
+      // newer activity revives it as a fresh chat. Confirm first.
+      confirm({
+        title: 'Delete chat?',
+        message: `This removes this chat and its messages from your device only. ${displayName} will still have their copy, and the chat will reappear here if there are new messages.`,
+        icon: 'trash-outline',
+        buttons: [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try { await deleteRoomMessages(item.id); } catch { /* best-effort */ }
+              markRoomCleared(item.id);
+              clearRoomState(item.id);
+              setLocalLastMessages((prev) => {
+                if (!(item.id in prev)) return prev;
+                const next = { ...prev };
+                delete next[item.id];
+                return next;
+              });
+              setRooms((prev) => prev.filter((r) => r.id !== item.id));
+            },
+          },
+        ],
       });
-      setRooms((prev) => prev.filter((r) => r.id !== item.id));
     };
 
     const openRoomMenu = () => {
@@ -244,8 +262,13 @@ export default function ChatListScreen() {
           {
             text: 'Delete chat',
             style: 'destructive',
-            onPress: async () => {
-              await handleDeleteChat();
+            onPress: () => {
+              // Defer so the room-menu modal fully dismisses before the delete
+              // confirm opens. Opening a second native Modal while the first is
+              // still closing is swallowed on Android, so the confirm wouldn't
+              // appear. The provider spaces queued dialogs by ~220ms; wait a bit
+              // longer than that.
+              setTimeout(handleDeleteChat, 300);
             },
           },
           { text: 'Cancel', style: 'cancel' },
@@ -401,10 +424,10 @@ export default function ChatListScreen() {
         </TouchableOpacity>
       )}
       <FlatList
-        data={rooms}
+        data={visibleRooms}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
-        contentContainerStyle={rooms.length === 0 ? styles.emptyContainer : styles.list}
+        contentContainerStyle={visibleRooms.length === 0 ? styles.emptyContainer : styles.list}
         ListEmptyComponent={
           <EmptyState
             iconName="chatbubbles-outline"

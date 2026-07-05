@@ -25,6 +25,7 @@ import { playLooping, stopLooping, playSound } from '../../services/soundService
 import { getRingerModeSync } from '../../services/ringerService';
 import { cancelIncomingCallNotification } from '../../services/callNotificationService';
 import { useAppStore } from '../../store/appStore';
+import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import Avatar from '../../components/ui/Avatar';
 import type { RootStackParamList } from '../../types';
 
@@ -33,6 +34,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'IncomingCall'>;
 export default function IncomingCallScreen({ route, navigation }: Props) {
   const { callId, callerName, callType, roomName } = route.params;
   const { colors: Colors } = useTheme();
+  const { ensure: ensurePermission } = usePermissionPrompt();
   const { subscribe } = useNotificationContext();
   const dismissed = useRef(false);
 
@@ -129,6 +131,11 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
 
   const handleAccept = async () => {
     if (dismissed.current) return;
+    // Camera (video) / mic are required for the call to work — ask before we
+    // join so we don't accept into a broken call. If denied, keep ringing so
+    // the user can grant access and retry (or reject).
+    const ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
+    if (!ok) return;
     dismissed.current = true;
     stopLooping();
     Vibration.cancel();
