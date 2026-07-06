@@ -29,6 +29,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { useNotificationContext, NotificationPayload } from '../contexts/NotificationContext';
 import { playSound } from '../services/soundService';
 import { useAppStore } from '../store/appStore';
+import { isCallEnded } from '../services/callDedupe';
 import { shouldHandleIncomingCallInApp, shouldShowInAppMessageToast } from '../services/notificationPresentationPolicy';
 import { decideIncomingCallInApp, decideInAppMessageToast } from '../services/notificationPresentationPolicy';
 
@@ -143,6 +144,9 @@ function IncomingCallListener() {
         payload.call_id &&
         payload.call_id !== handled.current
       ) {
+        // Never re-open the incoming-call screen for a call the user already
+        // declined / answered / that ended (a later transport may re-deliver).
+        if (isCallEnded(payload.call_id)) return;
         const cur = useAppStore.getState().activeCall;
         if (cur && cur.callId === payload.call_id && cur.state !== 'ended') {
           return;

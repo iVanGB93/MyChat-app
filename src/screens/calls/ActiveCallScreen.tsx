@@ -13,6 +13,7 @@ import { Font, Radius, Spacing } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { endCall, getCallStatus } from '../../services/callService';
+import { markCallEnded } from '../../services/callDedupe';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playSound, playLooping, stopLooping } from '../../services/soundService';
 import { startForegroundService, stopForegroundService } from '../../services/foregroundService';
@@ -42,6 +43,15 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   const ringPulseRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const offerStartedRef = useRef(false);
   const hasEnded = useRef(false);
+
+  // When launched directly into a call (background/killed), there is no route
+  // to go back to — navigation.goBack() would throw "GO_BACK was not handled".
+  // Fall back to the home route in that case.
+  const dismiss = () => {
+    markCallEnded(callId);
+    if (navigation.canGoBack()) navigation.goBack();
+    else navigation.navigate('Main' as never);
+  };
 
   const { subscribe } = useNotificationContext();
 
@@ -151,7 +161,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
         setStatus('ended');
         hasEnded.current = true;
         cleanupWebRTC();
-        setTimeout(() => navigation.goBack(), 1200);
+        setTimeout(() => dismiss(), 1200);
       }
     });
     return unsub;
@@ -178,7 +188,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
           setStatus('ended');
           hasEnded.current = true;
           cleanupWebRTC();
-          setTimeout(() => navigation.goBack(), 1200);
+          setTimeout(() => dismiss(), 1200);
         }
       } catch { /* ignore */ }
     }, 1200);
@@ -194,7 +204,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
         setStatus('ended');
         hasEnded.current = true;
         cleanupWebRTC();
-        setTimeout(() => navigation.goBack(), 1200);
+        setTimeout(() => dismiss(), 1200);
       }
     }, 45000);
     return () => clearTimeout(timeout);
@@ -224,7 +234,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     setStatus('ended');
     try { await endCall(callId); } catch {}
     cleanupWebRTC();
-    setTimeout(() => navigation.goBack(), 800);
+    setTimeout(() => dismiss(), 800);
   };
 
   const isVideo = callType === 'video';

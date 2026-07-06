@@ -1,5 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useRef } from 'react';
+import { AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider } from './src/contexts/AuthContext';
@@ -22,7 +23,7 @@ import {
 } from './src/services/callNotificationService';
 import { joinCall, endCall } from './src/services/callService';
 import { registerFcmForegroundHandler } from './src/services/fcmService';
-import messaging from '@react-native-firebase/messaging';
+import { getMessaging, onNotificationOpenedApp, getInitialNotification } from '@react-native-firebase/messaging';
 import { ensureMessageChannel } from './src/services/messageNotificationService';
 import notifee, { EventType } from '@notifee/react-native';
 import { AppLifecycleBridge } from './src/store/AppLifecycleBridge';
@@ -32,6 +33,10 @@ import { IncomingCallBanner } from './src/store/IncomingCallBanner';
 import AppUpdateGate from './src/components/AppUpdateGate';
 import ShareIntentBridge from './src/store/ShareIntentBridge';
 import { savePushMessage } from './src/services/pushMessageStore';
+import { takePendingRoomNav } from './src/services/pendingRoomNav';
+import { takePendingCallNav } from './src/services/pendingCallNav';
+import { markCallEnded, isCallEnded } from './src/services/callDedupe';
+import { useAppStore } from './src/store/appStore';
 
 export default function App() {
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
@@ -57,6 +62,7 @@ export default function App() {
       console.log('[App] CallNotif action:', type, data.callId);
 
       if (type === 'decline') {
+        markCallEnded(data.callId);
         endCall(data.callId, 'reject').catch(() => {});
         cancelIncomingCallNotification(data.callId).catch(() => {});
         return;
@@ -67,6 +73,9 @@ export default function App() {
       cancelIncomingCallNotification(data.callId).catch(() => {});
 
       if (type === 'accept') {
+        // Answering ends the "incoming" phase — stop any later transport from
+        // re-ringing this call.
+        markCallEnded(data.callId);
         // Optimistically join; IncomingCallScreen would normally call this on
         // tap Accept, but the action button bypasses that screen.
         joinCall(data.callId).catch(() => {});
@@ -117,14 +126,16 @@ export default function App() {
     const unsubFcmForeground = registerFcmForegroundHandler();
 
     // Navigate to the chat when a MessagingStyle (Notifee) message notification
-    // is tapped while the app is alive.
+    // is tapped. On a COLD start the `ChatRoom` route only exists once the user
+    // is authenticated, so a single navigate would no-op and leave the user on
+    // the default screen — we retry until we actually land on the room.
     const navigateToRoomWhenReady = (
       d: Record<string, string>,
       attempt = 0,
     ) => {
+      if (attempt > 150) return; // ~30s cap (covers auth loading on cold start)
       if (!navigationRef.isReady()) {
-        if (attempt > 100) return;
-        setTimeout(() => navigateToRoomWhenReady(d, attempt + 1), 100);
+        setTimeout(() => navigateToRoomWhenReady(d, attempt + 1), 200);
         return;
       }
       const senderIdNum = d.senderId != null ? Number(d.senderId) : undefined;
@@ -133,6 +144,12 @@ export default function App() {
         roomName: String(d.roomName ?? ''),
         otherUserId: senderIdNum && !Number.isNaN(senderIdNum) ? senderIdNum : undefined,
       });
+      // The navigate above is a no-op until the authed stack (with ChatRoom) is
+      // mounted. Keep retrying until the current route is actually the room.
+      const current = navigationRef.getCurrentRoute();
+      if (current?.name !== 'ChatRoom') {
+        setTimeout(() => navigateToRoomWhenReady(d, attempt + 1), 200);
+      }
     };
     const unsubNotifeeMsg = notifee.onForegroundEvent(({ type, detail }) => {
       // Direct-reply action typed on a message notification while the app is
@@ -143,8 +160,16 @@ export default function App() {
           .catch(() => {});
         return;
       }
+      // "Mark as read" action — dismiss + send read receipts to the sender.
+      if (type === EventType.ACTION_PRESS && detail.pressAction?.id === 'mark_read') {
+        import('./src/services/notificationActionService')
+          .then((m) => m.handleMarkReadEvent({ type, detail }))
+          .catch(() => {});
+        return;
+      }
       if (type !== EventType.PRESS) return;
       const d = detail.notification?.data as Record<string, string> | undefined;
+      console.log('[Notif] foreground PRESS', { type: d?.type, roomId: d?.roomId });
       if (!d || d.type !== 'new_message' || !d.roomId) return;
       navigateToRoomWhenReady(d);
     });
@@ -153,8 +178,59 @@ export default function App() {
     // route straight to the room.
     notifee.getInitialNotification().then((initial) => {
       const d = initial?.notification?.data as Record<string, string> | undefined;
+      console.log('[Notif] getInitialNotification', { type: d?.type, roomId: d?.roomId });
       if (d?.type === 'new_message' && d.roomId) navigateToRoomWhenReady(d);
     }).catch(() => {});
+
+    // A message notification pressed while BACKGROUNDED is delivered to the
+    // background handler, which stashes the target. Consume it now (on mount)
+    // and whenever the app returns to the foreground, then navigate.
+    const consumePendingNav = () => {
+      const pending = takePendingRoomNav();
+      if (pending?.roomId) {
+        console.log('[Notif] consuming pending nav →', pending.roomId);
+        navigateToRoomWhenReady({
+          type: 'new_message',
+          roomId: pending.roomId,
+          roomName: pending.roomName ?? '',
+          ...(pending.senderId ? { senderId: pending.senderId } : {}),
+        });
+      }
+    };
+    // A call that arrived while backgrounded/killed launches the app via the
+    // full-screen intent. Navigate straight to the full-screen IncomingCall
+    // screen so it takes over instead of leaving a heads-up banner.
+    const consumePendingCall = () => {
+      const call = takePendingCallNav();
+      if (!call?.callId) return;
+      if (isCallEnded(call.callId)) return;
+      console.log('[Notif] consuming pending call →', call.callId);
+      const run = (attempt = 0) => {
+        if (!navigationRef.isReady()) {
+          if (attempt > 100) return;
+          setTimeout(() => run(attempt + 1), 100);
+          return;
+        }
+        const cur = useAppStore.getState().activeCall;
+        if (cur && cur.callId === call.callId && cur.state !== 'ended') return;
+        navigationRef.navigate('IncomingCall', {
+          callId: call.callId,
+          callerName: call.callerName,
+          callerId: call.callerId,
+          callType: call.callType,
+          roomName: call.roomName,
+        });
+      };
+      run();
+    };
+    consumePendingNav();
+    consumePendingCall();
+    const appStateSub = AppState.addEventListener('change', (s) => {
+      if (s === 'active') {
+        consumePendingNav();
+        consumePendingCall();
+      }
+    });
 
     // FCM notification taps (hybrid push backup floor). When the app is
     // killed/backgrounded the OS renders the FCM `notification` block directly;
@@ -194,9 +270,9 @@ export default function App() {
       }
     };
     // Background → foreground tap.
-    const unsubFcmOpened = messaging().onNotificationOpenedApp(handleFcmOpen);
+    const unsubFcmOpened = onNotificationOpenedApp(getMessaging(), handleFcmOpen);
     // Cold start from a fully quit state.
-    messaging().getInitialNotification().then((m) => { if (m) handleFcmOpen(m); }).catch(() => {});
+    getInitialNotification(getMessaging()).then((m) => { if (m) handleFcmOpen(m); }).catch(() => {});
 
     // Handle notification taps — navigate to the relevant screen and save msg
     responseListener.current = addNotificationResponseListener((response) => {
@@ -264,6 +340,7 @@ export default function App() {
       unsubFcmForeground();
       unsubNotifeeMsg();
       unsubFcmOpened();
+      appStateSub.remove();
     };
   }, []);
 

@@ -251,14 +251,19 @@ async function maybeNotify(evt: CanonicalMessage): Promise<void> {
   const isStranger = !store?.contactIds?.[evt.senderId];
   const body = isStranger ? 'wants to talk to you · tap to accept' : evt.content;
   try {
-    const { showMessageNotification } = await import('./pushNotificationService');
-    await showMessageNotification({
-      senderName: evt.senderName || evt.roomName || 'New message',
-      senderId: evt.senderId,
-      content: body,
+    // Notifee MessagingStyle: one box per conversation (accumulates recent
+    // messages, expandable), with Reply + Mark-as-read actions. Same renderer
+    // the FCM/killed-app path uses, so the look is consistent everywhere.
+    const { ensureMessageChannel, displayMessageNotification } = await import('./messageNotificationService');
+    await ensureMessageChannel();
+    await displayMessageNotification({
       roomId: evt.roomId,
       roomName: evt.roomName || evt.senderName,
-      messageId: evt.messageId, // dedupes across paths inside the notifier
+      senderName: evt.senderName || evt.roomName || 'New message',
+      senderId: evt.senderId,
+      messageId: evt.messageId,
+      text: body,
+      timestamp: Date.now(),
     });
   } catch { /* notifier unavailable */ }
 }

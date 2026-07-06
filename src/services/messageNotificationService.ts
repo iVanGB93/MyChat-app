@@ -14,6 +14,7 @@ import notifee, {
   AndroidVisibility,
 } from '@notifee/react-native';
 import { Platform } from 'react-native';
+import { resolveMediaUrl } from './api';
 
 const CHANNEL_ID = 'messages';
 const NOTIFICATION_ID_PREFIX = 'message:';
@@ -24,6 +25,12 @@ export interface IncomingMessageNotif {
   senderName: string;
   /** User id of the message sender (the reply recipient), if known. */
   senderId?: number;
+  /** Message id — used to dedupe when the same message is delivered via more
+   *  than one path (WS + FCM) or FCM delivers a duplicate. */
+  messageId?: string;
+  /** Absolute URL of the sender's avatar, shown as the notification's large
+   *  (person) icon. Omitted → Android shows a generated monogram. */
+  avatar?: string | null;
   text: string;
   /** Epoch millis for the message; defaults to now. */
   timestamp?: number;
@@ -44,11 +51,16 @@ export function parseMessageNotifData(
   const ts = Number(raw.timestamp ?? 0);
   const senderIdRaw = raw.senderId ?? raw.sender_id;
   const senderId = Number(senderIdRaw);
+  const messageId = String(raw.messageId ?? raw.message_id ?? '');
+  const avatarRaw = raw.senderAvatar ?? raw.sender_avatar ?? null;
+  const avatar = avatarRaw ? resolveMediaUrl(String(avatarRaw)) : null;
   return {
     roomId,
     roomName,
     senderName,
     senderId: Number.isFinite(senderId) && senderId > 0 ? senderId : undefined,
+    messageId: messageId || undefined,
+    avatar,
     text,
     timestamp: Number.isFinite(ts) && ts > 0 ? ts : Date.now(),
   };
@@ -71,43 +83,47 @@ export async function ensureMessageChannel() {
   });
 }
 
-type MessagingMessage = {
-  text: string;
-  timestamp: number;
-  person?: { name: string };
-};
-
 /**
- * Read the messages already shown for this room so a new message appends to the
- * existing conversation (MessagingStyle) instead of replacing it. Best-effort:
- * returns [] if nothing is displayed or the platform doesn't expose it.
+ * Read the accumulated lines + already-shown message ids for a room's
+ * notification so new messages append (grouping) and the same message is never
+ * added twice. Best-effort. Stored in the notification's own `data` so it
+ * survives across app process restarts (killed-app FCM handler).
  */
-async function getExistingMessages(notifId: string): Promise<MessagingMessage[]> {
+async function getExisting(
+  notifId: string,
+): Promise<{ lines: string[]; shownIds: string[]; count: number }> {
   try {
     const displayed = await notifee.getDisplayedNotifications();
     const match = displayed.find((d) => d.id === notifId);
-    const style = match?.notification?.android?.style as
-      | { type: AndroidStyle.MESSAGING; messages?: MessagingMessage[] }
-      | undefined;
-    if (style && style.type === AndroidStyle.MESSAGING && Array.isArray(style.messages)) {
-      // Keep the conversation bounded so the payload stays small.
-      return style.messages.slice(-9);
+    const data = (match?.notification?.data ?? {}) as Record<string, unknown>;
+    let lines: string[] = [];
+    if (typeof data.lines === 'string') {
+      try {
+        const parsed = JSON.parse(data.lines);
+        if (Array.isArray(parsed)) lines = parsed.map((l) => String(l));
+      } catch { /* ignore */ }
     }
+    const shownIds =
+      typeof data.shownIds === 'string' ? data.shownIds.split(',').filter(Boolean) : [];
+    const count = Number(data.count) || lines.length;
+    return { lines, shownIds, count };
   } catch {
     // ignore — fall back to a fresh conversation
   }
-  return [];
+  return { lines: [], shownIds: [], count: 0 };
 }
 
 /**
- * Display (or update) the MessagingStyle notification for an incoming message.
- * Safe to call from the killed-app background handler.
+ * Display (or update) the grouped message notification for a room. Uses a
+ * BigText style so it arrives COLLAPSED (sender + latest message) and expands
+ * to show the recent messages. One stable notification per room accumulates
+ * new messages. Safe to call from the killed-app background handler.
  */
 export async function displayMessageNotification(data: IncomingMessageNotif) {
   const notifId = NOTIFICATION_ID_PREFIX + data.roomId;
 
   if (Platform.OS !== 'android') {
-    // iOS: plain notification (MessagingStyle is Android-only).
+    // iOS: plain notification.
     await notifee.displayNotification({
       id: notifId,
       title: data.senderName,
@@ -118,26 +134,38 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
     return;
   }
 
-  const previous = await getExistingMessages(notifId);
-  const messages: MessagingMessage[] = [
-    ...previous,
-    {
-      text: data.text,
-      timestamp: data.timestamp ?? Date.now(),
-      // Omitting `person` makes MessagingStyle render the message as sent by
-      // the conversation owner (the local user) — used for reply echoes.
-      ...(data.fromMe ? {} : { person: { name: data.senderName } }),
-    },
-  ];
+  const { lines: prevLines, shownIds, count: prevCount } = await getExisting(notifId);
+
+  // Dedupe: same message delivered via WS + FCM, or a duplicate FCM.
+  if (data.messageId && shownIds.includes(data.messageId)) return;
+
+  // A real group chat has a room name distinct from the sender; a 1:1 doesn't.
+  const isGroup = !!data.roomName && data.roomName !== data.senderName;
+  // Prefix the line with the speaker for group chats / reply echoes so the
+  // expanded list shows who said what; a 1:1 line is just the message text.
+  const speaker = data.fromMe ? 'You' : data.senderName;
+  const line = isGroup || data.fromMe ? `${speaker}: ${data.text}` : data.text;
+  const lines = [line, ...prevLines].slice(0, 8); // newest first, bounded
+  const count = prevCount + 1;
+  const nextShownIds = (data.messageId ? [...shownIds, data.messageId] : shownIds).slice(-20);
+
+  const name = isGroup ? data.roomName : data.senderName;
+  // Title carries an unread count when more than one message is stacked.
+  const title = count > 1 ? `${name} (${count})` : name;
+  const body = lines[0]; // collapsed → latest message
+  const bigText = lines.join('\n'); // expanded → recent history
 
   await notifee.displayNotification({
     id: notifId,
-    title: data.roomName,
-    body: data.text,
+    title,
+    body,
     data: {
       roomId: data.roomId,
       roomName: data.roomName,
       type: 'new_message',
+      lines: JSON.stringify(lines),
+      count: String(count),
+      shownIds: nextShownIds.join(','),
       ...(data.senderId != null ? { senderId: String(data.senderId) } : {}),
     },
     android: {
@@ -146,27 +174,23 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
       visibility: AndroidVisibility.PRIVATE,
       smallIcon: 'ic_launcher',
       color: '#7C3AED',
+      // Sender's avatar as the large icon (falls back to nothing / app icon).
+      ...(data.avatar ? { largeIcon: data.avatar } : {}),
       pressAction: { id: 'default', launchActivity: 'default' },
-      // Direct-reply action — lets the user reply from the notification shade
-      // without opening the app. Handled in the Notifee background event
-      // handler (registered in index.ts), which POSTs to /api/chat/messages/send/.
       actions: [
         {
           title: 'Reply',
           pressAction: { id: 'reply' },
-          input: {
-            allowFreeFormInput: true,
-            placeholder: 'Reply\u2026',
-          },
+          input: { allowFreeFormInput: true, placeholder: 'Reply\u2026' },
+        },
+        {
+          // Dismisses the notification and sends read receipts to the sender.
+          title: 'Mark as read',
+          pressAction: { id: 'mark_read' },
         },
       ],
-      style: {
-        type: AndroidStyle.MESSAGING,
-        person: { name: 'You' },
-        title: data.roomName,
-        group: messages.length > 1,
-        messages,
-      },
+      // BigText collapses to title + body and expands to the recent lines.
+      style: { type: AndroidStyle.BIGTEXT, text: bigText },
     },
   });
 }

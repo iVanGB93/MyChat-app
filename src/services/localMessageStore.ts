@@ -768,6 +768,18 @@ export async function deleteRoomMessages(roomId: string): Promise<void> {
   await db.runAsync(`DELETE FROM update_outbox WHERE room_id = $rid`, { $rid: roomId });
 }
 
+/** Ids of received (not-mine), unread, non-deleted messages in a room.
+ *  Used by the notification "Mark as read" action to send read receipts. */
+export async function getUnreadReceivedIds(roomId: string): Promise<string[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<{ id: string }>(
+    `SELECT id FROM messages
+     WHERE room_id = $rid AND is_mine = 0 AND is_read = 0 AND is_deleted = 0`,
+    { $rid: roomId },
+  );
+  return rows.map((r) => r.id);
+}
+
 /** Returns the most recent message per room (for ChatList preview). */
 export async function getLastMessagePerRoom(): Promise<
   Record<string, LocalMessage>

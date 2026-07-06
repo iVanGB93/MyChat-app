@@ -24,6 +24,7 @@ import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playLooping, stopLooping, playSound } from '../../services/soundService';
 import { getRingerModeSync } from '../../services/ringerService';
 import { cancelIncomingCallNotification } from '../../services/callNotificationService';
+import { markCallEnded } from '../../services/callDedupe';
 import { useAppStore } from '../../store/appStore';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import Avatar from '../../components/ui/Avatar';
@@ -37,6 +38,16 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
   const { ensure: ensurePermission } = usePermissionPrompt();
   const { subscribe } = useNotificationContext();
   const dismissed = useRef(false);
+
+  // When the app is launched directly into this screen from a background/killed
+  // call (via the full-screen intent / pending-call nav), there is no previous
+  // route, so navigation.goBack() throws "GO_BACK was not handled". Fall back to
+  // the home route in that case.
+  const dismiss = () => {
+    markCallEnded(callId);
+    if (navigation.canGoBack()) navigation.goBack();
+    else navigation.navigate('Main' as never);
+  };
 
   // Pulsing scale for the avatar ring + the "scan" radial sweep.
   const pulse = useRef(new Animated.Value(0)).current;
@@ -108,7 +119,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
         Vibration.cancel();
         cancelIncomingCallNotification(callId).catch(() => {});
         playSound('call_end');
-        setTimeout(() => navigation.goBack(), 600);
+        setTimeout(() => dismiss(), 600);
       }
     });
     return unsub;
@@ -123,7 +134,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
         stopLooping();
         Vibration.cancel();
         cancelIncomingCallNotification(callId).catch(() => {});
-        navigation.goBack();
+        dismiss();
       }
     }, 40000);
     return () => clearTimeout(timeout);
@@ -140,6 +151,9 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
     stopLooping();
     Vibration.cancel();
     cancelIncomingCallNotification(callId).catch(() => {});
+    // Answering ends the "incoming" phase — block any later transport from
+    // re-ringing this call while we move to the active screen.
+    markCallEnded(callId);
     try {
       await joinCall(callId);
       navigation.replace('ActiveCall', {
@@ -151,7 +165,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
         peerUserId: route.params.callerId,
       });
     } catch {
-      navigation.goBack();
+      dismiss();
     }
   };
 
@@ -163,7 +177,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
     cancelIncomingCallNotification(callId).catch(() => {});
     playSound('call_end');
     try { await endCall(callId, 'reject'); } catch {}
-    navigation.goBack();
+    dismiss();
   };
 
   const styles = useMemo(() => makeStyles(Colors), [Colors]);

@@ -127,6 +127,16 @@ export async function sendReplyFromNotification(
     /* notification echo is best-effort */
   }
 
+  // 4. Replying implies you've read the conversation — send read receipts and
+  //    clear the unread badge (but keep the notification, which now shows your
+  //    reply echo).
+  try {
+    const { markRoomReadFromNotification } = await import('./notificationActionService');
+    await markRoomReadFromNotification(args.roomId, { dismiss: false });
+  } catch {
+    /* best-effort */
+  }
+
   return true;
 }
 

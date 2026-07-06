@@ -23,9 +23,11 @@ import notifee, {
   EventType,
   type Event,
 } from '@notifee/react-native';
-import { Platform } from 'react-native';
+import { Alert, Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as IntentLauncher from 'expo-intent-launcher';
 
-const CHANNEL_ID = 'incoming-calls';
+const CHANNEL_ID = 'incoming-calls-v2';
 const NOTIFICATION_ID_PREFIX = 'incoming-call:';
 
 const ACTION_ACCEPT = 'accept';
@@ -116,6 +118,9 @@ export function registerCallNotificationBackgroundHandler() {
  */
 export async function ensureCallChannel() {
   if (Platform.OS !== 'android') return;
+  // Remove the pre-v2 channel so upgraded users don't see two "Incoming Calls"
+  // entries in system settings (the old one may be stuck at a lower importance).
+  await notifee.deleteChannel('incoming-calls').catch(() => {});
   await notifee.createChannel({
     id: CHANNEL_ID,
     name: 'Incoming Calls',
@@ -161,6 +166,43 @@ export async function setupCallNotifications() {
   await ensureCallChannel();
   await ensureIosCallCategory();
   registerCallNotificationListeners();
+  ensureFullScreenIntentAccess().catch(() => {});
+}
+
+const FSI_PROMPT_KEY = 'fsi_prompted_v1';
+
+/**
+ * On Android 14+ (API 34) the USE_FULL_SCREEN_INTENT special access is DENIED
+ * by default for apps that aren't the default dialer/alarm app, so an incoming
+ * call only shows as a heads-up banner instead of taking over the screen. We
+ * ask once (persisted) and deep-link the user to the exact settings toggle so
+ * the call can render full-screen. No-op on older Android / iOS.
+ */
+export async function ensureFullScreenIntentAccess(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  if (typeof Platform.Version === 'number' && Platform.Version < 34) return;
+  try {
+    if (await AsyncStorage.getItem(FSI_PROMPT_KEY)) return;
+    await AsyncStorage.setItem(FSI_PROMPT_KEY, '1');
+    Alert.alert(
+      'Allow full-screen calls',
+      'To show incoming calls as a full-screen ringing screen (like a phone call), enable “Full-screen notifications” for Axonic.',
+      [
+        { text: 'Not now', style: 'cancel' },
+        {
+          text: 'Open settings',
+          onPress: () => {
+            IntentLauncher.startActivityAsync(
+              'android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT',
+              { data: 'package:com.axonic' },
+            ).catch(() => {});
+          },
+        },
+      ],
+    );
+  } catch (err) {
+    console.warn('[CallNotif] full-screen-intent access prompt failed:', err);
+  }
 }
 
 /**
@@ -172,6 +214,19 @@ export async function displayIncomingCallNotification(data: IncomingCallData) {
   const notifId = NOTIFICATION_ID_PREFIX + data.callId;
   const title = data.callerName;
   const body = `Incoming ${data.callType} call`;
+
+  // A single call is delivered over WS + FCM (+ background poll) at once. Only
+  // the first transport should render/ring; a call that was already declined /
+  // answered must never be shown again. This collapses the "arrived twice" and
+  // "rang again after I declined" bugs across every render path.
+  const { shouldShowCall } = require('./callDedupe');
+  if (!shouldShowCall(data.callId)) return;
+
+  // The killed-app FCM background handler renders this in a fresh JS process
+  // that never ran setupCallNotifications(), so the channel may not exist yet.
+  // Posting to a missing channel makes Android show a silent, non-heads-up
+  // notification (only visible in the shade). Ensure it exists first.
+  await ensureCallChannel();
 
   await notifee.displayNotification({
     id: notifId,

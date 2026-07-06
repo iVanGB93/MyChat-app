@@ -10,7 +10,13 @@
 /*  push token.                                                         */
 /* ------------------------------------------------------------------ */
 
-import messaging, {
+import {
+  getMessaging,
+  getToken,
+  onMessage,
+  onTokenRefresh,
+  setBackgroundMessageHandler,
+  registerDeviceForRemoteMessages,
   type FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
 import { Platform } from 'react-native';
@@ -31,9 +37,9 @@ export async function getFcmToken(): Promise<string | null> {
     // iOS needs explicit registration before a token is available; on Android
     // this is a no-op but safe to call.
     if (Platform.OS === 'ios') {
-      await messaging().registerDeviceForRemoteMessages();
+      await registerDeviceForRemoteMessages(getMessaging());
     }
-    const token = await messaging().getToken();
+    const token = await getToken(getMessaging());
     return token || null;
   } catch (err) {
     console.warn('[FCM] failed to get token:', err);
@@ -46,7 +52,7 @@ export async function getFcmToken(): Promise<string | null> {
  * caller can re-register it with the backend. Returns an unsubscribe function.
  */
 export function onFcmTokenRefresh(cb: (token: string) => void): () => void {
-  return messaging().onTokenRefresh((token) => {
+  return onTokenRefresh(getMessaging(), (token) => {
     if (token) cb(token);
   });
 }
@@ -65,6 +71,36 @@ async function handleDataMessage(
   remoteMessage: FirebaseMessagingTypes.RemoteMessage,
 ): Promise<void> {
   const data = (remoteMessage?.data ?? {}) as Record<string, string>;
+
+  // Incoming call: render the proper CallStyle notification (full-screen,
+  // Accept/Decline, ringtone) so a killed/backgrounded call looks like a CALL,
+  // not a plain message banner. Stable per-callId id dedupes with the WS path.
+  if (data.type === 'incoming_call') {
+    const callNav = {
+      callId: String(data.callId ?? data.call_id ?? ''),
+      callerId: Number(data.callerId ?? data.caller_id ?? 0),
+      callerName: String(data.callerName ?? data.caller_name ?? 'Unknown'),
+      callType: (data.callType === 'video' || data.call_type === 'video' ? 'video' : 'voice') as
+        | 'voice'
+        | 'video',
+      roomName: String(data.roomName ?? data.room_name ?? ''),
+    };
+    try {
+      // Stash the call so that when the full-screen intent launches (or wakes)
+      // the app, App.tsx navigates straight to the full-screen IncomingCall
+      // screen instead of leaving the user on a heads-up banner.
+      const { setPendingCallNav } = await import('./pendingCallNav');
+      setPendingCallNav(callNav);
+    } catch { /* ignore */ }
+    try {
+      const { displayIncomingCallNotification } = await import('./callNotificationService');
+      await displayIncomingCallNotification(callNav);
+    } catch (err) {
+      console.warn('[FCM] displayIncomingCallNotification failed:', err);
+    }
+    return;
+  }
+
   if (!data || (data.type && data.type !== 'new_message')) return;
   // Persist + ack first so the delivered receipt fires regardless of whether
   // the notification renders.
@@ -91,7 +127,7 @@ async function handleDataMessage(
  * top-level of `index.ts` (outside React) so it fires when the app is killed.
  */
 export function registerFcmBackgroundHandler(): void {
-  messaging().setBackgroundMessageHandler(handleDataMessage);
+  setBackgroundMessageHandler(getMessaging(), handleDataMessage);
 }
 
 /**
@@ -101,7 +137,7 @@ export function registerFcmBackgroundHandler(): void {
  * unsubscribe function. Call from React after auth.
  */
 export function registerFcmForegroundHandler(): () => void {
-  return messaging().onMessage(async (remoteMessage) => {
+  return onMessage(getMessaging(), async (remoteMessage) => {
     const data = (remoteMessage?.data ?? {}) as Record<string, string>;
     if (!data || (data.type && data.type !== 'new_message')) return;
     try {

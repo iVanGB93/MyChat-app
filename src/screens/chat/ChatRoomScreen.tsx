@@ -1279,11 +1279,16 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 keyExtractor={(r) => r.id}
                 style={{ maxHeight: winHeight * 0.5 }}
                 renderItem={({ item }) => {
-                  const label = item.name
-                    ?? item.members_detail
-                      .filter((m) => m.id !== user?.id)
-                      .map((m) => m.username)
-                      .join(', ');
+                  // Direct rooms have name === '' (empty string, not null), so
+                  // `??` wouldn't fall back — check for a non-blank name first,
+                  // otherwise build a label from the other members' usernames.
+                  const named = item.name && item.name.trim();
+                  const label = named
+                    ? item.name
+                    : (item.members_detail ?? [])
+                        .filter((m) => m.id !== user?.id)
+                        .map((m) => m.username)
+                        .join(', ') || 'Chat';
                   return (
                     <TouchableOpacity
                       onPress={() => doForwardTo(item.id)}

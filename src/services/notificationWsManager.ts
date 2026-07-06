@@ -580,13 +580,21 @@ async function connectWs() {
             payload.caller &&
             payload.call_id
           ) {
-            displayIncomingCallNotification({
+            const callNav = {
               callId: payload.call_id,
               callerId: payload.caller_id ?? 0,
               callerName: payload.caller,
               callType: payload.call_type ?? 'voice',
               roomName: payload.room_name ?? '',
-            }).catch(() => {});
+            };
+            // App is not in the foreground (that's the only time the local
+            // notification is shown). Stash the call so the full-screen intent
+            // launch navigates to the full-screen IncomingCall screen.
+            try {
+              const { setPendingCallNav } = require('./pendingCallNav');
+              setPendingCallNav(callNav);
+            } catch { /* ignore */ }
+            displayIncomingCallNotification(callNav).catch(() => {});
           }
         } catch { /* ignore — notification service unavailable */ }
 
@@ -600,6 +608,14 @@ async function connectWs() {
           try {
             const { cancelIncomingCallNotification } = require('./callNotificationService');
             cancelIncomingCallNotification(payload.call_id).catch(() => {});
+          } catch { /* ignore */ }
+          try {
+            const { clearPendingCallNav } = require('./pendingCallNav');
+            clearPendingCallNav(payload.call_id);
+          } catch { /* ignore */ }
+          try {
+            const { markCallEnded } = require('./callDedupe');
+            markCallEnded(payload.call_id);
           } catch { /* ignore */ }
         }
 

@@ -1,3 +1,7 @@
+// Silence React Native Firebase's namespaced-API deprecation warnings. MUST be
+// the FIRST import so the flag is set before any Firebase module is used.
+import './src/config/silenceFirebaseWarnings';
+
 // Notifee REQUIRES the background event handler to be registered at the
 // module top-level of the entry file so it can fire when the app is killed
 // or backgrounded (e.g. when the user taps Accept / Decline on the call
