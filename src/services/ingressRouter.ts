@@ -68,6 +68,13 @@ export interface CanonicalMessage {
   audioMime: string | null;
   imageB64: string | null;
   imageMime: string | null;
+  /** Out-of-band media pointer (Phase 2): the blob is fetched over HTTP from
+   *  the backend (chat.MediaBlob) instead of riding inline as base64. */
+  mediaId: string | null;
+  mediaMd5: string | null;
+  mediaSha256: string | null;
+  mediaSize: number | null;
+  mediaMime: string | null;
   /** Did the server also queue a push floor (FCM/Expo) for this delivery?
    *  When true, the WS path defers the OS banner to FCM to avoid double-
    *  notifying; when false/null the app's local notification is the only
@@ -83,6 +90,9 @@ export interface CanonicalMessage {
  * Persistent dedupe across app restarts is provided by SQLite `messageExists`. */
 const _acked = new Set<string>();
 const _persisting = new Set<string>();
+/** Pointer-media downloads in flight (separate from `_persisting` so a download
+ *  kicked off right after persist isn't blocked by the persist guard). */
+const _downloading = new Set<string>();
 const MAX_TRACKED = 300;
 
 function track(set: Set<string>, id: string): void {
@@ -154,6 +164,11 @@ export function normalizeMessage(
     audioMime: asStr(raw.audio_mime),
     imageB64: asStr(raw.image_b64),
     imageMime: asStr(raw.image_mime),
+    mediaId: asStr(raw.media_id ?? raw.mediaId),
+    mediaMd5: asStr(raw.media_md5 ?? raw.mediaMd5),
+    mediaSha256: asStr(raw.media_sha256 ?? raw.mediaSha256),
+    mediaSize: asNum(raw.media_size ?? raw.mediaSize),
+    mediaMime: asStr(raw.audio_mime ?? raw.image_mime ?? raw.media_mime ?? raw.mediaMime),
     pushFloor: asBool(raw.push_floor ?? raw.pushFloor),
   };
 }
@@ -212,6 +227,92 @@ async function decodeMedia(evt: CanonicalMessage): Promise<string | null> {
     console.warn('[Ingress] media decode failed:', err);
   }
   return null;
+}
+
+/** Media type of a canonical message, or null if it isn't media. */
+function mediaTypeOf(evt: CanonicalMessage): 'image' | 'voice' | 'video' | null {
+  if (evt.messageType === 'image') return 'image';
+  if (evt.messageType === 'voice') return 'voice';
+  if (evt.messageType === 'video') return 'video';
+  return null;
+}
+
+/**
+ * Download an out-of-band media blob (Phase 2 pointer), persist it to durable
+ * storage, verify md5, wire the file into the row + open room, ACK delivery,
+ * then confirm the download so the server can retire the blob. Returns true on
+ * success. Guarded by `_persisting` to avoid concurrent downloads of one id.
+ */
+async function hydratePointerMedia(evt: CanonicalMessage): Promise<boolean> {
+  const mt = mediaTypeOf(evt);
+  if (!evt.mediaId || !mt) return false;
+  if (_downloading.has(evt.messageId)) return false;
+  track(_downloading, evt.messageId);
+  try {
+    const { downloadAndPersistMedia, confirmDownloaded } = await import('./mediaLane');
+    const uri = await downloadAndPersistMedia({
+      mediaId: evt.mediaId,
+      mediaType: mt,
+      mime: evt.mediaMime ?? (mt === 'voice' ? 'audio/m4a' : mt === 'video' ? 'video/mp4' : 'image/jpeg'),
+      md5: evt.mediaMd5,
+      messageId: evt.messageId,
+    });
+    await setMessageFileUri(evt.messageId, uri);
+    injectReceivedMessage(evt.roomId, toWsMessage(evt, uri), { updateExisting: true });
+    // Bytes are now durably present → ACK delivery so the sender's ✓ reflects
+    // the real file, and confirm so the server can delete the blob after grace.
+    await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+    confirmDownloaded(evt.mediaId).catch(() => {});
+    console.log('[Ingress] downloaded pointer media for', evt.messageId);
+    return true;
+  } catch (err) {
+    console.warn('[Ingress] pointer media download failed', evt.messageId, err);
+    return false;
+  } finally {
+    _downloading.delete(evt.messageId);
+  }
+}
+
+/**
+ * Re-attempt downloads for received pointer-media in a room whose blob is still
+ * missing locally (e.g. the app was killed when the pointer arrived, so the
+ * ingest-time download never ran). Call on room open / reconnect. Best-effort.
+ */
+export async function retryPointerDownloads(roomId: string): Promise<void> {
+  try {
+    const { getIncompletePointerMedia } = await import('./localMessageStore');
+    const rows = await getIncompletePointerMedia(roomId);
+    for (const r of rows) {
+      let ptr: any = null;
+      try { ptr = r.media_ptr ? JSON.parse(r.media_ptr) : null; } catch { ptr = null; }
+      if (!ptr?.media_id) continue;
+      let replyTo: ReplyRef | null = null;
+      try { replyTo = r.reply_to ? JSON.parse(r.reply_to) : null; } catch { replyTo = null; }
+      const evt: CanonicalMessage = {
+        messageId: r.id,
+        roomId: r.room_id,
+        roomName: '',
+        senderId: r.sender_id,
+        senderName: r.sender_name,
+        content: r.content,
+        messageType: r.type,
+        createdAt: r.created_at,
+        replyTo,
+        durationMs: r.duration_ms,
+        audioB64: null,
+        audioMime: null,
+        imageB64: null,
+        imageMime: null,
+        mediaId: ptr.media_id,
+        mediaMd5: ptr.md5 ?? null,
+        mediaSha256: ptr.sha256 ?? null,
+        mediaSize: ptr.size ?? null,
+        mediaMime: ptr.mime ?? null,
+        pushFloor: null,
+      };
+      void hydratePointerMedia(evt);
+    }
+  } catch { /* best-effort */ }
 }
 
 /** Build the in-memory WsMessage used to hydrate an open chat room. */
@@ -304,6 +405,9 @@ export async function ingestMessage(
   const isMediaType = evt.messageType === 'image'
     || evt.messageType === 'voice'
     || evt.messageType === 'video';
+  // Phase 2: an out-of-band media message carries a pointer (media_id) instead
+  // of inline base64. The blob is fetched over HTTP (mediaLane) after persist.
+  const hasPointer = !!evt.mediaId;
   if (!isMediaType) {
     await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
   }
@@ -350,6 +454,14 @@ export async function ingestMessage(
         }
       } catch { /* fall through to plain hydrate */ }
     }
+    // Out-of-band pointer whose blob hasn't been downloaded yet → start the
+    // download in the background (it acks + confirms on completion).
+    if (hasPointer && !_downloading.has(evt.messageId)) {
+      try {
+        const existingUri = await getMessageFileUri(evt.messageId);
+        if (!existingUri) { void hydratePointerMedia(evt); }
+      } catch { /* best-effort */ }
+    }
     // Already stored — just make sure an open room shows it.
     injectReceivedMessage(evt.roomId, toWsMessage(evt, null));
     return;
@@ -375,6 +487,15 @@ export async function ingestMessage(
     is_read: false,
     reply_to: evt.replyTo,
     duration_ms: evt.durationMs,
+    media_ptr: hasPointer
+      ? {
+          media_id: evt.mediaId!,
+          md5: evt.mediaMd5,
+          sha256: evt.mediaSha256,
+          size: evt.mediaSize,
+          mime: evt.mediaMime,
+        }
+      : null,
   });
 
   // 4b. Delivery ACK for media: only now that we persisted a row WITH its file
@@ -387,12 +508,18 @@ export async function ingestMessage(
   // 5. Hydrate an open chat room (no-op if the room screen isn't mounted).
   injectReceivedMessage(evt.roomId, toWsMessage(evt, fileUri));
 
-  // 5b. Media placeholder (a media message whose bytes didn't ride along — the
-  //     push stripped them, or it's a large chunked transfer still in flight).
-  //     Give the normal chunk stream a few seconds to complete; if the media is
-  //     still missing, signal the sender to (re)send it so the "Downloading…"
-  //     bubble can finish. Best-effort; also retried on room/notif auth_ok.
-  if (isMediaType && !fileUri) {
+  // 5a. Out-of-band pointer → download the blob over HTTP in the background.
+  //     hydratePointerMedia persists the file, acks delivery, and confirms the
+  //     download (so the server can retire the blob after the grace window).
+  if (hasPointer && !fileUri) {
+    void hydratePointerMedia(evt);
+  }
+
+  // 5b. Legacy inline/chunk media placeholder (no pointer): the bytes didn't
+  //     ride along (push stripped them, or a chunk stream is still in flight).
+  //     Give it a few seconds, then signal the sender to (re)send. Pointer
+  //     media is handled by the HTTP download above, so skip it here.
+  if (isMediaType && !fileUri && !hasPointer) {
     setTimeout(async () => {
       try {
         const uri = await getMessageFileUri(evt.messageId);

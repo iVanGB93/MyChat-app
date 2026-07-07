@@ -3,7 +3,8 @@
 /* ------------------------------------------------------------------ */
 
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Image } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { useTheme } from '../../contexts/ThemeContext';
 
 interface Props {
@@ -51,10 +52,12 @@ export default function Avatar({ uri, name, size = 48, showOnline = false, isOnl
         ]}
       >
         {uri && !failed ? (
-          <Image
+          <ExpoImage
             source={{ uri }}
             style={{ width: innerSize, height: innerSize, borderRadius: innerSize / 2 }}
-            resizeMode="cover"
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            recyclingKey={uri}
             onError={() => setFailed(true)}
           />
         ) : (

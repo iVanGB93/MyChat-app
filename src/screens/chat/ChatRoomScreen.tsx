@@ -19,14 +19,14 @@ import {
   useWindowDimensions,
   Animated,
   PanResponder,
-  Image,
 } from 'react-native';
+import { Image as ExpoImage } from 'expo-image';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
 import dayjs from 'dayjs';
-import { Font, Spacing, Radius } from '../../theme';
+import { Font, Spacing, Radius, type ThemeColors } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import {
   useAudioRecorder,
@@ -112,6 +112,265 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/*  MessageBubble — memoized row. Extracted from the screen so the      */
+/*  FlatList only re-renders bubbles whose *content* actually changed   */
+/*  (custom comparator below), not the whole list on every WS frame.    */
+/* ------------------------------------------------------------------ */
+interface MessageBubbleProps {
+  item: Message;
+  isMine: boolean;
+  isPending: boolean;
+  isDelivered: boolean;
+  isRead: boolean;
+  isDirectChat: boolean;
+  Colors: ThemeColors;
+  currentUserId?: number;
+  onReply: (item: Message) => void;
+  onLongPress: (pageY: number, item: Message) => void;
+  onImagePress: (uri: string | null) => void;
+  onReaction: (item: Message, emoji: string) => void;
+}
+
+function MessageBubbleBase({
+  item,
+  isMine,
+  isPending,
+  isDelivered,
+  isRead,
+  isDirectChat,
+  Colors,
+  currentUserId,
+  onReply,
+  onLongPress,
+  onImagePress,
+  onReaction,
+}: MessageBubbleProps) {
+  const isDeliveredPersisted = isMine && item.status === 'delivered';
+
+  let statusIcon: string;
+  let statusColor: string;
+  if (isPending) {
+    statusIcon = '⏱';
+    statusColor = Colors.textTertiary;
+  } else if (isRead) {
+    statusIcon = '✓✓';
+    statusColor = Colors.checkBlue;
+  } else if (isDelivered) {
+    statusIcon = '✓';
+    statusColor = Colors.textTertiary;
+  } else if (isDeliveredPersisted) {
+    statusIcon = '✓';
+    statusColor = Colors.textTertiary;
+  } else {
+    // Unknown local state defaults to pending to avoid false delivery ticks.
+    statusIcon = '⏱';
+    statusColor = Colors.textTertiary;
+  }
+
+  return (
+    <Swipeable
+      renderLeftActions={() => (
+        <View style={styles.swipeReplyHint}>
+          <Ionicons name="arrow-undo" size={22} color={Colors.primary} />
+        </View>
+      )}
+      leftThreshold={40}
+      friction={2}
+      overshootLeft={false}
+      enabled={!item.is_deleted}
+      onSwipeableOpen={(direction, swipeable) => {
+        if (direction === 'left') {
+          onReply(item);
+          swipeable.close();
+        }
+      }}
+    >
+      <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
+        <TouchableOpacity
+          onLongPress={(e) => {
+            if (!item.is_deleted) {
+              onLongPress(e.nativeEvent.pageY, item);
+            }
+          }}
+          delayLongPress={350}
+          activeOpacity={0.85}
+        >
+          <View style={[
+            styles.bubbleWrap,
+            item.reactions && Object.keys(item.reactions).length > 0 && !item.is_deleted && styles.bubbleWrapWithReactions,
+          ]}>
+          <View style={[
+            styles.bubble,
+            isMine
+              ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
+              : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
+          ]}>
+            {!isMine && !isDirectChat && (
+              <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
+            )}
+            {item.reply_to && !item.is_deleted && (
+              <View style={[styles.quoteBlock, {
+                borderLeftColor: Colors.primary,
+                backgroundColor: Colors.surfaceVariant,
+              }]}>
+                <Text style={[styles.quoteName, { color: Colors.primary }]} numberOfLines={1}>
+                  {item.reply_to.sender_name || 'Unknown'}
+                </Text>
+                <Text style={[styles.quoteText, { color: Colors.textSecondary }]} numberOfLines={2}>
+                  {item.reply_to.content
+                    || (item.reply_to.type && item.reply_to.type !== 'text'
+                      ? `[${item.reply_to.type}]`
+                      : '')}
+                </Text>
+              </View>
+            )}
+            {item.is_deleted ? (
+              <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>
+                🚫 This message was deleted.
+              </Text>
+            ) : item.message_type === 'voice' ? (
+              <VoiceMessageBubble
+                fileUri={item.file_uri ?? item.file ?? null}
+                durationMs={item.duration_ms ?? null}
+                loading={!(item.file_uri || item.file)}
+                tint={Colors.primary}
+                subtleColor={Colors.textSecondary}
+                trackBg={Colors.surfaceVariant}
+              />
+            ) : item.message_type === 'image' && (item.file_uri || item.file) ? (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                onPress={() => onImagePress(item.file_uri ?? item.file ?? null)}
+                onLongPress={(e) => {
+                  if (!item.is_deleted) {
+                    onLongPress(e.nativeEvent.pageY, item);
+                  }
+                }}
+                delayLongPress={350}
+              >
+                <ExpoImage
+                  source={{ uri: item.file_uri ?? item.file ?? '' }}
+                  style={styles.imageBubble}
+                  contentFit="cover"
+                  cachePolicy="memory-disk"
+                  transition={100}
+                  recyclingKey={item.id}
+                />
+                {item.uploading && (
+                  <View style={styles.mediaOverlay}>
+                    <ActivityIndicator color="#fff" />
+                    <Text style={styles.mediaOverlayText}>Uploading…</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            ) : item.message_type === 'image' ? (
+              // Received image whose bytes haven't arrived yet (streaming over
+              // chunks). Show a receiving placeholder until it hydrates.
+              <View style={[styles.imageBubble, styles.mediaPlaceholder, { backgroundColor: Colors.surfaceVariant }]}>
+                <ActivityIndicator color={Colors.primary} />
+                <Text style={[styles.mediaPlaceholderText, { color: Colors.textSecondary }]}>Receiving…</Text>
+              </View>
+            ) : (
+              <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
+            )}
+            {__DEV__ && isMine && !item.is_deleted && (
+              <Text
+                style={[
+                  styles.syncDebugText,
+                  { color: item.sync ? Colors.success : Colors.warning },
+                ]}
+              >
+                {item.sync ? 'SYNC OK' : 'SYNC PENDING'}
+              </Text>
+            )}
+            <View style={styles.metaRow}>
+              <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
+                {dayjs(item.created_at).format('HH:mm')}
+              </Text>
+              {isMine && !item.is_deleted && (
+                <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
+              )}
+            </View>
+          </View>
+          {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
+            <View
+              style={[styles.reactionsOverlay, styles.reactionsOverlayLeft]}
+            >
+              {Object.entries(item.reactions).map(([emoji, users]) => {
+                const mine = users.includes(String(currentUserId));
+                return (
+                  <TouchableOpacity
+                    key={emoji}
+                    onPress={() => onReaction(item, emoji)}
+                    style={[styles.reactionBadge, {
+                      backgroundColor: mine ? Colors.neonGlow : Colors.surface,
+                      borderColor: mine ? Colors.primary : Colors.neonBorder,
+                      shadowColor: Colors.primary,
+                    }]}
+                  >
+                    <Text style={styles.reactionEmojiInBadge}>{emoji}</Text>
+                    <Text
+                      style={[
+                        styles.reactionBadgeText,
+                        { color: mine ? Colors.primary : Colors.text },
+                      ]}
+                    >
+                      {users.length}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+          </View>
+        </TouchableOpacity>
+      </View>
+    </Swipeable>
+  );
+}
+
+/** Only re-render a bubble when its own content/state changed. */
+function areBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
+  if (
+    prev.isMine !== next.isMine ||
+    prev.isPending !== next.isPending ||
+    prev.isDelivered !== next.isDelivered ||
+    prev.isRead !== next.isRead ||
+    prev.isDirectChat !== next.isDirectChat ||
+    prev.Colors !== next.Colors ||
+    prev.currentUserId !== next.currentUserId ||
+    prev.onReply !== next.onReply ||
+    prev.onLongPress !== next.onLongPress ||
+    prev.onImagePress !== next.onImagePress ||
+    prev.onReaction !== next.onReaction
+  ) {
+    return false;
+  }
+  const a = prev.item;
+  const b = next.item;
+  return (
+    a.id === b.id &&
+    a.content === b.content &&
+    a.message_type === b.message_type &&
+    a.file === b.file &&
+    a.file_uri === b.file_uri &&
+    a.duration_ms === b.duration_ms &&
+    a.uploading === b.uploading &&
+    a.is_read === b.is_read &&
+    a.is_deleted === b.is_deleted &&
+    a.status === b.status &&
+    a.sync === b.sync &&
+    a.sender === b.sender &&
+    a.sender_username === b.sender_username &&
+    a.created_at === b.created_at &&
+    JSON.stringify(a.reactions) === JSON.stringify(b.reactions) &&
+    JSON.stringify(a.reply_to) === JSON.stringify(b.reply_to)
+  );
+}
+
+const MessageBubble = React.memo(MessageBubbleBase, areBubblePropsEqual);
+
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
   const isDirectChat = !!otherUserId;
@@ -188,7 +447,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /* Load (or reload) messages from the local SQLite DB */
   const loadFromDB = useCallback(async (cancelled?: { current: boolean }) => {
     const dbMsgs = await getMessages(roomId);
-    console.log('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
+    if (__DEV__) console.log('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
     if (cancelled?.current) return;
     setSqliteMessages(dbMsgs.map(toMsg));
     // Pre-populate readIds from is_read=1 rows persisted in SQLite (survives app restarts).
@@ -216,6 +475,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       try {
         await initDB();
         await loadFromDB(cancel);
+        // Re-attempt any out-of-band media downloads missed while the app was
+        // away (killed/backgrounded when the pointer first arrived).
+        import('../../services/ingressRouter')
+          .then((m) => m.retryPointerDownloads(roomId))
+          .catch(() => {});
       } catch { /* ignore */ } finally {
         if (!cancel.current) setLoading(false);
       }
@@ -286,7 +550,6 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         });
       }
     }
-    console.log('[ChatRoom] allMessages:', byId.size, '(sqlite:', sqliteMessages.length, 'ws:', wsMessages.length, ')');
     return Array.from(byId.values()).sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
     );
@@ -297,6 +560,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     () => allMessages.map(m => ({ ...m, is_read: m.is_read || readIds.has(m.id) })),
     [allMessages, readIds],
   );
+
+  /* Inverted FlatList needs newest-first. Memoize so we don't rebuild the
+     array (and force a full re-render) on every unrelated render. */
+  const reversedMsgs = useMemo(() => [...displayedMsgs].reverse(), [displayedMsgs]);
 
   /* ── Auto-scroll and keyboard scroll removed — FlatList is inverted, newest messages
      always appear at the bottom automatically ── */
@@ -685,199 +952,47 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     } catch { /* ignore — saved locally */ }
   }, [forwardMsg]);
 
-  const renderMessage = ({ item }: { item: Message }) => {
-    const isMine    = item.sender === user?.id;
+  /* ── Stable per-row callbacks so memoized MessageBubble rows don't re-render ── */
+  const handleReply = useCallback((m: Message) => {
+    setReplyingTo(m);
+  }, []);
+
+  const handleBubbleLongPress = useCallback((pageY: number, m: Message) => {
+    setContextY(pageY);
+    setContextMsg(m);
+  }, []);
+
+  const handleImagePress = useCallback((uri: string | null) => {
+    setFullscreenImageUri(uri);
+  }, []);
+
+  const handleReactionToggle = useCallback(async (m: Message, emoji: string) => {
+    const newReactions = await toggleReaction(m.id, emoji, String(user?.id ?? ''));
+    sendMessageUpdate(roomId, m.id, { reactions: newReactions, reacted_emoji: emoji });
+  }, [roomId, user?.id]);
+
+  const renderMessage = useCallback(({ item }: { item: Message }) => {
+    const isMine = item.sender === user?.id;
     const isPending = isMine && pendingIds.has(item.id);
     const isDelivered = isMine && deliveredIds.has(item.id);
-    const persistedStatus = item.status;
-    const isDeliveredPersisted = isMine && persistedStatus === 'delivered';
-    const isRead    = isMine && (item.is_read || readIds.has(item.id) || persistedStatus === 'read');
-    const hasReactions = !item.is_deleted
-      && !!item.reactions
-      && Object.keys(item.reactions).length > 0;
-
-    let statusIcon: string;
-    let statusColor: string;
-    if (isPending) {
-      statusIcon  = '⏱';
-      statusColor = Colors.textTertiary;
-    } else if (isRead) {
-      statusIcon  = '✓✓';
-      statusColor = Colors.checkBlue;
-    } else if (isDelivered) {
-      statusIcon  = '✓';
-      statusColor = Colors.textTertiary;
-    } else if (isDeliveredPersisted) {
-      statusIcon  = '✓';
-      statusColor = Colors.textTertiary;
-    } else {
-      // Unknown local state defaults to pending to avoid false delivery ticks.
-      statusIcon  = '⏱';
-      statusColor = Colors.textTertiary;
-    }
+    const isRead = isMine && (item.is_read || readIds.has(item.id) || item.status === 'read');
     return (
-      <Swipeable
-        renderLeftActions={() => (
-          <View style={styles.swipeReplyHint}>
-            <Ionicons name="arrow-undo" size={22} color={Colors.primary} />
-          </View>
-        )}
-        leftThreshold={40}
-        friction={2}
-        overshootLeft={false}
-        enabled={!item.is_deleted}
-        onSwipeableOpen={(direction, swipeable) => {
-          if (direction === 'left') {
-            setReplyingTo(item);
-            swipeable.close();
-          }
-        }}
-      >
-        <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
-          <TouchableOpacity
-            onLongPress={(e) => {
-              if (!item.is_deleted) {
-                setContextY(e.nativeEvent.pageY);
-                setContextMsg(item);
-              }
-            }}
-            delayLongPress={350}
-            activeOpacity={0.85}
-          >
-            <View style={[
-              styles.bubbleWrap,
-              hasReactions && styles.bubbleWrapWithReactions,
-            ]}>
-            <View style={[
-              styles.bubble,
-              isMine
-                ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
-                : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
-            ]}>
-              {!isMine && !isDirectChat && (
-                <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
-              )}
-              {item.reply_to && !item.is_deleted && (
-                <View style={[styles.quoteBlock, {
-                  borderLeftColor: Colors.primary,
-                  backgroundColor: Colors.surfaceVariant,
-                }]}>
-                  <Text style={[styles.quoteName, { color: Colors.primary }]} numberOfLines={1}>
-                    {item.reply_to.sender_name || 'Unknown'}
-                  </Text>
-                  <Text style={[styles.quoteText, { color: Colors.textSecondary }]} numberOfLines={2}>
-                    {item.reply_to.content
-                      || (item.reply_to.type && item.reply_to.type !== 'text'
-                        ? `[${item.reply_to.type}]`
-                        : '')}
-                  </Text>
-                </View>
-              )}
-              {item.is_deleted ? (
-                <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>
-                  🚫 This message was deleted.
-                </Text>
-              ) : item.message_type === 'voice' ? (
-                <VoiceMessageBubble
-                  fileUri={item.file_uri ?? item.file ?? null}
-                  durationMs={item.duration_ms ?? null}
-                  loading={!(item.file_uri || item.file)}
-                  tint={Colors.primary}
-                  subtleColor={Colors.textSecondary}
-                  trackBg={Colors.surfaceVariant}
-                />
-              ) : item.message_type === 'image' && (item.file_uri || item.file) ? (
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => setFullscreenImageUri(item.file_uri ?? item.file ?? null)}
-                  onLongPress={(e) => {
-                    if (!item.is_deleted) {
-                      setContextY(e.nativeEvent.pageY);
-                      setContextMsg(item);
-                    }
-                  }}
-                  delayLongPress={350}
-                >
-                  <Image
-                    source={{ uri: item.file_uri ?? item.file ?? '' }}
-                    style={styles.imageBubble}
-                    resizeMode="cover"
-                  />
-                  {item.uploading && (
-                    <View style={styles.mediaOverlay}>
-                      <ActivityIndicator color="#fff" />
-                      <Text style={styles.mediaOverlayText}>Uploading…</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-              ) : item.message_type === 'image' ? (
-                // Received image whose bytes haven't arrived yet (streaming over
-                // chunks). Show a receiving placeholder until it hydrates.
-                <View style={[styles.imageBubble, styles.mediaPlaceholder, { backgroundColor: Colors.surfaceVariant }]}>
-                  <ActivityIndicator color={Colors.primary} />
-                  <Text style={[styles.mediaPlaceholderText, { color: Colors.textSecondary }]}>Receiving…</Text>
-                </View>
-              ) : (
-                <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
-              )}
-              {__DEV__ && isMine && !item.is_deleted && (
-                <Text
-                  style={[
-                    styles.syncDebugText,
-                    { color: item.sync ? Colors.success : Colors.warning },
-                  ]}
-                >
-                  {item.sync ? 'SYNC OK' : 'SYNC PENDING'}
-                </Text>
-              )}
-              <View style={styles.metaRow}>
-                <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
-                  {dayjs(item.created_at).format('HH:mm')}
-                </Text>
-                {isMine && !item.is_deleted && (
-                  <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
-                )}
-              </View>
-            </View>
-            {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
-              <View
-                style={[styles.reactionsOverlay, styles.reactionsOverlayLeft]}
-              >
-                {Object.entries(item.reactions).map(([emoji, users]) => {
-                  const mine = users.includes(String(user?.id));
-                  return (
-                    <TouchableOpacity
-                      key={emoji}
-                      onPress={async () => {
-                        const newReactions = await toggleReaction(item.id, emoji, String(user?.id ?? ''));
-                        sendMessageUpdate(roomId, item.id, { reactions: newReactions, reacted_emoji: emoji });
-                      }}
-                      style={[styles.reactionBadge, {
-                        backgroundColor: mine ? Colors.neonGlow : Colors.surface,
-                        borderColor: mine ? Colors.primary : Colors.neonBorder,
-                        shadowColor: Colors.primary,
-                      }]}
-                    >
-                      <Text style={styles.reactionEmojiInBadge}>{emoji}</Text>
-                      <Text
-                        style={[
-                          styles.reactionBadgeText,
-                          { color: mine ? Colors.primary : Colors.text },
-                        ]}
-                      >
-                        {users.length}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            )}
-            </View>
-          </TouchableOpacity>
-        </View>
-      </Swipeable>
+      <MessageBubble
+        item={item}
+        isMine={isMine}
+        isPending={isPending}
+        isDelivered={isDelivered}
+        isRead={isRead}
+        isDirectChat={isDirectChat}
+        Colors={Colors}
+        currentUserId={user?.id}
+        onReply={handleReply}
+        onLongPress={handleBubbleLongPress}
+        onImagePress={handleImagePress}
+        onReaction={handleReactionToggle}
+      />
     );
-  };
+  }, [user?.id, pendingIds, deliveredIds, readIds, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleImagePress, handleReactionToggle]);
 
   const handleAcceptRequest = useCallback(async () => {
     if (!otherUserId || requestBusy) return;
@@ -982,14 +1097,18 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
       <FlatList
         ref={flatListRef}
-        data={[...displayedMsgs].reverse()}
-        extraData={displayedMsgs.length}
+        data={reversedMsgs}
         keyExtractor={(item) => item.id}
         renderItem={renderMessage}
         style={styles.messageList}
         contentContainerStyle={styles.messagesList}
         inverted
         keyboardShouldPersistTaps="handled"
+        initialNumToRender={15}
+        maxToRenderPerBatch={10}
+        updateCellsBatchingPeriod={50}
+        windowSize={11}
+        removeClippedSubviews={Platform.OS === 'android'}
       />
 
       <View style={[styles.inputBar, { backgroundColor: Colors.chatBg, borderTopColor: Colors.neonBorder, paddingBottom: insets.bottom + Spacing.sm }]}>
@@ -1171,10 +1290,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       >
         <Pressable style={styles.fullscreenBackdrop} onPress={() => setFullscreenImageUri(null)}>
           {fullscreenImageUri && (
-            <Image
+            <ExpoImage
               source={{ uri: fullscreenImageUri }}
               style={styles.fullscreenImage}
-              resizeMode="contain"
+              contentFit="contain"
+              cachePolicy="memory-disk"
             />
           )}
         </Pressable>

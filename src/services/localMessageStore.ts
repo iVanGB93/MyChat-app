@@ -77,6 +77,10 @@ export async function initDB(): Promise<void> {
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN status     TEXT    DEFAULT 'pending'`); } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reply_to   TEXT`);                 } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN duration_ms INTEGER`);              } catch {}
+  // Phase 2 out-of-band media: JSON pointer {media_id, md5, sha256, size, mime}.
+  // The blob is uploaded/downloaded over HTTP (mediaLane) — only this pointer
+  // rides the chat WS. NULL for text and legacy inline-media rows.
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN media_ptr  TEXT`);                 } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +97,16 @@ export interface ReplyRef {
   /** Type of the original message ('text', 'image', etc.) — used to render an icon
    *  hint for non-text replies. */
   type?: string;
+}
+
+/** Pointer to an out-of-band media blob (Phase 2). The bytes live on the server
+ *  (chat.MediaBlob) and are moved via HTTP (mediaLane); only this rides the WS. */
+export interface MediaPointer {
+  media_id: string;
+  md5?: string | null;
+  sha256?: string | null;
+  size?: number | null;
+  mime?: string | null;
 }
 
 export interface LocalMessage {
@@ -114,6 +128,8 @@ export interface LocalMessage {
   reply_to: ReplyRef | null;
   /** Duration in milliseconds for voice/audio/video messages. NULL for text. */
   duration_ms: number | null;
+  /** Out-of-band media pointer (Phase 2). NULL for text / legacy inline media. */
+  media_ptr?: MediaPointer | null;
 }
 
 /** Partial mutation that can be applied to a message and relayed to other devices. */
@@ -163,12 +179,61 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
   if (msg.file_uri != null) params.$file_uri = String(msg.file_uri);
   if (msg.reply_to != null) params.$reply_to = JSON.stringify(msg.reply_to);
   if (msg.duration_ms != null) params.$duration_ms = Number(msg.duration_ms);
+  if (msg.media_ptr != null) params.$media_ptr = JSON.stringify(msg.media_ptr);
 
   await db.runAsync(
     `INSERT OR IGNORE INTO messages
-       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, sync, status, reply_to, duration_ms)
-     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $sync, $status, $reply_to, $duration_ms)`,
+       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, sync, status, reply_to, duration_ms, media_ptr)
+     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $sync, $status, $reply_to, $duration_ms, $media_ptr)`,
     params,
+  );
+}
+
+/** Store/replace the out-of-band media pointer for a message (after upload, or
+ *  when a received pointer is persisted). */
+export async function setMediaPointer(id: string, ptr: MediaPointer): Promise<void> {
+  const db = await getDB();
+  await db.runAsync(
+    `UPDATE messages SET media_ptr = ? WHERE id = ?`,
+    JSON.stringify(ptr), id,
+  );
+}
+
+/** Read the out-of-band media pointer for a message, or null if none. */
+export async function getMediaPointer(id: string): Promise<MediaPointer | null> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ media_ptr: string | null }>(
+    `SELECT media_ptr FROM messages WHERE id = ?`,
+    id,
+  );
+  if (!row?.media_ptr) return null;
+  try { return JSON.parse(row.media_ptr) as MediaPointer; } catch { return null; }
+}
+
+/** A received pointer-media row whose blob hasn't been downloaded yet. */
+export interface IncompletePointerRow {
+  id: string;
+  room_id: string;
+  sender_id: number;
+  sender_name: string;
+  content: string | null;
+  type: string;
+  created_at: string;
+  reply_to: string | null;
+  duration_ms: number | null;
+  media_ptr: string;
+}
+
+/** Received out-of-band media in a room whose blob is still missing locally.
+ *  Used to re-attempt downloads that were missed (e.g. app killed at receipt). */
+export async function getIncompletePointerMedia(roomId: string): Promise<IncompletePointerRow[]> {
+  const db = await getDB();
+  return await db.getAllAsync<IncompletePointerRow>(
+    `SELECT id, room_id, sender_id, sender_name, content, type, created_at, reply_to, duration_ms, media_ptr
+     FROM messages
+     WHERE room_id = ? AND is_mine = 0 AND media_ptr IS NOT NULL
+       AND (file_uri IS NULL OR file_uri = '')`,
+    roomId,
   );
 }
 
@@ -772,9 +837,14 @@ export async function deleteRoomMessages(roomId: string): Promise<void> {
  *  Used by the notification "Mark as read" action to send read receipts. */
 export async function getUnreadReceivedIds(roomId: string): Promise<string[]> {
   const db = await getDB();
+  // Exclude media placeholders (voice/image/video whose file hasn't downloaded
+  // yet): sending a read receipt for those would give the sender a false ✓✓
+  // read for a file the recipient never actually received. They become
+  // readable once the media hydrates (file_uri set).
   const rows = await db.getAllAsync<{ id: string }>(
     `SELECT id FROM messages
-     WHERE room_id = $rid AND is_mine = 0 AND is_read = 0 AND is_deleted = 0`,
+     WHERE room_id = $rid AND is_mine = 0 AND is_read = 0 AND is_deleted = 0
+       AND NOT (type IN ('voice','image','video') AND (file_uri IS NULL OR file_uri = ''))`,
     { $rid: roomId },
   );
   return rows.map((r) => r.id);

@@ -23,8 +23,8 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
-import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState } from './localMessageStore';
-import { readAudioAsBase64, readFileAsBase64 } from './voiceMessageUtils';
+import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer } from './localMessageStore';
+import { uploadMedia, type MediaType } from './mediaLane';
 import { useAppStore } from '../store/appStore';
 import type { InboundResult } from './ingressRouter';
 
@@ -818,106 +818,18 @@ export function disconnectAllRooms(): void {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Media delivery: inline for small, chunked for large                */
+/*  Media delivery (Phase 2): out-of-band via HTTP                      */
 /*                                                                     */
-/*  Media (voice/image) rides as base64 inside the chat frame. Measured */
-/*  2026-07-05: chat.qbared.com (Railway edge) HARD-DROPS any WS frame  */
-/*  larger than 1 MiB (1,048,576 B) with close code 1006 before it ever */
-/*  reaches Daphne — which, mid-outbox, silently drops every message    */
-/*  queued behind it (head-of-line block).                             */
-/*                                                                     */
-/*  So: media whose base64 fits in one frame is sent INLINE. Larger     */
-/*  media is sent as a lightweight placeholder message (no blob) plus a */
-/*  stream of `media_chunk` frames the receiver reassembles. The server */
-/*  pure-relays the chunks (no storage). See mediaChunkTransfer.ts.     */
+/*  Media (voice/image/video) is uploaded to / downloaded from the      */
+/*  backend over HTTP (see mediaLane.ts). The chat frame carries only a */
+/*  lightweight pointer (media_id + md5 + metadata) — never the bytes.  */
+/*  This keeps text fast (no head-of-line blocking) and sidesteps the   */
+/*  Railway 1 MiB WS-frame ceiling entirely. See sendOutboxFrame below. */
 /* ------------------------------------------------------------------ */
-
-/** Max base64 length sent INLINE in one frame. Above this we chunk. Kept well
- *  under the measured 1 MiB ceiling to leave room for the JSON envelope
- *  (uuid, timestamps, mime, content, optional reply_to). */
-const MEDIA_INLINE_MAX_B64_CHARS = 700_000;
-
-/** Base64 slice size per `media_chunk` frame — same budget as an inline frame
- *  so every chunk stays comfortably below the 1 MiB ceiling. */
-const MEDIA_CHUNK_B64_CHARS = 700_000;
-
-/** Small pause between chunk sends so a big transfer doesn't monopolize the
- *  socket / JS thread or spike the native send buffer. */
-const MEDIA_CHUNK_GAP_MS = 15;
-
-/** Result of preparing a message's media for the wire. */
-interface WireMedia {
-  audioB64: string | null;
-  imageB64: string | null;
-  /** True when the base64 exceeds the inline cap and must be chunked. */
-  tooLarge: boolean;
-}
-
-/**
- * Read a message's media as base64. Never throws — on a read error it returns
- * nulls. `tooLarge` tells the caller to chunk instead of sending inline.
- */
-async function readMediaForWire(msg: {
-  type: string;
-  file_uri?: string | null;
-}): Promise<WireMedia> {
-  let audioB64: string | null = null;
-  let imageB64: string | null = null;
-  if (msg.type === 'voice' && msg.file_uri) {
-    try { audioB64 = await readAudioAsBase64(msg.file_uri); } catch { /* keep null */ }
-  } else if (msg.type === 'image' && msg.file_uri) {
-    try { imageB64 = await readFileAsBase64(msg.file_uri); } catch { /* keep null */ }
-  }
-  const b64 = audioB64 ?? imageB64;
-  const tooLarge = !!(b64 && b64.length > MEDIA_INLINE_MAX_B64_CHARS);
-  return { audioB64, imageB64, tooLarge };
-}
-
-/**
- * Stream a large media blob to the room as a sequence of `media_chunk` frames.
- * Each frame is small enough to clear the WS frame ceiling. If the socket drops
- * mid-stream the remaining chunks are skipped; the receiver's incomplete row is
- * later healed by the media-hydration path (sync.request → resend).
- */
-async function streamMediaChunks(
-  s: RoomState,
-  roomId: string,
-  messageId: string,
-  mediaType: string,
-  mime: string,
-  base64: string,
-): Promise<void> {
-  const total = Math.ceil(base64.length / MEDIA_CHUNK_B64_CHARS);
-  for (let seq = 0; seq < total; seq++) {
-    if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) return;
-    const start = seq * MEDIA_CHUNK_B64_CHARS;
-    const slice = base64.slice(start, start + MEDIA_CHUNK_B64_CHARS);
-    try {
-      s.ws.send(JSON.stringify({
-        type: 'media_chunk',
-        id: messageId,
-        room_id: roomId,
-        sender_id: _myUserId,
-        media_type: mediaType,
-        mime,
-        seq,
-        total,
-        data: slice,
-      }));
-    } catch (err) {
-      console.warn('[ChatWsManager] media_chunk send failed at seq', seq, err);
-      return;
-    }
-    if (seq < total - 1) {
-      await new Promise((resolve) => setTimeout(resolve, MEDIA_CHUNK_GAP_MS));
-    }
-  }
-  console.log('[ChatWsManager] streamed', total, 'media chunk(s) for', messageId);
-}
 
 /**
  * Toggle the in-memory "uploading" flag on an outgoing media message so the
- * sender's bubble can show an upload spinner while its chunks stream out.
+ * sender's bubble can show a spinner while its blob uploads over HTTP.
  */
 function markUploading(s: RoomState, roomId: string, messageId: string, uploading: boolean): void {
   const idx = s.messages.findIndex((m) => m.id === messageId);
@@ -953,10 +865,8 @@ async function sendOutboxFrame(
   opts?: { hydration?: boolean; audioMime?: string | null; imageMime?: string | null },
 ): Promise<boolean> {
   if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) return false;
-  const { audioB64, imageB64, tooLarge } = await readMediaForWire(msg);
-  const b64 = audioB64 ?? imageB64;
   const isVoice = msg.type === 'voice';
-  const mime = isVoice ? (opts?.audioMime ?? 'audio/m4a') : (opts?.imageMime ?? 'image/jpeg');
+  const isMedia = isVoice || msg.type === 'image' || msg.type === 'video';
 
   const base: Record<string, any> = {
     id: msg.id,
@@ -968,35 +878,54 @@ async function sendOutboxFrame(
     ...(opts?.hydration ? { hydration: true } : {}),
   };
 
-  if (b64 && tooLarge) {
-    // Placeholder frame first (no blob) so the message delivers + notifies over
-    // the normal path, then stream the bytes as chunks.
+  if (isMedia) {
+    // Out-of-band media: upload the blob once (HTTP), persist the pointer, then
+    // send a lightweight pointer frame on the WS. The bytes NEVER ride the WS.
+    let ptr = await getMediaPointer(msg.id);
+    if (!ptr?.media_id) {
+      if (!msg.file_uri) return false; // nothing to upload yet — retried later
+      const mime = isVoice ? (opts?.audioMime ?? 'audio/m4a') : (opts?.imageMime ?? 'image/jpeg');
+      const mediaType: MediaType = msg.type === 'video' ? 'video' : isVoice ? 'voice' : 'image';
+      markUploading(s, roomId, msg.id, true);
+      try {
+        const up = await uploadMedia({
+          roomId,
+          fileUri: msg.file_uri,
+          mediaType,
+          mime,
+          messageId: msg.id,
+          durationMs: msg.duration_ms ?? null,
+        });
+        ptr = { media_id: up.media_id, md5: up.md5, sha256: up.sha256, size: up.size_bytes, mime: up.mime };
+        await setMediaPointer(msg.id, ptr);
+      } catch (err) {
+        console.warn('[ChatWsManager] media upload failed, keeping pending', msg.id, err);
+        markUploading(s, roomId, msg.id, false);
+        return false;
+      }
+      markUploading(s, roomId, msg.id, false);
+    }
+    // The upload may have taken a while — re-check the socket before sending.
+    if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) return false;
     try {
       s.ws.send(JSON.stringify({
         ...base,
-        media_chunked: true,
-        ...(isVoice ? { audio_mime: mime } : { image_mime: mime }),
+        media_id: ptr.media_id,
+        media_md5: ptr.md5,
+        media_sha256: ptr.sha256,
+        media_size: ptr.size,
+        ...(isVoice ? { audio_mime: ptr.mime } : { image_mime: ptr.mime }),
       }));
     } catch (err) {
-      console.warn('[ChatWsManager] placeholder frame send failed', msg.id, err);
+      console.warn('[ChatWsManager] media pointer send failed', msg.id, err);
       return false;
-    }
-    markUploading(s, roomId, msg.id, true);
-    try {
-      await streamMediaChunks(s, roomId, msg.id, msg.type, mime, b64);
-    } finally {
-      markUploading(s, roomId, msg.id, false);
     }
     return true;
   }
 
-  // Single frame (text or inline-sized media).
+  // Text — single frame.
   try {
-    s.ws.send(JSON.stringify({
-      ...base,
-      ...(audioB64 ? { audio_b64: audioB64, audio_mime: mime } : {}),
-      ...(imageB64 ? { image_b64: imageB64, image_mime: mime } : {}),
-    }));
+    s.ws.send(JSON.stringify({ ...base }));
   } catch (err) {
     console.warn('[ChatWsManager] frame send failed', msg.id, err);
     return false;
@@ -1016,7 +945,7 @@ export async function sendChatMessage(
   replyTo: import('./localMessageStore').ReplyRef | null = null,
   extras: SendExtras | null = null,
 ): Promise<string | null> {
-  console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId, 'type:', messageType);
+  if (__DEV__) console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId, 'type:', messageType);
   const msgId = generateUUID();
   const createdAt = new Date().toISOString();
 
@@ -1043,7 +972,7 @@ export async function sendChatMessage(
     };
     s.pendingIds = new Set([...s.pendingIds, msgId]);
     s.messages = [...s.messages, optimisticMsg];
-    console.log('[ChatWsManager] optimistic update — listeners:', s.listeners.size, 'total msgs:', s.messages.length);
+    if (__DEV__) console.log('[ChatWsManager] optimistic update — listeners:', s.listeners.size, 'total msgs:', s.messages.length);
     notifyListeners(roomId, s);
   } else {
     console.warn('[ChatWsManager] skipped optimistic update — _myUserId:', _myUserId, 'roomState:', !!s);

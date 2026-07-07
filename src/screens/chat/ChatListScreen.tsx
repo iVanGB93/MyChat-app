@@ -11,13 +11,14 @@ import {
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Swipeable } from 'react-native-gesture-handler';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { Font, Spacing, Radius } from '../../theme';
+import { Font, Spacing, Radius, type ThemeColors } from '../../theme';
 import { resolveMediaUrl } from '../../services/api';
 import { getRooms } from '../../services/chatService';
 import { getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
@@ -34,6 +35,179 @@ import type { ChatRoom, RootStackParamList } from '../../types';
 dayjs.extend(relativeTime);
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
+
+function formatTime(dateStr: string): string {
+  const d = dayjs(dateStr);
+  const now = dayjs();
+  if (d.isSame(now, 'day')) return d.format('HH:mm');
+  if (d.isSame(now.subtract(1, 'day'), 'day')) return 'Yesterday';
+  return d.format('DD/MM/YY');
+}
+
+/* ------------------------------------------------------------------ */
+/*  ChatListRow — memoized. Receives only primitives + stable          */
+/*  callbacks, so a message arriving in one room re-renders ONLY that   */
+/*  room's row (React.memo shallow-compares props) instead of the whole */
+/*  list. Heavy children (Avatar, Swipeable) are skipped when unchanged.*/
+/* ------------------------------------------------------------------ */
+interface ChatListRowProps {
+  roomId: string;
+  displayName: string;
+  avatarUri: string | null;
+  isDirect: boolean;
+  isOnline: boolean;
+  otherUserId?: number;
+  lastMsgContent: string | null;
+  lastMsgTime: string | null;
+  lastMsgFromMe: boolean;
+  lastMsgStatus?: 'pending' | 'delivered' | 'read';
+  unread: number;
+  typingLabel: string | null;
+  isMuted: boolean;
+  Colors: ThemeColors;
+  onOpen: (roomId: string, displayName: string, otherUserId?: number) => void;
+  onLongPress: (roomId: string, displayName: string) => void;
+  onMarkRead: (roomId: string) => void;
+}
+
+function ChatListRowBase({
+  roomId,
+  displayName,
+  avatarUri,
+  isDirect,
+  isOnline,
+  otherUserId,
+  lastMsgContent,
+  lastMsgTime,
+  lastMsgFromMe,
+  lastMsgStatus,
+  unread,
+  typingLabel,
+  isMuted,
+  Colors,
+  onOpen,
+  onLongPress,
+  onMarkRead,
+}: ChatListRowProps) {
+  const renderRightActions = () => (
+    <TouchableOpacity
+      style={[styles.swipeAction, { backgroundColor: Colors.primary }]}
+      activeOpacity={0.8}
+      onPress={() => onMarkRead(roomId)}
+    >
+      <Ionicons name="checkmark-done" size={22} color="#fff" />
+      <Text style={styles.swipeActionText}>Mark read</Text>
+    </TouchableOpacity>
+  );
+
+  const row = (
+    <TouchableOpacity
+      style={[styles.chatItem, { borderColor: Colors.neonBorder, backgroundColor: Colors.background }]}
+      activeOpacity={0.7}
+      onLongPress={() => onLongPress(roomId, displayName)}
+      delayLongPress={350}
+      onPress={() => onOpen(roomId, displayName, otherUserId)}
+    >
+      {/* Left accent bar */}
+      <View style={[styles.accentBar, { backgroundColor: Colors.primary }]} />
+
+      <View style={styles.avatarWrapper}>
+        <Avatar
+          name={displayName}
+          uri={avatarUri}
+          size={50}
+          showOnline={isDirect}
+          isOnline={isOnline}
+        />
+      </View>
+
+      <View style={styles.chatInfo}>
+        <View style={styles.chatHeader}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+            <Text style={[styles.chatName, { color: Colors.text }]} numberOfLines={1}>
+              {displayName}
+            </Text>
+            {isMuted && (
+              <Ionicons
+                name="notifications-off"
+                size={14}
+                color={Colors.textTertiary}
+                style={{ marginLeft: 6 }}
+              />
+            )}
+          </View>
+          {lastMsgTime && (
+            <Text style={[styles.chatTime, { color: Colors.primary }]}>
+              {lastMsgTime}
+            </Text>
+          )}
+        </View>
+        <View style={styles.chatBottomRow}>
+          <Text
+            style={[
+              styles.lastMessage,
+              typingLabel
+                ? { color: Colors.primary, fontStyle: 'italic' }
+                : { color: unread > 0 ? Colors.text : Colors.textSecondary, fontWeight: unread > 0 ? '600' : '400' },
+            ]}
+            numberOfLines={1}
+          >
+            {typingLabel
+              ? typingLabel
+              : lastMsgContent != null
+                ? (
+                  <>
+                    {lastMsgFromMe && (
+                      <Text
+                        style={{
+                          color: lastMsgStatus === 'read'
+                            ? Colors.checkBlue
+                            : Colors.textTertiary,
+                        }}
+                      >
+                        {lastMsgStatus === 'pending'
+                          ? '⏱ '
+                          : lastMsgStatus === 'read'
+                            ? '✓✓ '
+                            : '✓ '}
+                      </Text>
+                    )}
+                    {lastMsgContent}
+                  </>
+                )
+                : '— no messages yet —'}
+          </Text>
+          {unread > 0 && (
+            <View style={[styles.unreadBadge, { backgroundColor: isMuted ? Colors.textTertiary : Colors.primary }]}>
+              <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
+  if (unread > 0) {
+    return (
+      <Swipeable
+        renderRightActions={renderRightActions}
+        overshootRight={false}
+        onSwipeableOpen={(direction, swipeable) => {
+          if (direction === 'right') {
+            onMarkRead(roomId);
+            swipeable.close();
+          }
+        }}
+      >
+        {row}
+      </Swipeable>
+    );
+  }
+  return row;
+}
+
+const ChatListRow = React.memo(ChatListRowBase);
+
 
 export default function ChatListScreen() {
   const navigation = useNavigation<Nav>();
@@ -167,14 +341,6 @@ export default function ChatListScreen() {
     return null;
   };
 
-  const formatTime = (dateStr: string) => {
-    const d = dayjs(dateStr);
-    const now = dayjs();
-    if (d.isSame(now, 'day')) return d.format('HH:mm');
-    if (d.isSame(now.subtract(1, 'day'), 'day')) return 'Yesterday';
-    return d.format('DD/MM/YY');
-  };
-
   const getLastMessage = (room: ChatRoom) => {
     type LastMsg = {
       content: string;
@@ -203,16 +369,23 @@ export default function ChatListScreen() {
     return !!last && new Date(last.created_at).getTime() > clearedAt;
   });
 
-  const renderItem = ({ item }: { item: ChatRoom }) => {
-    const displayName = getRoomDisplayName(item);
-    const other = getOtherMember(item);
-    const lastMsg = getLastMessage(item);
-    const unread = unreadByRoom[item.id] ?? 0;
-    const typingEntry = typingByRoom[item.id];
-    const typers = (typingEntry ?? []).filter((t) => t.userId !== user?.id);
-    const isMuted = !!mutedRooms[item.id];
+  /* ── Stable row callbacks (never change identity → memoized rows stay put) ── */
+  const handleOpenRoom = useCallback(
+    (roomId: string, displayName: string, otherUserId?: number) => {
+      navigation.navigate('ChatRoom', { roomId, roomName: displayName, otherUserId });
+    },
+    [navigation],
+  );
 
-    const handleDeleteChat = () => {
+  const handleMarkRead = useCallback(
+    (roomId: string) => {
+      clearRoomUnread(roomId);
+    },
+    [clearRoomUnread],
+  );
+
+  const handleDeleteChat = useCallback(
+    (roomId: string, displayName: string) => {
       // "Delete for me only": the server room + the other user's copy stay
       // intact. We just wipe this device's messages and hide the room until
       // newer activity revives it as a fresh chat. Confirm first.
@@ -226,23 +399,30 @@ export default function ChatListScreen() {
             text: 'Delete',
             style: 'destructive',
             onPress: async () => {
-              try { await deleteRoomMessages(item.id); } catch { /* best-effort */ }
-              markRoomCleared(item.id);
-              clearRoomState(item.id);
+              try { await deleteRoomMessages(roomId); } catch { /* best-effort */ }
+              markRoomCleared(roomId);
+              clearRoomState(roomId);
               setLocalLastMessages((prev) => {
-                if (!(item.id in prev)) return prev;
+                if (!(roomId in prev)) return prev;
                 const next = { ...prev };
-                delete next[item.id];
+                delete next[roomId];
                 return next;
               });
-              setRooms((prev) => prev.filter((r) => r.id !== item.id));
+              setRooms((prev) => prev.filter((r) => r.id !== roomId));
             },
           },
         ],
       });
-    };
+    },
+    [confirm, markRoomCleared, clearRoomState],
+  );
 
-    const openRoomMenu = () => {
+  const handleRowLongPress = useCallback(
+    (roomId: string, displayName: string) => {
+      // Read the freshest unread/mute at press time so the menu labels are correct.
+      const st = useAppStore.getState();
+      const unread = st.unreadByRoom[roomId] ?? 0;
+      const muted = !!st.mutedRooms[roomId];
       confirm({
         title: displayName.toUpperCase(),
         message: 'Choose an action for this chat.',
@@ -251,13 +431,13 @@ export default function ChatListScreen() {
           {
             text: unread > 0 ? 'Mark as read' : 'Mark as unread',
             onPress: () => {
-              if (unread > 0) clearRoomUnread(item.id);
-              else incrementRoomUnread(item.id, 1);
+              if (unread > 0) clearRoomUnread(roomId);
+              else incrementRoomUnread(roomId, 1);
             },
           },
           {
-            text: isMuted ? 'Unmute notifications' : 'Mute notifications',
-            onPress: () => toggleRoomMuted(item.id),
+            text: muted ? 'Unmute notifications' : 'Mute notifications',
+            onPress: () => toggleRoomMuted(roomId),
           },
           {
             text: 'Delete chat',
@@ -266,140 +446,64 @@ export default function ChatListScreen() {
               // Defer so the room-menu modal fully dismisses before the delete
               // confirm opens. Opening a second native Modal while the first is
               // still closing is swallowed on Android, so the confirm wouldn't
-              // appear. The provider spaces queued dialogs by ~220ms; wait a bit
-              // longer than that.
-              setTimeout(handleDeleteChat, 300);
+              // appear. The provider spaces queued dialogs by ~220ms.
+              setTimeout(() => handleDeleteChat(roomId, displayName), 300);
             },
           },
           { text: 'Cancel', style: 'cancel' },
         ],
       });
-    };
+    },
+    [confirm, clearRoomUnread, incrementRoomUnread, toggleRoomMuted, handleDeleteChat],
+  );
 
-    const renderRightActions = () => (
-      <TouchableOpacity
-        style={[styles.swipeAction, { backgroundColor: Colors.primary }]}
-        activeOpacity={0.8}
-        onPress={() => clearRoomUnread(item.id)}
-      >
-        <Ionicons name="checkmark-done" size={22} color="#fff" />
-        <Text style={styles.swipeActionText}>Mark read</Text>
-      </TouchableOpacity>
-    );
-
-    const row = (
-      <TouchableOpacity
-        style={[styles.chatItem, { borderColor: Colors.neonBorder, backgroundColor: Colors.background }]}
-        activeOpacity={0.7}
-        onLongPress={openRoomMenu}
-        delayLongPress={350}
-        onPress={() =>
-          navigation.navigate('ChatRoom', {
-            roomId: item.id,
-            roomName: displayName,
-            otherUserId: other?.id,
-          })
-        }
-      >
-        {/* Left accent bar */}
-        <View style={[styles.accentBar, { backgroundColor: Colors.primary }]} />
-
-        <View style={styles.avatarWrapper}>
-          <Avatar
-            name={displayName}
-            uri={resolveMediaUrl(other?.avatar ?? null)}
-            size={50}
-            showOnline={item.room_type === 'direct'}
-            isOnline={other?.is_online ?? false}
-          />
-        </View>
-
-        <View style={styles.chatInfo}>
-          <View style={styles.chatHeader}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-              <Text style={[styles.chatName, { color: Colors.text }]} numberOfLines={1}>
-                {displayName}
-              </Text>
-              {isMuted && (
-                <Ionicons
-                  name="notifications-off"
-                  size={14}
-                  color={Colors.textTertiary}
-                  style={{ marginLeft: 6 }}
-                />
-              )}
-            </View>
-            {lastMsg && (
-              <Text style={[styles.chatTime, { color: unread > 0 ? Colors.primary : Colors.primary }]}>
-                {formatTime(lastMsg.created_at)}
-              </Text>
-            )}
-          </View>
-          <View style={styles.chatBottomRow}>
-            <Text
-              style={[
-                styles.lastMessage,
-                typers.length > 0
-                  ? { color: Colors.primary, fontStyle: 'italic' }
-                  : { color: unread > 0 ? Colors.text : Colors.textSecondary, fontWeight: unread > 0 ? '600' : '400' },
-              ]}
-              numberOfLines={1}
-            >
-              {typers.length > 0
-                ? (typers.length === 1
-                    ? `${typers[0].username} is typing…`
-                    : 'typing…')
-                : lastMsg
-                  ? (
-                    <>
-                      {lastMsg.sender_id === user?.id && (
-                        <Text
-                          style={{
-                            color: lastMsg.status === 'read'
-                              ? Colors.checkBlue
-                              : Colors.textTertiary,
-                          }}
-                        >
-                          {lastMsg.status === 'pending'
-                            ? '⏱ '
-                            : lastMsg.status === 'read'
-                              ? '✓✓ '
-                              : '✓ '}
-                        </Text>
-                      )}
-                      {lastMsg.content}
-                    </>
-                  )
-                  : '— no messages yet —'}
-            </Text>
-            {unread > 0 && (
-              <View style={[styles.unreadBadge, { backgroundColor: isMuted ? Colors.textTertiary : Colors.primary }]}>
-                <Text style={styles.unreadText}>{unread > 99 ? '99+' : unread}</Text>
-              </View>
-            )}
-          </View>
-        </View>
-      </TouchableOpacity>
-    );
-
-    if (unread > 0) {
+  const renderItem = useCallback(
+    ({ item }: { item: ChatRoom }) => {
+      const displayName = getRoomDisplayName(item);
+      const other = getOtherMember(item);
+      const lastMsg = getLastMessage(item);
+      const unread = unreadByRoom[item.id] ?? 0;
+      const typingEntry = typingByRoom[item.id];
+      const typers = (typingEntry ?? []).filter((t) => t.userId !== user?.id);
+      const typingLabel =
+        typers.length > 0
+          ? (typers.length === 1 ? `${typers[0].username} is typing…` : 'typing…')
+          : null;
       return (
-        <Swipeable
-          renderRightActions={renderRightActions}
-          overshootRight={false}
-          onSwipeableOpen={(direction, swipeable) => {
-            if (direction === 'right') {
-              clearRoomUnread(item.id);
-              swipeable.close();
-            }
-          }}
-        >
-          {row}
-        </Swipeable>
+        <ChatListRow
+          roomId={item.id}
+          displayName={displayName}
+          avatarUri={resolveMediaUrl(other?.avatar ?? null)}
+          isDirect={item.room_type === 'direct'}
+          isOnline={other?.is_online ?? false}
+          otherUserId={other?.id}
+          lastMsgContent={lastMsg ? (lastMsg.content ?? '') : null}
+          lastMsgTime={lastMsg ? formatTime(lastMsg.created_at) : null}
+          lastMsgFromMe={!!lastMsg && lastMsg.sender_id === user?.id}
+          lastMsgStatus={lastMsg?.status}
+          unread={unread}
+          typingLabel={typingLabel}
+          isMuted={!!mutedRooms[item.id]}
+          Colors={Colors}
+          onOpen={handleOpenRoom}
+          onLongPress={handleRowLongPress}
+          onMarkRead={handleMarkRead}
+        />
       );
-    }
-    return row;
-  };
+    },
+    [
+      unreadByRoom,
+      typingByRoom,
+      mutedRooms,
+      lastMessageByRoom,
+      localLastMessages,
+      user?.id,
+      Colors,
+      handleOpenRoom,
+      handleRowLongPress,
+      handleMarkRead,
+    ],
+  );
 
   if (loading) {
     return (
@@ -428,6 +532,11 @@ export default function ChatListScreen() {
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         contentContainerStyle={visibleRooms.length === 0 ? styles.emptyContainer : styles.list}
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        updateCellsBatchingPeriod={50}
+        windowSize={11}
+        removeClippedSubviews={Platform.OS === 'android'}
         ListEmptyComponent={
           <EmptyState
             iconName="chatbubbles-outline"

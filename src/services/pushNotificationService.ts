@@ -291,8 +291,10 @@ export async function showMessageNotification({
 
   // Title carries the conversation name + unread count (e.g. "Alice (3)").
   const title = count > 1 ? `${displayRoomName} (${count})` : displayRoomName;
-  // Body: latest message collapsed; full recent list when expanded.
-  const body = lines.join('\n');
+  // Body: latest message collapsed; full recent list when expanded. The blank
+  // line between messages uses a non-breaking space (U+00A0) so Android doesn't
+  // collapse it.
+  const body = lines.join('\n\u00A0\n');
 
   await showLocalNotification({
     title,

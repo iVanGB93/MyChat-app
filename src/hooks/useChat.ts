@@ -48,8 +48,17 @@ export function useChat(roomId: string, currentUserId?: number) {
     const msgs = snapshot.messages;
     if (msgs.length > prevMsgCountRef.current) {
       const newMsgs = msgs.slice(prevMsgCountRef.current);
+      // Media whose bytes haven't been downloaded yet (file_uri null) is a
+      // placeholder. Marking a placeholder read would tell the sender ✓✓ read
+      // even though the file never arrived (false read/delivered). Skip it here;
+      // once the media hydrates, loadFromDB re-runs and sends the receipt.
+      const isIncompleteMedia = (m: typeof msgs[number]) =>
+        (m.message_type === 'voice' || m.message_type === 'image' || m.message_type === 'video')
+        && !m.file_uri;
       const unreadIds = currentUserId
-        ? newMsgs.filter((m) => m.sender_id !== currentUserId).map((m) => m.id)
+        ? newMsgs
+            .filter((m) => m.sender_id !== currentUserId && !isIncompleteMedia(m))
+            .map((m) => m.id)
         : [];
       if (unreadIds.length > 0) {
         markRoomAsRead(roomId, unreadIds); // queued if WS not open

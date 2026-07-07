@@ -153,7 +153,10 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
   // Title carries an unread count when more than one message is stacked.
   const title = count > 1 ? `${name} (${count})` : name;
   const body = lines[0]; // collapsed → latest message
-  const bigText = lines.join('\n'); // expanded → recent history
+  // Separate stacked messages with a blank line. A bare "\n\n" gets collapsed
+  // by Android's BigText renderer, so the middle line carries a non-breaking
+  // space (U+00A0) to force a visible gap.
+  const bigText = lines.join('\n\u00A0\n'); // expanded → recent history
 
   await notifee.displayNotification({
     id: notifId,

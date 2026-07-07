@@ -20,6 +20,13 @@ registerFcmBackgroundHandler();
 
 import { registerRootComponent } from 'expo';
 
+// Freeze inactive navigation screens (react-native-screens + react-freeze):
+// a screen that isn't focused stops re-rendering on store/context updates and
+// resumes with fresh state when navigated back to. Broad CPU win — e.g. the
+// chat list no longer re-renders on every WS frame while a room is open.
+import { enableFreeze } from 'react-native-screens';
+enableFreeze(true);
+
 import App from './App';
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);

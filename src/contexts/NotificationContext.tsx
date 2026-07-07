@@ -13,6 +13,7 @@ import React, {
   useEffect,
   useState,
   useCallback,
+  useMemo,
 } from 'react';
 import { useAuth } from './AuthContext';
 import { checkPendingNotifications } from '../services/backgroundNotificationService';
@@ -97,10 +98,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     reconnectWsNow();
   }, []);
 
+  const value = useMemo(
+    () => ({ connected, connectionStatus, reconnectAttempt: 0, sendSignal, subscribe, reconnectNow }),
+    [connected, connectionStatus, sendSignal, subscribe, reconnectNow],
+  );
+
   return (
-    <NotificationContext.Provider
-      value={{ connected, connectionStatus, reconnectAttempt: 0, sendSignal, subscribe, reconnectNow }}
-    >
+    <NotificationContext.Provider value={value}>
       {children}
     </NotificationContext.Provider>
   );
