@@ -23,9 +23,7 @@ import notifee, {
   EventType,
   type Event,
 } from '@notifee/react-native';
-import { Alert, Platform } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as IntentLauncher from 'expo-intent-launcher';
+import { Platform } from 'react-native';
 
 const CHANNEL_ID = 'incoming-calls-v2';
 const NOTIFICATION_ID_PREFIX = 'incoming-call:';
@@ -166,43 +164,6 @@ export async function setupCallNotifications() {
   await ensureCallChannel();
   await ensureIosCallCategory();
   registerCallNotificationListeners();
-  ensureFullScreenIntentAccess().catch(() => {});
-}
-
-const FSI_PROMPT_KEY = 'fsi_prompted_v1';
-
-/**
- * On Android 14+ (API 34) the USE_FULL_SCREEN_INTENT special access is DENIED
- * by default for apps that aren't the default dialer/alarm app, so an incoming
- * call only shows as a heads-up banner instead of taking over the screen. We
- * ask once (persisted) and deep-link the user to the exact settings toggle so
- * the call can render full-screen. No-op on older Android / iOS.
- */
-export async function ensureFullScreenIntentAccess(): Promise<void> {
-  if (Platform.OS !== 'android') return;
-  if (typeof Platform.Version === 'number' && Platform.Version < 34) return;
-  try {
-    if (await AsyncStorage.getItem(FSI_PROMPT_KEY)) return;
-    await AsyncStorage.setItem(FSI_PROMPT_KEY, '1');
-    Alert.alert(
-      'Allow full-screen calls',
-      'To show incoming calls as a full-screen ringing screen (like a phone call), enable “Full-screen notifications” for Axonic.',
-      [
-        { text: 'Not now', style: 'cancel' },
-        {
-          text: 'Open settings',
-          onPress: () => {
-            IntentLauncher.startActivityAsync(
-              'android.settings.MANAGE_APP_USE_FULL_SCREEN_INTENT',
-              { data: 'package:com.axonic' },
-            ).catch(() => {});
-          },
-        },
-      ],
-    );
-  } catch (err) {
-    console.warn('[CallNotif] full-screen-intent access prompt failed:', err);
-  }
 }
 
 /**

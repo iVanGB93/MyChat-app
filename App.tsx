@@ -27,7 +27,6 @@ import { getMessaging, onNotificationOpenedApp, getInitialNotification } from '@
 import { ensureMessageChannel } from './src/services/messageNotificationService';
 import notifee, { EventType } from '@notifee/react-native';
 import { AppLifecycleBridge } from './src/store/AppLifecycleBridge';
-import { DebugOverlay } from './src/store/DebugOverlay';
 import { ConnectionBanner } from './src/store/ConnectionBanner';
 import { ActiveCallBanner } from './src/store/ActiveCallBanner';
 import { IncomingCallBanner } from './src/store/IncomingCallBanner';
@@ -360,7 +359,6 @@ export default function App() {
                 <AppUpdateGate />
                 <IncomingCallBanner />
                 <ShareIntentBridge />
-                <DebugOverlay />
               </ConfirmProvider>
             </NotificationProvider>
           </AuthProvider>

@@ -67,12 +67,24 @@ function processQueue(error: any, token: string | null = null) {
   failedQueue = [];
 }
 
+// Endpoints that never had an authenticated session to refresh — a 401/400
+// here means bad credentials or an invalid code, not an expired token, so
+// the refresh-and-retry flow must not run for them.
+const NO_REFRESH_RETRY_PATHS = [
+  '/api/users/token/',
+  '/api/users/token/refresh/',
+  '/api/users/register/',
+  '/api/users/password/reset/',
+];
+
 api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config;
+    const url: string = original?.url ?? '';
+    const isAuthEndpoint = NO_REFRESH_RETRY_PATHS.some((p) => url.includes(p));
 
-    if (error.response?.status === 401 && !original._retry) {
+    if (error.response?.status === 401 && !original._retry && !isAuthEndpoint) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });

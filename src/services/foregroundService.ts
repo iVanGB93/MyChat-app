@@ -28,11 +28,9 @@ let _storeUnsub: (() => void) | null = null;
 
 /* ---- Build notification text from store ---- */
 function buildContent(): { title: string; text: string } {
-  const call = useAppStore.getState().activeCall;
-  if (call) {
-    const icon = call.callType === 'video' ? '📹' : '📞';
-    return { title: 'Axonic — On a call', text: `${icon} ${call.peerName}` };
-  }
+  // Kept generic on purpose — the in-app call screen already shows the
+  // peer name and call type, so repeating it here just duplicates the
+  // same info in the status bar chip.
   return { title: 'Axonic', text: 'Call in progress' };
 }
 
@@ -51,12 +49,6 @@ async function _ensureNativeStarted(): Promise<void> {
     _nativeRunning = true;
     try { useAppStore.getState().setForegroundServiceRunning(true); } catch {}
     _pushUpdate();
-    // Keep the notification text in sync when a call starts/ends.
-    if (!_storeUnsub) {
-      _storeUnsub = useAppStore.subscribe((s, prev) => {
-        if (s.activeCall !== prev.activeCall) _pushUpdate();
-      });
-    }
     console.log('[ForegroundService] native service started');
   } catch (err: any) {
     console.warn('[ForegroundService] start error:', err?.message ?? err);

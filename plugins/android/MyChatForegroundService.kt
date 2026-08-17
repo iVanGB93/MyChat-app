@@ -50,7 +50,7 @@ class MyChatForegroundService : Service() {
 
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Axonic")
-            .setContentText("In a call")
+            .setContentText("Call in progress")
             .setSmallIcon(R.drawable.notification_icon)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)

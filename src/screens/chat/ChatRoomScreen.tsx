@@ -50,6 +50,7 @@ import { dismissRoomNotification } from '../../services/pushNotificationService'
 import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import VoiceMessageBubble from '../../components/VoiceMessageBubble';
+import SmartMessageText from '../../components/SmartMessageText';
 import { persistOutgoingImage, compressImageForSend } from '../../services/voiceMessageUtils';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 
@@ -272,7 +273,12 @@ function MessageBubbleBase({
                 <Text style={[styles.mediaPlaceholderText, { color: Colors.textSecondary }]}>Receiving…</Text>
               </View>
             ) : (
-              <Text style={[styles.messageText, { color: Colors.text }]}>{item.content}</Text>
+              <SmartMessageText
+                style={[styles.messageText, { color: Colors.text }]}
+                linkColor={Colors.primary}
+              >
+                {item.content}
+              </SmartMessageText>
             )}
             {__DEV__ && isMine && !item.is_deleted && (
               <Text

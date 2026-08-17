@@ -206,7 +206,11 @@ export default function useWebRTC({
     return stream as MediaStream;
   }, [callType]);
 
-  const applyVideoBitrate = useCallback(async (pc: RTCPeerConnection, maxBitrate: number) => {
+  const applyVideoBitrate = useCallback(async (
+    pc: RTCPeerConnection,
+    maxBitrate: number,
+    degradationPreference: 'maintain-resolution' | 'balanced',
+  ) => {
     const senders = (pc as any).getSenders?.() ?? [];
     for (const sender of senders) {
       if (sender.track?.kind !== 'video' || typeof sender.getParameters !== 'function') continue;
@@ -215,6 +219,11 @@ export default function useWebRTC({
         parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
         parameters.encodings[0].maxBitrate = maxBitrate;
         parameters.encodings[0].maxFramerate = 30;
+        parameters.encodings[0].scaleResolutionDownBy = 1;
+        // Prefer keeping the full capture resolution on a good connection —
+        // WebRTC's default 'balanced' preference drops resolution first,
+        // which is the softness users notice even when bandwidth is fine.
+        parameters.degradationPreference = degradationPreference;
         if (typeof sender.setParameters === 'function') await sender.setParameters(parameters);
       } catch (err) {
         console.warn('[WebRTC] unable to apply video bitrate:', err);
@@ -264,7 +273,15 @@ export default function useWebRTC({
       const level: CallQualityLevel = poor ? 'poor' : fair ? 'fair' : (roundTripTimeMs != null || packetLossPercent != null) ? 'good' : 'unknown';
 
       setCallQuality({ level, roundTripTimeMs, packetLossPercent, bitrateKbps });
-      await applyVideoBitrate(pc, poor ? 450_000 : fair ? 850_000 : 1_500_000);
+      // Raised ceilings so a good connection actually renders at near-source
+      // quality instead of settling for a conservative default cap.
+      if (poor) {
+        await applyVideoBitrate(pc, 500_000, 'balanced');
+      } else if (fair) {
+        await applyVideoBitrate(pc, 1_200_000, 'balanced');
+      } else {
+        await applyVideoBitrate(pc, 2_500_000, 'maintain-resolution');
+      }
     } catch (err) {
       console.warn('[WebRTC] quality stats failed:', err);
     }

@@ -88,6 +88,8 @@ export function formatApiError(err: unknown, opts: FormatOptions = {}): string {
     return fallback;
   }
 
-  if (err instanceof Error && err.message) return err.message;
+  // Any other thrown value (including internal Error objects, whose
+  // messages are developer-facing, not user-facing) falls back to the
+  // generic copy instead of leaking implementation details.
   return fallback;
 }
