@@ -123,6 +123,12 @@ export default function LoginScreen({ navigation }: Props) {
             <Text style={[styles.link, { color: Colors.primary }]}> REGISTER</Text>
           </TouchableOpacity>
         </View>
+
+        <View style={styles.forgotWrap}>
+          <TouchableOpacity onPress={() => navigation.navigate('ForgotPassword')}>
+            <Text style={[styles.link, { color: Colors.textSecondary }]}>FORGOT PASSWORD?</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -186,6 +192,7 @@ const styles = StyleSheet.create({
     borderRadius: Radius.md,
   },
   footer: { flexDirection: 'row', justifyContent: 'center', marginTop: Spacing.sm },
+  forgotWrap: { alignItems: 'center', marginTop: Spacing.sm },
   footerText: { fontSize: Font.size.sm, letterSpacing: 1 },
   link: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1 },
 });

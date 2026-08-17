@@ -137,6 +137,9 @@ export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
   VerifyEmail: { email: string; expiresIn: number };
+  ForgotPassword: undefined;
+  VerifyPasswordReset: { email: string; expiresIn: number };
+  ResetPassword: { email: string; code: string };
   Main: undefined;
   Contacts: { prefillTag?: string } | undefined;
   ScanTag: undefined;

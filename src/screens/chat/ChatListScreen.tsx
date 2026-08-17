@@ -362,12 +362,20 @@ export default function ChatListScreen() {
   // Hide chats the user "deleted" (cleared) locally until a message NEWER than
   // the clear exists — then the room reappears as a fresh chat (its old messages
   // were already wiped from this device).
-  const visibleRooms = rooms.filter((room) => {
-    const clearedAt = clearedRooms[room.id];
-    if (clearedAt == null) return true;
-    const last = getLastMessage(room);
-    return !!last && new Date(last.created_at).getTime() > clearedAt;
-  });
+  const visibleRooms = rooms
+    .filter((room) => {
+      const clearedAt = clearedRooms[room.id];
+      if (clearedAt == null) return true;
+      const last = getLastMessage(room);
+      return !!last && new Date(last.created_at).getTime() > clearedAt;
+    })
+    .sort((a, b) => {
+      const aLast = getLastMessage(a);
+      const bLast = getLastMessage(b);
+      const aTime = aLast ? new Date(aLast.created_at).getTime() : new Date(a.updated_at).getTime();
+      const bTime = bLast ? new Date(bLast.created_at).getTime() : new Date(b.updated_at).getTime();
+      return bTime - aTime;
+    });
 
   /* ── Stable row callbacks (never change identity → memoized rows stay put) ── */
   const handleOpenRoom = useCallback(

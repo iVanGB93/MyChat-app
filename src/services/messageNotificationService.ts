@@ -18,6 +18,7 @@ import { resolveMediaUrl } from './api';
 
 const CHANNEL_ID = 'messages';
 const NOTIFICATION_ID_PREFIX = 'message:';
+const NOTIFICATION_ORDER_VERSION = 'chronological-v2';
 
 export interface IncomingMessageNotif {
   roomId: string;
@@ -91,33 +92,48 @@ export async function ensureMessageChannel() {
  */
 async function getExisting(
   notifId: string,
-): Promise<{ lines: string[]; shownIds: string[]; count: number }> {
+): Promise<{
+  messages: Array<{ text: string; timestamp: number; senderName: string; fromMe: boolean }>;
+  shownIds: string[];
+  count: number;
+}> {
   try {
     const displayed = await notifee.getDisplayedNotifications();
     const match = displayed.find((d) => d.id === notifId);
     const data = (match?.notification?.data ?? {}) as Record<string, unknown>;
-    let lines: string[] = [];
-    if (typeof data.lines === 'string') {
+    if (data.orderVersion !== NOTIFICATION_ORDER_VERSION) {
+      return { messages: [], shownIds: [], count: 0 };
+    }
+    let messages: Array<{ text: string; timestamp: number; senderName: string; fromMe: boolean }> = [];
+    if (typeof data.messages === 'string') {
       try {
-        const parsed = JSON.parse(data.lines);
-        if (Array.isArray(parsed)) lines = parsed.map((l) => String(l));
+        const parsed = JSON.parse(data.messages);
+        if (Array.isArray(parsed)) {
+          messages = parsed
+            .filter((message) => message && typeof message.text === 'string')
+            .map((message) => ({
+              text: String(message.text),
+              timestamp: Number(message.timestamp) || Date.now(),
+              senderName: String(message.senderName || ''),
+              fromMe: Boolean(message.fromMe),
+            }));
+        }
       } catch { /* ignore */ }
     }
     const shownIds =
       typeof data.shownIds === 'string' ? data.shownIds.split(',').filter(Boolean) : [];
-    const count = Number(data.count) || lines.length;
-    return { lines, shownIds, count };
+    const count = Number(data.count) || messages.length;
+    return { messages, shownIds, count };
   } catch {
     // ignore — fall back to a fresh conversation
   }
-  return { lines: [], shownIds: [], count: 0 };
+  return { messages: [], shownIds: [], count: 0 };
 }
 
 /**
- * Display (or update) the grouped message notification for a room. Uses a
- * BigText style so it arrives COLLAPSED (sender + latest message) and expands
- * to show the recent messages. One stable notification per room accumulates
- * new messages. Safe to call from the killed-app background handler.
+ * Display (or update) the grouped message notification for a room. Uses the
+ * native Android MessagingStyle so each message gets its own row when the
+ * notification expands. The compact notification keeps only the latest body.
  */
 export async function displayMessageNotification(data: IncomingMessageNotif) {
   const notifId = NOTIFICATION_ID_PREFIX + data.roomId;
@@ -134,7 +150,7 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
     return;
   }
 
-  const { lines: prevLines, shownIds, count: prevCount } = await getExisting(notifId);
+  const { messages: prevMessages, shownIds, count: prevCount } = await getExisting(notifId);
 
   // Dedupe: same message delivered via WS + FCM, or a duplicate FCM.
   if (data.messageId && shownIds.includes(data.messageId)) return;
@@ -145,18 +161,22 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
   // expanded list shows who said what; a 1:1 line is just the message text.
   const speaker = data.fromMe ? 'You' : data.senderName;
   const line = isGroup || data.fromMe ? `${speaker}: ${data.text}` : data.text;
-  const lines = [line, ...prevLines].slice(0, 8); // newest first, bounded
+  const messages = [
+    ...prevMessages,
+    {
+      text: line,
+      timestamp: data.timestamp ?? Date.now(),
+      senderName: speaker,
+      fromMe: data.fromMe === true,
+    },
+  ].slice(-8);
   const count = prevCount + 1;
   const nextShownIds = (data.messageId ? [...shownIds, data.messageId] : shownIds).slice(-20);
 
   const name = isGroup ? data.roomName : data.senderName;
   // Title carries an unread count when more than one message is stacked.
   const title = count > 1 ? `${name} (${count})` : name;
-  const body = lines[0]; // collapsed → latest message
-  // Separate stacked messages with a blank line. A bare "\n\n" gets collapsed
-  // by Android's BigText renderer, so the middle line carries a non-breaking
-  // space (U+00A0) to force a visible gap.
-  const bigText = lines.join('\n\u00A0\n'); // expanded → recent history
+  const body = messages[messages.length - 1].text; // compact → latest message
 
   await notifee.displayNotification({
     id: notifId,
@@ -166,16 +186,17 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
       roomId: data.roomId,
       roomName: data.roomName,
       type: 'new_message',
-      lines: JSON.stringify(lines),
+      messages: JSON.stringify(messages),
       count: String(count),
       shownIds: nextShownIds.join(','),
+      orderVersion: NOTIFICATION_ORDER_VERSION,
       ...(data.senderId != null ? { senderId: String(data.senderId) } : {}),
     },
     android: {
       channelId: CHANNEL_ID,
       importance: AndroidImportance.HIGH,
       visibility: AndroidVisibility.PRIVATE,
-      smallIcon: 'ic_launcher',
+      smallIcon: 'notification_icon',
       color: '#7C3AED',
       // Sender's avatar as the large icon (falls back to nothing / app icon).
       ...(data.avatar ? { largeIcon: data.avatar } : {}),
@@ -192,8 +213,17 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
           pressAction: { id: 'mark_read' },
         },
       ],
-      // BigText collapses to title + body and expands to the recent lines.
-      style: { type: AndroidStyle.BIGTEXT, text: bigText },
+      style: {
+        type: AndroidStyle.MESSAGING,
+        person: { name: 'You' },
+        title: name,
+        group: isGroup,
+        messages: messages.map((message) => ({
+          text: message.text,
+          timestamp: message.timestamp,
+          ...(message.fromMe ? {} : { person: { name: message.senderName } }),
+        })),
+      },
     },
   });
 }

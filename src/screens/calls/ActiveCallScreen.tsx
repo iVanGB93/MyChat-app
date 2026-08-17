@@ -64,6 +64,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     toggleMute,
     toggleCamera,
     switchCamera,
+    callQuality,
     startAsOfferer,
     cleanup: cleanupWebRTC,
   } = useWebRTC({
@@ -276,7 +277,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
         <View style={styles.pipWrap} pointerEvents="none">
           <RTCView
             streamURL={localStreamUrl}
-            style={styles.pip}
+            style={[styles.pip, { borderRadius: Radius.lg, overflow: 'hidden' }]}
             objectFit="cover"
             mirror={true}
             zOrder={1}
@@ -292,17 +293,19 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       {/* ---- Overlay: top info + actions ---- */}
       <View style={styles.overlay}>
         <View style={styles.top}>
-          <View style={[styles.typePill, { borderColor: Colors.neonBorder }]}>
-            <Ionicons
-              name={isVideo ? 'videocam-outline' : 'call-outline'}
-              size={14}
-              color={Colors.primary}
-              style={{ marginRight: 6 }}
-            />
-            <Text style={[styles.typePillText, { color: Colors.primary }]}>
-              {isVideo ? 'VIDEO CALL' : 'VOICE CALL'}
-            </Text>
-          </View>
+          {!isVideo && (
+            <View style={[styles.typePill, { borderColor: Colors.neonBorder }] }>
+              <Ionicons
+                name="call-outline"
+                size={14}
+                color={Colors.primary}
+                style={{ marginRight: 6 }}
+              />
+              <Text style={[styles.typePillText, { color: Colors.primary }] }>
+                VOICE CALL
+              </Text>
+            </View>
+          )}
 
           {showOverlayAvatar && (
             <View style={styles.avatarWrap}>
@@ -326,6 +329,24 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
               ? 'Call ended'
               : formatTime(seconds)}
           </Text>
+          {isVideo && callQuality.level !== 'unknown' && (
+            <Text
+              style={[
+                styles.quality,
+                {
+                  color: callQuality.level === 'good'
+                    ? Colors.success
+                    : callQuality.level === 'fair'
+                    ? Colors.warning
+                    : Colors.error,
+                },
+              ]}
+            >
+              {callQuality.level.toUpperCase()}
+              {callQuality.roundTripTimeMs != null ? ` • ${callQuality.roundTripTimeMs} ms` : ''}
+              {callQuality.packetLossPercent != null ? ` • ${callQuality.packetLossPercent}% loss` : ''}
+            </Text>
+          )}
         </View>
 
         {/* ---- Action buttons ---- */}
@@ -447,7 +468,8 @@ function makeStyles(Colors: any) {
       height: 150,
       borderRadius: Radius.lg,
       borderWidth: 1,
-      borderColor: Colors.neonBorder,
+      borderColor: 'rgba(255,255,255,0.9)',
+      backgroundColor: 'rgba(255,255,255,0.12)',
       shadowColor: Colors.primary,
       shadowOpacity: 0.45,
       shadowRadius: 10,
@@ -459,6 +481,8 @@ function makeStyles(Colors: any) {
     pip: {
       flex: 1,
       backgroundColor: '#000',
+      borderRadius: Radius.lg,
+      overflow: 'hidden',
     },
     overlay: {
       ...StyleSheet.absoluteFillObject,
@@ -506,6 +530,12 @@ function makeStyles(Colors: any) {
       marginTop: Spacing.xs,
       ...Font.medium,
       letterSpacing: 1,
+    },
+    quality: {
+      marginTop: 4,
+      fontSize: Font.size.xs,
+      fontWeight: '700',
+      letterSpacing: 0.8,
     },
     actions: {
       flexDirection: 'row',

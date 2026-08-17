@@ -29,6 +29,41 @@ import type { CallType, IceConfig } from '../types';
 /** The ICE gather timeout — same as web app */
 const ICE_GATHER_TIMEOUT = 5000;
 
+let prewarmedVideoStream: MediaStream | null = null;
+
+export async function prewarmVideoCallMedia(): Promise<MediaStream> {
+  if (prewarmedVideoStream) return prewarmedVideoStream;
+  try {
+    prewarmedVideoStream = await mediaDevices.getUserMedia({
+      audio: true,
+      video: {
+        facingMode: 'user',
+        width: { ideal: 1280, min: 640 },
+        height: { ideal: 720, min: 360 },
+        frameRate: { ideal: 30, max: 30 },
+      },
+    }) as MediaStream;
+  } catch {
+    prewarmedVideoStream = await mediaDevices.getUserMedia({
+      audio: true,
+      video: { facingMode: 'user', width: 640, height: 480, frameRate: 24 },
+    }) as MediaStream;
+  }
+  return prewarmedVideoStream;
+}
+
+export function takePrewarmedVideoCallMedia(): MediaStream | null {
+  const stream = prewarmedVideoStream;
+  prewarmedVideoStream = null;
+  return stream;
+}
+
+export function discardPrewarmedVideoCallMedia(): void {
+  if (!prewarmedVideoStream) return;
+  prewarmedVideoStream.getTracks().forEach((track) => track.stop());
+  prewarmedVideoStream = null;
+}
+
 /** Fallback config if the server is unreachable */
 const FALLBACK_ICE_CONFIG: IceConfig = {
   ice_servers: [
@@ -39,6 +74,15 @@ const FALLBACK_ICE_CONFIG: IceConfig = {
 };
 
 export type ConnectionType = 'connecting' | 'p2p' | 'relayed';
+
+export type CallQualityLevel = 'unknown' | 'poor' | 'fair' | 'good';
+
+export interface CallQuality {
+  level: CallQualityLevel;
+  roundTripTimeMs: number | null;
+  packetLossPercent: number | null;
+  bitrateKbps: number | null;
+}
 
 interface UseWebRTCOptions {
   callId: string;
@@ -77,6 +121,14 @@ export default function useWebRTC({
   const [isCameraOff, setIsCameraOff] = useState(false);
   /** Whether the active path is direct P2P or relayed through TURN. */
   const [connectionType, setConnectionType] = useState<ConnectionType>('connecting');
+  const [callQuality, setCallQuality] = useState<CallQuality>({
+    level: 'unknown',
+    roundTripTimeMs: null,
+    packetLossPercent: null,
+    bitrateKbps: null,
+  });
+  const qualityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const qualitySampleRef = useRef<{ timestamp: number; bytesSent: number } | null>(null);
 
   /* ---- Fetch ICE config from server on mount ---- */
   useEffect(() => {
@@ -117,18 +169,116 @@ export default function useWebRTC({
     if (localStreamRef.current) {
       return localStreamRef.current;
     }
+    const prewarmed = callType === 'video' ? takePrewarmedVideoCallMedia() : null;
+    if (prewarmed) {
+      localStreamRef.current = prewarmed;
+      setLocalStream(prewarmed);
+      return prewarmed;
+    }
     const constraints: any = {
       audio: true,
       video: callType === 'video'
-        ? { facingMode: 'user', width: 640, height: 480 }
+        ? {
+            facingMode: 'user',
+            width: { ideal: 1280, min: 640 },
+            height: { ideal: 720, min: 360 },
+            frameRate: { ideal: 30, max: 30 },
+          }
         : false,
     };
-    const stream = await mediaDevices.getUserMedia(constraints);
+    let stream: MediaStream;
+    try {
+      stream = await mediaDevices.getUserMedia(constraints) as MediaStream;
+    } catch (err) {
+      // Some emulators and older devices reject ideal constraints. Keep the
+      // call usable with the previous low-bandwidth profile as a fallback.
+      console.warn('[WebRTC] preferred camera constraints failed, using fallback:', err);
+      stream = await mediaDevices.getUserMedia({
+        audio: true,
+        video: callType === 'video'
+          ? { facingMode: 'user', width: 640, height: 480, frameRate: 24 }
+          : false,
+      }) as MediaStream;
+    }
     localStreamRef.current = stream as MediaStream;
     setLocalStream(stream as MediaStream);
     console.log('[WebRTC] local media acquired, tracks:', (stream as MediaStream).getTracks().length);
     return stream as MediaStream;
   }, [callType]);
+
+  const applyVideoBitrate = useCallback(async (pc: RTCPeerConnection, maxBitrate: number) => {
+    const senders = (pc as any).getSenders?.() ?? [];
+    for (const sender of senders) {
+      if (sender.track?.kind !== 'video' || typeof sender.getParameters !== 'function') continue;
+      try {
+        const parameters = sender.getParameters();
+        parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
+        parameters.encodings[0].maxBitrate = maxBitrate;
+        parameters.encodings[0].maxFramerate = 30;
+        if (typeof sender.setParameters === 'function') await sender.setParameters(parameters);
+      } catch (err) {
+        console.warn('[WebRTC] unable to apply video bitrate:', err);
+      }
+    }
+  }, []);
+
+  const measureCallQuality = useCallback(async (pc: RTCPeerConnection) => {
+    try {
+      const stats: RTCStatsReport = await (pc as any).getStats();
+      let bytesSent = 0;
+      let roundTripTimeMs: number | null = null;
+      let packetsLost = 0;
+      let packetsSent = 0;
+
+      stats.forEach((report: any) => {
+        if (report.type === 'outbound-rtp' && report.kind === 'video') {
+          bytesSent = Number(report.bytesSent) || 0;
+          packetsSent = Number(report.packetsSent) || 0;
+        }
+        if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
+          const rtt = Number(report.currentRoundTripTime);
+          if (Number.isFinite(rtt) && rtt >= 0) roundTripTimeMs = Math.round(rtt * 1000);
+        }
+        if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
+          const rtt = Number(report.roundTripTime);
+          if (Number.isFinite(rtt) && rtt >= 0) roundTripTimeMs = Math.round(rtt * 1000);
+          packetsLost = Number(report.packetsLost) || packetsLost;
+          packetsSent = Number(report.packetsSent) || packetsSent;
+        }
+      });
+
+      const now = Date.now();
+      const previous = qualitySampleRef.current;
+      const bitrateKbps = previous && now > previous.timestamp && bytesSent >= previous.bytesSent
+        ? Math.round(((bytesSent - previous.bytesSent) * 8) / (now - previous.timestamp))
+        : null;
+      qualitySampleRef.current = { timestamp: now, bytesSent };
+
+      const packetLossPercent = packetsSent > 0
+        ? Math.round((packetsLost / (packetsSent + packetsLost)) * 1000) / 10
+        : null;
+      const poor = (roundTripTimeMs != null && roundTripTimeMs >= 350)
+        || (packetLossPercent != null && packetLossPercent >= 8);
+      const fair = (roundTripTimeMs != null && roundTripTimeMs >= 180)
+        || (packetLossPercent != null && packetLossPercent >= 3);
+      const level: CallQualityLevel = poor ? 'poor' : fair ? 'fair' : (roundTripTimeMs != null || packetLossPercent != null) ? 'good' : 'unknown';
+
+      setCallQuality({ level, roundTripTimeMs, packetLossPercent, bitrateKbps });
+      await applyVideoBitrate(pc, poor ? 450_000 : fair ? 850_000 : 1_500_000);
+    } catch (err) {
+      console.warn('[WebRTC] quality stats failed:', err);
+    }
+  }, [applyVideoBitrate]);
+
+  const startQualityMonitoring = useCallback((pc: RTCPeerConnection) => {
+    if (callType !== 'video') return;
+    if (qualityTimerRef.current) clearInterval(qualityTimerRef.current);
+    qualitySampleRef.current = null;
+    measureCallQuality(pc).catch(() => {});
+    qualityTimerRef.current = setInterval(() => {
+      if (!cleanedUp.current) measureCallQuality(pc).catch(() => {});
+    }, 3000);
+  }, [callType, measureCallQuality]);
 
   /** Flush buffered ICE candidates after remote description is set. */
   const flushCandidates = useCallback(() => {
@@ -196,6 +346,7 @@ export default function useWebRTC({
       } as any);
       pcRef.current = pc;
       hasRemoteDesc.current = false;
+      startQualityMonitoring(pc);
 
       // Add local tracks
       stream.getTracks().forEach((track) => {
@@ -247,7 +398,7 @@ export default function useWebRTC({
 
       return pc;
     },
-    [peerUserId, sendSignal, isOutgoing, onConnected, onDisconnected, waitForIceGathering, detectConnectionType],
+    [peerUserId, sendSignal, isOutgoing, onConnected, onDisconnected, waitForIceGathering, detectConnectionType, startQualityMonitoring],
   );
 
   /* ---- Caller flow: called after call_accepted ---- */
@@ -413,6 +564,11 @@ export default function useWebRTC({
     console.log('[WebRTC] cleanup');
     cleanedUp.current = true;
 
+    if (qualityTimerRef.current) {
+      clearInterval(qualityTimerRef.current);
+      qualityTimerRef.current = null;
+    }
+
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
@@ -445,6 +601,7 @@ export default function useWebRTC({
     toggleMute,
     toggleCamera,
     switchCamera,
+    callQuality,
     /** Caller calls this after receiving call_accepted */
     startAsOfferer,
     cleanup,

@@ -283,9 +283,9 @@ export async function showMessageNotification({
   // match, so we keep the line clean.
   const isGroup = displayRoomName !== senderName;
   const line = isGroup ? `${senderName}: ${content}` : content;
-  // Newest line first so the COLLAPSED notification (single truncated line)
-  // shows the latest message, while the EXPANDED view lists recent history.
-  const lines = [line, ...prev.lines].slice(0, MAX_NOTIF_LINES);
+  // Keep chronological order in the expanded notification so each message
+  // appears on its own line and the newest message is at the bottom.
+  const lines = [...prev.lines, line].slice(-MAX_NOTIF_LINES);
   const count = prev.count + 1;
   _roomNotifState.set(safeRoomId, { count, lines, roomName: displayRoomName, seen: prev.seen });
 

@@ -135,6 +135,48 @@ export async function changePassword(currentPassword: string, newPassword: strin
   }
 }
 
+export interface PasswordResetRequestResult {
+  email: string;
+  expires_in: number;
+}
+
+export async function requestPasswordReset(email: string): Promise<PasswordResetRequestResult> {
+  const { data } = await api.post<PasswordResetRequestResult>(
+    '/api/users/password/reset/request/',
+    { email },
+  );
+  return data;
+}
+
+export async function resendPasswordResetCode(email: string): Promise<PasswordResetRequestResult> {
+  const { data } = await api.post<PasswordResetRequestResult>(
+    '/api/users/password/reset/resend/',
+    { email },
+  );
+  return data;
+}
+
+export interface PasswordResetVerifyResult {
+  email: string;
+  status: string;
+}
+
+export async function verifyPasswordReset(email: string, code: string): Promise<PasswordResetVerifyResult> {
+  const { data } = await api.post<PasswordResetVerifyResult>(
+    '/api/users/password/reset/verify/',
+    { email, code },
+  );
+  return data;
+}
+
+export async function confirmPasswordReset(email: string, code: string, newPassword: string): Promise<void> {
+  await api.post('/api/users/password/reset/confirm/', {
+    email,
+    code,
+    new_password: newPassword,
+  });
+}
+
 /**
  * Permanently delete the authenticated user's account. Requires the
  * current password as a confirmation step.

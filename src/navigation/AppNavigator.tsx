@@ -37,6 +37,9 @@ import { decideIncomingCallInApp, decideInAppMessageToast } from '../services/no
 import LoginScreen from '../screens/auth/LoginScreen';
 import RegisterScreen from '../screens/auth/RegisterScreen';
 import VerifyEmailScreen from '../screens/auth/VerifyEmailScreen';
+import ForgotPasswordScreen from '../screens/auth/ForgotPasswordScreen';
+import VerifyPasswordResetScreen from '../screens/auth/VerifyPasswordResetScreen';
+import ResetPasswordScreen from '../screens/auth/ResetPasswordScreen';
 import ChatListScreen from '../screens/chat/ChatListScreen';
 import ChatRoomScreen from '../screens/chat/ChatRoomScreen';
 import CallsScreen from '../screens/calls/CallsScreen';
@@ -501,6 +504,21 @@ export default function AppNavigator() {
               <Stack.Screen
                 name="VerifyEmail"
                 component={VerifyEmailScreen}
+                options={{ headerShown: true, headerTitle: '', headerTransparent: true, headerTintColor: Colors.primary }}
+              />
+              <Stack.Screen
+                name="ForgotPassword"
+                component={ForgotPasswordScreen}
+                options={{ headerShown: true, headerTitle: '', headerTransparent: true, headerTintColor: Colors.primary }}
+              />
+              <Stack.Screen
+                name="VerifyPasswordReset"
+                component={VerifyPasswordResetScreen}
+                options={{ headerShown: true, headerTitle: '', headerTransparent: true, headerTintColor: Colors.primary }}
+              />
+              <Stack.Screen
+                name="ResetPassword"
+                component={ResetPasswordScreen}
                 options={{ headerShown: true, headerTitle: '', headerTransparent: true, headerTintColor: Colors.primary }}
               />
             </>

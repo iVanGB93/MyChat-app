@@ -29,6 +29,7 @@ import notifee, { EventType } from '@notifee/react-native';
 import { AppLifecycleBridge } from './src/store/AppLifecycleBridge';
 import { DebugOverlay } from './src/store/DebugOverlay';
 import { ConnectionBanner } from './src/store/ConnectionBanner';
+import { ActiveCallBanner } from './src/store/ActiveCallBanner';
 import { IncomingCallBanner } from './src/store/IncomingCallBanner';
 import AppUpdateGate from './src/components/AppUpdateGate';
 import ShareIntentBridge from './src/store/ShareIntentBridge';
@@ -355,6 +356,7 @@ export default function App() {
                 <ThemedStatusBar />
                 <AppNavigator />
                 <ConnectionBanner />
+                <ActiveCallBanner />
                 <AppUpdateGate />
                 <IncomingCallBanner />
                 <ShareIntentBridge />

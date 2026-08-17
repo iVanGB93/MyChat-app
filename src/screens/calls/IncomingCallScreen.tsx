@@ -15,6 +15,7 @@ import {
   Vibration,
   View,
 } from 'react-native';
+import { RTCView } from 'react-native-webrtc';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { Font, Radius, Spacing } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,6 +29,10 @@ import { markCallEnded } from '../../services/callDedupe';
 import { useAppStore } from '../../store/appStore';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import Avatar from '../../components/ui/Avatar';
+import {
+  discardPrewarmedVideoCallMedia,
+  prewarmVideoCallMedia,
+} from '../../hooks/useWebRTC';
 import type { RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'IncomingCall'>;
@@ -38,6 +43,8 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
   const { ensure: ensurePermission } = usePermissionPrompt();
   const { subscribe } = useNotificationContext();
   const dismissed = useRef(false);
+  const accepted = useRef(false);
+  const [localPreviewUrl, setLocalPreviewUrl] = React.useState<string | null>(null);
 
   // When the app is launched directly into this screen from a background/killed
   // call (via the full-screen intent / pending-call nav), there is no previous
@@ -115,6 +122,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
       if (call_id && call_id !== callId) return;
       if (event === 'call_ended' || event === 'call_rejected') {
         dismissed.current = true;
+        discardPrewarmedVideoCallMedia();
         stopLooping();
         Vibration.cancel();
         cancelIncomingCallNotification(callId).catch(() => {});
@@ -130,6 +138,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
     const timeout = setTimeout(async () => {
       if (!dismissed.current) {
         dismissed.current = true;
+        discardPrewarmedVideoCallMedia();
         try { await endCall(callId, 'reject'); } catch {}
         stopLooping();
         Vibration.cancel();
@@ -148,6 +157,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
     const ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
     if (!ok) return;
     dismissed.current = true;
+    accepted.current = true;
     stopLooping();
     Vibration.cancel();
     cancelIncomingCallNotification(callId).catch(() => {});
@@ -165,6 +175,8 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
         peerUserId: route.params.callerId,
       });
     } catch {
+      accepted.current = false;
+      discardPrewarmedVideoCallMedia();
       dismiss();
     }
   };
@@ -172,6 +184,7 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
   const handleReject = async () => {
     if (dismissed.current) return;
     dismissed.current = true;
+    discardPrewarmedVideoCallMedia();
     stopLooping();
     Vibration.cancel();
     cancelIncomingCallNotification(callId).catch(() => {});
@@ -183,6 +196,25 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
   const styles = useMemo(() => makeStyles(Colors), [Colors]);
   const isVideo = callType === 'video';
 
+  useEffect(() => {
+    if (!isVideo) return;
+    let cancelled = false;
+    (async () => {
+      const allowed = await ensurePermission('camera+microphone');
+      if (!allowed || cancelled) return;
+      try {
+        const stream = await prewarmVideoCallMedia();
+        if (!cancelled) setLocalPreviewUrl((stream as any).toURL());
+      } catch (err) {
+        console.warn('[IncomingCall] camera preview unavailable:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (!accepted.current) discardPrewarmedVideoCallMedia();
+    };
+  }, [ensurePermission, isVideo]);
+
   const ringScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] });
   const ringOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.55, 0] });
   const ring2Scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.4] });
@@ -191,6 +223,15 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
 
   return (
     <View style={styles.container}>
+      {isVideo && localPreviewUrl && (
+        <RTCView
+          streamURL={localPreviewUrl}
+          style={styles.incomingPreview}
+          objectFit="cover"
+          mirror
+          zOrder={0}
+        />
+      )}
       {/* Background grid glow */}
       <View pointerEvents="none" style={styles.bgGlowTop} />
       <View pointerEvents="none" style={styles.bgGlowBottom} />
@@ -208,31 +249,35 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
           </Text>
         </View>
 
-        {/* Pulsing rings around avatar */}
-        <View style={styles.avatarStack}>
-          <Animated.View
-            style={[
-              styles.pulseRing,
-              { borderColor: Colors.primary, opacity: ring2Opacity, transform: [{ scale: ring2Scale }] },
-            ]}
-          />
-          <Animated.View
-            style={[
-              styles.pulseRing,
-              { borderColor: Colors.primary, opacity: ringOpacity, transform: [{ scale: ringScale }] },
-            ]}
-          />
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.sweep,
-              { borderColor: Colors.primary, transform: [{ rotate: sweepRotate }] },
-            ]}
-          />
-          <View style={styles.avatarWrap}>
-            <Avatar name={callerName} size={140} />
-          </View>
-        </View>
+        {!localPreviewUrl && (
+          <>
+            {/* Pulsing rings around avatar */}
+            <View style={styles.avatarStack}>
+              <Animated.View
+                style={[
+                  styles.pulseRing,
+                  { borderColor: Colors.primary, opacity: ring2Opacity, transform: [{ scale: ring2Scale }] },
+                ]}
+              />
+              <Animated.View
+                style={[
+                  styles.pulseRing,
+                  { borderColor: Colors.primary, opacity: ringOpacity, transform: [{ scale: ringScale }] },
+                ]}
+              />
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  styles.sweep,
+                  { borderColor: Colors.primary, transform: [{ rotate: sweepRotate }] },
+                ]}
+              />
+              <View style={styles.avatarWrap}>
+                <Avatar name={callerName} size={140} />
+              </View>
+            </View>
+          </>
+        )}
 
         <Text style={styles.callerName}>{callerName}</Text>
         <Text style={[styles.status, { color: Colors.textSecondary }]}>is calling you…</Text>
@@ -289,6 +334,10 @@ function makeStyles(Colors: any) {
     },
 
     content: { alignItems: 'center' },
+    incomingPreview: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: '#000',
+    },
     typePill: {
       flexDirection: 'row',
       alignItems: 'center',

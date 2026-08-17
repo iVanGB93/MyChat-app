@@ -106,8 +106,13 @@ export function ConnectionBanner() {
     }).start();
   }, [banner.show, slide]);
 
-  // Don't show banner on login/register/verify screens
-  const isAuthScreen = currentRoute === 'Login' || currentRoute === 'Register' || currentRoute === 'VerifyEmail';
+  // Don't show banner on login, registration, or password recovery screens.
+  const isAuthScreen = currentRoute === 'Login'
+    || currentRoute === 'Register'
+    || currentRoute === 'VerifyEmail'
+    || currentRoute === 'ForgotPassword'
+    || currentRoute === 'VerifyPasswordReset'
+    || currentRoute === 'ResetPassword';
   if (isAuthScreen) return null;
 
   if (!banner.show) return null;

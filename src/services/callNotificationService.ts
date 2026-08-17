@@ -240,7 +240,7 @@ export async function displayIncomingCallNotification(data: IncomingCallData) {
       visibility: AndroidVisibility.PUBLIC,
       ongoing: true,
       autoCancel: false,
-      smallIcon: 'ic_launcher',
+      smallIcon: 'notification_icon',
       color: '#FF0000', // Red for call visibility
       // Wake the screen and route to the app when the user taps the body.
       pressAction: { id: 'default', launchActivity: 'default' },
