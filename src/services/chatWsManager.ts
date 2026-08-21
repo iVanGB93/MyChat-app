@@ -23,7 +23,7 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
-import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer } from './localMessageStore';
+import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers } from './localMessageStore';
 import { uploadMedia, type MediaType } from './mediaLane';
 import { useAppStore } from '../store/appStore';
 import type { InboundResult } from './ingressRouter';
@@ -99,6 +99,8 @@ export interface SendExtras {
   audio_mime?: string | null;
   /** Image MIME type — used by the receiver to pick a file extension. */
   image_mime?: string | null;
+  /** MIME type for video/document blobs. */
+  media_mime?: string | null;
 }
 
 export type RoomStatus = 'connected' | 'connecting' | 'reconnecting' | 'disconnected';
@@ -296,6 +298,8 @@ function _flushPendingUpdates(roomId: string, s: RoomState): void {
 async function _flushSQLiteOutbox(roomId: string, s: RoomState): Promise<void> {
   try {
     const entries = await getPendingOutboxUpdates(roomId);
+    const persistedIds = new Set(entries.map((entry) => entry.id));
+    s.pendingUpdates = s.pendingUpdates.filter((entry) => persistedIds.has(entry.id));
     if (!entries.length) return;
     if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
     const have = new Set(s.pendingUpdates.map((u) => u.id));
@@ -306,23 +310,23 @@ async function _flushSQLiteOutbox(roomId: string, s: RoomState): Promise<void> {
   } catch { /* ignore */ }
 }
 
-function _ackPendingUpdates(roomId: string, s: RoomState, ids: string[]): void {
+function _ackPendingUpdates(roomId: string, s: RoomState, ids: string[], ackedByUserId?: number): void {
   if (!ids.length) return;
-  const idSet = new Set(ids);
-  s.pendingUpdates = s.pendingUpdates.filter((u) => !idSet.has(u.id));
-  ackOutboxUpdates(ids).catch(() => {});
+  // SQLite owns completion: an update stays queued until every planned peer
+  // has acknowledged it. Removing it from memory here would lose retries.
+  ackOutboxUpdates(ids, ackedByUserId).then(() => _flushSQLiteOutbox(roomId, s)).catch(() => {});
   console.log('[ChatWsManager] acked', ids.length, 'message updates for room', roomId);
 }
 
-export function ackMessageUpdates(roomId: string, ids: string[]): void {
+export function ackMessageUpdates(roomId: string, ids: string[], ackedByUserId?: number): void {
   if (!ids.length) return;
   const s = rooms.get(roomId);
   if (s) {
-    _ackPendingUpdates(roomId, s, ids);
+    _ackPendingUpdates(roomId, s, ids, ackedByUserId);
     return;
   }
   // Room not in memory (screen closed). Still clear SQLite outbox + sync flags.
-  ackOutboxUpdates(ids).catch(() => {});
+  ackOutboxUpdates(ids, ackedByUserId).catch(() => {});
 }
 
 function scheduleReconnect(roomId: string, s: RoomState) {
@@ -580,6 +584,20 @@ export async function connectRoom(roomId: string): Promise<void> {
               })
               .catch(() => { /* ignore */ });
           }
+          return;
+        }
+
+        // The relay accepted a mutation and returns the authoritative member
+        // snapshot. This lets SQLite retain the update until every peer applies it.
+        if (msgType === 'message_update_server_ack') {
+          const updates = Array.isArray(data.updates) ? data.updates : [];
+          updates.forEach((update: any) => {
+            const id = typeof update?.id === 'string' ? update.id : '';
+            const peers = Array.isArray(update?.expected_peer_ids)
+              ? update.expected_peer_ids.map(Number).filter((userId: number) => Number.isInteger(userId) && userId > 0)
+              : [];
+            if (id) setOutboxExpectedPeers(id, peers).then(() => _flushSQLiteOutbox(roomId, s)).catch(() => {});
+          });
           return;
         }
 
@@ -844,6 +862,21 @@ function markUploading(s: RoomState, roomId: string, messageId: string, uploadin
   notifyListeners(roomId, s);
 }
 
+function fallbackMediaMime(messageType: string, fileUri: string | null | undefined): string {
+  const ext = fileUri?.split('?')[0].split('.').pop()?.toLowerCase() ?? '';
+  if (messageType === 'video') return ext === 'mov' ? 'video/quicktime' : ext === 'webm' ? 'video/webm' : 'video/mp4';
+  if (messageType === 'document') {
+    const types: Record<string, string> = {
+      pdf: 'application/pdf', txt: 'text/plain', doc: 'application/msword',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', zip: 'application/zip',
+    };
+    return types[ext] ?? 'application/octet-stream';
+  }
+  return 'image/jpeg';
+}
+
 /**
  * Deliver one outgoing message over the room WS. Text and inline-sized media go
  * in a single frame; oversized media is sent as a placeholder frame (no blob)
@@ -862,11 +895,11 @@ async function sendOutboxFrame(
     duration_ms?: number | null;
     file_uri?: string | null;
   },
-  opts?: { hydration?: boolean; audioMime?: string | null; imageMime?: string | null },
+  opts?: { hydration?: boolean; audioMime?: string | null; imageMime?: string | null; mediaMime?: string | null },
 ): Promise<boolean> {
   if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) return false;
   const isVoice = msg.type === 'voice';
-  const isMedia = isVoice || msg.type === 'image' || msg.type === 'video';
+  const isMedia = isVoice || msg.type === 'image' || msg.type === 'video' || msg.type === 'document';
 
   const base: Record<string, any> = {
     id: msg.id,
@@ -884,8 +917,8 @@ async function sendOutboxFrame(
     let ptr = await getMediaPointer(msg.id);
     if (!ptr?.media_id) {
       if (!msg.file_uri) return false; // nothing to upload yet — retried later
-      const mime = isVoice ? (opts?.audioMime ?? 'audio/m4a') : (opts?.imageMime ?? 'image/jpeg');
-      const mediaType: MediaType = msg.type === 'video' ? 'video' : isVoice ? 'voice' : 'image';
+      const mime = isVoice ? (opts?.audioMime ?? 'audio/m4a') : (opts?.mediaMime ?? opts?.imageMime ?? fallbackMediaMime(msg.type, msg.file_uri));
+      const mediaType: MediaType = msg.type === 'video' ? 'video' : msg.type === 'document' ? 'document' : isVoice ? 'voice' : 'image';
       markUploading(s, roomId, msg.id, true);
       try {
         const up = await uploadMedia({
@@ -914,7 +947,7 @@ async function sendOutboxFrame(
         media_md5: ptr.md5,
         media_sha256: ptr.sha256,
         media_size: ptr.size,
-        ...(isVoice ? { audio_mime: ptr.mime } : { image_mime: ptr.mime }),
+        ...(isVoice ? { audio_mime: ptr.mime } : msg.type === 'image' ? { image_mime: ptr.mime } : { media_mime: ptr.mime }),
       }));
     } catch (err) {
       console.warn('[ChatWsManager] media pointer send failed', msg.id, err);
@@ -953,11 +986,16 @@ export async function sendChatMessage(
   const durationMs = extras?.duration_ms ?? null;
   const audioMime = extras?.audio_mime ?? null;
   const imageMime = extras?.image_mime ?? null;
+  const mediaMime = extras?.media_mime ?? null;
 
-  const s = rooms.get(roomId);
+  // A reply can be composed immediately after a notification opens a room,
+  // before React has mounted `useChat` and subscribed the room socket. Always
+  // create the room state here so the message has an owner and can actively
+  // establish the transport instead of remaining pending indefinitely.
+  const s = getOrCreate(roomId);
 
   // Optimistically add to in-memory list IMMEDIATELY so UI updates without waiting for SQLite
-  if (_myUserId !== null && s) {
+  if (_myUserId !== null) {
     const optimisticMsg: WsMessage = {
       id: msgId,
       sender: _myUsername,
@@ -1014,15 +1052,20 @@ export async function sendChatMessage(
     }
   }
 
-  if (s?.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+  if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
     // Delivers text/small media in one frame; large media is chunked. Reads the
     // media base64 from `file_uri` internally.
     await sendOutboxFrame(
       s,
       roomId,
       { id: msgId, content, type: messageType, created_at: createdAt, reply_to: replyTo, duration_ms: durationMs, file_uri: fileUri },
-      { audioMime, imageMime },
+      { audioMime, imageMime, mediaMime },
     );
+  } else {
+    // The message is safely persisted above. Start (or resume) the room socket
+    // now; its auth_ok path flushes SQLite outbox rows, including this one.
+    // This covers notification/deep-link cold starts and transient disconnects.
+    connectRoom(roomId).catch(() => {});
   }
 
   return msgId;
@@ -1238,19 +1281,23 @@ export function sendMessageUpdate(
   roomId: string,
   messageId: string,
   changes: MessageChanges,
+  expectedPeerIds: number[] = [],
 ): void {
   const s = getOrCreate(roomId);
   // Apply to in-memory WS state immediately → triggers notifyListeners → UI re-renders
   // (also writes to SQLite internally via applyMessageChanges)
   _applyUpdatesToState(roomId, s, [{ message_id: messageId, changes }]);
   const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-  s.pendingUpdates.push({ id, message_id: messageId, changes });
-  // Persist so it survives an app restart before the WS connects
-  queueMessageUpdate(roomId, messageId, changes).catch(() => {});
+  // Persist before sending. The same id is used in memory, on the wire and in
+  // SQLite, so an acknowledgement can never strand a second phantom outbox row.
+  queueMessageUpdate(roomId, messageId, changes, { id, expectedPeerIds })
+    .then(() => {
+      s.pendingUpdates.push({ id, message_id: messageId, changes });
+      _flushPendingUpdates(roomId, s);
+    })
+    .catch(() => {});
   // Local mutation diverged from peer until ACK is received.
   setMessageSyncState(messageId, false).catch(() => {});
-  // Attempt immediate send
-  _flushPendingUpdates(roomId, s);
 }
 
 /**
@@ -1263,15 +1310,18 @@ export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
   const s = getOrCreate(roomId);
   for (const msgId of messageIds) {
     const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9);
-    s.pendingUpdates.push({ id, message_id: msgId, changes: { is_read: true } });
-    // Persist to outbox for retry on reconnect
-    queueMessageUpdate(roomId, msgId, { is_read: true }).catch(() => {});
+    // Persist first; read receipts use the server-provided room membership
+    // snapshot when their relay acknowledgement arrives.
+    queueMessageUpdate(roomId, msgId, { is_read: true }, { id })
+      .then(() => {
+        s.pendingUpdates.push({ id, message_id: msgId, changes: { is_read: true } });
+        _flushPendingUpdates(roomId, s);
+      })
+      .catch(() => {});
     setMessageSyncState(msgId, false).catch(() => {});
     // Mark read locally so loadFromDB filters this message out on the next reload
     applyMessageChanges(msgId, { is_read: true }).catch(() => {});
   }
-  // Single WS send for the whole batch
-  _flushPendingUpdates(roomId, s);
 }
 
 /**

@@ -160,3 +160,15 @@ export function deleteVoiceFile(fileUri: string | null | undefined): void {
   }
 }
 
+/** Copy a shared video or document into Axonic-owned cache before Android
+ * revokes the temporary content URI supplied by the system share sheet. */
+export function persistSharedFile(messageId: string, sourceUri: string, filename?: string | null): string {
+  const src = new File(sourceUri);
+  if (!src.exists) throw new Error(`Shared file does not exist: ${sourceUri}`);
+  const ext = filename?.split('.').pop()?.replace(/[^a-z0-9]/gi, '') || src.extension?.replace(/^\./, '') || 'bin';
+  const dir = cachedDir('shared');
+  const dest = new File(dir, `${messageId}.${ext}`);
+  if (!dest.exists) src.copy(dest);
+  return dest.uri;
+}
+

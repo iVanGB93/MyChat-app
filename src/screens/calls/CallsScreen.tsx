@@ -22,6 +22,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getCallHistory, initiateCall } from '../../services/callService';
+import { cacheCallHistory, getCachedCallHistory } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 import type { CallLog, RootStackParamList } from '../../types';
@@ -39,17 +40,34 @@ export default function CallsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const fetchCalls = useCallback(async () => {
+  const syncCalls = useCallback(async () => {
     try {
       const data = await getCallHistory();
       setCalls(data);
+      if (user?.id != null) await cacheCallHistory(user.id, data);
     } catch { /* ignore */ } finally {
-      setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [user?.id]);
 
-  useEffect(() => { fetchCalls(); }, [fetchCalls]);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const cached = user?.id != null ? await getCachedCallHistory(user.id) : [];
+        if (active && cached.length) setCalls(cached);
+      } catch { /* cache is best-effort */ } finally {
+        if (active) setLoading(false);
+      }
+      syncCalls().catch(() => {});
+    })();
+    return () => { active = false; };
+  }, [user?.id, syncCalls]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', syncCalls);
+    return unsub;
+  }, [navigation, syncCalls]);
 
   const handleCallback = async (call: CallLog) => {
     const otherId = call.caller === user?.id ? call.callee : call.caller;
@@ -151,7 +169,7 @@ export default function CallsScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => { setRefreshing(true); fetchCalls(); }}
+            onRefresh={() => { setRefreshing(true); syncCalls(); }}
             colors={[Colors.primary]}
             tintColor={Colors.primary}
           />

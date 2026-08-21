@@ -45,7 +45,7 @@ import type { NotificationPayload } from './notificationWsManager';
 import { enqueueMessageAck } from './messageAckRetryQueue';
 import { toEnvelope, idempotencyId } from './rrp/envelope';
 import type { RrpType } from './rrp/envelope';
-import api from './api';
+import api, { resolveMediaUrl } from './api';
 
 /** Where an incoming event came from. Drives the notification decision: only
  *  the `ws` source renders a local notification — for push sources the OS has
@@ -59,6 +59,7 @@ export interface CanonicalMessage {
   roomName: string;
   senderId: number;
   senderName: string;
+  senderAvatar: string | null;
   content: string | null;
   messageType: string;
   createdAt: string;
@@ -155,6 +156,7 @@ export function normalizeMessage(
     roomName: asStr(raw.room_name ?? raw.roomName) ?? '',
     senderId,
     senderName: asStr(raw.sender ?? raw.from_username ?? raw.senderName) ?? '',
+    senderAvatar: asStr(raw.sender_avatar ?? raw.senderAvatar),
     content: asStr(raw.content),
     messageType: asStr(raw.message_type ?? raw.messageType) ?? 'text',
     createdAt: asStr(raw.created_at ?? raw.createdAt) ?? new Date().toISOString(),
@@ -230,10 +232,11 @@ async function decodeMedia(evt: CanonicalMessage): Promise<string | null> {
 }
 
 /** Media type of a canonical message, or null if it isn't media. */
-function mediaTypeOf(evt: CanonicalMessage): 'image' | 'voice' | 'video' | null {
+function mediaTypeOf(evt: CanonicalMessage): 'image' | 'voice' | 'video' | 'document' | null {
   if (evt.messageType === 'image') return 'image';
   if (evt.messageType === 'voice') return 'voice';
   if (evt.messageType === 'video') return 'video';
+  if (evt.messageType === 'document') return 'document';
   return null;
 }
 
@@ -294,6 +297,7 @@ export async function retryPointerDownloads(roomId: string): Promise<void> {
         roomName: '',
         senderId: r.sender_id,
         senderName: r.sender_name,
+        senderAvatar: null,
         content: r.content,
         messageType: r.type,
         createdAt: r.created_at,
@@ -362,6 +366,7 @@ async function maybeNotify(evt: CanonicalMessage): Promise<void> {
       roomName: evt.roomName || evt.senderName,
       senderName: evt.senderName || evt.roomName || 'New message',
       senderId: evt.senderId,
+      avatar: resolveMediaUrl(evt.senderAvatar),
       messageId: evt.messageId,
       text: body,
       timestamp: Date.now(),
@@ -404,7 +409,8 @@ export async function ingestMessage(
   const hasMedia = !!(evt.audioB64 || evt.imageB64);
   const isMediaType = evt.messageType === 'image'
     || evt.messageType === 'voice'
-    || evt.messageType === 'video';
+    || evt.messageType === 'video'
+    || evt.messageType === 'document';
   // Phase 2: an out-of-band media message carries a pointer (media_id) instead
   // of inline base64. The blob is fetched over HTTP (mediaLane) after persist.
   const hasPointer = !!evt.mediaId;
@@ -669,7 +675,8 @@ export async function routeInbound(
     case 'message.update.ack': {
       const ids = (p.update_ids as unknown[] | undefined)?.map((x) => String(x)) ?? [];
       if (!env.room_id || ids.length === 0) return { type: env.type, handled: false };
-      try { ackMessageUpdates(env.room_id, ids); } catch {}
+      const byUserId = asNum(p.by_user_id ?? p.sender_id);
+      try { ackMessageUpdates(env.room_id, ids, byUserId ?? undefined); } catch {}
       return { type: env.type, handled: true };
     }
 

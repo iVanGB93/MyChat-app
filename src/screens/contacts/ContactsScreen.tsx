@@ -23,6 +23,7 @@ import { searchUsers } from '../../services/authService';
 import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppStore } from '../../store/appStore';
+import { setCachedRelationship } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import EmptyState from '../../components/ui/EmptyState';
@@ -103,6 +104,7 @@ export default function ContactsScreen() {
     try {
       await addContact(userId);
       useAppStore.getState().addContactId(userId);
+      if (user?.id != null) await setCachedRelationship(user.id, userId, 'contact');
       alert('Done', 'Contact added!');
       fetchContacts();
     } catch {
@@ -124,6 +126,7 @@ export default function ContactsScreen() {
             try {
               await removeContact(contact.id);
               useAppStore.getState().removeContactId(contact.contact);
+              if (user?.id != null) await setCachedRelationship(user.id, contact.contact, null);
               fetchContacts();
             } catch { alert('Error', 'Failed to remove contact'); }
           },

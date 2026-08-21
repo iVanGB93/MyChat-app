@@ -17,6 +17,7 @@ import {
   ActivityIndicator,
   Image,
   TextInput,
+  ScrollView,
 } from 'react-native';
 import { useNavigation, useRoute, type RouteProp } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -29,11 +30,11 @@ import { useConfirm } from '../../contexts/ConfirmContext';
 import { getContacts } from '../../services/contactService';
 import { getOrCreateDirect } from '../../services/chatService';
 import { connectRoom, sendChatMessage } from '../../services/chatWsManager';
-import { persistOutgoingImage } from '../../services/voiceMessageUtils';
+import { persistOutgoingImage, persistSharedFile } from '../../services/voiceMessageUtils';
 import { playSound } from '../../services/soundService';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
-import type { Contact, RootStackParamList } from '../../types';
+import type { Contact, RootStackParamList, ShareAttachment } from '../../types';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'ShareTarget'>;
 type R = RouteProp<RootStackParamList, 'ShareTarget'>;
@@ -45,8 +46,9 @@ export default function ShareTargetScreen() {
   const route = useRoute<R>();
   const insets = useSafeAreaInsets();
 
-  const { text: initialText, imageUri, imageMime } = route.params ?? {};
+  const { text: initialText, attachments: initialAttachments = [] } = route.params ?? {};
   const [caption, setCaption] = useState(initialText ?? '');
+  const [attachments, setAttachments] = useState<ShareAttachment[]>(initialAttachments);
   const [query, setQuery] = useState('');
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,21 +95,33 @@ export default function ShareTargetScreen() {
       // but connecting first gives the best chance of immediate delivery.
       try { await connectRoom(room.id); } catch { /* outbox will retry */ }
 
-      if (imageUri) {
-        // Persist the OS-provided URI into our own cache so it survives
-        // the share session ending (the temp URI from Android may
-        // become invalid once we return).
-        const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-        let persistedUri = imageUri;
-        try {
-          persistedUri = await persistOutgoingImage(msgId, imageUri, imageMime ?? 'image/jpeg');
-        } catch (err) {
-          console.warn('[ShareTarget] persistOutgoingImage failed:', err);
+      if (attachments.length) {
+        // Send one message per item, in the exact order supplied by the OS.
+        // Each temporary share URI is copied first, so Android cannot revoke it
+        // while the outbox is still uploading later items.
+        for (let index = 0; index < attachments.length; index += 1) {
+          const attachment = attachments[index];
+          const msgId = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
+          let persistedUri = attachment.uri;
+          try {
+            persistedUri = attachment.kind === 'image'
+              ? await persistOutgoingImage(msgId, attachment.uri, attachment.mimeType || 'image/jpeg')
+              : persistSharedFile(msgId, attachment.uri, attachment.fileName);
+          } catch (err) { console.warn('[ShareTarget] failed to persist shared file:', err); }
+          const messageType = attachment.kind === 'file' ? 'document' : attachment.kind;
+          const fallback = attachment.kind === 'image' ? '\uD83D\uDCF7 Photo'
+            : attachment.kind === 'video' ? `\uD83C\uDFA5 ${attachment.fileName}`
+            : `\uD83D\uDCC4 ${attachment.fileName}`;
+          await sendChatMessage(
+            room.id,
+            index === 0 && attachment.kind === 'image' ? (caption.trim() || fallback) : fallback,
+            messageType,
+            null,
+            attachment.kind === 'image'
+              ? { file_uri: persistedUri, image_mime: attachment.mimeType || 'image/jpeg' }
+              : { file_uri: persistedUri, media_mime: attachment.mimeType || 'application/octet-stream' },
+          );
         }
-        await sendChatMessage(room.id, caption.trim() || '\uD83D\uDCF7 Photo', 'image', null, {
-          file_uri: persistedUri,
-          image_mime: imageMime ?? 'image/jpeg',
-        });
       } else {
         const body = caption.trim();
         if (!body) {
@@ -132,7 +146,7 @@ export default function ShareTargetScreen() {
       alert('Error', 'Could not send the shared content.');
       setSendingTo(null);
     }
-  }, [sendingTo, imageUri, imageMime, caption, navigation, alert]);
+  }, [sendingTo, attachments, caption, navigation, alert]);
 
   const renderItem = ({ item }: { item: Contact }) => {
     const u = item.contact_detail;
@@ -178,13 +192,32 @@ export default function ShareTargetScreen() {
 
       {/* Preview of what we're about to share */}
       <View style={[styles.preview, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
-        {imageUri ? (
-          <Image source={{ uri: imageUri }} style={styles.previewImg} resizeMode="cover" />
+        {attachments.length ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.previewScroller} contentContainerStyle={styles.previewStrip}>
+            {attachments.map((attachment, index) => (
+              <View key={`${attachment.uri}-${index}`} style={styles.attachmentPreview}>
+                {attachment.kind === 'image' ? (
+                  <Image source={{ uri: attachment.uri }} style={[styles.previewImg, styles.multiPreviewImg]} resizeMode="cover" />
+                ) : (
+                  <View style={[styles.previewImg, styles.multiPreviewImg, styles.filePreview, { backgroundColor: Colors.highlight }]}>
+                    <Ionicons name={attachment.kind === 'video' ? 'videocam-outline' : 'document-outline'} size={24} color={Colors.primary} />
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={[styles.removeAttachment, { backgroundColor: Colors.surface }]}
+                  onPress={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                  accessibilityLabel={`Remove ${attachment.fileName}`}
+                >
+                  <Ionicons name="close" size={14} color={Colors.text} />
+                </TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
         ) : (
           <Ionicons name="document-text-outline" size={28} color={Colors.primary} style={{ marginRight: Spacing.md }} />
         )}
         <View style={{ flex: 1 }}>
-          {imageUri ? (
+          {attachments.length ? (
             <TextInput
               value={caption}
               onChangeText={setCaption}
@@ -262,6 +295,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     minHeight: 80,
   },
+  previewStrip: { gap: Spacing.xs, paddingRight: Spacing.md },
+  previewScroller: { flexGrow: 0, maxWidth: '58%', marginRight: Spacing.sm },
+  attachmentPreview: { position: 'relative' },
+  multiPreviewImg: { marginRight: 0 },
+  filePreview: { alignItems: 'center', justifyContent: 'center' },
+  removeAttachment: { position: 'absolute', top: -5, right: -5, width: 19, height: 19, borderRadius: 10, alignItems: 'center', justifyContent: 'center', elevation: 3 },
   previewImg: { width: 64, height: 64, borderRadius: Radius.sm, marginRight: Spacing.md, backgroundColor: '#000' },
   previewText: { fontSize: Font.size.sm },
   captionInput: { fontSize: Font.size.sm, minHeight: 40, padding: 0, textAlignVertical: 'top' },

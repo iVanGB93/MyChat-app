@@ -7,6 +7,7 @@
  */
 
 import * as SQLite from "expo-sqlite";
+import { File, Paths } from 'expo-file-system';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 
@@ -53,11 +54,13 @@ export async function initDB(): Promise<void> {
     );
 
     CREATE TABLE IF NOT EXISTS update_outbox (
-      id         TEXT    PRIMARY KEY,
-      room_id    TEXT    NOT NULL,
-      message_id TEXT    NOT NULL,
-      changes    TEXT    NOT NULL,
-      created_at INTEGER NOT NULL
+      id                 TEXT    PRIMARY KEY,
+      room_id            TEXT    NOT NULL,
+      message_id         TEXT    NOT NULL,
+      changes            TEXT    NOT NULL,
+      expected_peer_ids  TEXT    NOT NULL DEFAULT '[]',
+      acked_by_user_ids  TEXT    NOT NULL DEFAULT '[]',
+      created_at         INTEGER NOT NULL
     );
 
     -- RRP: persistent idempotency ledger. Every inbound protocol event whose
@@ -68,6 +71,43 @@ export async function initDB(): Promise<void> {
       type TEXT,
       ts   INTEGER NOT NULL
     );
+
+    -- Room metadata is separate from messages so the chat list can render
+    -- instantly on app start, even while the network refresh is still running.
+    -- The owner id prevents one account's room names/members leaking into a
+    -- later account on the same device.
+    CREATE TABLE IF NOT EXISTS room_cache (
+      owner_user_id INTEGER NOT NULL,
+      room_id       TEXT    NOT NULL,
+      payload       TEXT    NOT NULL,
+      updated_at    TEXT    NOT NULL,
+      cached_at     INTEGER NOT NULL,
+      PRIMARY KEY (owner_user_id, room_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_room_cache_owner_updated
+      ON room_cache (owner_user_id, updated_at DESC);
+
+    -- Durable, account-scoped contact/block state. This lets a message request
+    -- render correctly before the contacts API refresh completes at startup.
+    CREATE TABLE IF NOT EXISTS relationship_cache (
+      owner_user_id INTEGER NOT NULL,
+      other_user_id INTEGER NOT NULL,
+      state         TEXT    NOT NULL CHECK(state IN ('contact', 'blocked')),
+      updated_at    INTEGER NOT NULL,
+      PRIMARY KEY (owner_user_id, other_user_id)
+    );
+
+    -- Durable, account-scoped call history for the Calls tab's local-first UI.
+    CREATE TABLE IF NOT EXISTS call_cache (
+      owner_user_id INTEGER NOT NULL,
+      call_id       TEXT    NOT NULL,
+      payload       TEXT    NOT NULL,
+      started_at    TEXT    NOT NULL,
+      cached_at     INTEGER NOT NULL,
+      PRIMARY KEY (owner_user_id, call_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_call_cache_owner_started
+      ON call_cache (owner_user_id, started_at DESC);
   `);
   // Migrations for DBs created before new columns existed
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reactions  TEXT    DEFAULT '{}'`); } catch {}
@@ -81,6 +121,222 @@ export async function initDB(): Promise<void> {
   // The blob is uploaded/downloaded over HTTP (mediaLane) — only this pointer
   // rides the chat WS. NULL for text and legacy inline-media rows.
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN media_ptr  TEXT`);                 } catch {}
+  try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN expected_peer_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
+  try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN acked_by_user_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
+}
+
+// ---------------------------------------------------------------------------
+// Local room metadata cache (local-first chat list)
+// ---------------------------------------------------------------------------
+
+export async function getCachedRooms(ownerUserId: number): Promise<import('../types').ChatRoom[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<{ payload: string }>(
+    `SELECT payload FROM room_cache WHERE owner_user_id = ? ORDER BY updated_at DESC`,
+    ownerUserId,
+  );
+  const rooms: import('../types').ChatRoom[] = [];
+  for (const row of rows) {
+    try {
+      const room = JSON.parse(row.payload);
+      if (room?.id && Array.isArray(room.members_detail)) rooms.push(room);
+    } catch {
+      // A corrupt/stale row is ignored and repaired by the next server sync.
+    }
+  }
+  return rooms;
+}
+
+/** Replace this user's room metadata with the latest authoritative server list. */
+export async function cacheRooms(ownerUserId: number, rooms: import('../types').ChatRoom[]): Promise<void> {
+  const db = await getDB();
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM room_cache WHERE owner_user_id = ?`, ownerUserId);
+    for (const room of rooms) {
+      await db.runAsync(
+        `INSERT INTO room_cache (owner_user_id, room_id, payload, updated_at, cached_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        ownerUserId,
+        room.id,
+        JSON.stringify(room),
+        room.updated_at || new Date(now).toISOString(),
+        now,
+      );
+    }
+  });
+}
+
+export interface CachedRelationshipSets {
+  contactIds: number[];
+  blockedIds: number[];
+}
+
+export async function getCachedRelationshipSets(ownerUserId: number): Promise<CachedRelationshipSets> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<{ other_user_id: number; state: 'contact' | 'blocked' }>(
+    `SELECT other_user_id, state FROM relationship_cache WHERE owner_user_id = ?`,
+    ownerUserId,
+  );
+  return {
+    contactIds: rows.filter((row) => row.state === 'contact').map((row) => row.other_user_id),
+    blockedIds: rows.filter((row) => row.state === 'blocked').map((row) => row.other_user_id),
+  };
+}
+
+/** Replace relationship state after a successful authoritative API sync. */
+export async function cacheRelationshipSets(ownerUserId: number, contactIds: number[], blockedIds: number[]): Promise<void> {
+  const db = await getDB();
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM relationship_cache WHERE owner_user_id = ?`, ownerUserId);
+    for (const otherUserId of contactIds) {
+      await db.runAsync(`INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'contact', ?)`, ownerUserId, otherUserId, now);
+    }
+    for (const otherUserId of blockedIds) {
+      await db.runAsync(`INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'blocked', ?)`, ownerUserId, otherUserId, now);
+    }
+  });
+}
+
+/** Optimistically record an accepted contact or blocked sender immediately. */
+export async function setCachedRelationship(ownerUserId: number, otherUserId: number, state: 'contact' | 'blocked' | null): Promise<void> {
+  const db = await getDB();
+  if (state == null) {
+    await db.runAsync(`DELETE FROM relationship_cache WHERE owner_user_id = ? AND other_user_id = ?`, ownerUserId, otherUserId);
+    return;
+  }
+  await db.runAsync(
+    `INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(owner_user_id, other_user_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+    ownerUserId, otherUserId, state, Date.now(),
+  );
+}
+
+export async function getCachedCallHistory(ownerUserId: number): Promise<import('../types').CallLog[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<{ payload: string }>(
+    `SELECT payload FROM call_cache WHERE owner_user_id = ? ORDER BY started_at DESC`,
+    ownerUserId,
+  );
+  const calls: import('../types').CallLog[] = [];
+  for (const row of rows) {
+    try {
+      const call = JSON.parse(row.payload);
+      if (call?.id && call?.started_at) calls.push(call);
+    } catch { /* repaired by next successful server sync */ }
+  }
+  return calls;
+}
+
+export async function cacheCallHistory(ownerUserId: number, calls: import('../types').CallLog[]): Promise<void> {
+  const db = await getDB();
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM call_cache WHERE owner_user_id = ?`, ownerUserId);
+    for (const call of calls) {
+      await db.runAsync(
+        `INSERT INTO call_cache (owner_user_id, call_id, payload, started_at, cached_at) VALUES (?, ?, ?, ?, ?)`,
+        ownerUserId, call.id, JSON.stringify(call), call.started_at, now,
+      );
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// On-device storage inspection
+// ---------------------------------------------------------------------------
+
+export interface LocalChatStorageRoom {
+  roomId: string;
+  messageCount: number;
+  /** SQLite row payload attributable to this room (text, metadata, pointers). */
+  databaseBytes: number;
+  /** Downloaded/recorded media files referenced by this room. */
+  mediaBytes: number;
+  totalBytes: number;
+}
+
+export interface LocalChatStorageStats {
+  /** Allocated SQLite database pages, including indexes and all local tables. */
+  databaseBytes: number;
+  /** Physical media files referenced by locally stored messages. */
+  mediaBytes: number;
+  totalBytes: number;
+  rooms: LocalChatStorageRoom[];
+}
+
+/**
+ * Calculate the chat data stored on this device. SQLite does not expose a
+ * precise per-table file allocation because pages and indexes are shared, so
+ * the total uses the actual database page count while each room is based on
+ * its stored row payload plus the exact size of its local media files.
+ */
+export async function getLocalChatStorageStats(): Promise<LocalChatStorageStats> {
+  const db = await getDB();
+  const [pageCount, pageSize] = await Promise.all([
+    db.getFirstAsync<{ page_count: number }>('PRAGMA page_count'),
+    db.getFirstAsync<{ page_size: number }>('PRAGMA page_size'),
+  ]);
+
+  const rows = await db.getAllAsync<{
+    room_id: string;
+    message_count: number;
+    database_bytes: number;
+    file_uris: string | null;
+  }>(`
+    SELECT
+      room_id,
+      COUNT(*) AS message_count,
+      COALESCE(SUM(
+        length(CAST(COALESCE(content, '') AS BLOB)) +
+        length(CAST(COALESCE(sender_name, '') AS BLOB)) +
+        length(CAST(COALESCE(type, '') AS BLOB)) +
+        length(CAST(COALESCE(file_uri, '') AS BLOB)) +
+        length(CAST(COALESCE(reactions, '') AS BLOB)) +
+        length(CAST(COALESCE(reply_to, '') AS BLOB)) +
+        length(CAST(COALESCE(media_ptr, '') AS BLOB))
+      ), 0) AS database_bytes,
+      GROUP_CONCAT(DISTINCT file_uri) AS file_uris
+    FROM messages
+    GROUP BY room_id
+    ORDER BY database_bytes DESC
+  `);
+
+  const countedFiles = new Set<string>();
+  const rooms: LocalChatStorageRoom[] = [];
+  let mediaBytes = 0;
+
+  for (const row of rows) {
+    let roomMediaBytes = 0;
+    for (const uri of (row.file_uris ?? '').split(',').filter(Boolean)) {
+      if (countedFiles.has(uri)) continue;
+      countedFiles.add(uri);
+      try {
+        const size = new File(uri).size;
+        if (Number.isFinite(size) && size > 0) roomMediaBytes += size;
+      } catch {
+        // A cache-cleaned or permission-protected URI simply contributes zero.
+      }
+    }
+    mediaBytes += roomMediaBytes;
+    const databaseBytes = Number(row.database_bytes) || 0;
+    rooms.push({
+      roomId: row.room_id,
+      messageCount: Number(row.message_count) || 0,
+      databaseBytes,
+      mediaBytes: roomMediaBytes,
+      totalBytes: databaseBytes + roomMediaBytes,
+    });
+  }
+
+  const databaseBytes = (Number(pageCount?.page_count) || 0) * (Number(pageSize?.page_size) || 0);
+  return {
+    databaseBytes,
+    mediaBytes,
+    totalBytes: databaseBytes + mediaBytes,
+    rooms: rooms.sort((a, b) => b.totalBytes - a.totalBytes),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +403,8 @@ export interface OutboxEntry {
   room_id: string;
   message_id: string;
   changes: MessageChanges;
+  expected_peer_ids: number[];
+  acked_by_user_ids: number[];
   created_at: number;
 }
 
@@ -609,23 +867,34 @@ export async function queueMessageUpdate(
   roomId: string,
   messageId: string,
   changes: MessageChanges,
-): Promise<void> {
+  opts: { id?: string; expectedPeerIds?: number[] } = {},
+): Promise<string> {
   const db = await getDB();
+  const id = opts.id ?? genOutboxId();
+  const peers = [...new Set((opts.expectedPeerIds ?? []).filter((userId) => Number.isInteger(userId) && userId > 0))];
   await db.runAsync(
-    `INSERT INTO update_outbox (id, room_id, message_id, changes, created_at) VALUES (?, ?, ?, ?, ?)`,
-    genOutboxId(), roomId, messageId, JSON.stringify(changes), Date.now(),
+    `INSERT OR IGNORE INTO update_outbox
+       (id, room_id, message_id, changes, expected_peer_ids, acked_by_user_ids, created_at)
+     VALUES (?, ?, ?, ?, ?, '[]', ?)`,
+    id, roomId, messageId, JSON.stringify(changes), JSON.stringify(peers), Date.now(),
   );
   // Any local mutation means this row is no longer guaranteed to match the peer.
   await db.runAsync(`UPDATE messages SET sync = 0 WHERE id = ?`, messageId);
+  return id;
 }
 
 /** Load all pending outbox entries for a room (or all rooms if omitted). */
 export async function getPendingOutboxUpdates(roomId?: string): Promise<OutboxEntry[]> {
   const db = await getDB();
-  const rows: Array<{ id: string; room_id: string; message_id: string; changes: string; created_at: number }> = roomId
+  const rows: Array<{ id: string; room_id: string; message_id: string; changes: string; expected_peer_ids?: string; acked_by_user_ids?: string; created_at: number }> = roomId
     ? await db.getAllAsync(`SELECT * FROM update_outbox WHERE room_id = ? ORDER BY created_at ASC`, roomId)
     : await db.getAllAsync(`SELECT * FROM update_outbox ORDER BY created_at ASC`);
-  return rows.map((r) => ({ ...r, changes: JSON.parse(r.changes) as MessageChanges }));
+  return rows.map((r) => ({
+    ...r,
+    changes: JSON.parse(r.changes) as MessageChanges,
+    expected_peer_ids: r.expected_peer_ids ? JSON.parse(r.expected_peer_ids) as number[] : [],
+    acked_by_user_ids: r.acked_by_user_ids ? JSON.parse(r.acked_by_user_ids) as number[] : [],
+  }));
 }
 
 /**
@@ -736,7 +1005,7 @@ export async function getPendingUnsyncedOutgoingMessages(
   }));
 }
 
-/** Delete outbox entries that have been successfully sent. */
+/** Delete outbox entries that have been successfully relayed. */
 export async function deleteOutboxUpdates(ids: string[]): Promise<void> {
   if (!ids.length) return;
   const db = await getDB();
@@ -753,10 +1022,11 @@ export async function setMessageSyncState(messageId: string, synced: boolean): P
 
 /**
  * Acknowledge outbox updates by ID:
- * - delete matching update_outbox rows
+ * - record the acknowledging peer
+ * - delete a row only after every expected peer has acknowledged it
  * - set sync=1 only for messages with no remaining pending update rows
  */
-export async function ackOutboxUpdates(ids: string[]): Promise<void> {
+export async function ackOutboxUpdates(ids: string[], ackedByUserId?: number): Promise<void> {
   if (!ids.length) return;
   const db = await getDB();
 
@@ -767,7 +1037,26 @@ export async function ackOutboxUpdates(ids: string[]): Promise<void> {
   const messageIds = msgRows.map((r) => r.message_id);
 
   for (const id of ids) {
-    await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
+    const row = await db.getFirstAsync<{ expected_peer_ids?: string; acked_by_user_ids?: string }>(
+      `SELECT expected_peer_ids, acked_by_user_ids FROM update_outbox WHERE id = ?`, id,
+    );
+    if (!row) continue;
+    const expected = row.expected_peer_ids ? JSON.parse(row.expected_peer_ids) as number[] : [];
+    const acked = row.acked_by_user_ids ? JSON.parse(row.acked_by_user_ids) as number[] : [];
+    const nextAcked = ackedByUserId && ackedByUserId > 0
+      ? [...new Set([...acked, ackedByUserId])]
+      : acked;
+    // Existing outbox rows have no delivery plan, so preserve their old
+    // first-ack behaviour. Newly created rows wait for every planned peer.
+    const complete = expected.length === 0 || expected.every((peerId) => nextAcked.includes(peerId));
+    if (complete) {
+      await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
+    } else {
+      await db.runAsync(
+        `UPDATE update_outbox SET acked_by_user_ids = ? WHERE id = ?`,
+        JSON.stringify(nextAcked), id,
+      );
+    }
   }
 
   for (const messageId of messageIds) {
@@ -829,8 +1118,49 @@ export async function deleteMessage(messageId: string): Promise<void> {
  *  Used when the user chooses "Delete chat" from the chat list. */
 export async function deleteRoomMessages(roomId: string): Promise<void> {
   const db = await getDB();
+  const fileRows = await db.getAllAsync<{ file_uri: string }>(
+    `SELECT DISTINCT file_uri FROM messages WHERE room_id = $rid AND file_uri IS NOT NULL AND file_uri != ''`,
+    { $rid: roomId },
+  );
   await db.runAsync(`DELETE FROM messages WHERE room_id = $rid`, { $rid: roomId });
   await db.runAsync(`DELETE FROM update_outbox WHERE room_id = $rid`, { $rid: roomId });
+
+  // Delete only files owned by this app, and only when no other cached room
+  // references them. Picker/source URIs outside the app's directories are left
+  // untouched deliberately.
+  for (const { file_uri: uri } of fileRows) {
+    const stillReferenced = await db.getFirstAsync<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM messages WHERE file_uri = $uri`,
+      { $uri: uri },
+    );
+    if ((Number(stillReferenced?.count) || 0) > 0) continue;
+    if (!uri.startsWith(Paths.cache.uri) && !uri.startsWith(Paths.document.uri)) continue;
+    try {
+      const file = new File(uri);
+      if (file.exists) file.delete();
+    } catch {
+      // A partially removed or inaccessible cache file is safe to ignore.
+    }
+  }
+}
+
+/** Update the recipient plan after the server accepts and validates a relay. */
+export async function setOutboxExpectedPeers(id: string, peerIds: number[]): Promise<void> {
+  const db = await getDB();
+  const expected = [...new Set(peerIds.filter((userId) => Number.isInteger(userId) && userId > 0))];
+  const row = await db.getFirstAsync<{ acked_by_user_ids?: string }>(
+    `SELECT acked_by_user_ids FROM update_outbox WHERE id = ?`, id,
+  );
+  if (!row) return;
+  const acked = row.acked_by_user_ids ? JSON.parse(row.acked_by_user_ids) as number[] : [];
+  if (expected.length === 0 || expected.every((peerId) => acked.includes(peerId))) {
+    await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
+    return;
+  }
+  await db.runAsync(
+    `UPDATE update_outbox SET expected_peer_ids = ? WHERE id = ?`,
+    JSON.stringify(expected), id,
+  );
 }
 
 /** Ids of received (not-mine), unread, non-deleted messages in a room.

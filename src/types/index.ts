@@ -67,7 +67,7 @@ export interface Message {
   sender: number;
   sender_username: string;
   content: string;
-  message_type: 'text' | 'image' | 'file' | 'voice';
+  message_type: 'text' | 'image' | 'file' | 'voice' | 'video' | 'document';
   file: string | null;
   /** Local file URI for media messages (voice / image). */
   file_uri?: string | null;
@@ -133,6 +133,14 @@ export interface PaginatedResponse<T> {
 }
 
 // ---- Navigation ----
+export interface ShareAttachment {
+  uri: string;
+  mimeType: string;
+  fileName: string;
+  size: number | null;
+  kind: 'image' | 'video' | 'file';
+}
+
 export type RootStackParamList = {
   Login: undefined;
   Register: undefined;
@@ -145,13 +153,13 @@ export type RootStackParamList = {
   ScanTag: undefined;
   ChatRoom: { roomId: string; roomName: string; otherUserId?: number };
   EditAccount: undefined;
+  ChatStorage: undefined;
   ChangePassword: undefined;
   BlockedUsers: undefined;
-  /** Modal opened when the OS hands us a shared payload (text/url/image). */
+  /** Modal opened when the OS hands us a shared payload. */
   ShareTarget: {
     text?: string;
-    imageUri?: string;
-    imageMime?: string;
+    attachments?: ShareAttachment[];
   };
   IncomingCall: {
     callId: string;

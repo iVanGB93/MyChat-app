@@ -16,7 +16,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import api, { BASE_URL, getTokens } from './api';
 
-export type MediaType = 'image' | 'voice' | 'video';
+export type MediaType = 'image' | 'voice' | 'video' | 'document';
 
 export interface UploadedMedia {
   media_id: string;
@@ -29,7 +29,7 @@ export interface UploadedMedia {
 const MEDIA_ROOT = 'media';
 
 function subdirFor(mediaType: MediaType): string {
-  return mediaType === 'voice' ? 'voice' : mediaType === 'video' ? 'video' : 'images';
+  return mediaType === 'voice' ? 'voice' : mediaType === 'video' ? 'video' : mediaType === 'document' ? 'documents' : 'images';
 }
 
 function extFor(mediaType: MediaType, mime?: string | null): string {
@@ -43,6 +43,15 @@ function extFor(mediaType: MediaType, mime?: string | null): string {
   if (mediaType === 'video') {
     if (m.includes('quicktime') || m.includes('mov')) return 'mov';
     return 'mp4';
+  }
+  if (mediaType === 'document') {
+    if (m.includes('pdf')) return 'pdf';
+    if (m.includes('wordprocessingml') || m.includes('msword')) return 'docx';
+    if (m.includes('spreadsheetml') || m.includes('excel')) return 'xlsx';
+    if (m.includes('presentationml') || m.includes('powerpoint')) return 'pptx';
+    if (m.includes('zip')) return 'zip';
+    if (m.includes('plain')) return 'txt';
+    return 'bin';
   }
   // image
   if (m.includes('png')) return 'png';

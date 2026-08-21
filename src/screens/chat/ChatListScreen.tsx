@@ -21,7 +21,7 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius, type ThemeColors } from '../../theme';
 import { resolveMediaUrl } from '../../services/api';
 import { getRooms } from '../../services/chatService';
-import { getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
+import { cacheRooms, getCachedRooms, getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
@@ -241,42 +241,50 @@ export default function ChatListScreen() {
     >
   >({});
 
-  const fetchRooms = useCallback(async () => {
+  const loadLocalLastMessages = useCallback(async () => {
+    const localMsgsMap = await getLastMessagePerRoom();
+    const map: Record<string, { content: string; created_at: string; sender_id?: number; status?: 'pending' | 'delivered' | 'read' } | null> = {};
+    for (const [roomId, msg] of Object.entries(localMsgsMap)) {
+      map[roomId] = { content: msg.content ?? '', created_at: msg.created_at, sender_id: msg.sender_id, status: msg.status };
+    }
+    setLocalLastMessages(map);
+  }, []);
+
+  /** Server remains authoritative for room metadata; this runs after the local
+   * cache is visible, and on focus/pull-to-refresh as a background repair. */
+  const syncRooms = useCallback(async () => {
     try {
       const data = await getRooms();
       setRooms(data);
-      // Load last messages from local DB for all rooms
-      const localMsgsMap = await getLastMessagePerRoom();
-      const map: Record<
-        string,
-        {
-          content: string;
-          created_at: string;
-          sender_id?: number;
-          status?: 'pending' | 'delivered' | 'read';
-        } | null
-      > = {};
-      for (const [roomId, msg] of Object.entries(localMsgsMap)) {
-        map[roomId] = {
-          content: msg.content ?? '',
-          created_at: msg.created_at,
-          sender_id: msg.sender_id,
-          status: msg.status,
-        };
-      }
-      setLocalLastMessages(map);
+      if (user?.id != null) await cacheRooms(user.id, data);
+      await loadLocalLastMessages();
     } catch { /* ignore */ } finally {
-      setLoading(false);
       setRefreshing(false);
     }
-  }, []);
-
-  useEffect(() => { fetchRooms(); }, [fetchRooms]);
+  }, [user?.id, loadLocalLastMessages]);
 
   useEffect(() => {
-    const unsub = navigation.addListener('focus', fetchRooms);
+    let active = true;
+    (async () => {
+      try {
+        const [cachedRooms] = await Promise.all([
+          user?.id != null ? getCachedRooms(user.id) : Promise.resolve([] as ChatRoom[]),
+          loadLocalLastMessages(),
+        ]);
+        if (active && cachedRooms.length) setRooms(cachedRooms);
+      } catch { /* cache is best-effort */ } finally {
+        if (active) setLoading(false);
+      }
+      // Do not await: the list is already usable from local SQLite.
+      syncRooms().catch(() => {});
+    })();
+    return () => { active = false; };
+  }, [user?.id, loadLocalLastMessages, syncRooms]);
+
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', syncRooms);
     return unsub;
-  }, [navigation, fetchRooms]);
+  }, [navigation, syncRooms]);
 
   // Live-update the list when a new message arrives over the notification WS.
   // Without this, the "last message" preview only refreshes when the screen
@@ -301,7 +309,7 @@ export default function ChatListScreen() {
         const idx = prev.findIndex((r) => r.id === roomId);
         if (idx === -1) {
           // New room not yet in our list — re-fetch to pick it up.
-          fetchRooms();
+          syncRooms();
           return prev;
         }
         const updated: ChatRoom = {
@@ -321,7 +329,7 @@ export default function ChatListScreen() {
       });
     });
     return unsub;
-  }, [subscribe, fetchRooms]);
+  }, [subscribe, syncRooms]);
 
   const getRoomDisplayName = (room: ChatRoom): string => {
     if (room.name) return room.name;
@@ -523,7 +531,7 @@ export default function ChatListScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: Colors.background }]}>
-      {totalUnread > 0 && (
+      {totalUnread > 50 && (
         <TouchableOpacity
           style={[styles.markAllBar, { borderBottomColor: Colors.divider }]}
           activeOpacity={0.7}
@@ -555,7 +563,7 @@ export default function ChatListScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => { setRefreshing(true); fetchRooms(); }}
+            onRefresh={() => { setRefreshing(true); syncRooms(); }}
             colors={[Colors.primary]}
             tintColor={Colors.primary}
           />

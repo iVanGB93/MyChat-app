@@ -15,17 +15,20 @@ import {
 import { Font, Radius, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
+import { useAuth } from '../../contexts/AuthContext';
 import {
   BlockedUserRow,
   getBlockedUsers,
   unblockUser,
 } from '../../services/contactService';
 import { useAppStore } from '../../store/appStore';
+import { setCachedRelationship } from '../../services/localMessageStore';
 import { resolveMediaUrl } from '../../services/api';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 
 export default function BlockedUsersScreen() {
+  const { user } = useAuth();
   const { colors: Colors } = useTheme();
   const { confirm, alert } = useConfirm();
   const [rows, setRows] = useState<BlockedUserRow[]>([]);
@@ -66,6 +69,7 @@ export default function BlockedUsersScreen() {
             setPending((p) => ({ ...p, [row.id]: true }));
             try {
               await unblockUser(row.id);
+              if (user?.id != null) await setCachedRelationship(user.id, row.blocked, null);
               setRows((prev) => {
                 const next = prev.filter((r) => r.id !== row.id);
                 useAppStore.getState().setBlockedIds(next.map((r) => r.blocked));

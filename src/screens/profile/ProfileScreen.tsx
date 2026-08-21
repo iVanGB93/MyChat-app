@@ -388,6 +388,18 @@ export default function ProfileScreen() {
         />
       </View>
 
+      {/* Local chat storage */}
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ DEVICE CHAT STORAGE</Text>
+        <ActionRow
+          label="MANAGE CHAT STORAGE"
+          icon="server-outline"
+          colors={Colors}
+          onPress={() => navigation.navigate('ChatStorage')}
+          last
+        />
+      </View>
+
       {/* Theme card */}
       <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
         <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ DISPLAY</Text>

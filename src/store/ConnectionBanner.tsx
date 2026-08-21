@@ -5,7 +5,7 @@
 /*  wrong with connectivity. Hidden when everything is fine.           */
 /* ------------------------------------------------------------------ */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { selectNotifWsConnected, useAppStore } from './appStore';
@@ -16,6 +16,50 @@ interface BannerState {
   show: boolean;
   text: string;
   color: string;
+  /** Automatic recovery is in progress; use motion instead of a retry button. */
+  recovering: boolean;
+  /** Manual action is useful only after recovery cannot continue on its own. */
+  failed: boolean;
+}
+
+/** A small wave makes a short reconnect period feel active without adding dots. */
+function RecoveringText({ text }: { text: string }) {
+  const letters = useMemo(() => Array.from(text), [text]);
+  const pulses = useRef<Animated.Value[]>([]).current;
+  while (pulses.length < letters.length) pulses.push(new Animated.Value(0));
+
+  useEffect(() => {
+    const wave = Animated.loop(
+      Animated.sequence([
+        Animated.stagger(42, letters.map((_, index) => Animated.sequence([
+          Animated.timing(pulses[index], { toValue: 1, duration: 150, useNativeDriver: true }),
+          Animated.timing(pulses[index], { toValue: 0, duration: 230, useNativeDriver: true }),
+        ]))),
+        Animated.delay(360),
+      ]),
+    );
+    wave.start();
+    return () => wave.stop();
+  }, [letters, pulses]);
+
+  return (
+    <View style={styles.animatedText} accessibilityLabel={text}>
+      {letters.map((letter, index) => (
+        <Animated.Text
+          key={`${letter}-${index}`}
+          style={[
+            styles.text,
+            {
+              opacity: pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] }),
+              transform: [{ translateY: pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0, -2] }) }],
+            },
+          ]}
+        >
+          {letter}
+        </Animated.Text>
+      ))}
+    </View>
+  );
 }
 
 function deriveBanner(
@@ -27,28 +71,28 @@ function deriveBanner(
   appLifecycle: string,
 ): BannerState {
   // Skip while the app is backgrounded — banners only matter when visible.
-  if (appLifecycle !== 'active') return { show: false, text: '', color: '' };
+  if (appLifecycle !== 'active') return { show: false, text: '', color: '', recovering: false, failed: false };
 
   if (net === 'offline') {
-    return { show: true, text: 'No internet connection', color: '#EF4444' };
+    return { show: true, text: 'No internet connection', color: '#B91C1C', recovering: false, failed: true };
   }
   if (suspendedUntil > Date.now()) {
     const sec = Math.ceil((suspendedUntil - Date.now()) / 1000);
-    return { show: true, text: `Server unavailable — retrying in ${sec}s`, color: '#EF4444' };
+    return { show: true, text: `Server unavailable — retrying in ${sec}s`, color: '#B91C1C', recovering: false, failed: true };
   }
   if (notifStatus === 'connecting' || notifStatus === 'reconnecting') {
-    return { show: true, text: 'Connecting…', color: '#F59E0B' };
+    return { show: true, text: notifStatus === 'reconnecting' ? 'Reconnecting' : 'Connecting', color: '#A16207', recovering: true, failed: false };
   }
   if (notifStatus === 'connected' && !authenticated) {
-    return { show: true, text: 'Authenticating…', color: '#F59E0B' };
+    return { show: true, text: 'Authenticating', color: '#A16207', recovering: true, failed: false };
   }
   if (notifStatus === 'connected' && authenticated && !verifiedConnected) {
-    return { show: true, text: 'Connection stale — recovering…', color: '#F59E0B' };
+    return { show: true, text: 'Restoring connection', color: '#A16207', recovering: true, failed: false };
   }
   if (notifStatus === 'disconnected') {
-    return { show: true, text: 'Disconnected', color: '#6B7280' };
+    return { show: true, text: 'Connection lost', color: '#4B5563', recovering: false, failed: true };
   }
-  return { show: false, text: '', color: '' };
+  return { show: false, text: '', color: '', recovering: false, failed: false };
 }
 
 export function ConnectionBanner() {
@@ -95,7 +139,6 @@ export function ConnectionBanner() {
   }, []);
 
   const banner = deriveBanner(net, notifStatus, authenticated, verifiedConnected, suspendedUntil, appLifecycle);
-  const canReconnect = notifStatus === 'disconnected' || notifStatus === 'reconnecting';
   const slide = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -138,8 +181,8 @@ export function ConnectionBanner() {
       ]}
     >
       <View style={styles.row}>
-        <Text style={styles.text}>{banner.text}</Text>
-        {canReconnect ? (
+        {banner.recovering ? <RecoveringText text={banner.text} /> : <Text style={styles.text}>{banner.text}</Text>}
+        {banner.failed ? (
           <Pressable
             onPress={reconnectWsNow}
             style={styles.reconnectBtn}
@@ -168,6 +211,9 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  animatedText: {
+    flexDirection: 'row',
   },
   row: {
     flexDirection: 'row',

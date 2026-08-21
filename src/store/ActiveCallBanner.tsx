@@ -55,11 +55,28 @@ export function ActiveCallBanner() {
     navigationRef.isReady() ? navigationRef.getCurrentRoute()?.name : undefined,
   );
   useEffect(() => {
-    if (!navigationRef.isReady()) return;
-    const update = () => setCurrentRouteName(navigationRef.getCurrentRoute()?.name);
-    update();
-    const unsub = navigationRef.addListener('state', update);
-    return unsub;
+    let unsubscribe: (() => void) | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    const attach = () => {
+      // This banner mounts beside (not inside) NavigationContainer, so its
+      // first effect can run before navigation is ready. Retry once it mounts;
+      // otherwise it never learns that the user is already on ActiveCall.
+      if (!navigationRef.isReady()) {
+        retry = setTimeout(attach, 100);
+        return;
+      }
+      if (cancelled) return;
+      const update = () => setCurrentRouteName(navigationRef.getCurrentRoute()?.name);
+      update();
+      unsubscribe = navigationRef.addListener('state', update);
+    };
+    attach();
+    return () => {
+      cancelled = true;
+      if (retry) clearTimeout(retry);
+      unsubscribe?.();
+    };
   }, []);
   const onCallScreen =
     currentRouteName === 'ActiveCall' || currentRouteName === 'IncomingCall';

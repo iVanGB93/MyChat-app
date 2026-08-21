@@ -3,6 +3,7 @@
 /* ------------------------------------------------------------------ */
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearTokens, getTokens } from '../services/api';
 import { getProfile, login as loginApi, register as registerApi, registerPushToken, unregisterPushToken } from '../services/authService';
@@ -10,7 +11,7 @@ import { getPushRegistrationPayload } from '../services/pushNotificationService'
 import { unregisterBackgroundTask, unregisterPushReceiveTask } from '../services/backgroundNotificationService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { setCurrentUserId } from '../services/chatWsManager';
-import { initDB } from '../services/localMessageStore';
+import { cacheRelationshipSets, getCachedRelationshipSets, initDB } from '../services/localMessageStore';
 import { getContacts, getBlockedUsers } from '../services/contactService';
 import { useAppStore } from '../store/appStore';
 import type { User } from '../types';
@@ -86,25 +87,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  /** Refresh contact and blocked-user sets in the global store. */
-  const syncContactSets = useCallback(async () => {
+  /** Load the last known state first so request banners are correct offline. */
+  const loadCachedContactSets = useCallback(async (ownerUserId: number) => {
     try {
-      const [contacts, blocked] = await Promise.all([
-        getContacts().catch(() => []),
-        getBlockedUsers().catch(() => []),
-      ]);
+      const cached = await getCachedRelationshipSets(ownerUserId);
       const store = useAppStore.getState();
-      store.setContactIds(contacts.map((c) => c.contact));
-      store.setBlockedIds(blocked.map((b) => b.blocked));
+      store.setContactIds(cached.contactIds);
+      store.setBlockedIds(cached.blockedIds);
+    } catch (err) {
+      console.warn('[Auth] cached relationship load failed:', err);
+    }
+  }, []);
+
+  /** Refresh contact and blocked-user sets without wiping valid cache on a
+   * transient network error. A successful pair is committed to SQLite. */
+  const syncContactSets = useCallback(async (ownerUserId: number) => {
+    try {
+      const [contactsResult, blockedResult] = await Promise.allSettled([getContacts(), getBlockedUsers()]);
+      const store = useAppStore.getState();
+      const contacts = contactsResult.status === 'fulfilled' ? contactsResult.value : null;
+      const blocked = blockedResult.status === 'fulfilled' ? blockedResult.value : null;
+      if (contacts) store.setContactIds(contacts.map((c) => c.contact));
+      if (blocked) store.setBlockedIds(blocked.map((b) => b.blocked));
+      if (contacts && blocked) {
+        await cacheRelationshipSets(ownerUserId, contacts.map((c) => c.contact), blocked.map((b) => b.blocked));
+      }
     } catch (err) {
       console.warn('[Auth] contact set sync failed:', err);
     }
   }, []);
 
+  // Relationship changes made from another device should be reflected soon
+  // after this app returns to the foreground, while still leaving cached state
+  // visible if the network is unavailable.
+  useEffect(() => {
+    if (!state.user?.id) return;
+    const ownerUserId = state.user.id;
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') syncContactSets(ownerUserId);
+    });
+    return () => sub.remove();
+  }, [state.user?.id, syncContactSets]);
+
   // Try to restore session on mount
   useEffect(() => {
     (async () => {
-      initDB().catch(() => {}); // ensure DB is ready
+      await initDB().catch(() => {});
       try {
         const tokens = await getTokens();
         if (tokens?.access) {
@@ -112,17 +140,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           if (cachedUser) {
             setCurrentUserId(cachedUser.id, cachedUser.username);
             setState({ user: cachedUser, isLoading: false, isAuthenticated: true });
+            loadCachedContactSets(cachedUser.id);
             syncPushToken();
-            syncContactSets();
+            syncContactSets(cachedUser.id);
           }
           try {
             const user = await getProfile();
             await setCachedUser(user);
             setCurrentUserId(user.id, user.username);
             setState({ user, isLoading: false, isAuthenticated: true });
+            loadCachedContactSets(user.id);
             // Register push token with backend on session restore
             syncPushToken();
-            syncContactSets();
+            syncContactSets(user.id);
           } catch (err) {
             if (cachedUser && !isAuthFailure(err)) {
               // Keep user logged in with cached profile on transient failures.
@@ -150,7 +180,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
     })();
-  }, []);
+  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
 
   const login = useCallback(async (username: string, password: string) => {
     await loginApi(username, password);
@@ -158,10 +188,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await setCachedUser(user);
     setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
+    loadCachedContactSets(user.id);
     // Register push token with backend after login
     syncPushToken();
-    syncContactSets();
-  }, [syncPushToken, syncContactSets]);
+    syncContactSets(user.id);
+  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
 
   const register = useCallback(async (username: string, email: string, password: string, displayName?: string) => {
     await registerApi(username, email, password, displayName);
@@ -170,10 +201,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await setCachedUser(user);
     setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
+    loadCachedContactSets(user.id);
     // Register push token with backend after registration
     syncPushToken();
-    syncContactSets();
-  }, [syncPushToken, syncContactSets]);
+    syncContactSets(user.id);
+  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
 
   const logout = useCallback(async () => {
     destroyWsManager();
@@ -202,9 +234,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await setCachedUser(user);
     setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
+    loadCachedContactSets(user.id);
     syncPushToken();
-    syncContactSets();
-  }, [syncPushToken, syncContactSets]);
+    syncContactSets(user.id);
+  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
 
   return (
     <AuthContext.Provider value={{ ...state, login, register, loginWithTokens, logout, refreshUser }}>

@@ -19,6 +19,7 @@ import {
   useWindowDimensions,
   Animated,
   PanResponder,
+  Linking,
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -35,11 +36,13 @@ import {
 } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
+import * as IntentLauncher from 'expo-intent-launcher';
+import { File } from 'expo-file-system';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
-import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage } from '../../services/localMessageStore';
+import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
 import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, sendChatMessage } from '../../services/chatWsManager';
 import { getRooms } from '../../services/chatService';
 import { initiateCall } from '../../services/callService';
@@ -50,13 +53,56 @@ import { dismissRoomNotification } from '../../services/pushNotificationService'
 import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import VoiceMessageBubble from '../../components/VoiceMessageBubble';
-import SmartMessageText from '../../components/SmartMessageText';
+import SmartMessageText, { getFirstMessageUrl } from '../../components/SmartMessageText';
 import { persistOutgoingImage, compressImageForSend } from '../../services/voiceMessageUtils';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
+
+/** Compact header signal shown while the room socket is reconnecting. */
+function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing: boolean; color: string }) {
+  const letters = useMemo(() => Array.from(title.slice(0, 24)), [title]);
+  const pulses = useRef(letters.map(() => new Animated.Value(0))).current;
+
+  useEffect(() => {
+    if (!syncing) {
+      pulses.forEach((pulse) => pulse.setValue(0));
+      return;
+    }
+    const wave = Animated.loop(
+      Animated.sequence([
+        Animated.stagger(45, pulses.map((pulse) => Animated.sequence([
+          Animated.timing(pulse, { toValue: 1, duration: 160, useNativeDriver: true }),
+          Animated.timing(pulse, { toValue: 0, duration: 240, useNativeDriver: true }),
+        ]))),
+        Animated.delay(350),
+      ]),
+    );
+    wave.start();
+    return () => wave.stop();
+  }, [syncing, pulses]);
+
+  return (
+    <View style={styles.syncHeaderTitle} accessibilityLabel={syncing ? `${title}, syncing` : title}>
+      <View style={styles.syncLetters}>
+        {letters.map((letter, index) => (
+          <Animated.Text
+            key={`${letter}-${index}`}
+            style={[styles.syncHeaderLetter, {
+              color,
+              opacity: syncing ? pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0.7, 1] }) : 1,
+              transform: [{ translateY: syncing ? pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0, -2] }) : 0 }],
+            }]}
+          >
+            {letter}
+          </Animated.Text>
+        ))}
+      </View>
+    </View>
+  );
+}
 
 /* Voice recording tuned for speech (mono, low bitrate) so clips stay small
  * enough to ride in a single WS frame. A high-bitrate stereo clip can exceed
@@ -131,6 +177,46 @@ interface MessageBubbleProps {
   onLongPress: (pageY: number, item: Message) => void;
   onImagePress: (uri: string | null) => void;
   onReaction: (item: Message, emoji: string) => void;
+}
+
+function SharedFileBubble({ type, fileUri, label, colors }: { type: 'video' | 'document'; fileUri: string; label: string; colors: ThemeColors }) {
+  const isVideo = type === 'video';
+  return (
+    <TouchableOpacity
+      style={[styles.sharedFile, { backgroundColor: colors.surfaceVariant, borderColor: colors.neonBorder }]}
+      onPress={() => openSharedFile(fileUri)}
+      activeOpacity={0.75}
+      accessibilityRole="button"
+      accessibilityLabel={isVideo ? 'Open shared video' : 'Open shared document'}
+    >
+      <View style={[styles.sharedFileIcon, { backgroundColor: colors.highlight }]}>
+        <Ionicons name={isVideo ? 'videocam-outline' : 'document-text-outline'} size={24} color={colors.primary} />
+      </View>
+      <View style={styles.sharedFileInfo}>
+        <Text style={[styles.sharedFileTitle, { color: colors.text }]} numberOfLines={2}>{label}</Text>
+        <Text style={[styles.sharedFileHint, { color: colors.textSecondary }]}>{isVideo ? 'Tap to open video' : 'Tap to open document'}</Text>
+      </View>
+      <Ionicons name="open-outline" size={17} color={colors.textTertiary} />
+    </TouchableOpacity>
+  );
+}
+
+async function openSharedFile(fileUri: string): Promise<void> {
+  try {
+    if (Platform.OS === 'android') {
+      const file = new File(fileUri);
+      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+        data: file.contentUri,
+        type: file.type || '*/*',
+        // FLAG_GRANT_READ_URI_PERMISSION
+        flags: 1,
+      });
+      return;
+    }
+    await Linking.openURL(fileUri);
+  } catch {
+    // The receiving device may not have an app registered for this format.
+  }
 }
 
 function MessageBubbleBase({
@@ -272,13 +358,22 @@ function MessageBubbleBase({
                 <ActivityIndicator color={Colors.primary} />
                 <Text style={[styles.mediaPlaceholderText, { color: Colors.textSecondary }]}>Receiving…</Text>
               </View>
+            ) : (item.message_type === 'video' || item.message_type === 'document') && (item.file_uri || item.file) ? (
+              <SharedFileBubble type={item.message_type} fileUri={item.file_uri ?? item.file ?? ''} label={item.content || (item.message_type === 'video' ? 'Video' : 'Document')} colors={Colors} />
+            ) : item.message_type === 'video' || item.message_type === 'document' ? (
+              <View style={[styles.sharedFile, { backgroundColor: Colors.surfaceVariant, borderColor: Colors.neonBorder }]}>
+                <ActivityIndicator color={Colors.primary} />
+                <Text style={[styles.sharedFileHint, { color: Colors.textSecondary, marginLeft: Spacing.sm }]}>Receiving {item.message_type}…</Text>
+              </View>
             ) : (
-              <SmartMessageText
-                style={[styles.messageText, { color: Colors.text }]}
-                linkColor={Colors.primary}
-              >
-                {item.content}
-              </SmartMessageText>
+              <>
+                <SmartMessageText
+                  style={[styles.messageText, { color: Colors.text }]}
+                  linkColor={Colors.primary}
+                >
+                  {item.content}
+                </SmartMessageText>
+              </>
             )}
             {__DEV__ && isMine && !item.is_deleted && (
               <Text
@@ -616,6 +711,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   useLayoutEffect(() => {
     navigation.setOptions({
+      headerTitle: () => <SyncingHeaderTitle title={route.params.roomName} syncing={!connected} color={Colors.headerText} />,
       headerRight: () => (
         <View style={{ flexDirection: 'row', gap: 8, marginRight: 8 }}>
           <TouchableOpacity
@@ -661,7 +757,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         </View>
       ),
     });
-  }, [navigation, otherUserId, roomId, isMuted]);
+  }, [navigation, otherUserId, roomId, isMuted, connected, Colors.headerText, route.params.roomName]);
 
   const handleSend = () => {
     const trimmed = text.trim();
@@ -888,8 +984,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     setContextMsg(null);
     const newReactions = await toggleReaction(msgId, emoji, String(user.id));
     // Update in-memory WS state + relay to other members (reacted_emoji is a display hint)
-    sendMessageUpdate(roomId, msgId, { reactions: newReactions, reacted_emoji: emoji });
-  }, [contextMsg, user, roomId, loadFromDB]);
+    sendMessageUpdate(roomId, msgId, { reactions: newReactions, reacted_emoji: emoji }, otherUserId ? [otherUserId] : []);
+  }, [contextMsg, user, roomId, otherUserId, loadFromDB]);
 
   const handleCopy = useCallback(async () => {
     if (!contextMsg) return;
@@ -899,6 +995,19 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     try {
       await Clipboard.setStringAsync(text);
     } catch { /* ignore */ }
+  }, [contextMsg]);
+
+  const handleOpenLink = useCallback(() => {
+    const url = contextMsg ? getFirstMessageUrl(contextMsg.content ?? '') : null;
+    setContextMsg(null);
+    if (url) Linking.openURL(url).catch(() => {});
+  }, [contextMsg]);
+
+  const handleCopyLink = useCallback(async () => {
+    const url = contextMsg ? getFirstMessageUrl(contextMsg.content ?? '') : null;
+    setContextMsg(null);
+    if (!url) return;
+    try { await Clipboard.setStringAsync(url); } catch { /* ignore */ }
   }, [contextMsg]);
 
   const handleDelete = useCallback(() => {
@@ -914,7 +1023,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         { text: 'Delete', style: 'destructive', onPress: async () => {
           await deleteMessage(msgId);
           // Update in-memory WS state + relay to other members
-          sendMessageUpdate(roomId, msgId, { is_deleted: true });
+          sendMessageUpdate(roomId, msgId, { is_deleted: true }, otherUserId ? [otherUserId] : []);
         }},
       ],
     });
@@ -952,6 +1061,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           ? { file_uri: msg.file_uri ?? msg.file ?? null, image_mime: 'image/jpeg' }
           : type === 'voice'
             ? { file_uri: msg.file_uri ?? msg.file ?? null, duration_ms: msg.duration_ms ?? null, audio_mime: 'audio/m4a' }
+            : (type === 'video' || type === 'document')
+              ? { file_uri: msg.file_uri ?? msg.file ?? null, media_mime: 'application/octet-stream' }
             : null;
       await sendChatMessage(targetRoomId, msg.content ?? '', type, null, extras);
       playSound('message_sent');
@@ -974,8 +1085,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   const handleReactionToggle = useCallback(async (m: Message, emoji: string) => {
     const newReactions = await toggleReaction(m.id, emoji, String(user?.id ?? ''));
-    sendMessageUpdate(roomId, m.id, { reactions: newReactions, reacted_emoji: emoji });
-  }, [roomId, user?.id]);
+    sendMessageUpdate(roomId, m.id, { reactions: newReactions, reacted_emoji: emoji }, otherUserId ? [otherUserId] : []);
+  }, [roomId, user?.id, otherUserId]);
 
   const renderMessage = useCallback(({ item }: { item: Message }) => {
     const isMine = item.sender === user?.id;
@@ -1006,17 +1117,19 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     try {
       await addContact(otherUserId);
       useAppStore.getState().addContactId(otherUserId);
+      if (user?.id != null) await setCachedRelationship(user.id, otherUserId, 'contact');
     } catch (err: any) {
       // Likely 400 because the contact already exists — treat that as accepted.
       if (err?.response?.status === 400) {
         useAppStore.getState().addContactId(otherUserId);
+        if (user?.id != null) await setCachedRelationship(user.id, otherUserId, 'contact');
       } else {
         alert('Could not accept', 'Please try again.');
       }
     } finally {
       setRequestBusy(false);
     }
-  }, [otherUserId, requestBusy]);
+  }, [otherUserId, requestBusy, user?.id]);
 
   const handleBlockRequest = useCallback(() => {
     if (!otherUserId || requestBusy) return;
@@ -1034,6 +1147,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             try {
               await blockUser(otherUserId);
               useAppStore.getState().addBlockedId(otherUserId);
+              useAppStore.getState().removeContactId(otherUserId);
+              if (user?.id != null) await setCachedRelationship(user.id, otherUserId, 'blocked');
               navigation.goBack();
             } catch {
               alert('Could not block', 'Please try again.');
@@ -1043,7 +1158,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         },
       ],
     });
-  }, [otherUserId, requestBusy, navigation]);
+  }, [otherUserId, requestBusy, navigation, user?.id]);
 
   if (loading) {
     return (
@@ -1061,12 +1176,6 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       behavior="padding"
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 80}
     >
-      {!connected && (
-        <View style={[styles.connectionBar, { backgroundColor: Colors.surface, borderBottomColor: Colors.warning }]}>
-          <Text style={[styles.connectionText, { color: Colors.warning }]}>◈ SYNCING…</Text>
-        </View>
-      )}
-
       {isMessageRequest && (
         <View style={[styles.requestBanner, {
           backgroundColor: Colors.surface,
@@ -1318,7 +1427,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             style={[styles.contextPanel, {
               backgroundColor: Colors.surface,
               borderColor: Colors.neonBorder,
-              top: Math.min(Math.max(contextY - 70, 60), winHeight - 200),
+              top: Math.min(Math.max(contextY - 70, 60), winHeight - 290),
             }]}
             onPress={() => {}}
           >
@@ -1345,6 +1454,17 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
                 <TouchableOpacity onPress={handleCopy} style={styles.contextOption}>
                   <Text style={[styles.contextOptionText, { color: Colors.text }]}>📋  Copy message</Text>
+                </TouchableOpacity>
+              </>
+            )}
+            {contextMsg && !contextMsg.is_deleted && getFirstMessageUrl(contextMsg.content ?? '') && (
+              <>
+                <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
+                <TouchableOpacity onPress={handleOpenLink} style={styles.contextOption}>
+                  <Text style={[styles.contextOptionText, { color: Colors.text }]}>↗  Open link</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleCopyLink} style={styles.contextOption}>
+                  <Text style={[styles.contextOptionText, { color: Colors.text }]}>🔗  Copy link</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -1440,12 +1560,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  connectionBar: {
-    paddingVertical: Spacing.xs,
-    alignItems: 'center',
-    borderBottomWidth: 1,
-  },
-  connectionText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 2 },
+  syncHeaderTitle: { flexDirection: 'row', alignItems: 'center', maxWidth: 150 },
+  syncLetters: { flexDirection: 'row', flexShrink: 1 },
+  syncHeaderLetter: { fontSize: Font.size.md, fontWeight: '800', letterSpacing: 0.7 },
 
   /* ---- Contact / message-request banner ---- */
   requestBanner: {
@@ -1615,6 +1732,11 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     backgroundColor: '#0002',
   },
+  sharedFile: { flexDirection: 'row', alignItems: 'center', minWidth: 220, maxWidth: 280, borderWidth: 1, borderRadius: Radius.sm, padding: Spacing.sm },
+  sharedFileIcon: { width: 42, height: 42, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center', marginRight: Spacing.sm },
+  sharedFileInfo: { flex: 1, minWidth: 0, paddingRight: Spacing.xs },
+  sharedFileTitle: { fontSize: Font.size.sm, fontWeight: '700' },
+  sharedFileHint: { fontSize: Font.size.xs, marginTop: 3 },
   mediaPlaceholder: {
     alignItems: 'center',
     justifyContent: 'center',

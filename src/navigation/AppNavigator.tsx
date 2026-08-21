@@ -454,6 +454,18 @@ export default function AppNavigator() {
                 }}
               />
               <Stack.Screen
+                name="ChatStorage"
+                component={require('../screens/profile/ChatStorageScreen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Chat storage',
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
+              />
+              <Stack.Screen
                 name="ChangePassword"
                 component={require('../screens/profile/ChangePasswordScreen').default}
                 options={{

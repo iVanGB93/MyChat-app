@@ -11,6 +11,7 @@ import { useShareIntent } from 'expo-share-intent';
 
 import { useAuth } from '../contexts/AuthContext';
 import { navigationRef } from '../navigation/AppNavigator';
+import type { RootStackParamList } from '../types';
 
 export default function ShareIntentBridge() {
   const { isAuthenticated } = useAuth();
@@ -28,14 +29,25 @@ export default function ShareIntentBridge() {
       return () => clearTimeout(t);
     }
 
-    // Pick the first usable file (image), or fall back to text/url.
-    const file = shareIntent.files?.[0];
-    const isImage = !!file && file.mimeType?.startsWith('image/');
+    // Keep every shared item. Android frequently hands us content:// URIs that
+    // expire when the share activity closes, so ShareTarget copies each file
+    // into Axonic-owned storage before it enters the sending outbox.
+    const attachments: NonNullable<RootStackParamList['ShareTarget']>['attachments'] =
+      (shareIntent.files ?? [])
+        .filter((file) => !!file?.path)
+        .map((file) => ({
+          uri: file.path,
+          mimeType: file.mimeType || 'application/octet-stream',
+          fileName: file.fileName || 'Shared file',
+          size: file.size ?? null,
+          kind: file.mimeType?.startsWith('image/') ? 'image'
+            : file.mimeType?.startsWith('video/') ? 'video'
+            : 'file',
+        }));
 
     const params = {
       text: shareIntent.text ?? shareIntent.webUrl ?? undefined,
-      imageUri: isImage ? file!.path : undefined,
-      imageMime: isImage ? file!.mimeType : undefined,
+      attachments: attachments.length ? attachments : undefined,
     };
 
     navigationRef.navigate('ShareTarget', params);

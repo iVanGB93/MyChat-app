@@ -5,7 +5,7 @@
 /* ------------------------------------------------------------------ */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Pressable, Platform } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useKeepAwake } from 'expo-keep-awake';
 import { RTCView } from 'react-native-webrtc';
@@ -36,6 +36,9 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   useKeepAwake('axonic-active-call');
 
   const [seconds, setSeconds] = useState(0);
+  // Video is unobstructed once controls are dismissed. A transparent press
+  // target beneath the controls makes any unused part of the screen toggle it.
+  const [showVideoControls, setShowVideoControls] = useState(true);
   const [status, setStatus] = useState<'connecting' | 'ringing' | 'connected' | 'ended'>(
     isOutgoing ? 'connecting' : 'connected',
   );
@@ -272,6 +275,15 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
         />
       )}
 
+      {isVideo && (showRemoteFullscreen || showLocalFullscreen) && (
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={() => setShowVideoControls((visible) => !visible)}
+          accessibilityRole="button"
+          accessibilityLabel={showVideoControls ? 'Hide call controls' : 'Show call controls'}
+        />
+      )}
+
       {/* PIP local preview only when remote is fullscreen */}
       {showRemoteFullscreen && localStreamUrl && (
         <View style={styles.pipWrap} pointerEvents="none">
@@ -285,13 +297,9 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
         </View>
       )}
 
-      {/* Scrim for legibility over any video */}
-      {(showRemoteFullscreen || showLocalFullscreen) && (
-        <View pointerEvents="none" style={styles.scrim} />
-      )}
-
       {/* ---- Overlay: top info + actions ---- */}
-      <View style={styles.overlay}>
+      {(!isVideo || showVideoControls) && (
+      <View style={styles.overlay} pointerEvents="box-none">
         <View style={styles.top}>
           {!isVideo && (
             <View style={[styles.typePill, { borderColor: Colors.neonBorder }] }>
@@ -397,6 +405,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
           )}
         </View>
       </View>
+      )}
     </View>
   );
 }
@@ -455,10 +464,6 @@ function makeStyles(Colors: any) {
     fullVideo: {
       ...StyleSheet.absoluteFillObject,
       backgroundColor: '#000',
-    },
-    scrim: {
-      ...StyleSheet.absoluteFillObject,
-      backgroundColor: 'rgba(2,13,31,0.45)',
     },
     pipWrap: {
       position: 'absolute',
