@@ -27,6 +27,7 @@ import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUn
 import { uploadMedia, type MediaType } from './mediaLane';
 import { useAppStore } from '../store/appStore';
 import type { InboundResult } from './ingressRouter';
+import { ensureWsAlive, isNotifWsReady, sendRawNotif, subscribeStatus } from './notificationWsManager';
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
 
@@ -113,6 +114,8 @@ export interface RoomSnapshot {
   status: RoomStatus;
   reconnectCount: number;
   lastMutationAt: number;
+  /** IDs affected by the latest SQLite-backed mutation batch. */
+  lastMutationIds: string[];
 }
 
 type RoomListener = (snapshot: RoomSnapshot) => void;
@@ -131,6 +134,10 @@ interface RoomState {
   deliveredIds: Set<string>;
   /** In-memory queue of updates not yet sent (also persisted to SQLite outbox). */
   pendingUpdates: Array<{ id: string; message_id: string; changes: MessageChanges }>;
+  /** Update ids already handed to Axion; prevents a local event storm from
+   * sending the exact same durable batch repeatedly before its ACK arrives. */
+  inFlightUpdateIds: Set<string>;
+  updateRetryTimer: ReturnType<typeof setTimeout> | null;
   reconnectDelay: number;
   reconnectCount: number;
   close1011Count: number;
@@ -145,6 +152,7 @@ interface RoomState {
   /** Queued media-hydration resends (specific ids) for a recipient, awaiting WS open. */
   pendingResends: Array<{ recipientId: number; ids: string[] }>;
   lastMutationAt: number;
+  lastMutationIds: string[];
   listeners: Set<RoomListener>;
   /** Pending teardown timer scheduled by subscribeRoom when listeners reach 0. */
   disconnectTimer: ReturnType<typeof setTimeout> | null;
@@ -152,6 +160,51 @@ interface RoomState {
 
 /* ---- Module-level state (survives React unmounts) ---- */
 const rooms = new Map<string, RoomState>();
+
+// Axion is the single authenticated realtime transport for the app. Room state
+// remains local because it owns the durable outbox, message snapshots and UI
+// subscriptions; it no longer owns a physical WebSocket per room.
+let _axionStatusUnsub: (() => void) | null = null;
+
+function isAxionReady(): boolean {
+  return isNotifWsReady();
+}
+
+function flushAxionRoom(roomId: string, s: RoomState): void {
+  s.authenticated = true;
+  s.connecting = false;
+  s.hasConnectedBefore = true;
+  setStatus(roomId, s, 'connected');
+  _syncRoomPendingNow(roomId, s);
+  sendRawNotif({ type: 'room_ready', room_id: roomId });
+  if (s.pendingFlushes.length > 0) {
+    const recipients = [...s.pendingFlushes];
+    s.pendingFlushes = [];
+    recipients.forEach((recipientId) => { void _doFlush(roomId, s, recipientId); });
+  }
+  if (s.pendingResends.length > 0) {
+    const queued = [...s.pendingResends];
+    s.pendingResends = [];
+    queued.forEach(({ recipientId, ids }) => { void resendMessagesByIds(roomId, recipientId, ids); });
+  }
+}
+
+function ensureAxionStatusListener(): void {
+  if (_axionStatusUnsub) return;
+  _axionStatusUnsub = subscribeStatus((status) => {
+    rooms.forEach((s, roomId) => {
+      if (status === 'connected' && isAxionReady()) {
+        flushAxionRoom(roomId, s);
+      } else if (status === 'connecting' || status === 'reconnecting') {
+        s.authenticated = false;
+        setStatus(roomId, s, s.hasConnectedBefore ? 'reconnecting' : 'connecting');
+      } else {
+        s.authenticated = false;
+        setStatus(roomId, s, 'disconnected');
+      }
+    });
+  });
+}
 
 let _netInfoUnsub: (() => void) | null = null;
 let _appStateUnsub: { remove: () => void } | null = null;
@@ -197,6 +250,8 @@ function createRoomState(): RoomState {
     pendingIds: new Set(),
     deliveredIds: new Set(),
     pendingUpdates: [],
+    inFlightUpdateIds: new Set(),
+    updateRetryTimer: null,
     reconnectDelay: INITIAL_RECONNECT_MS,
     reconnectCount: 0,
     close1011Count: 0,
@@ -210,6 +265,7 @@ function createRoomState(): RoomState {
     pendingFlushes: [],
     pendingResends: [],
     lastMutationAt: 0,
+    lastMutationIds: [],
     listeners: new Set(),
     disconnectTimer: null,
   };
@@ -231,6 +287,7 @@ function notifyListeners(roomId: string, state: RoomState) {
     status: state.status,
     reconnectCount: state.reconnectCount,
     lastMutationAt: state.lastMutationAt,
+    lastMutationIds: state.lastMutationIds,
   };
   state.listeners.forEach((fn) => { try { fn(snapshot); } catch { /* ignore */ } });
 }
@@ -247,6 +304,8 @@ function clearTimers(s: RoomState) {
   if (s.pongTimer) { clearTimeout(s.pongTimer); s.pongTimer = null; }
   if (s.connectionTimeoutTimer) { clearTimeout(s.connectionTimeoutTimer); s.connectionTimeoutTimer = null; }
   if (s.authTimeoutTimer) { clearTimeout(s.authTimeoutTimer); s.authTimeoutTimer = null; }
+  if (s.updateRetryTimer) { clearTimeout(s.updateRetryTimer); s.updateRetryTimer = null; }
+  s.inFlightUpdateIds.clear();
 }
 
 function closeWs(s: RoomState) {
@@ -281,13 +340,26 @@ function startPing(roomId: string, s: RoomState) {
 /** Send in-memory pending updates now (if connected). ACK deletes outbox rows. */
 function _flushPendingUpdates(roomId: string, s: RoomState): void {
   if (s.pendingUpdates.length === 0) return;
-  if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
-  const batch = [...s.pendingUpdates];
+  if (!isAxionReady()) return;
+  const batch = s.pendingUpdates.filter((update) => !s.inFlightUpdateIds.has(update.id));
+  if (!batch.length) return;
   try {
-    s.ws.send(JSON.stringify({
+    const sent = sendRawNotif({
       type: 'message_update',
+      room_id: roomId,
       updates: batch.map((u) => ({ id: u.id, message_id: u.message_id, changes: u.changes })),
-    }));
+    });
+    if (!sent) return;
+    batch.forEach((update) => s.inFlightUpdateIds.add(update.id));
+    // A missing server/peer ACK must be retried eventually, but never in a
+    // tight loop caused by unrelated inbound events or a stale deployment.
+    if (!s.updateRetryTimer) {
+      s.updateRetryTimer = setTimeout(() => {
+        s.updateRetryTimer = null;
+        s.inFlightUpdateIds.clear();
+        _flushSQLiteOutbox(roomId, s).catch(() => {});
+      }, 8_000);
+    }
     console.log('[ChatWsManager] sent', batch.length, 'pending updates for room', roomId);
   } catch {
     // Keep queued entries; they will be retried on next reconnect/flush.
@@ -300,8 +372,15 @@ async function _flushSQLiteOutbox(roomId: string, s: RoomState): Promise<void> {
     const entries = await getPendingOutboxUpdates(roomId);
     const persistedIds = new Set(entries.map((entry) => entry.id));
     s.pendingUpdates = s.pendingUpdates.filter((entry) => persistedIds.has(entry.id));
+    s.inFlightUpdateIds.forEach((id) => {
+      if (!persistedIds.has(id)) s.inFlightUpdateIds.delete(id);
+    });
+    if (s.inFlightUpdateIds.size === 0 && s.updateRetryTimer) {
+      clearTimeout(s.updateRetryTimer);
+      s.updateRetryTimer = null;
+    }
     if (!entries.length) return;
-    if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
+    if (!isAxionReady()) return;
     const have = new Set(s.pendingUpdates.map((u) => u.id));
     for (const e of entries) {
       if (!have.has(e.id)) s.pendingUpdates.push({ id: e.id, message_id: e.message_id, changes: e.changes });
@@ -356,7 +435,7 @@ function scheduleReconnect(roomId: string, s: RoomState) {
 }
 
 function _syncRoomPendingNow(roomId: string, s: RoomState): void {
-  if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
+  if (!isAxionReady()) return;
   _flushPendingUpdates(roomId, s);
   _flushSQLiteOutbox(roomId, s).catch(() => {});
   _retryUndeliveredMessages(roomId, s).catch(() => {});
@@ -413,6 +492,25 @@ async function refreshTokenIfNeeded(): Promise<string | null> {
 
 export async function connectRoom(roomId: string): Promise<void> {
   const s = getOrCreate(roomId);
+
+  // Axion is shared by every room. Opening a chat only registers a logical
+  // room with the local outbox; it must never create a second room WebSocket.
+  ensureAxionStatusListener();
+  if (isAxionReady()) {
+    flushAxionRoom(roomId, s);
+    return;
+  }
+  s.connecting = true;
+  s.connectingStartedAt = Date.now();
+  setStatus(roomId, s, s.hasConnectedBefore ? 'reconnecting' : 'connecting');
+  await ensureWsAlive().catch(() => {});
+  if (isAxionReady()) {
+    flushAxionRoom(roomId, s);
+  }
+  // The status subscription above updates this logical room when Axion's
+  // authentication/reconnect completes. Do not fall through into legacy room
+  // socket setup.
+  return;
 
   if (s.suspendReconnectUntil > Date.now()) return;
 
@@ -859,6 +957,7 @@ function markUploading(s: RoomState, roomId: string, messageId: string, uploadin
     ...s.messages.slice(idx + 1),
   ];
   s.lastMutationAt = Date.now();
+  s.lastMutationIds = [];
   notifyListeners(roomId, s);
 }
 
@@ -878,10 +977,8 @@ function fallbackMediaMime(messageType: string, fileUri: string | null | undefin
 }
 
 /**
- * Deliver one outgoing message over the room WS. Text and inline-sized media go
- * in a single frame; oversized media is sent as a placeholder frame (no blob)
- * followed by a `media_chunk` stream. Returns false only if the socket is not
- * ready to send. Never throws.
+ * Deliver one outgoing message over Axion. Media bytes travel over HTTP and the
+ * shared realtime gateway carries only the lightweight message/pointer frame.
  */
 async function sendOutboxFrame(
   s: RoomState,
@@ -897,7 +994,7 @@ async function sendOutboxFrame(
   },
   opts?: { hydration?: boolean; audioMime?: string | null; imageMime?: string | null; mediaMime?: string | null },
 ): Promise<boolean> {
-  if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) return false;
+  if (!isAxionReady()) return false;
   const isVoice = msg.type === 'voice';
   const isMedia = isVoice || msg.type === 'image' || msg.type === 'video' || msg.type === 'document';
 
@@ -938,17 +1035,20 @@ async function sendOutboxFrame(
       }
       markUploading(s, roomId, msg.id, false);
     }
-    // The upload may have taken a while — re-check the socket before sending.
-    if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) return false;
+    // The upload may have taken a while — re-check Axion before sending.
+    if (!isAxionReady()) return false;
     try {
-      s.ws.send(JSON.stringify({
+      const sent = sendRawNotif({
+        type: 'send_message',
+        room_id: roomId,
         ...base,
         media_id: ptr.media_id,
         media_md5: ptr.md5,
         media_sha256: ptr.sha256,
         media_size: ptr.size,
         ...(isVoice ? { audio_mime: ptr.mime } : msg.type === 'image' ? { image_mime: ptr.mime } : { media_mime: ptr.mime }),
-      }));
+      });
+      if (!sent) return false;
     } catch (err) {
       console.warn('[ChatWsManager] media pointer send failed', msg.id, err);
       return false;
@@ -958,7 +1058,7 @@ async function sendOutboxFrame(
 
   // Text — single frame.
   try {
-    s.ws.send(JSON.stringify({ ...base }));
+    if (!sendRawNotif({ type: 'send_message', room_id: roomId, ...base })) return false;
   } catch (err) {
     console.warn('[ChatWsManager] frame send failed', msg.id, err);
     return false;
@@ -1052,7 +1152,7 @@ export async function sendChatMessage(
     }
   }
 
-  if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+  if (isAxionReady()) {
     // Delivers text/small media in one frame; large media is chunked. Reads the
     // media base64 from `file_uri` internally.
     await sendOutboxFrame(
@@ -1081,7 +1181,7 @@ async function _doFlush(roomId: string, s: RoomState, recipientId: number): Prom
     const msgs = await getPendingOutbox(roomId, _myUserId, recipientId);
     for (const msg of msgs) {
       // Stop if the socket dropped mid-flush; the rest is retried on next auth_ok.
-      if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) break;
+      if (!isAxionReady()) break;
       try {
         await sendOutboxFrame(s, roomId, msg);
       } catch (err) {
@@ -1107,7 +1207,7 @@ async function _retryUndeliveredMessages(roomId: string, s: RoomState): Promise<
     console.log('[ChatWsManager] retrying', msgs.length, 'undelivered messages in room', roomId);
     for (const msg of msgs) {
       // Stop if the socket dropped mid-retry; the rest is retried on next auth_ok.
-      if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) break;
+      if (!isAxionReady()) break;
       try {
         await sendOutboxFrame(s, roomId, msg);
       } catch (err) {
@@ -1130,7 +1230,7 @@ async function _retryPendingUnsyncedMessages(roomId: string, s: RoomState): Prom
     if (msgs.length === 0) return;
     for (const msg of msgs) {
       // Stop if the socket dropped mid-retry; the rest is retried on next auth_ok.
-      if (!(s.ws?.readyState === WebSocket.OPEN && s.authenticated)) break;
+      if (!isAxionReady()) break;
       try {
         await sendOutboxFrame(s, roomId, msg);
       } catch (err) {
@@ -1180,6 +1280,7 @@ function _applyUpdatesToState(
   }
   if (changed) {
     s.lastMutationAt = Date.now();
+    s.lastMutationIds = updates.map((update) => update.message_id);
     notifyListeners(roomId, s);
   }
   // Persist to SQLite (fire-and-forget)
@@ -1218,8 +1319,12 @@ export function applyRemoteMessageUpdates(
  */
 export function flushOutboxForRecipient(roomId: string, recipientId: number): void {
   const s = rooms.get(roomId);
-  if (s?.ws?.readyState === WebSocket.OPEN && s.authenticated) {
+  if (s && isAxionReady()) {
+    // The peer explicitly came online, so permit a durable mutation retry now
+    // rather than waiting for its normal bounded retry timer.
+    s.inFlightUpdateIds.clear();
     _doFlush(roomId, s, recipientId);
+    _flushSQLiteOutbox(roomId, s).catch(() => {});
   } else {
     const rs = getOrCreate(roomId);
     if (!rs.pendingFlushes.includes(recipientId)) {
@@ -1242,7 +1347,7 @@ export async function resendMessagesByIds(
 ): Promise<void> {
   if (_myUserId === null || !ids.length) return;
   const s = rooms.get(roomId);
-  if (!s || s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) {
+  if (!s || !isAxionReady()) {
     // Not connected to this room yet — queue the resend and open the socket.
     // The auth_ok handler drains pendingResends once the WS is authenticated.
     const rs = getOrCreate(roomId);
@@ -1253,7 +1358,7 @@ export async function resendMessagesByIds(
   try {
     const msgs = await getMessagesByIdsForResend(roomId, _myUserId, ids);
     for (const msg of msgs) {
-      if (s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) break;
+      if (!isAxionReady()) break;
       // Nothing to hydrate if this row carries no media file.
       if (!msg.file_uri || (msg.type !== 'voice' && msg.type !== 'image')) continue;
       try {
@@ -1338,8 +1443,8 @@ export function markIdsAsReadInRoom(roomId: string, ids: string[]): void {
 /** Return a snapshot of the current room state (safe to call any time). */
 export function getSnapshot(roomId: string): RoomSnapshot {
   const s = rooms.get(roomId);
-  if (!s) return { messages: [], readIds: new Set(), pendingIds: new Set(), deliveredIds: new Set(), status: 'disconnected', reconnectCount: 0, lastMutationAt: 0 };
-  return { messages: s.messages, readIds: s.readIds, pendingIds: s.pendingIds, deliveredIds: s.deliveredIds, status: s.status, reconnectCount: s.reconnectCount, lastMutationAt: s.lastMutationAt };
+  if (!s) return { messages: [], readIds: new Set(), pendingIds: new Set(), deliveredIds: new Set(), status: 'disconnected', reconnectCount: 0, lastMutationAt: 0, lastMutationIds: [] };
+  return { messages: s.messages, readIds: s.readIds, pendingIds: s.pendingIds, deliveredIds: s.deliveredIds, status: s.status, reconnectCount: s.reconnectCount, lastMutationAt: s.lastMutationAt, lastMutationIds: s.lastMutationIds };
 }
 
 /**
@@ -1383,6 +1488,7 @@ export function injectReceivedMessage(
       const merged: WsMessage = { ...prev, ...msg, file_uri: msg.file_uri ?? prev.file_uri };
       s.messages = [...s.messages.slice(0, idx), merged, ...s.messages.slice(idx + 1)];
       s.lastMutationAt = Date.now();
+      s.lastMutationIds = [msg.id];
       notifyListeners(roomId, s);
     }
     return; // dedup
@@ -1396,9 +1502,33 @@ export function injectReceivedMessage(
  * Caller is responsible for throttling (e.g. once per keystroke burst).
  */
 export function sendTyping(roomId: string, isTyping: boolean): void {
-  const s = rooms.get(roomId);
-  if (!s || s.ws?.readyState !== WebSocket.OPEN || !s.authenticated) return;
-  try {
-    s.ws.send(JSON.stringify({ type: 'typing', is_typing: isTyping }));
-  } catch { /* ignore */ }
+  if (!isAxionReady()) return;
+  sendRawNotif({ type: 'typing', room_id: roomId, is_typing: isTyping });
+}
+
+/** Axion accepted an outbound message. Persist its server-sync state without
+ * waiting for a delivery receipt from each recipient. */
+export function markServerMessageAccepted(roomId: string, messageId: string): void {
+  if (!messageId) return;
+  setMessageSyncState(messageId, true)
+    // No full-room SQLite reload here: acceptance is a transport-state change,
+    // not a content mutation. Delivery/read ticks still update their focused
+    // bubble and chat-list preview through their dedicated events.
+    .then(() => {})
+    .catch(() => {});
+}
+
+/** Store Axion's authoritative peer snapshot for a mutation outbox entry. */
+export function applyMessageUpdateServerAck(
+  roomId: string,
+  updates: Array<{ id?: string; expected_peer_ids?: number[] }>,
+): void {
+  const s = getOrCreate(roomId);
+  updates.forEach((update) => {
+    const id = typeof update?.id === 'string' ? update.id : '';
+    const peers = Array.isArray(update?.expected_peer_ids)
+      ? update.expected_peer_ids.map(Number).filter((userId) => Number.isInteger(userId) && userId > 0)
+      : [];
+    if (id) setOutboxExpectedPeers(id, peers).then(() => _flushSQLiteOutbox(roomId, s)).catch(() => {});
+  });
 }

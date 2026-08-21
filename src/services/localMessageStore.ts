@@ -45,6 +45,10 @@ export async function initDB(): Promise<void> {
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room_id, created_at);
+    -- Axion emits a compact reconnect digest ordered by recency across rooms.
+    -- This index keeps that work bounded even after a long-lived account has
+    -- accumulated a large offline history.
+    CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages (created_at DESC);
 
     CREATE TABLE IF NOT EXISTS delivery_tracking (
       message_id   TEXT    NOT NULL,
@@ -642,8 +646,14 @@ export async function getRecentMessageDigest(
   const db = await getDB();
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
   const rows = await db.getAllAsync<{ id: string; room_id: string }>(
-    `SELECT id, room_id FROM messages WHERE created_at >= ? ORDER BY created_at DESC`,
-    since
+    `SELECT id, room_id FROM (
+       SELECT id, room_id,
+              ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) AS room_rank
+       FROM messages
+       WHERE created_at >= ?
+     ) WHERE room_rank <= ?`,
+    since,
+    perRoom,
   );
   const byRoom = new Map<string, string[]>();
   for (const r of rows) {
@@ -881,6 +891,69 @@ export async function queueMessageUpdate(
   // Any local mutation means this row is no longer guaranteed to match the peer.
   await db.runAsync(`UPDATE messages SET sync = 0 WHERE id = ?`, messageId);
   return id;
+}
+
+/**
+ * Local-first history page. The nested newest-first query lets SQLite use the
+ * room/created_at index, while callers still receive chronological rows for
+ * the chat renderer.
+ */
+export async function getRecentMessages(roomId: string, limit = 60): Promise<LocalMessage[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<any>(
+    `SELECT * FROM (
+       SELECT * FROM messages WHERE room_id = ? ORDER BY created_at DESC LIMIT ?
+     ) ORDER BY created_at ASC`,
+    roomId,
+    limit,
+  );
+  return normaliseMessages(rows);
+}
+
+/** Fetch one older local history page without touching the server. */
+export async function getMessagesBefore(
+  roomId: string,
+  beforeCreatedAt: string,
+  limit = 60,
+): Promise<LocalMessage[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<any>(
+    `SELECT * FROM (
+       SELECT * FROM messages
+       WHERE room_id = ? AND created_at < ?
+       ORDER BY created_at DESC LIMIT ?
+     ) ORDER BY created_at ASC`,
+    roomId,
+    beforeCreatedAt,
+    limit,
+  );
+  return normaliseMessages(rows);
+}
+
+/** Read only the rows changed by a realtime mutation; avoids reloading a room. */
+export async function getMessagesByIds(messageIds: string[]): Promise<LocalMessage[]> {
+  if (!messageIds.length) return [];
+  const db = await getDB();
+  const ids = [...new Set(messageIds)];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync<any>(
+    `SELECT * FROM messages WHERE id IN (${placeholders})`,
+    ...ids,
+  );
+  return normaliseMessages(rows);
+}
+
+function normaliseMessages(rows: any[]): LocalMessage[] {
+  return rows.map((r) => ({
+    ...r,
+    is_mine:    r.is_mine    === 1,
+    sync:       r.sync       === 1,
+    status:     (r.status === 'read' ? 'read' : r.status === 'delivered' ? 'delivered' : 'pending'),
+    is_deleted: r.is_deleted === 1,
+    is_read:    r.is_read    === 1,
+    reactions:  r.reactions  ? JSON.parse(r.reactions) : {},
+    reply_to:   r.reply_to   ? (JSON.parse(r.reply_to) as ReplyRef) : null,
+  }));
 }
 
 /** Load all pending outbox entries for a room (or all rooms if omitted). */

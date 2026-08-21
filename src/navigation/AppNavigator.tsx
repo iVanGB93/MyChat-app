@@ -53,6 +53,46 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator();
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
+/** Lightweight feedback on the startup screen while the saved session connects. */
+function ConnectingBrand({ color }: { color: string }) {
+  const letters = 'AXONIC'.split('');
+  const pulses = useRef(letters.map(() => new Animated.Value(0))).current;
+
+  useEffect(() => {
+    const wave = Animated.loop(
+      Animated.sequence([
+        Animated.stagger(70, pulses.map((pulse) => Animated.sequence([
+          Animated.timing(pulse, { toValue: 1, duration: 180, useNativeDriver: true }),
+          Animated.timing(pulse, { toValue: 0, duration: 280, useNativeDriver: true }),
+        ]))),
+        Animated.delay(320),
+      ]),
+    );
+    wave.start();
+    return () => wave.stop();
+  }, [pulses]);
+
+  return (
+    <View style={styles.splashBrand} accessibilityLabel="Axonic is connecting">
+      {letters.map((letter, index) => (
+        <Animated.Text
+          key={`${letter}-${index}`}
+          style={[
+            styles.splashTitle,
+            {
+              color,
+              opacity: pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] }),
+              transform: [{ translateY: pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0, -3] }) }],
+            },
+          ]}
+        >
+          {letter}
+        </Animated.Text>
+      ))}
+    </View>
+  );
+}
+
 /* ---- Tab icons ---- */
 function TabIcon({ label, focused }: { label: string; focused: boolean }) {
   const { colors: Colors } = useTheme();
@@ -366,7 +406,7 @@ export default function AppNavigator() {
         <View style={[styles.splashMark, { borderColor: Colors.primary, shadowColor: Colors.primary }]}>
           <Text style={[styles.splashMarkText, { color: Colors.primary }]}>AX</Text>
         </View>
-        <Text style={[styles.splashTitle, { color: Colors.primary }]}>AXONIC</Text>
+        <ConnectingBrand color={Colors.primary} />
         <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: Spacing.lg }} />
       </View>
     );
@@ -447,6 +487,30 @@ export default function AppNavigator() {
                 options={{
                   headerShown: true,
                   headerTitle: 'Edit account',
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
+              />
+              <Stack.Screen
+                name="GroupCreate"
+                component={require('../screens/chat/GroupCreateScreen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'New group',
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
+              />
+              <Stack.Screen
+                name="GroupInfo"
+                component={require('../screens/chat/GroupInfoScreen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Group info',
                   headerStyle: { backgroundColor: Colors.headerBg },
                   headerShadowVisible: false,
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
@@ -565,6 +629,9 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: '800',
     letterSpacing: 2,
+  },
+  splashBrand: {
+    flexDirection: 'row',
   },
   splashTitle: { fontSize: Font.size.title, marginTop: 0, fontWeight: '800', letterSpacing: 8 },
 });

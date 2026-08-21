@@ -1,8 +1,8 @@
 {
   "expo": {
     "name": "Axonic",
-    "slug": "MyChat-app",
-    "version": "1.0.21",
+    "slug": "axonic",
+    "version": "1.0.22",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -99,6 +99,11 @@
             "application/vnd.ms-powerpoint",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation",
             "application/zip"
+          ],
+          "androidMultiIntentFilters": [
+            "image/*",
+            "video/*",
+            "*/*"
           ]
         }
       ]

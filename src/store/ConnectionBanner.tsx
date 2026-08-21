@@ -68,6 +68,7 @@ function deriveBanner(
   authenticated: boolean,
   verifiedConnected: boolean,
   suspendedUntil: number,
+  lastCloseCode: number | null,
   appLifecycle: string,
 ): BannerState {
   // Skip while the app is backgrounded — banners only matter when visible.
@@ -80,16 +81,24 @@ function deriveBanner(
     const sec = Math.ceil((suspendedUntil - Date.now()) / 1000);
     return { show: true, text: `Server unavailable — retrying in ${sec}s`, color: '#B91C1C', recovering: false, failed: true };
   }
-  if (notifStatus === 'connecting' || notifStatus === 'reconnecting') {
-    return { show: true, text: notifStatus === 'reconnecting' ? 'Reconnecting' : 'Connecting', color: '#A16207', recovering: true, failed: false };
+  // The first socket handshake is expected startup work. Keep it quiet so the
+  // chat list can appear immediately; if it fails, the manager changes to
+  // `reconnecting` and the user then gets useful feedback.
+  if (notifStatus === 'connecting') {
+    return { show: false, text: '', color: '', recovering: false, failed: false };
+  }
+  if (notifStatus === 'reconnecting') {
+    return { show: true, text: 'Reconnecting', color: '#A16207', recovering: true, failed: false };
   }
   if (notifStatus === 'connected' && !authenticated) {
-    return { show: true, text: 'Authenticating', color: '#A16207', recovering: true, failed: false };
+    return { show: false, text: '', color: '', recovering: false, failed: false };
   }
   if (notifStatus === 'connected' && authenticated && !verifiedConnected) {
-    return { show: true, text: 'Restoring connection', color: '#A16207', recovering: true, failed: false };
+    return { show: false, text: '', color: '', recovering: false, failed: false };
   }
-  if (notifStatus === 'disconnected') {
+  // The store starts as disconnected before the first connection has even
+  // begun. Only call it a lost connection after the socket has actually closed.
+  if (notifStatus === 'disconnected' && lastCloseCode !== null) {
     return { show: true, text: 'Connection lost', color: '#4B5563', recovering: false, failed: true };
   }
   return { show: false, text: '', color: '', recovering: false, failed: false };
@@ -103,6 +112,7 @@ export function ConnectionBanner() {
   const authenticated = useAppStore((s) => s.notifWs.authenticated);
   const verifiedConnected = useAppStore(selectNotifWsConnected);
   const suspendedUntil = useAppStore((s) => s.notifWs.suspendedUntil);
+  const lastCloseCode = useAppStore((s) => s.notifWs.lastCloseCode);
   const appLifecycle = useAppStore((s) => s.appLifecycle);
 
   // Track current route to hide banner on auth screens.
@@ -138,7 +148,15 @@ export function ConnectionBanner() {
     };
   }, []);
 
-  const banner = deriveBanner(net, notifStatus, authenticated, verifiedConnected, suspendedUntil, appLifecycle);
+  const banner = deriveBanner(
+    net,
+    notifStatus,
+    authenticated,
+    verifiedConnected,
+    suspendedUntil,
+    lastCloseCode,
+    appLifecycle,
+  );
   const slide = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {

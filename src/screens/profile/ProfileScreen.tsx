@@ -77,6 +77,7 @@ export default function ProfileScreen() {
   const [notifMessages, setNotifMessages] = useState<boolean>(user?.notif_messages_enabled ?? true);
   const [notifCalls, setNotifCalls] = useState<boolean>(user?.notif_calls_enabled ?? true);
   const [notifSound, setNotifSound] = useState<boolean>(user?.notif_sound_enabled ?? true);
+  const [notifOfflineEmail, setNotifOfflineEmail] = useState<boolean>(user?.notif_offline_email_enabled ?? true);
 
   const handleSave = async () => {
     setSaving(true);
@@ -156,7 +157,7 @@ export default function ProfileScreen() {
   /* ------------------------ Notification toggles ------------------------ */
   const persistNotifPref = async (
     setter: (v: boolean) => void,
-    field: 'notif_messages_enabled' | 'notif_calls_enabled' | 'notif_sound_enabled',
+    field: 'notif_messages_enabled' | 'notif_calls_enabled' | 'notif_sound_enabled' | 'notif_offline_email_enabled',
     prevValue: boolean,
     nextValue: boolean,
   ) => {
@@ -456,6 +457,13 @@ export default function ProfileScreen() {
           value={notifSound}
           colors={Colors}
           onValueChange={(v) => persistNotifPref(setNotifSound, 'notif_sound_enabled', notifSound, v)}
+        />
+        <ToggleRow
+          label="OFFLINE EMAIL"
+          desc="Email me when a contact messages me and the app cannot reach me"
+          value={notifOfflineEmail}
+          colors={Colors}
+          onValueChange={(v) => persistNotifPref(setNotifOfflineEmail, 'notif_offline_email_enabled', notifOfflineEmail, v)}
           last
         />
       </View>

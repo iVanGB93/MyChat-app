@@ -28,9 +28,10 @@ import { Font, Spacing, Radius } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { getContacts } from '../../services/contactService';
-import { getOrCreateDirect } from '../../services/chatService';
+import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { connectRoom, sendChatMessage } from '../../services/chatWsManager';
 import { persistOutgoingImage, persistSharedFile } from '../../services/voiceMessageUtils';
+import { getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
 import { playSound } from '../../services/soundService';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
@@ -51,6 +52,7 @@ export default function ShareTargetScreen() {
   const [attachments, setAttachments] = useState<ShareAttachment[]>(initialAttachments);
   const [query, setQuery] = useState('');
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [recentChatAt, setRecentChatAt] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   const [sendingTo, setSendingTo] = useState<number | null>(null);
 
@@ -59,8 +61,27 @@ export default function ShareTargetScreen() {
     let cancelled = false;
     (async () => {
       try {
-        const list = await getContacts();
-        if (!cancelled) setContacts(list);
+        const [list, rooms, localLastMessages] = await Promise.all([
+          getContacts(),
+          getRooms().catch(() => []),
+          getLastMessagePerRoom().catch(() => ({} as Record<string, LocalMessage>)),
+        ]);
+        if (cancelled) return;
+        const contactIds = new Set(list.map((contact) => contact.contact));
+        const recentByContact: Record<number, number> = {};
+        for (const room of rooms) {
+          if (room.room_type !== 'direct') continue;
+          const latest = localLastMessages[room.id]?.created_at ?? room.updated_at;
+          const timestamp = new Date(latest).getTime();
+          if (!Number.isFinite(timestamp)) continue;
+          for (const member of room.members_detail) {
+            if (contactIds.has(member.id)) {
+              recentByContact[member.id] = Math.max(recentByContact[member.id] ?? 0, timestamp);
+            }
+          }
+        }
+        setContacts(list);
+        setRecentChatAt(recentByContact);
       } catch {
         if (!cancelled) alert('Error', 'Could not load contacts');
       } finally {
@@ -72,15 +93,22 @@ export default function ShareTargetScreen() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return contacts;
-    return contacts.filter((c) => {
+    const matching = contacts.filter((c) => {
       const u = c.contact_detail;
       return (
+        !q ||
         u.username.toLowerCase().includes(q) ||
         (u.display_name ?? '').toLowerCase().includes(q)
       );
     });
-  }, [contacts, query]);
+    return matching.sort((a, b) => {
+      const recentDifference = (recentChatAt[b.contact] ?? 0) - (recentChatAt[a.contact] ?? 0);
+      if (recentDifference !== 0) return recentDifference;
+      const aName = a.contact_detail.display_name?.trim() || a.contact_detail.username;
+      const bName = b.contact_detail.display_name?.trim() || b.contact_detail.username;
+      return aName.localeCompare(bName);
+    });
+  }, [contacts, query, recentChatAt]);
 
   const handleSend = useCallback(async (contact: Contact) => {
     if (sendingTo !== null) return;

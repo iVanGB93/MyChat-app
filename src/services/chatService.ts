@@ -31,6 +31,30 @@ export async function addMemberToRoom(roomId: string, userId: number): Promise<C
   return data;
 }
 
+export async function getRoom(roomId: string): Promise<ChatRoom> {
+  const { data } = await api.get<ChatRoom>(`/api/chat/rooms/${roomId}/`);
+  return data;
+}
+
+export async function removeMemberFromRoom(roomId: string, userId: number): Promise<ChatRoom> {
+  const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/remove-member/`, {
+    user_id: userId,
+  });
+  return data;
+}
+
+export async function renameGroupRoom(roomId: string, name: string): Promise<ChatRoom> {
+  const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/rename/`, { name });
+  return data;
+}
+
+export async function makeGroupAdmin(roomId: string, userId: number): Promise<ChatRoom> {
+  const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/make-admin/`, {
+    user_id: userId,
+  });
+  return data;
+}
+
 /**
  * Permanently delete a chat room. The backend cascades message deletion
  * and the room disappears for every member.

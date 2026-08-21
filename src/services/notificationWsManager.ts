@@ -14,7 +14,6 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api, { getTokens, saveTokens, BASE_URL } from './api';
-import { connectRoom } from './chatWsManager';
 import { useAppStore } from '../store/appStore';
 import { shouldShowLocalIncomingCallNotification } from './notificationPresentationPolicy';
 import { decideLocalIncomingCallNotification } from './notificationPresentationPolicy';
@@ -419,8 +418,13 @@ async function connectWs() {
         // ---- Pending deliveries bootstrap can arrive before auth_ok ----
         if ((payload as any).type === 'pending_deliveries') {
           const deliveries: Array<{ room_id: string }> = (payload as any).deliveries ?? [];
+          // Avoid a module-init cycle: chatWsManager now uses this always-on
+          // socket (Axion) as its transport, while this bootstrap only needs to
+          // create logical room state for any pending local outbox work.
           for (const d of deliveries) {
-            if (d.room_id) connectRoom(d.room_id);
+            if (d.room_id) {
+              import('./chatWsManager').then((m) => m.connectRoom(d.room_id)).catch(() => {});
+            }
           }
           // Continue; auth_ok may follow in the same burst.
         }
@@ -484,6 +488,31 @@ async function connectWs() {
 
         // Drop all messages until auth completes
         if (!_wsAuthenticated) return;
+
+        // Axion's server acknowledgements are transport control frames, not
+        // inbound chat events. Keep the local durable outbox state in the
+        // logical room manager without routing them through notification UI.
+        if ((payload as any).type === 'message_server_ack') {
+          const roomId = String((payload as any).room_id ?? '');
+          const messageId = String((payload as any).message_id ?? '');
+          if (roomId && messageId) {
+            import('./chatWsManager')
+              .then((m) => m.markServerMessageAccepted(roomId, messageId))
+              .catch(() => {});
+          }
+          return;
+        }
+
+        if ((payload as any).type === 'message_update_server_ack') {
+          const roomId = String((payload as any).room_id ?? '');
+          const updates = Array.isArray((payload as any).updates) ? (payload as any).updates : [];
+          if (roomId && updates.length) {
+            import('./chatWsManager')
+              .then((m) => m.applyMessageUpdateServerAck(roomId, updates))
+              .catch(() => {});
+          }
+          return;
+        }
 
         // ---- Peer sync: another session of this user can share its message history ----
         if ((payload as any).type === 'peer_sync_available') {

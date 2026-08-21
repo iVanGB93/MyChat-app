@@ -198,8 +198,10 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
       visibility: AndroidVisibility.PRIVATE,
       smallIcon: 'notification_icon',
       color: '#7C3AED',
-      // Sender's avatar as the large icon (falls back to nothing / app icon).
-      ...(data.avatar ? { largeIcon: data.avatar } : {}),
+      // MessagingStyle does not use the general large icon for the speaker
+      // bubbles on every Android version. Keep it for the compact card, then
+      // also attach the same URL to the message sender below.
+      ...(data.avatar ? { largeIcon: data.avatar, circularLargeIcon: true } : {}),
       pressAction: { id: 'default', launchActivity: 'default' },
       actions: [
         {
@@ -221,7 +223,17 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
         messages: messages.map((message) => ({
           text: message.text,
           timestamp: message.timestamp,
-          ...(message.fromMe ? {} : { person: { name: message.senderName } }),
+          // This is the person icon Android shows alongside a MessagingStyle
+          // row. Without `icon` Android creates its generic world/monogram
+          // glyph even though `largeIcon` is present on the notification.
+          ...(message.fromMe
+            ? {}
+            : {
+                person: {
+                  name: message.senderName,
+                  ...(data.avatar ? { icon: data.avatar } : {}),
+                },
+              }),
         })),
       },
     },

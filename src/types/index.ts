@@ -24,6 +24,7 @@ export interface User {
   notif_messages_enabled?: boolean;
   notif_calls_enabled?: boolean;
   notif_sound_enabled?: boolean;
+  notif_offline_email_enabled?: boolean;
 }
 
 export interface Contact {
@@ -48,6 +49,7 @@ export interface RoomMember {
   user_tag?: string | null;
   is_online: boolean;
   avatar?: string | null;
+  role?: 'admin' | 'member';
 }
 
 export interface ChatRoom {
@@ -150,6 +152,8 @@ export type RootStackParamList = {
   ResetPassword: { email: string; code: string };
   Main: undefined;
   Contacts: { prefillTag?: string } | undefined;
+  GroupCreate: undefined;
+  GroupInfo: { roomId: string; roomName: string };
   ScanTag: undefined;
   ChatRoom: { roomId: string; roomName: string; otherUserId?: number };
   EditAccount: undefined;

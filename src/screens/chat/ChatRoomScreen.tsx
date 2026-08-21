@@ -35,6 +35,7 @@ import {
   setAudioModeAsync,
 } from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { File } from 'expo-file-system';
@@ -42,7 +43,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
-import { initDB, saveMessage, getMessages, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
+import { initDB, saveMessage, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
 import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, sendChatMessage } from '../../services/chatWsManager';
 import { getRooms } from '../../services/chatService';
 import { initiateCall } from '../../services/callService';
@@ -54,12 +55,13 @@ import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import VoiceMessageBubble from '../../components/VoiceMessageBubble';
 import SmartMessageText, { getFirstMessageUrl } from '../../components/SmartMessageText';
-import { persistOutgoingImage, compressImageForSend } from '../../services/voiceMessageUtils';
+import { persistOutgoingImage, persistSharedFile, compressImageForSend } from '../../services/voiceMessageUtils';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
+const LOCAL_HISTORY_PAGE_SIZE = 60;
 
 /** Compact header signal shown while the room socket is reconnecting. */
 function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing: boolean; color: string }) {
@@ -476,7 +478,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
   const isDirectChat = !!otherUserId;
   const { user } = useAuth();
-  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, typers, notifyTyping } = useChat(roomId, user?.id);
+  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, lastMutationIds, typers, notifyTyping } = useChat(roomId, user?.id);
   const isMuted = useAppStore((s) => !!s.mutedRooms[roomId]);
   /** True when the other user in a direct chat is not yet in our contacts.
    *  Shows the "wants to talk to you" accept/block banner above the message list. */
@@ -512,6 +514,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   /* SQLite-sourced messages — only updated by load/reload calls */
   const [sqliteMessages, setSqliteMessages] = useState<Message[]>([]);
+  const [hasOlderMessages, setHasOlderMessages] = useState(true);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [contextMsg, setContextMsg] = useState<Message | null>(null);
   const [contextY,   setContextY]   = useState(0);
   /** Message currently being forwarded — when set, the room-picker modal is shown. */
@@ -542,15 +546,17 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /** Distance the user has to drag left before the recording is cancelled. */
   const CANCEL_THRESHOLD_PX = 90;
   const flatListRef = useRef<FlatList>(null);
+  const loadedHistoryLimitRef = useRef(LOCAL_HISTORY_PAGE_SIZE);
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
 
   /* Load (or reload) messages from the local SQLite DB */
   const loadFromDB = useCallback(async (cancelled?: { current: boolean }) => {
-    const dbMsgs = await getMessages(roomId);
+    const dbMsgs = await getRecentMessages(roomId, loadedHistoryLimitRef.current);
     if (__DEV__) console.log('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
     if (cancelled?.current) return;
     setSqliteMessages(dbMsgs.map(toMsg));
+    setHasOlderMessages(dbMsgs.length >= loadedHistoryLimitRef.current);
     // Pre-populate readIds from is_read=1 rows persisted in SQLite (survives app restarts).
     const persistedReadIds = dbMsgs.filter(m => m.is_mine && m.is_read).map(m => m.id);
     if (persistedReadIds.length > 0) markIdsAsReadInRoom(roomId, persistedReadIds);
@@ -569,11 +575,43 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     }
   }, [roomId]);
 
+  const loadOlderMessages = useCallback(async () => {
+    if (loadingOlderMessages || !hasOlderMessages) return;
+    const oldest = sqliteMessages[0]?.created_at;
+    if (!oldest) {
+      setHasOlderMessages(false);
+      return;
+    }
+    setLoadingOlderMessages(true);
+    try {
+      const older = await getMessagesBefore(roomId, oldest, LOCAL_HISTORY_PAGE_SIZE);
+      if (older.length === 0) {
+        setHasOlderMessages(false);
+        return;
+      }
+      loadedHistoryLimitRef.current += older.length;
+      setSqliteMessages((current) => {
+        const byId = new Map(current.map((message) => [message.id, message]));
+        older.map(toMsg).forEach((message) => byId.set(message.id, message));
+        return Array.from(byId.values()).sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        );
+      });
+      if (older.length < LOCAL_HISTORY_PAGE_SIZE) setHasOlderMessages(false);
+    } catch {
+      // Local history remains usable; the user can scroll again to retry.
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  }, [roomId, sqliteMessages, loadingOlderMessages, hasOlderMessages]);
+
   /* ── Initial load from SQLite ── */
   useEffect(() => {
     const cancel = { current: false };
     (async () => {
       try {
+        loadedHistoryLimitRef.current = LOCAL_HISTORY_PAGE_SIZE;
+        setHasOlderMessages(true);
         await initDB();
         await loadFromDB(cancel);
         // Re-attempt any out-of-band media downloads missed while the app was
@@ -594,13 +632,20 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     loadFromDB().catch(() => {});
   }, [reconnectCount, loadFromDB]);
 
-  /* ── Reload SQLite when a remote message_update arrives (reactions, is_read, etc.) ── */
+  /* ── Refresh only the mutated local rows (never re-read an entire room). ── */
   const prevMutationRef = useRef(0);
   useEffect(() => {
     if (!lastMutationAt || lastMutationAt === prevMutationRef.current) return;
     prevMutationRef.current = lastMutationAt;
-    loadFromDB().catch(() => {});
-  }, [lastMutationAt, loadFromDB]);
+    if (!lastMutationIds.length) return;
+    getMessagesByIds(lastMutationIds)
+      .then((rows) => {
+        if (!rows.length) return;
+        const changed = new Map(rows.map((row) => [row.id, toMsg(row)]));
+        setSqliteMessages((current) => current.map((message) => changed.get(message.id) ?? message));
+      })
+      .catch(() => {});
+  }, [lastMutationAt, lastMutationIds]);
 
   /* ── Merge SQLite messages + live WS messages (dedup by ID, WS wins for freshness) ── */
   const allMessages = useMemo(() => {
@@ -730,6 +775,21 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               color={isMuted ? '#FF5050' : '#00E5FF'}
             />
           </TouchableOpacity>
+          {!otherUserId && (
+            <TouchableOpacity
+              onPress={() => navigation.navigate('GroupInfo', { roomId, roomName: route.params.roomName })}
+              activeOpacity={0.7}
+              style={{
+                width: 36, height: 36, borderRadius: 18,
+                backgroundColor: 'rgba(0,229,255,0.10)',
+                borderWidth: 1, borderColor: 'rgba(0,229,255,0.30)',
+                alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              <Ionicons name="people-outline" size={18} color="#00E5FF" />
+            </TouchableOpacity>
+          )}
+          {!!otherUserId && <>
           <TouchableOpacity
             onPress={() => handleCall('video')}
             activeOpacity={0.7}
@@ -754,6 +814,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           >
             <Ionicons name="call-outline" size={18} color="#00E5FF" />
           </TouchableOpacity>
+          </>}
         </View>
       ),
     });
@@ -899,25 +960,81 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     }
   }, [sendPickedImage, ensurePermission]);
 
-  const handlePickFromGallery = useCallback(async () => {
+  const sendPickedFile = useCallback(async (
+    asset: { uri: string; name?: string | null; mimeType?: string | null },
+    messageType: 'video' | 'document',
+  ) => {
+    if (!asset.uri) return;
+    const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let localUri = asset.uri;
+    try {
+      localUri = persistSharedFile(msgId, asset.uri, asset.name);
+    } catch (err) {
+      console.warn('[ChatRoomScreen] failed to persist picked file:', err);
+    }
+    const reply = replyingTo
+      ? {
+          id: replyingTo.id,
+          sender_name: replyingTo.sender_username || '',
+          content: (replyingTo.content ?? '').slice(0, 140),
+          type: replyingTo.message_type,
+        }
+      : null;
+    const label = asset.name || (messageType === 'video' ? 'Video' : 'Document');
+    await sendMessage(label, messageType, reply, {
+      file_uri: localUri,
+      media_mime: asset.mimeType ?? (messageType === 'video' ? 'video/mp4' : 'application/octet-stream'),
+    });
+    setReplyingTo(null);
+    playSound('message_sent');
+  }, [replyingTo, sendMessage]);
+
+  const handlePickMultimedia = useCallback(async () => {
     setAttachMenuOpen(false);
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) {
-        alert('Photo library permission required', 'Please enable photo access in Settings.');
+        alert('Media library permission required', 'Please enable media access in Settings.');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['images'],
+        mediaTypes: ['images', 'videos'],
+        allowsMultipleSelection: true,
         quality: 0.7,
       });
-      if (!result.canceled && result.assets?.[0]) {
-        await sendPickedImage(result.assets[0]);
+      if (!result.canceled && result.assets?.length) {
+        // Upload in order. Concurrent video uploads make the device feel slow
+        // and can overwhelm a mobile connection; every file remains in the
+        // durable outbox if an upload later needs a retry.
+        for (const asset of result.assets) {
+          if (asset.type === 'video') {
+            await sendPickedFile({ uri: asset.uri, name: asset.fileName, mimeType: asset.mimeType }, 'video');
+          } else {
+            await sendPickedImage(asset);
+          }
+        }
       }
     } catch (err) {
-      console.warn('[ChatRoomScreen] gallery error:', err);
+      console.warn('[ChatRoomScreen] multimedia picker error:', err);
     }
-  }, [sendPickedImage]);
+  }, [sendPickedImage, sendPickedFile]);
+
+  const handlePickDocuments = useCallback(async () => {
+    setAttachMenuOpen(false);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: '*/*',
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      for (const asset of result.assets) {
+        await sendPickedFile({ uri: asset.uri, name: asset.name, mimeType: asset.mimeType }, 'document');
+      }
+    } catch (err) {
+      console.warn('[ChatRoomScreen] document picker error:', err);
+    }
+  }, [sendPickedFile]);
 
   /* PanResponder bound to the mic button. Long-press → record. Drag left
      past CANCEL_THRESHOLD_PX → cancel. Release → send. */
@@ -1224,6 +1341,13 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         updateCellsBatchingPeriod={50}
         windowSize={11}
         removeClippedSubviews={Platform.OS === 'android'}
+        onEndReached={loadOlderMessages}
+        onEndReachedThreshold={0.35}
+        ListFooterComponent={loadingOlderMessages ? (
+          <View style={styles.historyLoader}>
+            <ActivityIndicator size="small" color={Colors.primary} />
+          </View>
+        ) : null}
       />
 
       <View style={[styles.inputBar, { backgroundColor: Colors.chatBg, borderTopColor: Colors.neonBorder, paddingBottom: insets.bottom + Spacing.sm }]}>
@@ -1383,9 +1507,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               <Text style={[styles.attachLabel, { color: Colors.text }]}>Camera</Text>
             </TouchableOpacity>
             <View style={[styles.attachDivider, { backgroundColor: Colors.border }]} />
-            <TouchableOpacity style={styles.attachRow} onPress={handlePickFromGallery} activeOpacity={0.7}>
+            <TouchableOpacity style={styles.attachRow} onPress={handlePickMultimedia} activeOpacity={0.7}>
               <Ionicons name="images" size={22} color={Colors.primary} />
-              <Text style={[styles.attachLabel, { color: Colors.text }]}>Photo Library</Text>
+              <Text style={[styles.attachLabel, { color: Colors.text }]}>Multimedia</Text>
+            </TouchableOpacity>
+            <View style={[styles.attachDivider, { backgroundColor: Colors.border }]} />
+            <TouchableOpacity style={styles.attachRow} onPress={handlePickDocuments} activeOpacity={0.7}>
+              <Ionicons name="document-attach-outline" size={22} color={Colors.primary} />
+              <Text style={[styles.attachLabel, { color: Colors.text }]}>Files</Text>
             </TouchableOpacity>
             <View style={[styles.attachDivider, { backgroundColor: Colors.border }]} />
             <TouchableOpacity style={styles.attachRow} onPress={() => setAttachMenuOpen(false)} activeOpacity={0.7}>
@@ -1604,6 +1733,7 @@ const styles = StyleSheet.create({
 
   messageList: { flex: 1 },
   messagesList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, flexGrow: 1 },
+  historyLoader: { paddingVertical: Spacing.md, alignItems: 'center' },
 
   bubbleRow: { marginBottom: Spacing.md },
   bubbleRowRight: { alignItems: 'flex-end' },

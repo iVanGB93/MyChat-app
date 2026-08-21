@@ -164,6 +164,7 @@ export function useChat(roomId: string, currentUserId?: number) {
     markIdsAsDelivered,
     reconnectCount: snapshot.reconnectCount,
     lastMutationAt: snapshot.lastMutationAt,
+    lastMutationIds: snapshot.lastMutationIds,
     typers,
     notifyTyping,
   };

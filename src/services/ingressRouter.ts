@@ -187,31 +187,29 @@ function isBlockedSender(senderId: number): boolean {
 /**
  * Fire a delivery ACK for a message. Idempotent on the server; we additionally
  * guard with `_acked` so the same id isn't acked repeatedly within a session.
- * HTTP first (works when the WS is dead), falling back to the retry queue + WS.
+ * Axion first. HTTP is only a background fallback when the realtime gateway is
+ * unavailable, so receiving a message never waits on an extra request.
  */
 async function ackDelivery(messageId: string, senderId: number, roomId: string): Promise<void> {
   if (senderId <= 0 || _acked.has(messageId)) return;
   track(_acked, messageId);
   const now = new Date().toISOString();
   try {
-    const response = await api.post('/api/chat/messages/ack/', {
-      message_id: messageId,
-      sender_id: senderId,
-      room_id: roomId,
-      delivered_at: now,
-    });
-    if (response.status === 200) {
-      console.log('[Ingress] delivery ack sent:', messageId);
+    const { isNotifWsReady, sendOrQueueMessageAck } = await import('./notificationWsManager');
+    if (isNotifWsReady()) {
+      await sendOrQueueMessageAck({ message_id: messageId, sender_id: senderId, room_id: roomId });
+      return;
     }
-  } catch (httpErr: any) {
-    console.warn('[Ingress] HTTP ack failed — queuing + WS fallback', messageId);
-    await enqueueMessageAck({ message_id: messageId, sender_id: senderId, room_id: roomId, delivered_at: now }).catch(() => {});
-  }
-  // Also attempt a WS ack (cheap, harmless if HTTP already succeeded).
-  try {
-    const { sendOrQueueMessageAck } = await import('./notificationWsManager');
-    await sendOrQueueMessageAck({ message_id: messageId, sender_id: senderId, room_id: roomId }).catch(() => {});
   } catch { /* notification WS manager unavailable */ }
+  // Offline/background fallback: preserve the ACK and let the retry service
+  // submit HTTP without holding up SQLite persistence or rendering.
+  await enqueueMessageAck({ message_id: messageId, sender_id: senderId, room_id: roomId, delivered_at: now }).catch(() => {});
+  api.post('/api/chat/messages/ack/', {
+    message_id: messageId,
+    sender_id: senderId,
+    room_id: roomId,
+    delivered_at: now,
+  }).catch(() => {});
 }
 
 /** Decode inline media (voice / image) to a cached file, returning its URI. */
@@ -414,10 +412,6 @@ export async function ingestMessage(
   // Phase 2: an out-of-band media message carries a pointer (media_id) instead
   // of inline base64. The blob is fetched over HTTP (mediaLane) after persist.
   const hasPointer = !!evt.mediaId;
-  if (!isMediaType) {
-    await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
-  }
-
   // 2. Content/media gate. A truncated push (ack-critical ids but no content)
   //    is acked above; we then wait for the full WS delivery to persist it.
   // A media message whose base64 blob was stripped from the push still has a
@@ -427,6 +421,7 @@ export async function ingestMessage(
   // peers are online. Without this the row never exists, so it can never
   // self-heal — and a killed receiver would silently lose the message.
   if (!evt.content && !hasMedia && !isMediaType) {
+    void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
     console.log('[Ingress] acked but not persisted — content missing (truncated)', evt.messageId);
     return;
   }
@@ -450,7 +445,7 @@ export async function ingestMessage(
               injectReceivedMessage(evt.roomId, toWsMessage(evt, hydratedUri), { updateExisting: true });
               // 3b. Media bytes are now fully present → ack delivery NOW so the
               //     sender's ✓ appears only once the real file has been received.
-              await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+              void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
               console.log('[Ingress] hydrated media for', evt.messageId);
               return;
             }
@@ -508,11 +503,17 @@ export async function ingestMessage(
   //     do we tell the sender it's delivered. A media placeholder (fileUri null)
   //     stays un-acked until its bytes arrive, so the sender's ✓ is accurate.
   if (isMediaType && fileUri) {
-    await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+    void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
   }
 
   // 5. Hydrate an open chat room (no-op if the room screen isn't mounted).
   injectReceivedMessage(evt.roomId, toWsMessage(evt, fileUri));
+
+  // The message row is durable and the open-room UI has been hydrated. ACK on
+  // Axion now, without holding the visible receive path on network latency.
+  if (!isMediaType) {
+    void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+  }
 
   // 5a. Out-of-band pointer → download the blob over HTTP in the background.
   //     hydratePointerMedia persists the file, acks delivery, and confirms the

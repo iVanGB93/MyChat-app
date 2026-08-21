@@ -293,6 +293,10 @@ export default function ChatListScreen() {
   const { subscribe } = useNotificationContext();
   useEffect(() => {
     const unsub = subscribe((payload) => {
+      if (payload.event === 'room_update') {
+        syncRooms();
+        return;
+      }
       if (payload.event !== 'new_message') return;
       const roomId = String(payload.room_id ?? '');
       if (!roomId) return;
@@ -575,7 +579,18 @@ export default function ChatListScreen() {
       <TouchableOpacity
         style={[styles.fab, { backgroundColor: Colors.surface, borderColor: Colors.primary, shadowColor: Colors.primary }]}
         activeOpacity={0.8}
-        onPress={() => navigation.navigate('Contacts')}
+        onPress={() => {
+          confirm({
+            title: 'Start a conversation',
+            message: 'Choose what you want to create.',
+            icon: 'add-circle-outline',
+            buttons: [
+              { text: 'New chat', onPress: () => navigation.navigate('Contacts') },
+              { text: 'New group', onPress: () => navigation.navigate('GroupCreate') },
+              { text: 'Cancel', style: 'cancel' },
+            ],
+          });
+        }}
       >
         <Ionicons name="add" size={32} color={Colors.primary} />
       </TouchableOpacity>
