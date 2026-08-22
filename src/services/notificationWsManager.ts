@@ -13,15 +13,13 @@
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import api, { getTokens, saveTokens, BASE_URL } from './api';
+import api, { clearTokens, getTokens, saveTokens, BASE_URL } from './api';
 import { useAppStore } from '../store/appStore';
 import { shouldShowLocalIncomingCallNotification } from './notificationPresentationPolicy';
 import { decideLocalIncomingCallNotification } from './notificationPresentationPolicy';
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
-import { reconcileSentDeliveryStatus } from './deliveryReconciler';
-import { routeInbound } from './ingressRouter';
-import type { InboundResult } from './ingressRouter';
 import { classify } from './rrp/envelope';
+import { invalidateSession } from './sessionInvalidation';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
@@ -75,6 +73,36 @@ export type ConnectionStatus =
 type EventListener = (payload: NotificationPayload) => void;
 type StatusListener = (status: ConnectionStatus) => void;
 
+// These modules ultimately use the chat manager, which uses Axion.  Loading
+// them only when an event arrives keeps the singleton transport free of
+// require cycles and avoids partially-initialised exports on Android.
+function reconcileDeliveryInBackground(): void {
+  import('./deliveryReconciler')
+    .then((m) => m.reconcileSentDeliveryStatus())
+    .catch(() => {});
+}
+
+function routeInboundInBackground(payload: NotificationPayload): void {
+  import('./ingressRouter')
+    .then(({ routeInbound }) => routeInbound(payload, 'ws'))
+    .then((res) => {
+      if (
+        res.ackUpdateIds && res.ackUpdateIds.length > 0 && res.ackSenderId &&
+        ws?.readyState === WebSocket.OPEN && _wsAuthenticated
+      ) {
+        try {
+          ws.send(JSON.stringify({
+            type: 'message_update_ack',
+            room_id: payload.room_id,
+            sender_id: res.ackSenderId,
+            update_ids: res.ackUpdateIds,
+          }));
+        } catch {}
+      }
+    })
+    .catch(() => {});
+}
+
 /* ---- Module-level state (survives React unmounts) ---- */
 let ws: WebSocket | null = null;
 let connecting = false;
@@ -83,6 +111,7 @@ let _authenticated = false;
 let _status: ConnectionStatus = 'disconnected';
 let _reconnectDelay = 1500;
 let _hasInternet = true;
+let _sessionRejected = false;
 
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let pingTimer: ReturnType<typeof setInterval> | null = null;
@@ -94,13 +123,17 @@ let _connectingStartedAt = 0; // timestamp to detect stuck connecting state
 let _lastReportedAppState: 'active' | 'background' | null = null;
 let _close1011Count = 0;
 let _suspendReconnectUntil = 0;
+let _missedPongs = 0;
 
 const INITIAL_RECONNECT_MS = 1500;
 const MAX_RECONNECT_MS = 60_000;
 const PING_INTERVAL_MS = 25_000;
 const PONG_TIMEOUT_MS = 15_000;
 const CONNECTION_TIMEOUT_MS = 8_000;
-const AUTH_TIMEOUT_MS = 10_000;
+// Railway can occasionally take longer than ten seconds to schedule the
+// authentication work after the TCP/WebSocket handshake.  Keep this safely
+// above the server-side budget so a healthy socket is not needlessly recycled.
+const AUTH_TIMEOUT_MS = 35_000;
 const TOKEN_REFRESH_MARGIN_MS = 2 * 60_000; // refresh JWT only when <2 min left
 // Server is now hardened with try/except in NotificationConsumer.receive, so it's
 // safe to inform the server of our app state. The server uses this to decide whether
@@ -134,6 +167,7 @@ function clearAllTimers() {
   if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
   if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
   if (authTimeoutTimer) { clearTimeout(authTimeoutTimer); authTimeoutTimer = null; }
+  _missedPongs = 0;
 }
 
 function closeWs() {
@@ -151,6 +185,7 @@ function closeWs() {
 function startPing() {
   if (pingTimer) clearInterval(pingTimer);
   if (pongTimer) clearTimeout(pongTimer);
+  _missedPongs = 0;
 
   pingTimer = setInterval(() => {
     if (ws?.readyState === WebSocket.OPEN) {
@@ -159,7 +194,15 @@ function startPing() {
       if (pongTimer) { clearTimeout(pongTimer); pongTimer = null; }
 
       pongTimer = setTimeout(() => {
-        console.warn('[WsManager] pong timeout — connection stale');
+        _missedPongs += 1;
+        // A single lost frame is common on mobile radio/proxy transitions.
+        // Reconnect only after two consecutive missed heartbeat replies;
+        // normal application traffic also proves the connection is alive.
+        if (_missedPongs < 2) {
+          console.warn('[WsManager] pong missed — keeping connection for one more heartbeat');
+          return;
+        }
+        console.warn('[WsManager] pong timeout twice — connection stale');
         closeWs();
         setStatus('reconnecting');
         scheduleReconnect();
@@ -206,6 +249,9 @@ export function sendRawNotif(frame: Record<string, any>): boolean {
   if (!isNotifWsReady() || !ws) return false;
   try {
     ws.send(JSON.stringify(frame));
+    if (__DEV__ && frame.type === 'send_message') {
+      console.log('[Axion] frame handed to WebSocket', frame.id ?? '', 'room', frame.room_id ?? '');
+    }
     return true;
   } catch {
     return false;
@@ -294,7 +340,7 @@ function scheduleReconnect() {
 }
 
 async function connectWs() {
-  if (!_userId || !_authenticated) return;
+  if (!_userId || !_authenticated || _sessionRejected) return;
   if (_suspendReconnectUntil > Date.now()) return;
   if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) return;
   if (ws?.readyState === WebSocket.OPEN && !_wsAuthenticated) return;
@@ -352,6 +398,21 @@ async function connectWs() {
     }
   } catch (err: any) {
     console.warn('[WsManager] token refresh failed:', err?.message ?? err);
+    const status = err?.response?.status;
+    if (status === 400 || status === 401 || status === 403) {
+      // A rejected refresh token is not a connectivity fault. Continuing the
+      // reconnect loop only produces repeated auth_failed frames and makes the
+      // UI look like a flaky network. End the session once and let AuthContext
+      // present the login screen.
+      console.warn('[WsManager] refresh token rejected — ending session');
+      _sessionRejected = true;
+      _authenticated = false;
+      await clearTokens();
+      connecting = false;
+      setStatus('disconnected');
+      invalidateSession('refresh_rejected');
+      return;
+    }
   }
 
   const tokens = await getTokens();
@@ -413,6 +474,7 @@ async function connectWs() {
     socket.onmessage = (e) => {
       try {
         const payload: NotificationPayload = JSON.parse(e.data);
+        _missedPongs = 0;
         try { useAppStore.getState().setNotifWsInboundAt(Date.now()); } catch {}
 
         // ---- Pending deliveries bootstrap can arrive before auth_ok ----
@@ -442,8 +504,14 @@ async function connectWs() {
           // Flush any message acks that were queued while WS was offline (both WS and HTTP retry queues)
           _flushPendingAcks().catch(() => {});
           flushHttpAckRetryQueue().catch(() => {});
+          // Restarted senders may have durable local messages whose chat
+          // screens are not mounted yet. Register those rooms so Axion can
+          // retry only the messages that never received server acceptance.
+          import('./chatWsManager')
+            .then((m) => m.recoverPendingOutgoingMessages())
+            .catch(() => {});
           // Catch up on delivery ticks we may have missed while disconnected.
-          reconcileSentDeliveryStatus().catch(() => {});
+          reconcileDeliveryInBackground();
           // RRP sync.digest: advertise the message ids we hold so the peer can
           // detect and request any gaps (best-effort, re-emitted each connect).
           import('./outboundRouter')
@@ -470,14 +538,13 @@ async function connectWs() {
         }
 
         if ((payload as any).type === 'auth_failed') {
-          console.warn('[WsManager] auth_failed — closing');
+          console.warn('[WsManager] auth_failed — ending session');
           closeWs();
-          if (_authenticated && _hasInternet) {
-            setStatus('reconnecting');
-            scheduleReconnect();
-          } else {
-            setStatus('disconnected');
-          }
+          _sessionRejected = true;
+          _authenticated = false;
+          clearTokens().catch(() => {});
+          setStatus('disconnected');
+          invalidateSession('auth_failed');
           return;
         }
 
@@ -551,23 +618,7 @@ async function connectWs() {
         // of transport. Transport-LOCAL follow-ups that need THIS socket (the
         // message_update_ack) are returned and sent here.
         const rrpType = classify(payload);
-        routeInbound(payload, 'ws')
-          .then((res: InboundResult) => {
-            if (
-              res.ackUpdateIds && res.ackUpdateIds.length > 0 && res.ackSenderId &&
-              ws?.readyState === WebSocket.OPEN && _wsAuthenticated
-            ) {
-              try {
-                ws.send(JSON.stringify({
-                  type: 'message_update_ack',
-                  room_id: payload.room_id,
-                  sender_id: res.ackSenderId,
-                  update_ids: res.ackUpdateIds,
-                }));
-              } catch {}
-            }
-          })
-          .catch(() => {});
+        routeInboundInBackground(payload);
 
         // Typing is ephemeral and fully owned by the router — no local
         // notification, and (matching prior behavior) no listener dispatch.
@@ -744,7 +795,7 @@ function startNetworkListener() {
       // Flush HTTP retry queue now that network is back
       flushHttpAckRetryQueue().catch(() => {});
       // Reconcile delivery ticks missed while offline
-      reconcileSentDeliveryStatus().catch(() => {});
+      reconcileDeliveryInBackground();
     }
   });
 }
@@ -838,6 +889,7 @@ function stopBgKeepalive() {
 export function initWsManager(userId: number): void {
   _userId = userId;
   _authenticated = true;
+  _sessionRejected = false;
   _reconnectDelay = INITIAL_RECONNECT_MS;
   // Persist userId so ensureWsAlive can restore in a fresh JS context
   AsyncStorage.setItem(USER_ID_KEY, String(userId)).catch(() => {});
@@ -996,5 +1048,5 @@ export async function ensureWsAlive(): Promise<void> {
   // Periodic flush of HTTP retry queue (background keepalive scenario)
   flushHttpAckRetryQueue().catch(() => {});
   // Periodic delivery-tick reconciliation (covers acks missed while WS was down)
-  reconcileSentDeliveryStatus().catch(() => {});
+  reconcileDeliveryInBackground();
 }

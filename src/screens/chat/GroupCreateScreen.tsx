@@ -18,8 +18,10 @@ import { useNavigation } from '@react-navigation/native';
 import { Font, Radius, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { getContacts } from '../../services/contactService';
 import { createGroupRoom } from '../../services/chatService';
+import { cacheContacts, getCachedContacts } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import type { Contact, RootStackParamList } from '../../types';
@@ -30,6 +32,7 @@ export default function GroupCreateScreen() {
   const navigation = useNavigation<Nav>();
   const { colors: Colors } = useTheme();
   const { alert } = useConfirm();
+  const { user } = useAuth();
   const [name, setName] = useState('');
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -38,12 +41,23 @@ export default function GroupCreateScreen() {
 
   useEffect(() => {
     let active = true;
-    getContacts()
-      .then((items) => { if (active) setContacts(items); })
-      .catch(() => { if (active) alert('Could not load contacts', 'Pull down and try again.'); })
-      .finally(() => { if (active) setLoading(false); });
+    (async () => {
+      // Local contacts make the picker usable immediately; the API refresh is
+      // deliberately non-blocking so a slow connection never delays selection.
+      if (user?.id != null) {
+        const cached = await getCachedContacts(user.id).catch(() => [] as Contact[]);
+        if (active && cached.length) setContacts(cached);
+      }
+      if (active) setLoading(false);
+      getContacts()
+        .then((items) => {
+          if (active) setContacts(items);
+          if (user?.id != null) cacheContacts(user.id, items).catch(() => {});
+        })
+        .catch(() => { /* cached contacts remain usable offline */ });
+    })();
     return () => { active = false; };
-  }, [alert]);
+  }, [user?.id]);
 
   const selectedCount = selected.size;
   const canCreate = name.trim().length > 0 && selectedCount >= 2 && !creating;

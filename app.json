@@ -1,8 +1,8 @@
 {
   "expo": {
     "name": "Axonic",
-    "slug": "axonic",
-    "version": "1.0.22",
+    "slug": "MyChat-app",
+    "version": "1.0.23",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",

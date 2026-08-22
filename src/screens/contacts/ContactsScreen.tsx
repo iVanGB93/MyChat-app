@@ -23,7 +23,7 @@ import { searchUsers } from '../../services/authService';
 import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppStore } from '../../store/appStore';
-import { setCachedRelationship } from '../../services/localMessageStore';
+import { cacheContacts, cacheRooms, getCachedContacts, getCachedRooms, setCachedRelationship } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import EmptyState from '../../components/ui/EmptyState';
@@ -51,6 +51,10 @@ export default function ContactsScreen() {
     try {
       const [contactsData, rooms] = await Promise.all([getContacts(), getRooms()]);
       setContacts(contactsData);
+      if (user?.id != null) {
+        cacheContacts(user.id, contactsData).catch(() => {});
+        cacheRooms(user.id, rooms).catch(() => {});
+      }
       // Mirror full set into the global store so chat screens know who is
       // already accepted (vs. who is a pending message-request sender).
       useAppStore.getState().setContactIds(contactsData.map((c) => c.contact));
@@ -71,7 +75,32 @@ export default function ContactsScreen() {
     }
   }, [user?.id]);
 
-  useEffect(() => { fetchContacts(); }, [fetchContacts]);
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      if (user?.id != null) {
+        const [cachedContacts, cachedRooms] = await Promise.all([
+          getCachedContacts(user.id).catch(() => [] as Contact[]),
+          getCachedRooms(user.id).catch(() => []),
+        ]);
+        if (!active) return;
+        if (cachedContacts.length) {
+          setContacts(cachedContacts);
+          useAppStore.getState().setContactIds(cachedContacts.map((c) => c.contact));
+        }
+        if (cachedRooms.length) {
+          const chatIds = new Set<number>();
+          cachedRooms.forEach((room) => room.room_type === 'direct' && room.members_detail.forEach((m) => {
+            if (m.id !== user.id) chatIds.add(m.id);
+          }));
+          setExistingChatUserIds(chatIds);
+        }
+      }
+      if (active) setLoading(false);
+      fetchContacts();
+    })();
+    return () => { active = false; };
+  }, [fetchContacts, user?.id]);
 
   // Pre-fill the search input when the screen is opened via a deep link
   // (e.g. `axonic://add/AXN-7K3P` from a shared tag).

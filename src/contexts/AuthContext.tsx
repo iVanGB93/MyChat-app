@@ -10,8 +10,9 @@ import { getProfile, login as loginApi, register as registerApi, registerPushTok
 import { getPushRegistrationPayload } from '../services/pushNotificationService';
 import { unregisterBackgroundTask, unregisterPushReceiveTask } from '../services/backgroundNotificationService';
 import { destroyWsManager } from '../services/notificationWsManager';
+import { subscribeSessionInvalidation } from '../services/sessionInvalidation';
 import { setCurrentUserId } from '../services/chatWsManager';
-import { cacheRelationshipSets, getCachedRelationshipSets, initDB } from '../services/localMessageStore';
+import { cacheContacts, cacheRelationshipSets, getCachedRelationshipSets, initDB } from '../services/localMessageStore';
 import { getContacts, getBlockedUsers } from '../services/contactService';
 import { useAppStore } from '../store/appStore';
 import type { User } from '../types';
@@ -109,6 +110,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const blocked = blockedResult.status === 'fulfilled' ? blockedResult.value : null;
       if (contacts) store.setContactIds(contacts.map((c) => c.contact));
       if (blocked) store.setBlockedIds(blocked.map((b) => b.blocked));
+      if (contacts) await cacheContacts(ownerUserId, contacts);
       if (contacts && blocked) {
         await cacheRelationshipSets(ownerUserId, contacts.map((c) => c.contact), blocked.map((b) => b.blocked));
       }
@@ -217,6 +219,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ user: null, isLoading: false, isAuthenticated: false });
     useAppStore.getState().reset();
   }, []);
+
+  // A rejected refresh token is an authentication state, not a transient
+  // socket error. Transport modules report it here so the app cleanly returns
+  // to login rather than retrying WebSocket authentication forever.
+  useEffect(() => subscribeSessionInvalidation(() => {
+    logout().catch(() => {});
+  }), [logout]);
 
   const refreshUser = useCallback(async () => {
     try {

@@ -23,11 +23,11 @@ import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import axios from 'axios';
 import { getTokens, saveTokens, BASE_URL } from './api';
-import { saveMessage, getPendingOutbox, getUndeliveredSentMessages, getPendingUnsyncedOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers } from './localMessageStore';
+import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers } from './localMessageStore';
 import { uploadMedia, type MediaType } from './mediaLane';
 import { useAppStore } from '../store/appStore';
 import type { InboundResult } from './ingressRouter';
-import { ensureWsAlive, isNotifWsReady, sendRawNotif, subscribeStatus } from './notificationWsManager';
+import { ensureWsAlive, isNotifWsReady, reconnectWsNow, sendRawNotif, subscribeStatus } from './notificationWsManager';
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
 
@@ -43,6 +43,28 @@ const WS_BASE = BASE_URL.replace(/^http/, 'ws');
 let _routeInbound:
   | ((raw: Record<string, any>, source: 'ws') => Promise<InboundResult>)
   | null = null;
+// An Axion acknowledgement can arrive before the sender's asynchronous local
+// SQLite insert finishes. Keep the acceptance briefly so the insert cannot turn
+// an already-accepted message back into a permanently retrying pending row.
+const _earlyServerAcceptedMessageIds = new Set<string>();
+const _serverAckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function watchForServerAck(messageId: string): void {
+  if (!messageId || _serverAckTimers.has(messageId)) return;
+  _serverAckTimers.set(messageId, setTimeout(() => {
+    _serverAckTimers.delete(messageId);
+    console.warn('[Axion] server ACK timed out — reconnecting to retry', messageId);
+    // The message is already durable in SQLite. Re-authentication runs the
+    // normal pending-outbox flush, so no in-memory-only data is lost here.
+    reconnectWsNow();
+  }, 6_000));
+}
+
+function clearServerAckWatch(messageId: string): void {
+  const timer = _serverAckTimers.get(messageId);
+  if (timer) clearTimeout(timer);
+  _serverAckTimers.delete(messageId);
+}
 async function routeInboundFrame(raw: Record<string, any>): Promise<InboundResult | null> {
   if (!_routeInbound) {
     try {
@@ -77,6 +99,8 @@ export interface WsMessage {
   content: string;
   message_type: string;
   created_at: string;
+  updated_at?: string;
+  revision?: number;
   is_read?: boolean;
   reactions?: Record<string, string[]>;
   is_deleted?: boolean;
@@ -397,6 +421,17 @@ function _ackPendingUpdates(roomId: string, s: RoomState, ids: string[], ackedBy
   console.log('[ChatWsManager] acked', ids.length, 'message updates for room', roomId);
 }
 
+/** Recover durable sends after an app process restart, even if their chat
+ * screen has not been opened yet. */
+export async function recoverPendingOutgoingMessages(): Promise<void> {
+  if (_myUserId === null || !isAxionReady()) return;
+  const roomIds = await getRoomsWithPendingOutgoingMessages(_myUserId);
+  for (const roomId of roomIds) {
+    const state = getOrCreate(roomId);
+    flushAxionRoom(roomId, state);
+  }
+}
+
 export function ackMessageUpdates(roomId: string, ids: string[], ackedByUserId?: number): void {
   if (!ids.length) return;
   const s = rooms.get(roomId);
@@ -438,7 +473,6 @@ function _syncRoomPendingNow(roomId: string, s: RoomState): void {
   if (!isAxionReady()) return;
   _flushPendingUpdates(roomId, s);
   _flushSQLiteOutbox(roomId, s).catch(() => {});
-  _retryUndeliveredMessages(roomId, s).catch(() => {});
   _retryPendingUnsyncedMessages(roomId, s).catch(() => {});
 }
 
@@ -627,9 +661,6 @@ export async function connectRoom(roomId: string): Promise<void> {
           if (SEND_READY_TO_RECEIVE_ON_AUTH_OK) {
             try { socket.send(JSON.stringify({ type: 'ready_to_receive' })); } catch { /* ignore */ }
           }
-          // Retry any messages that were never delivered (e.g. all recipients
-          // were offline when the message was originally sent)
-          _retryUndeliveredMessages(roomId, s).catch(() => {});
           // Flush any outbox entries queued while the WS was offline
           if (s.pendingFlushes.length > 0) {
             const toFlush = [...s.pendingFlushes];
@@ -676,7 +707,7 @@ export async function connectRoom(roomId: string): Promise<void> {
           if (ackId) {
             setMessageSyncState(ackId, true)
               .then(() => {
-                // Trigger a SQLite reload so the bubble flips SYNC PENDING → SYNC OK.
+                // Refresh the focused room after server acceptance.
                 s.lastMutationAt = Date.now();
                 notifyListeners(roomId, s);
               })
@@ -1053,6 +1084,7 @@ async function sendOutboxFrame(
       console.warn('[ChatWsManager] media pointer send failed', msg.id, err);
       return false;
     }
+    watchForServerAck(msg.id);
     return true;
   }
 
@@ -1063,6 +1095,7 @@ async function sendOutboxFrame(
     console.warn('[ChatWsManager] frame send failed', msg.id, err);
     return false;
   }
+  watchForServerAck(msg.id);
   return true;
 }
 
@@ -1116,10 +1149,13 @@ export async function sendChatMessage(
     console.warn('[ChatWsManager] skipped optimistic update — _myUserId:', _myUserId, 'roomState:', !!s);
   }
 
-  // Persist locally in the background (so it's never lost on reconnect)
-  if (_myUserId !== null) {
-    try {
-      await saveMessage({
+  // Persist locally first in intent, but never put the realtime relay behind a
+  // SQLite lock. Under load, awaiting this write here added multi-second gaps
+  // before the Axion frame was even handed to the WebSocket.
+  const persistLocalMessage = _myUserId !== null
+    ? (async () => {
+      try {
+        await saveMessage({
         id: msgId,
         room_id: roomId,
         sender_id: _myUserId,
@@ -1147,10 +1183,11 @@ export async function sendChatMessage(
           status: 'pending',
         });
       } catch {}
-    } catch (err) {
-      console.warn('[ChatWsManager] failed to save message locally:', err);
-    }
-  }
+      } catch (err) {
+        console.warn('[ChatWsManager] failed to save message locally:', err);
+      }
+    })()
+    : Promise.resolve();
 
   if (isAxionReady()) {
     // Delivers text/small media in one frame; large media is chunked. Reads the
@@ -1165,7 +1202,18 @@ export async function sendChatMessage(
     // The message is safely persisted above. Start (or resume) the room socket
     // now; its auth_ok path flushes SQLite outbox rows, including this one.
     // This covers notification/deep-link cold starts and transient disconnects.
+    await persistLocalMessage;
     connectRoom(roomId).catch(() => {});
+  }
+
+  // Do not await SQLite on the hot path. If the server ACK won the race with
+  // this write, apply that acceptance as soon as the row exists.
+  if (isAxionReady()) {
+    void persistLocalMessage.then(() => {
+      if (_earlyServerAcceptedMessageIds.delete(msgId)) {
+        return setMessageSyncState(msgId, true).catch(() => {});
+      }
+    });
   }
 
   return msgId;
@@ -1187,32 +1235,6 @@ async function _doFlush(roomId: string, s: RoomState, recipientId: number): Prom
       } catch (err) {
         // One bad message must never abort the loop — continue with the rest.
         console.warn('[ChatWsManager] outbox flush send failed, skipping', msg.id, err);
-        continue;
-      }
-    }
-  } catch { /* ignore */ }
-}
-
-/**
- * On every auth_ok, re-send any messages from this room that have never been
- * acknowledged by anyone (no delivery_tracking entry with delivered=1).
- * This handles the case where all recipients were offline when the message was
- * originally sent, so the server never had a chance to relay it.
- */
-async function _retryUndeliveredMessages(roomId: string, s: RoomState): Promise<void> {
-  if (_myUserId === null) return;
-  try {
-    const msgs = await getUndeliveredSentMessages(roomId, _myUserId);
-    if (msgs.length === 0) return;
-    console.log('[ChatWsManager] retrying', msgs.length, 'undelivered messages in room', roomId);
-    for (const msg of msgs) {
-      // Stop if the socket dropped mid-retry; the rest is retried on next auth_ok.
-      if (!isAxionReady()) break;
-      try {
-        await sendOutboxFrame(s, roomId, msg);
-      } catch (err) {
-        // One bad message must never abort the loop — continue with the rest.
-        console.warn('[ChatWsManager] undelivered retry send failed, skipping', msg.id, err);
         continue;
       }
     }
@@ -1273,6 +1295,8 @@ function _applyUpdatesToState(
           ...(u.changes.reactions  !== undefined && { reactions:  u.changes.reactions }),
           ...(u.changes.is_deleted !== undefined && { is_deleted: u.changes.is_deleted }),
           ...(u.changes.content    !== undefined && { content:    u.changes.content }),
+          ...(u.changes.updated_at !== undefined && { updated_at: u.changes.updated_at }),
+          ...(u.changes.revision   !== undefined && { revision:   u.changes.revision }),
         };
       });
       changed = true;
@@ -1401,8 +1425,6 @@ export function sendMessageUpdate(
       _flushPendingUpdates(roomId, s);
     })
     .catch(() => {});
-  // Local mutation diverged from peer until ACK is received.
-  setMessageSyncState(messageId, false).catch(() => {});
 }
 
 /**
@@ -1423,7 +1445,6 @@ export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
         _flushPendingUpdates(roomId, s);
       })
       .catch(() => {});
-    setMessageSyncState(msgId, false).catch(() => {});
     // Mark read locally so loadFromDB filters this message out on the next reload
     applyMessageChanges(msgId, { is_read: true }).catch(() => {});
   }
@@ -1510,6 +1531,10 @@ export function sendTyping(roomId: string, isTyping: boolean): void {
  * waiting for a delivery receipt from each recipient. */
 export function markServerMessageAccepted(roomId: string, messageId: string): void {
   if (!messageId) return;
+  clearServerAckWatch(messageId);
+  _earlyServerAcceptedMessageIds.add(messageId);
+  // A failed/delayed local write should not leave an unbounded in-memory entry.
+  setTimeout(() => _earlyServerAcceptedMessageIds.delete(messageId), 60_000);
   setMessageSyncState(messageId, true)
     // No full-room SQLite reload here: acceptance is a transport-state change,
     // not a content mutation. Delivery/read ticks still update their focused

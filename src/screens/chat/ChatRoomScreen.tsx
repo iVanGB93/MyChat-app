@@ -43,7 +43,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
-import { initDB, saveMessage, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
+import { initDB, saveMessage, getCachedRooms, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
 import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, sendChatMessage } from '../../services/chatWsManager';
 import { getRooms } from '../../services/chatService';
 import { initiateCall } from '../../services/callService';
@@ -376,16 +376,6 @@ function MessageBubbleBase({
                   {item.content}
                 </SmartMessageText>
               </>
-            )}
-            {__DEV__ && isMine && !item.is_deleted && (
-              <Text
-                style={[
-                  styles.syncDebugText,
-                  { color: item.sync ? Colors.success : Colors.warning },
-                ]}
-              >
-                {item.sync ? 'SYNC OK' : 'SYNC PENDING'}
-              </Text>
             )}
             <View style={styles.metaRow}>
               <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
@@ -1146,23 +1136,21 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     });
   }, [contextMsg, roomId, loadFromDB]);
 
-  /** Open the forward picker. Fetches the room list on demand. */
+  /** Open the forward picker from local room metadata, then repair in background. */
   const handleForward = useCallback(async () => {
     if (!contextMsg) return;
     const target = contextMsg;
     setContextMsg(null);
     setForwardMsg(target);
     setForwardLoading(true);
-    try {
-      const data = await getRooms();
-      // Exclude the source room — forwarding to self is rarely useful.
-      setForwardRooms(data.filter((r) => r.id !== roomId));
-    } catch {
-      setForwardRooms([]);
-    } finally {
-      setForwardLoading(false);
-    }
-  }, [contextMsg, roomId]);
+    const cached = user?.id != null ? await getCachedRooms(user.id).catch(() => [] as ChatRoom[]) : [];
+    // Exclude the source room — forwarding to self is rarely useful.
+    setForwardRooms(cached.filter((r) => r.id !== roomId));
+    setForwardLoading(false);
+    getRooms()
+      .then((data) => setForwardRooms(data.filter((r) => r.id !== roomId)))
+      .catch(() => { /* local room list remains usable offline */ });
+  }, [contextMsg, roomId, user?.id]);
 
   /** Send the forwarded message to the selected room. */
   const doForwardTo = useCallback(async (targetRoomId: string) => {
@@ -1767,14 +1755,6 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     letterSpacing: 0.2,
   },
-  syncDebugText: {
-    marginTop: 4,
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-    textAlign: 'right',
-  },
-
   metaRow: {
     flexDirection: 'row',
     alignItems: 'center',

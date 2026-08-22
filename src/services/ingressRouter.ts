@@ -187,28 +187,26 @@ function isBlockedSender(senderId: number): boolean {
 /**
  * Fire a delivery ACK for a message. Idempotent on the server; we additionally
  * guard with `_acked` so the same id isn't acked repeatedly within a session.
- * Axion first. HTTP is only a background fallback when the realtime gateway is
- * unavailable, so receiving a message never waits on an extra request.
+ * The acknowledgement is deliberately sent through the small HTTP endpoint.
+ * It avoids re-entering the notification-WebSocket module while that module is
+ * dynamically importing this router (a React Native require-cycle can otherwise
+ * leave the ACK export temporarily uninitialised).  The endpoint is idempotent
+ * and the server relays the resulting delivery tick over Axion.
  */
 async function ackDelivery(messageId: string, senderId: number, roomId: string): Promise<void> {
   if (senderId <= 0 || _acked.has(messageId)) return;
   track(_acked, messageId);
   const now = new Date().toISOString();
-  try {
-    const { isNotifWsReady, sendOrQueueMessageAck } = await import('./notificationWsManager');
-    if (isNotifWsReady()) {
-      await sendOrQueueMessageAck({ message_id: messageId, sender_id: senderId, room_id: roomId });
-      return;
-    }
-  } catch { /* notification WS manager unavailable */ }
-  // Offline/background fallback: preserve the ACK and let the retry service
-  // submit HTTP without holding up SQLite persistence or rendering.
+  // Keep an offline retry record before issuing the request.  Receipt delivery
+  // never blocks SQLite persistence or the visible receive path.
   await enqueueMessageAck({ message_id: messageId, sender_id: senderId, room_id: roomId, delivered_at: now }).catch(() => {});
   api.post('/api/chat/messages/ack/', {
     message_id: messageId,
     sender_id: senderId,
     room_id: roomId,
     delivered_at: now,
+  }).then(() => {
+    console.log('[Ingress] delivery ack submitted', messageId);
   }).catch(() => {});
 }
 

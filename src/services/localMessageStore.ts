@@ -36,6 +36,9 @@ export async function initDB(): Promise<void> {
       type        TEXT    DEFAULT 'text',
       file_uri    TEXT,
       created_at  TEXT    NOT NULL,
+      updated_at  TEXT,
+      revision    INTEGER DEFAULT 0,
+      accepted_at TEXT,
       is_mine     INTEGER DEFAULT 0,
       sync        INTEGER DEFAULT 0,
       status      TEXT    DEFAULT 'pending',
@@ -101,6 +104,18 @@ export async function initDB(): Promise<void> {
       PRIMARY KEY (owner_user_id, other_user_id)
     );
 
+    -- Full contact rows back the people pickers (new chat, group, share) so
+    -- they can render immediately instead of waiting for /contacts/.
+    CREATE TABLE IF NOT EXISTS contact_cache (
+      owner_user_id INTEGER NOT NULL,
+      contact_id    INTEGER NOT NULL,
+      payload       TEXT    NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      PRIMARY KEY (owner_user_id, contact_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_contact_cache_owner_updated
+      ON contact_cache (owner_user_id, updated_at DESC);
+
     -- Durable, account-scoped call history for the Calls tab's local-first UI.
     CREATE TABLE IF NOT EXISTS call_cache (
       owner_user_id INTEGER NOT NULL,
@@ -119,6 +134,13 @@ export async function initDB(): Promise<void> {
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_read    INTEGER DEFAULT 0`);    } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN sync       INTEGER DEFAULT 0`);    } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN status     TEXT    DEFAULT 'pending'`); } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN updated_at TEXT`); } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN revision INTEGER DEFAULT 0`); } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN accepted_at TEXT`); } catch {}
+  // Legacy rows used a boolean sync flag. Preserve their already-accepted
+  // state once, then use acceptance timestamps and edit versions going forward.
+  await db.execAsync(`UPDATE messages SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''`);
+  await db.execAsync(`UPDATE messages SET accepted_at = created_at WHERE accepted_at IS NULL AND sync = 1`);
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reply_to   TEXT`);                 } catch {}
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN duration_ms INTEGER`);              } catch {}
   // Phase 2 out-of-band media: JSON pointer {media_id, md5, sha256, size, mime}.
@@ -199,6 +221,45 @@ export async function cacheRelationshipSets(ownerUserId: number, contactIds: num
     }
     for (const otherUserId of blockedIds) {
       await db.runAsync(`INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'blocked', ?)`, ownerUserId, otherUserId, now);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Local contact cache (instant people pickers)
+// ---------------------------------------------------------------------------
+
+export async function getCachedContacts(ownerUserId: number): Promise<import('../types').Contact[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<{ payload: string }>(
+    `SELECT payload FROM contact_cache WHERE owner_user_id = ? ORDER BY updated_at DESC`,
+    ownerUserId,
+  );
+  const contacts: import('../types').Contact[] = [];
+  for (const row of rows) {
+    try {
+      const contact = JSON.parse(row.payload);
+      if (contact?.contact && contact?.contact_detail?.id) contacts.push(contact);
+    } catch {
+      // Corrupt cache rows are ignored and repaired by the next refresh.
+    }
+  }
+  return contacts;
+}
+
+export async function cacheContacts(ownerUserId: number, contacts: import('../types').Contact[]): Promise<void> {
+  const db = await getDB();
+  const now = Date.now();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM contact_cache WHERE owner_user_id = ?`, ownerUserId);
+    for (const contact of contacts) {
+      await db.runAsync(
+        `INSERT INTO contact_cache (owner_user_id, contact_id, payload, updated_at) VALUES (?, ?, ?, ?)`,
+        ownerUserId,
+        contact.contact,
+        JSON.stringify(contact),
+        now,
+      );
     }
   });
 }
@@ -378,6 +439,10 @@ export interface LocalMessage {
   type: string;
   file_uri: string | null;
   created_at: string;
+  /** Last content/state mutation, used to reconcile cross-device edits. */
+  updated_at?: string | null;
+  /** Monotonic edit revision; timestamp resolves cross-device ordering. */
+  revision?: number;
   is_mine: boolean;
   sync: boolean;
   status: 'pending' | 'delivered' | 'read';
@@ -398,6 +463,8 @@ export type MessageChanges = {
   reactions?: Record<string, string[]>;
   is_deleted?: boolean;
   content?: string;
+  updated_at?: string;
+  revision?: number;
   /** Display hint — which emoji was just toggled. NOT persisted to SQLite. */
   reacted_emoji?: string;
 };
@@ -433,20 +500,23 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
     $sender_name: String(msg.sender_name ?? ''),
     $type:        String(msg.type ?? 'text'),
     $created_at:  String(msg.created_at),
+    $updated_at:  String(msg.updated_at ?? msg.created_at),
+    $revision:    Number(msg.revision ?? 0),
     $is_mine:     msg.is_mine ? 1 : 0,
     $sync:        msg.sync ? 1 : 0,
     $status:      String(msg.status ?? 'pending'),
   };
   if (msg.content != null)  params.$content  = String(msg.content);
   if (msg.file_uri != null) params.$file_uri = String(msg.file_uri);
+  if (!msg.is_mine || msg.sync) params.$accepted_at = String(msg.created_at);
   if (msg.reply_to != null) params.$reply_to = JSON.stringify(msg.reply_to);
   if (msg.duration_ms != null) params.$duration_ms = Number(msg.duration_ms);
   if (msg.media_ptr != null) params.$media_ptr = JSON.stringify(msg.media_ptr);
 
   await db.runAsync(
     `INSERT OR IGNORE INTO messages
-       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, is_mine, sync, status, reply_to, duration_ms, media_ptr)
-     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $is_mine, $sync, $status, $reply_to, $duration_ms, $media_ptr)`,
+       (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, updated_at, revision, accepted_at, is_mine, sync, status, reply_to, duration_ms, media_ptr)
+     VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $updated_at, $revision, $accepted_at, $is_mine, $sync, $status, $reply_to, $duration_ms, $media_ptr)`,
     params,
   );
 }
@@ -522,7 +592,7 @@ export async function markDelivered(
   if (!first) return;
   const { total, delivered } = first;
   if (total > 0 && total === delivered) {
-    await db.runAsync(`UPDATE messages SET sync = 1, status = 'delivered' WHERE id = ?`, messageId);
+    await db.runAsync(`UPDATE messages SET status = 'delivered' WHERE id = ?`, messageId);
   }
 }
 
@@ -882,14 +952,23 @@ export async function queueMessageUpdate(
   const db = await getDB();
   const id = opts.id ?? genOutboxId();
   const peers = [...new Set((opts.expectedPeerIds ?? []).filter((userId) => Number.isInteger(userId) && userId > 0))];
+  // Delivery acceptance is separate from content convergence. Stamp every
+  // mutation with an edit version instead of resetting a sync boolean.
+  const current = await db.getFirstAsync<{ revision: number | null }>(
+    `SELECT revision FROM messages WHERE id = ?`, messageId,
+  );
+  if (!changes.updated_at) changes.updated_at = new Date().toISOString();
+  if (changes.revision == null) changes.revision = (Number(current?.revision) || 0) + 1;
   await db.runAsync(
     `INSERT OR IGNORE INTO update_outbox
        (id, room_id, message_id, changes, expected_peer_ids, acked_by_user_ids, created_at)
      VALUES (?, ?, ?, ?, ?, '[]', ?)`,
     id, roomId, messageId, JSON.stringify(changes), JSON.stringify(peers), Date.now(),
   );
-  // Any local mutation means this row is no longer guaranteed to match the peer.
-  await db.runAsync(`UPDATE messages SET sync = 0 WHERE id = ?`, messageId);
+  await db.runAsync(
+    `UPDATE messages SET updated_at = ?, revision = ? WHERE id = ?`,
+    changes.updated_at, changes.revision, messageId,
+  );
   return id;
 }
 
@@ -1061,7 +1140,7 @@ export async function getPendingUnsyncedOutgoingMessages(
        AND sender_id = ?
        AND is_deleted = 0
        AND created_at >= ?
-       AND sync = 0
+       AND accepted_at IS NULL
        AND status = 'pending'
      ORDER BY created_at ASC`,
     roomId, myUserId, since,
@@ -1087,10 +1166,14 @@ export async function deleteOutboxUpdates(ids: string[]): Promise<void> {
   }
 }
 
-/** Force a message row sync state. */
+/** Record server acceptance without conflating it with content consistency. */
 export async function setMessageSyncState(messageId: string, synced: boolean): Promise<void> {
   const db = await getDB();
-  await db.runAsync(`UPDATE messages SET sync = ? WHERE id = ?`, synced ? 1 : 0, messageId);
+  if (!synced) return;
+  await db.runAsync(
+    `UPDATE messages SET accepted_at = COALESCE(accepted_at, ?) WHERE id = ?`,
+    new Date().toISOString(), messageId,
+  );
 }
 
 /**
@@ -1132,15 +1215,9 @@ export async function ackOutboxUpdates(ids: string[], ackedByUserId?: number): P
     }
   }
 
-  for (const messageId of messageIds) {
-    const row = await db.getFirstAsync<{ c: number }>(
-      `SELECT COUNT(*) AS c FROM update_outbox WHERE message_id = ?`,
-      messageId,
-    );
-    if ((row?.c ?? 0) === 0) {
-      await db.runAsync(`UPDATE messages SET sync = 1 WHERE id = ?`, messageId);
-    }
-  }
+  // An outbox acknowledgement confirms transport only. Each message's
+  // updated_at/revision is the source of truth for content reconciliation.
+  void messageIds;
 }
 
 /**
@@ -1152,6 +1229,17 @@ export async function applyMessageChanges(
   changes: MessageChanges,
 ): Promise<void> {
   const db = await getDB();
+  const current = await db.getFirstAsync<{ updated_at: string | null; revision: number | null }>(
+    `SELECT updated_at, revision FROM messages WHERE id = ?`, messageId,
+  );
+  // A delayed frame can arrive through a second transport. Apply only the
+  // newest edit; old clients without version metadata remain compatible.
+  if (changes.updated_at && current?.updated_at) {
+    const incomingRevision = Number(changes.revision ?? 0);
+    const currentRevision = Number(current.revision ?? 0);
+    if (changes.updated_at < current.updated_at ||
+        (changes.updated_at === current.updated_at && incomingRevision < currentRevision)) return;
+  }
   if (changes.is_read !== undefined) {
     await db.runAsync(`UPDATE messages SET is_read = ? WHERE id = ?`, changes.is_read ? 1 : 0, messageId);
     if (changes.is_read) {
@@ -1176,6 +1264,28 @@ export async function applyMessageChanges(
       { $content: changes.content, $id: messageId },
     );
   }
+  if (changes.updated_at) {
+    await db.runAsync(
+      `UPDATE messages SET updated_at = ?, revision = MAX(COALESCE(revision, 0), ?) WHERE id = ?`,
+      changes.updated_at, Number(changes.revision ?? 0), messageId,
+    );
+  }
+}
+
+/** Rooms that still have an outgoing message awaiting Axion acceptance. */
+export async function getRoomsWithPendingOutgoingMessages(
+  myUserId: number,
+  sinceMs = 30 * 24 * 60 * 60 * 1000,
+): Promise<string[]> {
+  const db = await getDB();
+  const since = new Date(Date.now() - sinceMs).toISOString();
+  const rows = await db.getAllAsync<{ room_id: string }>(
+    `SELECT DISTINCT room_id FROM messages
+     WHERE is_mine = 1 AND sender_id = ? AND accepted_at IS NULL AND created_at >= ?`,
+    myUserId,
+    since,
+  );
+  return rows.map((row) => row.room_id).filter(Boolean);
 }
 
 /** Soft-delete a message locally (content cleared, is_deleted=1). */

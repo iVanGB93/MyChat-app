@@ -27,11 +27,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Font, Spacing, Radius } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { getContacts } from '../../services/contactService';
 import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { connectRoom, sendChatMessage } from '../../services/chatWsManager';
 import { persistOutgoingImage, persistSharedFile } from '../../services/voiceMessageUtils';
-import { getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
+import { cacheContacts, getCachedContacts, getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
 import { playSound } from '../../services/soundService';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
@@ -43,6 +44,7 @@ type R = RouteProp<RootStackParamList, 'ShareTarget'>;
 export default function ShareTargetScreen() {
   const { colors: Colors } = useTheme();
   const { alert } = useConfirm();
+  const { user } = useAuth();
   const navigation = useNavigation<Nav>();
   const route = useRoute<R>();
   const insets = useSafeAreaInsets();
@@ -56,10 +58,16 @@ export default function ShareTargetScreen() {
   const [loading, setLoading] = useState(true);
   const [sendingTo, setSendingTo] = useState<number | null>(null);
 
-  // Load contacts once on mount.
+  // Render cached contacts first. The server update only repairs the list and
+  // recalculates recency; it must never hold the share sheet behind a spinner.
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (user?.id != null) {
+        const cached = await getCachedContacts(user.id).catch(() => [] as Contact[]);
+        if (!cancelled && cached.length) setContacts(cached);
+      }
+      if (!cancelled) setLoading(false);
       try {
         const [list, rooms, localLastMessages] = await Promise.all([
           getContacts(),
@@ -67,6 +75,7 @@ export default function ShareTargetScreen() {
           getLastMessagePerRoom().catch(() => ({} as Record<string, LocalMessage>)),
         ]);
         if (cancelled) return;
+        if (user?.id != null) cacheContacts(user.id, list).catch(() => {});
         const contactIds = new Set(list.map((contact) => contact.contact));
         const recentByContact: Record<number, number> = {};
         for (const room of rooms) {
@@ -83,13 +92,13 @@ export default function ShareTargetScreen() {
         setContacts(list);
         setRecentChatAt(recentByContact);
       } catch {
-        if (!cancelled) alert('Error', 'Could not load contacts');
+        // Cached contacts remain valid when a refresh is temporarily unavailable.
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [alert]);
+  }, [user?.id]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
