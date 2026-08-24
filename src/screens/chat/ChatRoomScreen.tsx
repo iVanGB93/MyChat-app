@@ -44,7 +44,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
 import { initDB, saveMessage, getCachedRooms, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
-import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, sendChatMessage } from '../../services/chatWsManager';
+import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, retryOutgoingMessage, sendChatMessage } from '../../services/chatWsManager';
 import { getRooms } from '../../services/chatService';
 import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
@@ -177,6 +177,7 @@ interface MessageBubbleProps {
   currentUserId?: number;
   onReply: (item: Message) => void;
   onLongPress: (pageY: number, item: Message) => void;
+  onRetry: (messageId: string) => void;
   onImagePress: (uri: string | null) => void;
   onReaction: (item: Message, emoji: string) => void;
 }
@@ -232,6 +233,7 @@ function MessageBubbleBase({
   currentUserId,
   onReply,
   onLongPress,
+  onRetry,
   onImagePress,
   onReaction,
 }: MessageBubbleProps) {
@@ -382,7 +384,19 @@ function MessageBubbleBase({
                 {dayjs(item.created_at).format('HH:mm')}
               </Text>
               {isMine && !item.is_deleted && (
+                <>
+                {isPending && (
+                  <TouchableOpacity
+                    onPress={() => onRetry(item.id)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Resend pending message"
+                  >
+                    <Ionicons name="refresh" size={14} color={Colors.primary} />
+                  </TouchableOpacity>
+                )}
                 <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
+                </>
               )}
             </View>
           </View>
@@ -435,6 +449,7 @@ function areBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps)
     prev.currentUserId !== next.currentUserId ||
     prev.onReply !== next.onReply ||
     prev.onLongPress !== next.onLongPress ||
+    prev.onRetry !== next.onRetry ||
     prev.onImagePress !== next.onImagePress ||
     prev.onReaction !== next.onReaction
   ) {
@@ -466,13 +481,18 @@ const MessageBubble = React.memo(MessageBubbleBase, areBubblePropsEqual);
 
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
-  const isDirectChat = !!otherUserId;
+  // `otherUserId` is navigation context, not room metadata.  A group opened
+  // from a notification has the sender id populated too, so use the locally
+  // cached room type as the authority for group-only message UI.
+  const [isGroupChat, setIsGroupChat] = useState(!otherUserId);
+  const isDirectChat = !isGroupChat;
   const { user } = useAuth();
   const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, lastMutationIds, typers, notifyTyping } = useChat(roomId, user?.id);
   const isMuted = useAppStore((s) => !!s.mutedRooms[roomId]);
   /** True when the other user in a direct chat is not yet in our contacts.
    *  Shows the "wants to talk to you" accept/block banner above the message list. */
   const isMessageRequest = useAppStore((s) => {
+    if (!isDirectChat) return false;
     if (!otherUserId) return false;
     if (s.contactIds[otherUserId]) return false;
     if (s.blockedIds[otherUserId]) return false;
@@ -483,6 +503,23 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const { colors: Colors } = useTheme();
   const { confirm, alert } = useConfirm();
   const { ensure: ensurePermission } = usePermissionPrompt();
+
+  useEffect(() => {
+    let cancelled = false;
+    const resolveRoomType = async () => {
+      const cached = user?.id != null
+        ? await getCachedRooms(user.id).catch(() => [] as ChatRoom[])
+        : [] as ChatRoom[];
+      let room = cached.find((entry) => entry.id === roomId);
+      if (!room) {
+        const remote = await getRooms().catch(() => [] as ChatRoom[]);
+        room = remote.find((entry) => entry.id === roomId);
+      }
+      if (!cancelled && room) setIsGroupChat(room.room_type === 'group');
+    };
+    resolveRoomType().catch(() => {});
+    return () => { cancelled = true; };
+  }, [roomId, user?.id]);
 
   // Mark this room as the active one in the global store while the screen is mounted.
   // Other systems (notification routing, foreground service, etc.) read this to
@@ -730,7 +767,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /* ── Call header buttons ── */
   const handleCall = async (callType: 'voice' | 'video') => {
     Keyboard.dismiss();
-    if (!otherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
+    if (!isDirectChat || !otherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
     // A call needs the mic (always) and the camera (video). Ask up front so the
     // call doesn't silently fail when WebRTC can't get the media tracks.
     const ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
@@ -765,7 +802,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               color={isMuted ? '#FF5050' : '#00E5FF'}
             />
           </TouchableOpacity>
-          {!otherUserId && (
+          {!isDirectChat && (
             <TouchableOpacity
               onPress={() => navigation.navigate('GroupInfo', { roomId, roomName: route.params.roomName })}
               activeOpacity={0.7}
@@ -779,7 +816,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               <Ionicons name="people-outline" size={18} color="#00E5FF" />
             </TouchableOpacity>
           )}
-          {!!otherUserId && <>
+          {isDirectChat && !!otherUserId && <>
           <TouchableOpacity
             onPress={() => handleCall('video')}
             activeOpacity={0.7}
@@ -808,7 +845,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         </View>
       ),
     });
-  }, [navigation, otherUserId, roomId, isMuted, connected, Colors.headerText, route.params.roomName]);
+  }, [navigation, otherUserId, isDirectChat, roomId, isMuted, connected, Colors.headerText, route.params.roomName]);
 
   const handleSend = () => {
     const trimmed = text.trim();
@@ -1193,9 +1230,24 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     sendMessageUpdate(roomId, m.id, { reactions: newReactions, reacted_emoji: emoji }, otherUserId ? [otherUserId] : []);
   }, [roomId, user?.id, otherUserId]);
 
+  const handleRetryMessage = useCallback(async (messageId: string) => {
+    try {
+      const result = await retryOutgoingMessage(roomId, messageId);
+      if (result === 'queued') {
+        alert('Retry queued', 'Axonic will resend this message as soon as it reconnects.');
+      } else if (result === 'missing') {
+        alert('Message unavailable', 'This message is no longer available to resend from this phone.');
+      }
+    } catch {
+      alert('Could not resend', 'Please check your connection and try again.');
+    }
+  }, [alert, roomId]);
+
   const renderMessage = useCallback(({ item }: { item: Message }) => {
     const isMine = item.sender === user?.id;
-    const isPending = isMine && pendingIds.has(item.id);
+    // The in-memory set covers this live session; persisted pending status
+    // keeps the retry control available after an app restart.
+    const isPending = isMine && (pendingIds.has(item.id) || item.status === 'pending');
     const isDelivered = isMine && deliveredIds.has(item.id);
     const isRead = isMine && (item.is_read || readIds.has(item.id) || item.status === 'read');
     return (
@@ -1210,11 +1262,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         currentUserId={user?.id}
         onReply={handleReply}
         onLongPress={handleBubbleLongPress}
+        onRetry={handleRetryMessage}
         onImagePress={handleImagePress}
         onReaction={handleReactionToggle}
       />
     );
-  }, [user?.id, pendingIds, deliveredIds, readIds, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleImagePress, handleReactionToggle]);
+  }, [user?.id, pendingIds, deliveredIds, readIds, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleRetryMessage, handleImagePress, handleReactionToggle]);
 
   const handleAcceptRequest = useCallback(async () => {
     if (!otherUserId || requestBusy) return;

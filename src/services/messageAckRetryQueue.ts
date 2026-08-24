@@ -14,6 +14,17 @@ const MAX_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 60000;
 
+// Several transports may acknowledge the same burst concurrently (Axion, push
+// receive, and a foreground reconnect). AsyncStorage read-modify-write is not
+// atomic, so serialize mutations to prevent a flush from overwriting a newly
+// queued acknowledgement.
+let queueWriteTail: Promise<void> = Promise.resolve();
+function serializeQueue<T>(work: () => Promise<T>): Promise<T> {
+  const run = queueWriteTail.then(work, work);
+  queueWriteTail = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 export interface QueuedMessageAck {
   id: string; // unique ID for this retry attempt
   message_id: string;
@@ -32,9 +43,10 @@ export interface QueuedMessageAck {
  * Returns true if queued, false if too old to retry.
  */
 export async function enqueueMessageAck(ack: Omit<QueuedMessageAck, 'id' | 'created_at' | 'last_retry_at' | 'retry_count' | 'next_retry_at'>): Promise<boolean> {
-  try {
-    const raw = await AsyncStorage.getItem(RETRY_QUEUE_KEY);
-    const queue: QueuedMessageAck[] = raw ? JSON.parse(raw) : [];
+  return serializeQueue(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(RETRY_QUEUE_KEY);
+      const queue: QueuedMessageAck[] = raw ? JSON.parse(raw) : [];
     
     // Check if this ack is already in the queue (avoid duplicates)
     const alreadyQueued = queue.some(
@@ -58,11 +70,12 @@ export async function enqueueMessageAck(ack: Omit<QueuedMessageAck, 'id' | 'crea
     await AsyncStorage.setItem(RETRY_QUEUE_KEY, JSON.stringify(queue));
     
     console.log('[AckRetryQueue] enqueued ack:', ack.message_id, '(queue size:', queue.length, ')');
-    return true;
-  } catch (err) {
-    console.warn('[AckRetryQueue] failed to enqueue:', err);
-    return false;
-  }
+      return true;
+    } catch (err) {
+      console.warn('[AckRetryQueue] failed to enqueue:', err);
+      return false;
+    }
+  });
 }
 
 /**
@@ -70,9 +83,10 @@ export async function enqueueMessageAck(ack: Omit<QueuedMessageAck, 'id' | 'crea
  * Retries with exponential backoff; removes successful acks; re-queues failures.
  */
 export async function flushPendingAcks(): Promise<{ flushed: number; failed: number }> {
-  try {
-    const raw = await AsyncStorage.getItem(RETRY_QUEUE_KEY);
-    if (!raw) return { flushed: 0, failed: 0 };
+  return serializeQueue(async () => {
+    try {
+      const raw = await AsyncStorage.getItem(RETRY_QUEUE_KEY);
+      if (!raw) return { flushed: 0, failed: 0 };
     
     const queue: QueuedMessageAck[] = JSON.parse(raw);
     if (!queue.length) return { flushed: 0, failed: 0 };
@@ -158,11 +172,12 @@ export async function flushPendingAcks(): Promise<{ flushed: number; failed: num
       console.log('[AckRetryQueue] flush complete:', { flushed, failed, remaining: updated.length });
     }
     
-    return { flushed, failed };
-  } catch (err) {
-    console.warn('[AckRetryQueue] flush failed:', err);
-    return { flushed: 0, failed: 0 };
-  }
+      return { flushed, failed };
+    } catch (err) {
+      console.warn('[AckRetryQueue] flush failed:', err);
+      return { flushed: 0, failed: 0 };
+    }
+  });
 }
 
 /**
@@ -181,10 +196,12 @@ export async function getQueueStatus(): Promise<QueuedMessageAck[]> {
  * Clear the entire queue (e.g. on logout).
  */
 export async function clearQueue(): Promise<void> {
-  try {
-    await AsyncStorage.removeItem(RETRY_QUEUE_KEY);
-    console.log('[AckRetryQueue] queue cleared');
-  } catch (err) {
-    console.warn('[AckRetryQueue] failed to clear queue:', err);
-  }
+  return serializeQueue(async () => {
+    try {
+      await AsyncStorage.removeItem(RETRY_QUEUE_KEY);
+      console.log('[AckRetryQueue] queue cleared');
+    } catch (err) {
+      console.warn('[AckRetryQueue] failed to clear queue:', err);
+    }
+  });
 }

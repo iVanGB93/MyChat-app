@@ -86,6 +86,12 @@ const TOKEN_REFRESH_MARGIN_MS = 2 * 60_000; // refresh when <2 min left
 // Must be >= server's WS_AUTH_TIMEOUT_SECONDS (10s) so we don't give up before the
 // server has a chance to acknowledge our auth frame on slow networks.
 const AUTH_TIMEOUT_MS = 10_000;
+// A content update may legitimately wait for an offline group member.  Keep
+// that durable outbox reliable without waking the radio every eight seconds
+// until the member next opens Axonic (the timestamp reconciliation will also
+// converge it then).
+const INITIAL_UPDATE_RETRY_MS = 15_000;
+const MAX_UPDATE_RETRY_MS = 5 * 60_000;
 // Server is now hardened with try/except in ChatConsumer.receive, so re-enabling
 // ready_to_receive lets the server flush any pending deliveries for this room.
 const SEND_READY_TO_RECEIVE_ON_AUTH_OK = true;
@@ -162,6 +168,8 @@ interface RoomState {
    * sending the exact same durable batch repeatedly before its ACK arrives. */
   inFlightUpdateIds: Set<string>;
   updateRetryTimer: ReturnType<typeof setTimeout> | null;
+  /** Backoff for a durable update that still awaits an offline peer's ACK. */
+  updateRetryDelay: number;
   reconnectDelay: number;
   reconnectCount: number;
   close1011Count: number;
@@ -175,6 +183,8 @@ interface RoomState {
   pendingFlushes: number[];
   /** Queued media-hydration resends (specific ids) for a recipient, awaiting WS open. */
   pendingResends: Array<{ recipientId: number; ids: string[] }>;
+  /** User-requested retries. These preserve the original message id for dedupe. */
+  pendingManualRetryIds: string[];
   lastMutationAt: number;
   lastMutationIds: string[];
   listeners: Set<RoomListener>;
@@ -198,6 +208,10 @@ function flushAxionRoom(roomId: string, s: RoomState): void {
   s.authenticated = true;
   s.connecting = false;
   s.hasConnectedBefore = true;
+  // The chat UI reads both the logical room status and this authentication
+  // flag.  Axion authenticates once for the whole app, so promote every open
+  // logical room when that shared socket is ready as well.
+  try { useAppStore.getState().setChatRoomAuthenticated(roomId, true); } catch {}
   setStatus(roomId, s, 'connected');
   _syncRoomPendingNow(roomId, s);
   sendRawNotif({ type: 'room_ready', room_id: roomId });
@@ -211,6 +225,11 @@ function flushAxionRoom(roomId: string, s: RoomState): void {
     s.pendingResends = [];
     queued.forEach(({ recipientId, ids }) => { void resendMessagesByIds(roomId, recipientId, ids); });
   }
+  if (s.pendingManualRetryIds.length > 0) {
+    const ids = [...s.pendingManualRetryIds];
+    s.pendingManualRetryIds = [];
+    ids.forEach((id) => { void retryOutgoingMessage(roomId, id); });
+  }
 }
 
 function ensureAxionStatusListener(): void {
@@ -221,9 +240,11 @@ function ensureAxionStatusListener(): void {
         flushAxionRoom(roomId, s);
       } else if (status === 'connecting' || status === 'reconnecting') {
         s.authenticated = false;
+        try { useAppStore.getState().setChatRoomAuthenticated(roomId, false); } catch {}
         setStatus(roomId, s, s.hasConnectedBefore ? 'reconnecting' : 'connecting');
       } else {
         s.authenticated = false;
+        try { useAppStore.getState().setChatRoomAuthenticated(roomId, false); } catch {}
         setStatus(roomId, s, 'disconnected');
       }
     });
@@ -276,6 +297,7 @@ function createRoomState(): RoomState {
     pendingUpdates: [],
     inFlightUpdateIds: new Set(),
     updateRetryTimer: null,
+    updateRetryDelay: INITIAL_UPDATE_RETRY_MS,
     reconnectDelay: INITIAL_RECONNECT_MS,
     reconnectCount: 0,
     close1011Count: 0,
@@ -288,6 +310,7 @@ function createRoomState(): RoomState {
     authTimeoutTimer: null,
     pendingFlushes: [],
     pendingResends: [],
+    pendingManualRetryIds: [],
     lastMutationAt: 0,
     lastMutationIds: [],
     listeners: new Set(),
@@ -378,11 +401,13 @@ function _flushPendingUpdates(roomId: string, s: RoomState): void {
     // A missing server/peer ACK must be retried eventually, but never in a
     // tight loop caused by unrelated inbound events or a stale deployment.
     if (!s.updateRetryTimer) {
+      const retryAfterMs = s.updateRetryDelay;
       s.updateRetryTimer = setTimeout(() => {
         s.updateRetryTimer = null;
+        s.updateRetryDelay = Math.min(s.updateRetryDelay * 2, MAX_UPDATE_RETRY_MS);
         s.inFlightUpdateIds.clear();
         _flushSQLiteOutbox(roomId, s).catch(() => {});
-      }, 8_000);
+      }, retryAfterMs);
     }
     console.log('[ChatWsManager] sent', batch.length, 'pending updates for room', roomId);
   } catch {
@@ -402,6 +427,9 @@ async function _flushSQLiteOutbox(roomId: string, s: RoomState): Promise<void> {
     if (s.inFlightUpdateIds.size === 0 && s.updateRetryTimer) {
       clearTimeout(s.updateRetryTimer);
       s.updateRetryTimer = null;
+    }
+    if (s.inFlightUpdateIds.size === 0 && entries.length === 0) {
+      s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
     }
     if (!entries.length) return;
     if (!isAxionReady()) return;
@@ -1402,6 +1430,31 @@ export async function resendMessagesByIds(
 }
 
 /**
+ * Explicitly re-send one pending outgoing message. The original id is kept so
+ * the server's delivery records and the recipient's SQLite ingress dedupe it
+ * if the first relay was merely delayed rather than lost.
+ */
+export async function retryOutgoingMessage(
+  roomId: string,
+  messageId: string,
+): Promise<'sent' | 'queued' | 'missing'> {
+  if (_myUserId === null || !messageId) return 'missing';
+  const state = getOrCreate(roomId);
+  if (!isAxionReady()) {
+    if (!state.pendingManualRetryIds.includes(messageId)) {
+      state.pendingManualRetryIds.push(messageId);
+    }
+    ensureWsAlive();
+    connectRoom(roomId);
+    return 'queued';
+  }
+  const messages = await getMessagesByIdsForResend(roomId, _myUserId, [messageId]);
+  const message = messages[0];
+  if (!message) return 'missing';
+  return (await sendOutboxFrame(state, roomId, message)) ? 'sent' : 'queued';
+}
+
+/**
  * Queue a mutation to be synced to all other room members.
  * Adds to the in-memory queue + persists to SQLite outbox, then attempts immediate send.
  * Also applies the change locally right away so loadFromDB won't re-queue it.
@@ -1421,6 +1474,9 @@ export function sendMessageUpdate(
   // SQLite, so an acknowledgement can never strand a second phantom outbox row.
   queueMessageUpdate(roomId, messageId, changes, { id, expectedPeerIds })
     .then(() => {
+      // A fresh local action deserves the prompt first retry; only a stale
+      // offline-peer wait is exponentially slowed down.
+      s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
       s.pendingUpdates.push({ id, message_id: messageId, changes });
       _flushPendingUpdates(roomId, s);
     })
@@ -1441,6 +1497,7 @@ export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
     // snapshot when their relay acknowledgement arrives.
     queueMessageUpdate(roomId, msgId, { is_read: true }, { id })
       .then(() => {
+        s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
         s.pendingUpdates.push({ id, message_id: msgId, changes: { is_read: true } });
         _flushPendingUpdates(roomId, s);
       })

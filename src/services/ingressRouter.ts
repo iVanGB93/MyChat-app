@@ -91,6 +91,12 @@ export interface CanonicalMessage {
  * Persistent dedupe across app restarts is provided by SQLite `messageExists`. */
 const _acked = new Set<string>();
 const _persisting = new Set<string>();
+// Reconnect digests are deliberately redundant, but repeatedly asking every
+// group peer for the same historic gap turns a harmless cache mismatch into a
+// message/update storm. One recovery request per room/id per window is enough;
+// new live messages still arrive immediately through Axion or push.
+const _missingRequestRetryAfter = new Map<string, number>();
+const MISSING_REQUEST_COOLDOWN_MS = 15 * 60 * 1000;
 /** Pointer-media downloads in flight (separate from `_persisting` so a download
  *  kicked off right after persist isn't blocked by the persist guard). */
 const _downloading = new Set<string>();
@@ -708,10 +714,24 @@ export async function routeInbound(
       if (!env.room_id || ids.length === 0) return { type: env.type, handled: false };
       try {
         const missing = await filterMissingMessageIds(env.room_id, ids);
-        if (missing.length > 0) {
+        const now = Date.now();
+        // Keep the in-memory map bounded on long-lived app sessions.
+        if (_missingRequestRetryAfter.size > 1_000) {
+          for (const [key, retryAfter] of _missingRequestRetryAfter) {
+            if (retryAfter <= now) _missingRequestRetryAfter.delete(key);
+          }
+        }
+        const eligible = missing.filter((id) => {
+          const key = `${env.room_id}:${id}`;
+          return (_missingRequestRetryAfter.get(key) ?? 0) <= now;
+        });
+        if (eligible.length > 0) {
+          for (const id of eligible) {
+            _missingRequestRetryAfter.set(`${env.room_id}:${id}`, now + MISSING_REQUEST_COOLDOWN_MS);
+          }
           const { requestMissing } = await import('./outboundRouter');
-          await requestMissing(env.room_id, missing).catch(() => {});
-          console.log('[Ingress] sync.digest — requested', missing.length, 'missing in', env.room_id);
+          await requestMissing(env.room_id, eligible).catch(() => {});
+          console.log('[Ingress] sync.digest — requested', eligible.length, 'missing in', env.room_id);
         }
       } catch { /* best-effort */ }
       return { type: env.type, handled: true };

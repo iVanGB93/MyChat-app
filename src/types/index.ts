@@ -56,6 +56,8 @@ export interface ChatRoom {
   id: string;           // UUID
   name: string;
   room_type: 'direct' | 'group';
+  /** Group photo supplied by the server; direct rooms use member avatars. */
+  avatar?: string | null;
   members: number[];
   members_detail: RoomMember[];
   last_message: LastMessage | null;

@@ -10,19 +10,51 @@ import * as SQLite from "expo-sqlite";
 import { File, Paths } from 'expo-file-system';
 
 let _db: SQLite.SQLiteDatabase | null = null;
+let _dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let _initPromise: Promise<void> | null = null;
+let _exclusiveWriteTail: Promise<void> = Promise.resolve();
 
 async function getDB(): Promise<SQLite.SQLiteDatabase> {
-  if (!_db) {
-    _db = await SQLite.openDatabaseAsync("axonic_messages.db");
+  if (_db) return _db;
+  // Startup launches several local-first readers at once (rooms, contacts,
+  // calls, and chat history). Opening multiple handles to the same SQLite file
+  // races their migrations and can surface as "database is locked".
+  if (!_dbOpenPromise) {
+    _dbOpenPromise = SQLite.openDatabaseAsync("axonic_messages.db").then(async (db) => {
+      await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
+      _db = db;
+      return db;
+    });
   }
-  return _db;
+  return _dbOpenPromise;
+}
+
+/**
+ * Expo's exclusive transactions use a dedicated connection. Serializing the
+ * short cache replacement jobs prevents room/contact/call refreshes that all
+ * start at login from contending for SQLite's single writer lock.
+ */
+function runExclusiveWrite(task: (tx: SQLite.SQLiteDatabase) => Promise<void>): Promise<void> {
+  const run = _exclusiveWriteTail.then(async () => {
+    const db = await getDB();
+    await db.withExclusiveTransactionAsync(task);
+  });
+  _exclusiveWriteTail = run.catch(() => {});
+  return run;
 }
 
 // ---------------------------------------------------------------------------
 // Schema
 // ---------------------------------------------------------------------------
 
-export async function initDB(): Promise<void> {
+export function initDB(): Promise<void> {
+  // Schema setup and migrations must also be single-flight. Every caller gets
+  // the same promise instead of executing competing ALTER/CREATE statements.
+  if (!_initPromise) _initPromise = initDBOnce();
+  return _initPromise;
+}
+
+async function initDBOnce(): Promise<void> {
   const db = await getDB();
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
@@ -175,12 +207,11 @@ export async function getCachedRooms(ownerUserId: number): Promise<import('../ty
 
 /** Replace this user's room metadata with the latest authoritative server list. */
 export async function cacheRooms(ownerUserId: number, rooms: import('../types').ChatRoom[]): Promise<void> {
-  const db = await getDB();
   const now = Date.now();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync(`DELETE FROM room_cache WHERE owner_user_id = ?`, ownerUserId);
+  await runExclusiveWrite(async (tx) => {
+    await tx.runAsync(`DELETE FROM room_cache WHERE owner_user_id = ?`, ownerUserId);
     for (const room of rooms) {
-      await db.runAsync(
+      await tx.runAsync(
         `INSERT INTO room_cache (owner_user_id, room_id, payload, updated_at, cached_at)
          VALUES (?, ?, ?, ?, ?)`,
         ownerUserId,
@@ -212,15 +243,14 @@ export async function getCachedRelationshipSets(ownerUserId: number): Promise<Ca
 
 /** Replace relationship state after a successful authoritative API sync. */
 export async function cacheRelationshipSets(ownerUserId: number, contactIds: number[], blockedIds: number[]): Promise<void> {
-  const db = await getDB();
   const now = Date.now();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync(`DELETE FROM relationship_cache WHERE owner_user_id = ?`, ownerUserId);
+  await runExclusiveWrite(async (tx) => {
+    await tx.runAsync(`DELETE FROM relationship_cache WHERE owner_user_id = ?`, ownerUserId);
     for (const otherUserId of contactIds) {
-      await db.runAsync(`INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'contact', ?)`, ownerUserId, otherUserId, now);
+      await tx.runAsync(`INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'contact', ?)`, ownerUserId, otherUserId, now);
     }
     for (const otherUserId of blockedIds) {
-      await db.runAsync(`INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'blocked', ?)`, ownerUserId, otherUserId, now);
+      await tx.runAsync(`INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'blocked', ?)`, ownerUserId, otherUserId, now);
     }
   });
 }
@@ -248,12 +278,11 @@ export async function getCachedContacts(ownerUserId: number): Promise<import('..
 }
 
 export async function cacheContacts(ownerUserId: number, contacts: import('../types').Contact[]): Promise<void> {
-  const db = await getDB();
   const now = Date.now();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync(`DELETE FROM contact_cache WHERE owner_user_id = ?`, ownerUserId);
+  await runExclusiveWrite(async (tx) => {
+    await tx.runAsync(`DELETE FROM contact_cache WHERE owner_user_id = ?`, ownerUserId);
     for (const contact of contacts) {
-      await db.runAsync(
+      await tx.runAsync(
         `INSERT INTO contact_cache (owner_user_id, contact_id, payload, updated_at) VALUES (?, ?, ?, ?)`,
         ownerUserId,
         contact.contact,
@@ -266,16 +295,20 @@ export async function cacheContacts(ownerUserId: number, contacts: import('../ty
 
 /** Optimistically record an accepted contact or blocked sender immediately. */
 export async function setCachedRelationship(ownerUserId: number, otherUserId: number, state: 'contact' | 'blocked' | null): Promise<void> {
-  const db = await getDB();
-  if (state == null) {
-    await db.runAsync(`DELETE FROM relationship_cache WHERE owner_user_id = ? AND other_user_id = ?`, ownerUserId, otherUserId);
-    return;
-  }
-  await db.runAsync(
-    `INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(owner_user_id, other_user_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
-    ownerUserId, otherUserId, state, Date.now(),
-  );
+  // This can be triggered while the foreground relationship refresh is
+  // replacing the full cache. Keep it on the same serialized writer lane so a
+  // quick accept/block action is not lost or rejected as "database is locked".
+  await runExclusiveWrite(async (tx) => {
+    if (state == null) {
+      await tx.runAsync(`DELETE FROM relationship_cache WHERE owner_user_id = ? AND other_user_id = ?`, ownerUserId, otherUserId);
+      return;
+    }
+    await tx.runAsync(
+      `INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(owner_user_id, other_user_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+      ownerUserId, otherUserId, state, Date.now(),
+    );
+  });
 }
 
 export async function getCachedCallHistory(ownerUserId: number): Promise<import('../types').CallLog[]> {
@@ -295,12 +328,11 @@ export async function getCachedCallHistory(ownerUserId: number): Promise<import(
 }
 
 export async function cacheCallHistory(ownerUserId: number, calls: import('../types').CallLog[]): Promise<void> {
-  const db = await getDB();
   const now = Date.now();
-  await db.withTransactionAsync(async () => {
-    await db.runAsync(`DELETE FROM call_cache WHERE owner_user_id = ?`, ownerUserId);
+  await runExclusiveWrite(async (tx) => {
+    await tx.runAsync(`DELETE FROM call_cache WHERE owner_user_id = ?`, ownerUserId);
     for (const call of calls) {
-      await db.runAsync(
+      await tx.runAsync(
         `INSERT INTO call_cache (owner_user_id, call_id, payload, started_at, cached_at) VALUES (?, ?, ?, ?, ?)`,
         ownerUserId, call.id, JSON.stringify(call), call.started_at, now,
       );

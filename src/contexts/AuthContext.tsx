@@ -8,7 +8,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearTokens, getTokens } from '../services/api';
 import { getProfile, login as loginApi, register as registerApi, registerPushToken, unregisterPushToken } from '../services/authService';
 import { getPushRegistrationPayload } from '../services/pushNotificationService';
-import { unregisterBackgroundTask, unregisterPushReceiveTask } from '../services/backgroundNotificationService';
+import {
+  registerBackgroundTask,
+  registerPushReceiveTask,
+  unregisterBackgroundTask,
+  unregisterPushReceiveTask,
+} from '../services/backgroundNotificationService';
 import { destroyWsManager } from '../services/notificationWsManager';
 import { subscribeSessionInvalidation } from '../services/sessionInvalidation';
 import { setCurrentUserId } from '../services/chatWsManager';
@@ -100,6 +105,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  /** Background task registration is removed on logout. Re-install it after a
+   * successful login in the same running process, otherwise a later account
+   * would receive pushes but have no headless persistence/notification path. */
+  const ensureBackgroundServices = useCallback(() => {
+    registerBackgroundTask().catch(() => {});
+    registerPushReceiveTask().catch(() => {});
+  }, []);
+
   /** Refresh contact and blocked-user sets without wiping valid cache on a
    * transient network error. A successful pair is committed to SQLite. */
   const syncContactSets = useCallback(async (ownerUserId: number) => {
@@ -144,6 +157,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setState({ user: cachedUser, isLoading: false, isAuthenticated: true });
             loadCachedContactSets(cachedUser.id);
             syncPushToken();
+            ensureBackgroundServices();
             syncContactSets(cachedUser.id);
           }
           try {
@@ -154,6 +168,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             loadCachedContactSets(user.id);
             // Register push token with backend on session restore
             syncPushToken();
+            ensureBackgroundServices();
             syncContactSets(user.id);
           } catch (err) {
             if (cachedUser && !isAuthFailure(err)) {
@@ -182,7 +197,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
     })();
-  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
+  }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);
 
   const login = useCallback(async (username: string, password: string) => {
     await loginApi(username, password);
@@ -193,8 +208,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadCachedContactSets(user.id);
     // Register push token with backend after login
     syncPushToken();
+    ensureBackgroundServices();
     syncContactSets(user.id);
-  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
+  }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);
 
   const register = useCallback(async (username: string, email: string, password: string, displayName?: string) => {
     await registerApi(username, email, password, displayName);
@@ -206,8 +222,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     loadCachedContactSets(user.id);
     // Register push token with backend after registration
     syncPushToken();
+    ensureBackgroundServices();
     syncContactSets(user.id);
-  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
+  }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);
 
   const logout = useCallback(async () => {
     destroyWsManager();
@@ -245,8 +262,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ user, isLoading: false, isAuthenticated: true });
     loadCachedContactSets(user.id);
     syncPushToken();
+    ensureBackgroundServices();
     syncContactSets(user.id);
-  }, [loadCachedContactSets, syncPushToken, syncContactSets]);
+  }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);
 
   return (
     <AuthContext.Provider value={{ ...state, login, register, loginWithTokens, logout, refreshUser }}>

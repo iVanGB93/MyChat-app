@@ -180,6 +180,12 @@ function closeWs() {
     ws = null;
   }
   _wsAuthenticated = false;
+  // App-state reporting is scoped to a physical socket.  A newly authenticated
+  // connection must always report its current foreground/background state to
+  // the server; otherwise a reconnect while backgrounded can inherit the
+  // previous socket's "active" presence and suppress the push fallback.
+  _lastReportedAppState = null;
+  try { useAppStore.getState().setNotifWsAuthenticated(false); } catch {}
 }
 
 function startPing() {
@@ -716,6 +722,8 @@ async function connectWs() {
         connecting = false;
         _wsAuthenticated = false;
         ws = null;
+        _lastReportedAppState = null;
+        try { useAppStore.getState().setNotifWsAuthenticated(false); } catch {}
         if (ev.code === 1011) {
           _close1011Count += 1;
           // Slow down immediately on first server internal-error close.

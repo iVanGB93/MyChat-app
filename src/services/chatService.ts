@@ -55,6 +55,23 @@ export async function makeGroupAdmin(roomId: string, userId: number): Promise<Ch
   return data;
 }
 
+/** Upload a replacement group photo selected from the device library. */
+export async function uploadGroupAvatar(
+  roomId: string,
+  localUri: string,
+  mimeType: string = 'image/jpeg',
+): Promise<ChatRoom> {
+  const extension = (mimeType.split('/')[1] || 'jpg').toLowerCase();
+  const filename = localUri.split('/').pop() || `group-avatar.${extension}`;
+  const form = new FormData();
+  form.append('avatar', { uri: localUri, name: filename, type: mimeType } as any);
+  const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/avatar/`, form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    transformRequest: (request) => request,
+  });
+  return data;
+}
+
 /**
  * Permanently delete a chat room. The backend cascades message deletion
  * and the room disappears for every member.

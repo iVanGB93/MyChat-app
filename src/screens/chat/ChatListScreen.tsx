@@ -493,7 +493,7 @@ export default function ChatListScreen() {
         <ChatListRow
           roomId={item.id}
           displayName={displayName}
-          avatarUri={resolveMediaUrl(other?.avatar ?? null)}
+          avatarUri={resolveMediaUrl(item.room_type === 'group' ? item.avatar : other?.avatar ?? null)}
           isDirect={item.room_type === 'direct'}
           isOnline={other?.is_online ?? false}
           otherUserId={other?.id}
