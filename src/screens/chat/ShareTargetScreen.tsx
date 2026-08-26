@@ -30,12 +30,15 @@ import { useConfirm } from '../../contexts/ConfirmContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getContacts } from '../../services/contactService';
 import { getOrCreateDirect, getRooms } from '../../services/chatService';
-import { connectRoom, sendChatMessage } from '../../services/chatWsManager';
+import { connectRoom, sendChatMessage, type SendChatResult } from '../../services/chatWsManager';
 import { persistOutgoingImage, persistSharedFile } from '../../services/voiceMessageUtils';
+import { mediaFileSize } from '../../services/mediaLane';
+import { formatBytes, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, MEDIA_MAX_UPLOAD_BYTES, validateMediaSize } from '../../services/mediaTransferPolicy';
 import { cacheContacts, getCachedContacts, getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
 import { playSound } from '../../services/soundService';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
+import { useAppStore } from '../../store/appStore';
 import type { Contact, RootStackParamList, ShareAttachment } from '../../types';
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'ShareTarget'>;
@@ -57,6 +60,12 @@ export default function ShareTargetScreen() {
   const [recentChatAt, setRecentChatAt] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
   const [sendingTo, setSendingTo] = useState<number | null>(null);
+  const [transferState, setTransferState] = useState<Record<string, 'queued' | 'uploading' | 'sent' | 'failed'>>({});
+  const presenceByUserId = useAppStore((s) => s.presenceByUserId);
+  const oversizedCount = useMemo(
+    () => attachments.filter((attachment) => !!validateMediaSize(attachment.size)).length,
+    [attachments],
+  );
 
   // Render cached contacts first. The server update only repairs the list and
   // recalculates recency; it must never hold the share sheet behind a spinner.
@@ -132,24 +141,46 @@ export default function ShareTargetScreen() {
       // but connecting first gives the best chance of immediate delivery.
       try { await connectRoom(room.id); } catch { /* outbox will retry */ }
 
+      let sentAnything = false;
       if (attachments.length) {
-        // Send one message per item, in the exact order supplied by the OS.
-        // Each temporary share URI is copied first, so Android cannot revoke it
-        // while the outbox is still uploading later items.
-        for (let index = 0; index < attachments.length; index += 1) {
-          const attachment = attachments[index];
-          const msgId = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
+        // A caption for a document/video is sent once as text so the attachment
+        // can keep its original filename as the bubble label.
+        if (caption.trim() && attachments[0]?.kind !== 'image') {
+          const captionResult = await sendChatMessage(room.id, caption.trim(), 'text');
+          sentAnything = captionResult.state !== 'failed';
+        }
+
+        const results = await mapWithConcurrency(attachments, MEDIA_BATCH_CONCURRENCY, async (attachment, index): Promise<SendChatResult> => {
+          const key = `${attachment.uri}|${attachment.fileName}`;
+          const sizeFailure = validateMediaSize(attachment.size ?? mediaFileSize(attachment.uri));
+          if (sizeFailure) {
+            setTransferState((current) => ({ ...current, [key]: 'failed' }));
+            return { messageId: null, state: 'failed', error: sizeFailure };
+          }
+
+          setTransferState((current) => ({ ...current, [key]: 'uploading' }));
+          const stagingId = `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`;
           let persistedUri = attachment.uri;
           try {
             persistedUri = attachment.kind === 'image'
-              ? await persistOutgoingImage(msgId, attachment.uri, attachment.mimeType || 'image/jpeg')
-              : persistSharedFile(msgId, attachment.uri, attachment.fileName);
-          } catch (err) { console.warn('[ShareTarget] failed to persist shared file:', err); }
+              ? await persistOutgoingImage(stagingId, attachment.uri, attachment.mimeType || 'image/jpeg')
+              : persistSharedFile(stagingId, attachment.uri, attachment.fileName);
+          } catch (error) {
+            console.warn('[ShareTarget] failed to persist shared file:', error);
+            const failed: SendChatResult = {
+              messageId: null,
+              state: 'failed',
+              error: { code: 'invalid_file', message: `${attachment.fileName} could not be copied into Axonic.`, retryable: false, status: 0 },
+            };
+            setTransferState((current) => ({ ...current, [key]: 'failed' }));
+            return failed;
+          }
+
           const messageType = attachment.kind === 'file' ? 'document' : attachment.kind;
           const fallback = attachment.kind === 'image' ? '\uD83D\uDCF7 Photo'
             : attachment.kind === 'video' ? `\uD83C\uDFA5 ${attachment.fileName}`
             : `\uD83D\uDCC4 ${attachment.fileName}`;
-          await sendChatMessage(
+          const result = await sendChatMessage(
             room.id,
             index === 0 && attachment.kind === 'image' ? (caption.trim() || fallback) : fallback,
             messageType,
@@ -158,6 +189,23 @@ export default function ShareTargetScreen() {
               ? { file_uri: persistedUri, image_mime: attachment.mimeType || 'image/jpeg' }
               : { file_uri: persistedUri, media_mime: attachment.mimeType || 'application/octet-stream' },
           );
+          setTransferState((current) => ({
+            ...current,
+            [key]: result.state === 'failed' ? 'failed' : result.state === 'sent' ? 'sent' : 'queued',
+          }));
+          return result;
+        });
+
+        const failed = results.filter((result) => result.state === 'failed');
+        const queued = results.filter((result) => result.state === 'queued');
+        sentAnything = sentAnything || results.some((result) => result.state !== 'failed');
+        if (failed.length > 0) {
+          alert(
+            failed.length === results.length ? 'Nothing was sent' : 'Some items were not sent',
+            `${results.length - failed.length} of ${results.length} items were queued or sent. ${failed[0].error?.message || 'Please try the failed item again.'}`,
+          );
+        } else if (queued.length > 0) {
+          alert('Transfer queued', 'Axonic will finish sending when the connection is available.');
         }
       } else {
         const body = caption.trim();
@@ -166,10 +214,11 @@ export default function ShareTargetScreen() {
           setSendingTo(null);
           return;
         }
-        await sendChatMessage(room.id, body, 'text');
+        const result = await sendChatMessage(room.id, body, 'text');
+        sentAnything = result.state !== 'failed';
       }
 
-      playSound('message_sent');
+      if (sentAnything) playSound('message_sent');
 
       // Replace the share screen with the destination chat so the
       // back button doesn't take the user back to the share picker.
@@ -196,7 +245,7 @@ export default function ShareTargetScreen() {
         disabled={sendingTo !== null}
         activeOpacity={0.7}
       >
-        <Avatar name={primary} uri={u.avatar} size={44} showOnline isOnline={u.is_online} />
+        <Avatar name={primary} uri={u.avatar} size={44} showOnline isOnline={presenceByUserId[u.id]?.isOnline ?? false} />
         <View style={styles.info}>
           <Text style={[styles.name, { color: Colors.text }]} numberOfLines={1}>{primary}</Text>
           <Text style={[styles.sub, { color: Colors.textTertiary }]} numberOfLines={1}>
@@ -243,10 +292,30 @@ export default function ShareTargetScreen() {
                 <TouchableOpacity
                   style={[styles.removeAttachment, { backgroundColor: Colors.surface }]}
                   onPress={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                  disabled={sendingTo !== null}
                   accessibilityLabel={`Remove ${attachment.fileName}`}
                 >
                   <Ionicons name="close" size={14} color={Colors.text} />
                 </TouchableOpacity>
+                {transferState[`${attachment.uri}|${attachment.fileName}`] ? (
+                  <View style={[styles.transferBadge, {
+                    backgroundColor: transferState[`${attachment.uri}|${attachment.fileName}`] === 'failed'
+                      ? Colors.error
+                      : Colors.surface,
+                  }]}>
+                    {transferState[`${attachment.uri}|${attachment.fileName}`] === 'uploading' ? (
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                    ) : (
+                      <Text style={[styles.transferBadgeText, {
+                        color: transferState[`${attachment.uri}|${attachment.fileName}`] === 'failed'
+                          ? Colors.textInverse
+                          : Colors.primary,
+                      }]}>
+                        {transferState[`${attachment.uri}|${attachment.fileName}`]}
+                      </Text>
+                    )}
+                  </View>
+                ) : null}
               </View>
             ))}
           </ScrollView>
@@ -269,6 +338,13 @@ export default function ShareTargetScreen() {
               {caption || '(empty)'}
             </Text>
           )}
+          {attachments.length ? (
+            <Text style={[styles.limitHint, { color: oversizedCount ? Colors.error : Colors.textTertiary }]}>
+              {oversizedCount
+                ? `${oversizedCount} ${oversizedCount === 1 ? 'item exceeds' : 'items exceed'} the ${formatBytes(MEDIA_MAX_UPLOAD_BYTES)} limit`
+                : `${attachments.length} ${attachments.length === 1 ? 'item' : 'items'} · ${formatBytes(MEDIA_MAX_UPLOAD_BYTES)} maximum each`}
+            </Text>
+          ) : null}
         </View>
       </View>
 
@@ -338,9 +414,12 @@ const styles = StyleSheet.create({
   multiPreviewImg: { marginRight: 0 },
   filePreview: { alignItems: 'center', justifyContent: 'center' },
   removeAttachment: { position: 'absolute', top: -5, right: -5, width: 19, height: 19, borderRadius: 10, alignItems: 'center', justifyContent: 'center', elevation: 3 },
+  transferBadge: { position: 'absolute', left: 3, right: 3, bottom: 3, minHeight: 18, borderRadius: 9, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
+  transferBadgeText: { fontSize: 9, fontWeight: '800', textTransform: 'uppercase' },
   previewImg: { width: 64, height: 64, borderRadius: Radius.sm, marginRight: Spacing.md, backgroundColor: '#000' },
   previewText: { fontSize: Font.size.sm },
   captionInput: { fontSize: Font.size.sm, minHeight: 40, padding: 0, textAlignVertical: 'top' },
+  limitHint: { fontSize: 10, marginTop: 4 },
   searchBox: {
     flexDirection: 'row',
     alignItems: 'center',

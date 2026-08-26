@@ -1,7 +1,7 @@
 /* ------------------------------------------------------------------ */
 /*  AppUpdateGate                                                       */
 /*                                                                      */
-/*  Checks the backend on launch and either:                            */
+/*  Checks Google Play on launch/foreground (with a backend fallback):  */
 /*   - forces an update (blocking overlay) when the installed version is */
 /*     below the backend's min_supported (e.g. breaking protocol change) */
 /*   - suggests an update (dismissible banner) when a newer version is    */
@@ -9,8 +9,9 @@
 /*  Fails open: any error → renders nothing.                            */
 /* ------------------------------------------------------------------ */
 
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  AppState,
   View,
   Text,
   StyleSheet,
@@ -25,33 +26,61 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../contexts/ThemeContext';
 import { Spacing, Radius, Font } from '../theme';
 import { checkAppVersion, VersionCheckResult } from '../services/versionCheckService';
+import {
+  serializeUpdateDismissal,
+  shouldShowOptionalUpdate,
+} from '../services/versionPolicy';
 
 const DISMISS_KEY = 'axonic_update_dismissed_version';
+const FOREGROUND_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export default function AppUpdateGate() {
   const { colors: Colors } = useTheme();
   const insets = useSafeAreaInsets();
   const [result, setResult] = useState<VersionCheckResult | null>(null);
   const [dismissed, setDismissed] = useState(true);
+  const mountedRef = useRef(false);
+  const checkingRef = useRef(false);
+  const lastCheckedAtRef = useRef(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
+  const runCheck = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (checkingRef.current) return;
+    if (!force && now - lastCheckedAtRef.current < FOREGROUND_CHECK_INTERVAL_MS) return;
+
+    checkingRef.current = true;
+    lastCheckedAtRef.current = now;
+    try {
       const res = await checkAppVersion();
-      if (cancelled) return;
+      if (!mountedRef.current) return;
       setResult(res);
       if (res.status === 'optional') {
-        // Only nag once per newer version — respect a previous dismissal.
         try {
-          const last = await AsyncStorage.getItem(DISMISS_KEY);
-          setDismissed(last === res.latest);
+          const storedDismissal = await AsyncStorage.getItem(DISMISS_KEY);
+          if (!mountedRef.current) return;
+          setDismissed(!shouldShowOptionalUpdate(res.updateId, storedDismissal, now));
         } catch {
           setDismissed(false);
         }
+      } else {
+        setDismissed(true);
       }
-    })();
-    return () => { cancelled = true; };
+    } finally {
+      checkingRef.current = false;
+    }
   }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void runCheck(true);
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') void runCheck();
+    });
+    return () => {
+      mountedRef.current = false;
+      subscription.remove();
+    };
+  }, [runCheck]);
 
   const openStore = () => {
     const url = result?.storeUrl;
@@ -60,7 +89,9 @@ export default function AppUpdateGate() {
 
   const dismiss = () => {
     setDismissed(true);
-    if (result?.latest) AsyncStorage.setItem(DISMISS_KEY, result.latest).catch(() => {});
+    if (result?.updateId) {
+      AsyncStorage.setItem(DISMISS_KEY, serializeUpdateDismissal(result.updateId)).catch(() => {});
+    }
   };
 
   if (!result || result.status === 'ok') return null;
@@ -75,7 +106,7 @@ export default function AppUpdateGate() {
             <Text style={[styles.title, { color: Colors.text }]}>Update required</Text>
             <Text style={[styles.body, { color: Colors.textSecondary }]}>
               This version of Axonic is no longer supported. Please update to the latest
-              version (v{result.latest}) to keep chatting.
+              version to keep chatting.
             </Text>
             <TouchableOpacity
               style={[styles.primaryBtn, { backgroundColor: Colors.primary }]}
@@ -98,7 +129,7 @@ export default function AppUpdateGate() {
     <View style={[styles.banner, { top: insets.top + 4, backgroundColor: Colors.primary }]}>
       <Ionicons name="arrow-up-circle-outline" size={20} color="#fff" />
       <Text style={styles.bannerText} numberOfLines={1}>
-        Version {result.latest} available
+        A new version is available
       </Text>
       <TouchableOpacity onPress={openStore} style={styles.bannerAction} activeOpacity={0.8}>
         <Text style={styles.bannerActionText}>Update</Text>

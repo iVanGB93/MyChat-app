@@ -40,7 +40,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
 import { initDB, saveMessage, getCachedRooms, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
-import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, retryOutgoingMessage, sendChatMessage } from '../../services/chatWsManager';
+import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, retryOutgoingMessage, sendChatMessage, type SendChatResult } from '../../services/chatWsManager';
 import { getRooms } from '../../services/chatService';
 import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
@@ -53,6 +53,8 @@ import { getFirstMessageUrl } from '../../components/SmartMessageText';
 import ExtractedMessageBubble from '../../components/chat/MessageBubble';
 import { persistOutgoingImage, persistSharedFile, compressImageForSend } from '../../services/voiceMessageUtils';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
+import { mediaFileSize } from '../../services/mediaLane';
+import { mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, validateMediaSize } from '../../services/mediaTransferPolicy';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
@@ -126,6 +128,8 @@ function toMsg(m: LocalMessage): Message {
     duration_ms: m.duration_ms,
     sync: m.sync,
     status: m.status,
+    transfer_error_code: m.transfer_error_code ?? null,
+    transfer_error_message: m.transfer_error_message ?? null,
     is_read: false,
     created_at: m.created_at,
     reactions: m.reactions,
@@ -147,6 +151,8 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
     file_uri: m.file_uri ?? null,
     duration_ms: m.duration_ms ?? null,
     uploading: m.uploading ?? undefined,
+    transfer_error_code: m.transfer_error_code ?? null,
+    transfer_error_message: m.transfer_error_message ?? null,
     sync: undefined,
     status: undefined,
     is_read: m.is_read ?? false,
@@ -272,7 +278,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     // sender's ✓✓ (read) should only appear once the receiver actually has the
     // file. Once the media hydrates, loadFromDB re-runs and sends the receipt.
     const isIncompleteMedia = (m: LocalMessage) =>
-      (m.type === 'voice' || m.type === 'image' || m.type === 'video') && !m.file_uri;
+      (m.type === 'voice' || m.type === 'image' || m.type === 'video' || m.type === 'document') && !m.file_uri;
     const idsFromOthers = dbMsgs
       .filter(m => !m.is_mine && !m.is_read && !isIncompleteMedia(m))
       .map(m => m.id);
@@ -574,8 +580,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     } catch (err) {
       console.warn('[ChatRoom] failed to start recording:', err);
       setIsRecording(false);
+      alert('Could not record', 'Axonic could not start the microphone. Please try again.');
     }
-  }, [audioRecorder, slideX, pulseScale, ensurePermission]);
+  }, [audioRecorder, slideX, pulseScale, ensurePermission, alert]);
 
   const finishVoiceRecording = useCallback(async (cancelled: boolean) => {
     // Stop UI immediately so user gets feedback
@@ -602,36 +609,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (cancelled || !uri || durationMs < 400) {
       return;
     }
-    const reply = replyingTo
-      ? {
-          id: replyingTo.id,
-          sender_name: replyingTo.sender_username || '',
-          content: (replyingTo.content ?? '').slice(0, 140),
-          type: replyingTo.message_type,
-        }
-      : null;
-    sendMessage('🎤 Voice message', 'voice', reply, {
-      file_uri: uri,
-      duration_ms: durationMs,
-      audio_mime: 'audio/m4a',
-    });
-    setReplyingTo(null);
-    playSound('message_sent');
-  }, [audioRecorder, slideX, pulseScale, replyingTo, sendMessage]);
-
-  /* ---- Image attachment handlers ---- */
-  /** Pick an asset from the camera or library, persist it, and send. */
-  const sendPickedImage = useCallback(async (asset: ImagePicker.ImagePickerAsset) => {
-    if (!asset?.uri) return;
-    const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    // Compress/resize first so the photo rides in a single WS frame reliably,
-    // then persist our own copy so it survives picker cleanup and retries.
-    const compressed = await compressImageForSend(asset.uri, asset.width, asset.height);
-    let localUri = compressed.uri;
-    try {
-      localUri = await persistOutgoingImage(msgId, compressed.uri, compressed.mime);
-    } catch (err) {
-      console.warn('[ChatRoomScreen] failed to persist outgoing image:', err);
+    const sizeFailure = validateMediaSize(mediaFileSize(uri));
+    if (sizeFailure) {
+      alert('Could not send voice message', sizeFailure.message);
+      return;
     }
     const reply = replyingTo
       ? {
@@ -641,12 +622,72 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           type: replyingTo.message_type,
         }
       : null;
-    await sendMessage('\uD83D\uDCF7 Photo', 'image', reply, {
+    const result = await sendMessage('🎤 Voice message', 'voice', reply, {
+      file_uri: uri,
+      duration_ms: durationMs,
+      audio_mime: 'audio/m4a',
+    });
+    setReplyingTo(null);
+    if (result.state === 'failed') {
+      alert('Could not send voice message', result.error?.message || 'The recording could not be sent.');
+    } else {
+      playSound('message_sent');
+      if (result.state === 'queued') {
+        alert('Voice message queued', 'Axonic will finish sending when the connection is available.');
+      }
+    }
+  }, [audioRecorder, slideX, pulseScale, replyingTo, sendMessage, alert]);
+
+  const showTransferResults = useCallback((results: SendChatResult[]) => {
+    const failed = results.filter((result) => result.state === 'failed');
+    const queued = results.filter((result) => result.state === 'queued');
+    if (failed.length > 0) {
+      const detail = failed[0].error?.message || 'One or more attachments could not be sent.';
+      alert(
+        failed.length === results.length ? 'Could not send' : 'Some items were not sent',
+        `${results.length - failed.length} of ${results.length} queued or sent. ${detail}`,
+      );
+    } else if (queued.length > 0) {
+      alert('Transfer queued', 'Axonic will finish sending when the connection is available.');
+    }
+  }, [alert]);
+
+  /* ---- Image attachment handlers ---- */
+  /** Pick an asset from the camera or library, persist it, and send. */
+  const sendPickedImage = useCallback(async (asset: ImagePicker.ImagePickerAsset): Promise<SendChatResult> => {
+    if (!asset?.uri) return { messageId: null, state: 'failed', error: { code: 'invalid_file', message: 'The selected image is unavailable.', retryable: false, status: 0 } };
+    const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // Compress/resize first so the photo rides in a single WS frame reliably,
+    // then persist our own copy so it survives picker cleanup and retries.
+    const compressed = await compressImageForSend(asset.uri, asset.width, asset.height);
+    const sizeFailure = validateMediaSize(mediaFileSize(compressed.uri));
+    if (sizeFailure) return { messageId: null, state: 'failed', error: sizeFailure };
+    let localUri = compressed.uri;
+    try {
+      localUri = await persistOutgoingImage(msgId, compressed.uri, compressed.mime);
+    } catch (err) {
+      console.warn('[ChatRoomScreen] failed to persist outgoing image:', err);
+      return {
+        messageId: null,
+        state: 'failed',
+        error: { code: 'invalid_file', message: 'The image could not be prepared for sending.', retryable: false, status: 0 },
+      };
+    }
+    const reply = replyingTo
+      ? {
+          id: replyingTo.id,
+          sender_name: replyingTo.sender_username || '',
+          content: (replyingTo.content ?? '').slice(0, 140),
+          type: replyingTo.message_type,
+        }
+      : null;
+    const result = await sendMessage('\uD83D\uDCF7 Photo', 'image', reply, {
       file_uri: localUri,
       image_mime: compressed.mime,
     });
     setReplyingTo(null);
-    playSound('message_sent');
+    if (result.state !== 'failed') playSound('message_sent');
+    return result;
   }, [replyingTo, sendMessage]);
 
   const handlePickFromCamera = useCallback(async () => {
@@ -659,24 +700,32 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         quality: 0.7,
       });
       if (!result.canceled && result.assets?.[0]) {
-        await sendPickedImage(result.assets[0]);
+        showTransferResults([await sendPickedImage(result.assets[0])]);
       }
     } catch (err) {
       console.warn('[ChatRoomScreen] camera error:', err);
+      alert('Camera error', 'Axonic could not open or process the camera image. Please try again.');
     }
-  }, [sendPickedImage, ensurePermission]);
+  }, [sendPickedImage, ensurePermission, showTransferResults, alert]);
 
   const sendPickedFile = useCallback(async (
-    asset: { uri: string; name?: string | null; mimeType?: string | null },
+    asset: { uri: string; name?: string | null; mimeType?: string | null; size?: number | null },
     messageType: 'video' | 'document',
-  ) => {
-    if (!asset.uri) return;
+  ): Promise<SendChatResult> => {
+    if (!asset.uri) return { messageId: null, state: 'failed', error: { code: 'invalid_file', message: 'The selected file is unavailable.', retryable: false, status: 0 } };
+    const sizeFailure = validateMediaSize(asset.size ?? mediaFileSize(asset.uri));
+    if (sizeFailure) return { messageId: null, state: 'failed', error: sizeFailure };
     const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     let localUri = asset.uri;
     try {
       localUri = persistSharedFile(msgId, asset.uri, asset.name);
     } catch (err) {
       console.warn('[ChatRoomScreen] failed to persist picked file:', err);
+      return {
+        messageId: null,
+        state: 'failed',
+        error: { code: 'invalid_file', message: `${asset.name || 'The selected file'} could not be prepared for sending.`, retryable: false, status: 0 },
+      };
     }
     const reply = replyingTo
       ? {
@@ -687,12 +736,13 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         }
       : null;
     const label = asset.name || (messageType === 'video' ? 'Video' : 'Document');
-    await sendMessage(label, messageType, reply, {
+    const result = await sendMessage(label, messageType, reply, {
       file_uri: localUri,
       media_mime: asset.mimeType ?? (messageType === 'video' ? 'video/mp4' : 'application/octet-stream'),
     });
     setReplyingTo(null);
-    playSound('message_sent');
+    if (result.state !== 'failed') playSound('message_sent');
+    return result;
   }, [replyingTo, sendMessage]);
 
   const handlePickMultimedia = useCallback(async () => {
@@ -709,21 +759,19 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         quality: 0.7,
       });
       if (!result.canceled && result.assets?.length) {
-        // Upload in order. Concurrent video uploads make the device feel slow
-        // and can overwhelm a mobile connection; every file remains in the
-        // durable outbox if an upload later needs a retry.
-        for (const asset of result.assets) {
+        const results = await mapWithConcurrency(result.assets, MEDIA_BATCH_CONCURRENCY, async (asset) => {
           if (asset.type === 'video') {
-            await sendPickedFile({ uri: asset.uri, name: asset.fileName, mimeType: asset.mimeType }, 'video');
-          } else {
-            await sendPickedImage(asset);
+            return sendPickedFile({ uri: asset.uri, name: asset.fileName, mimeType: asset.mimeType, size: asset.fileSize }, 'video');
           }
-        }
+          return sendPickedImage(asset);
+        });
+        showTransferResults(results);
       }
     } catch (err) {
       console.warn('[ChatRoomScreen] multimedia picker error:', err);
+      alert('Could not select media', 'Axonic could not open or process the selected media. Please try again.');
     }
-  }, [sendPickedImage, sendPickedFile]);
+  }, [sendPickedImage, sendPickedFile, showTransferResults, alert]);
 
   const handlePickDocuments = useCallback(async () => {
     setAttachMenuOpen(false);
@@ -734,13 +782,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         copyToCacheDirectory: true,
       });
       if (result.canceled || !result.assets?.length) return;
-      for (const asset of result.assets) {
-        await sendPickedFile({ uri: asset.uri, name: asset.name, mimeType: asset.mimeType }, 'document');
-      }
+      const results = await mapWithConcurrency(result.assets, MEDIA_BATCH_CONCURRENCY, (asset) =>
+        sendPickedFile({ uri: asset.uri, name: asset.name, mimeType: asset.mimeType, size: asset.size }, 'document'));
+      showTransferResults(results);
     } catch (err) {
       console.warn('[ChatRoomScreen] document picker error:', err);
+      alert('Could not select documents', 'Axonic could not open or process the selected documents. Please try again.');
     }
-  }, [sendPickedFile]);
+  }, [sendPickedFile, showTransferResults, alert]);
 
   /* PanResponder bound to the mic button. Long-press → record. Drag left
      past CANCEL_THRESHOLD_PX → cancel. Release → send. */
@@ -875,8 +924,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     setForwardMsg(null);
     try {
       const type = (msg.message_type as string) || 'text';
-      // For media, carry the local file so the forward actually re-sends the
-      // picture / voice (re-read + relayed inline or chunked as needed).
+      // For media, carry the local file so the forward uploads its own durable
+      // blob and sends a new pointer to the destination room.
       const extras =
         type === 'image'
           ? { file_uri: msg.file_uri ?? msg.file ?? null, image_mime: 'image/jpeg' }
@@ -885,10 +934,19 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             : (type === 'video' || type === 'document')
               ? { file_uri: msg.file_uri ?? msg.file ?? null, media_mime: 'application/octet-stream' }
             : null;
-      await sendChatMessage(targetRoomId, msg.content ?? '', type, null, extras);
-      playSound('message_sent');
-    } catch { /* ignore — saved locally */ }
-  }, [forwardMsg]);
+      const result = await sendChatMessage(targetRoomId, msg.content ?? '', type, null, extras);
+      if (result.state === 'failed') {
+        alert('Could not forward', result.error?.message || 'The message could not be forwarded.');
+      } else {
+        playSound('message_sent');
+        if (result.state === 'queued') {
+          alert('Forward queued', 'Axonic will finish forwarding when the connection is available.');
+        }
+      }
+    } catch {
+      alert('Could not forward', 'The message could not be forwarded. Please try again.');
+    }
+  }, [forwardMsg, alert]);
 
   /* ── Stable per-row callbacks so memoized MessageBubble rows don't re-render ── */
   const handleReply = useCallback((m: Message) => {
@@ -913,10 +971,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     setRetryStartedAtById((current) => ({ ...current, [messageId]: Date.now() }));
     try {
       const result = await retryOutgoingMessage(roomId, messageId);
-      if (result === 'queued') {
+      if (result.state === 'queued') {
         alert('Retry queued', 'Axonic will resend this message as soon as it reconnects.');
-      } else if (result === 'missing') {
+      } else if (result.state === 'missing') {
         alert('Message unavailable', 'This message is no longer available to resend from this phone.');
+      } else if (result.state === 'failed') {
+        alert('Could not resend', result.error?.message || 'This attachment cannot be sent.');
       }
     } catch {
       alert('Could not resend', 'Please check your connection and try again.');

@@ -13,6 +13,7 @@ import { addMemberToRoom, getRoom, removeMemberFromRoom, renameGroupRoom, upload
 import { getContacts } from '../../services/contactService';
 import { resolveMediaUrl } from '../../services/api';
 import Avatar from '../../components/ui/Avatar';
+import { useAppStore } from '../../store/appStore';
 import type { ChatRoom, Contact, RootStackParamList, RoomMember } from '../../types';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -32,6 +33,7 @@ export default function GroupInfoScreen() {
   const [showAdd, setShowAdd] = useState(false);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
+  const presenceByUserId = useAppStore((s) => s.presenceByUserId);
 
   const load = useCallback(async () => {
     try { setRoom(await getRoom(route.params.roomId)); }
@@ -141,7 +143,7 @@ export default function GroupInfoScreen() {
       renderItem={({ item }) => {
         const primary = item.display_name?.trim() || item.username;
         return <View style={[styles.member, { borderBottomColor: Colors.divider }]}>
-          <Avatar name={primary} uri={resolveMediaUrl(item.avatar)} size={44} showOnline isOnline={item.is_online} />
+          <Avatar name={primary} uri={resolveMediaUrl(item.avatar)} size={44} showOnline isOnline={item.id === user?.id || (presenceByUserId[item.id]?.isOnline ?? false)} />
           <View style={styles.memberInfo}><Text style={[styles.memberName, { color: Colors.text }]}>{item.id === user?.id ? `${primary} (You)` : primary}</Text><Text style={[styles.memberSub, { color: Colors.textSecondary }]}>@{item.username}</Text></View>
           {item.role === 'admin' && <Text style={[styles.admin, { color: Colors.primary, borderColor: Colors.primary }]}>ADMIN</Text>}
           {isAdmin && item.id !== user?.id && <TouchableOpacity style={styles.remove} onPress={() => removeMember(item)} disabled={busy}><Ionicons name="person-remove-outline" size={20} color={Colors.error} /></TouchableOpacity>}

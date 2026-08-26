@@ -74,6 +74,9 @@ async function initDBOnce(): Promise<void> {
       is_mine     INTEGER DEFAULT 0,
       sync        INTEGER DEFAULT 0,
       status      TEXT    DEFAULT 'pending',
+      auto_retry_blocked INTEGER DEFAULT 0,
+      transfer_error_code TEXT,
+      transfer_error_message TEXT,
       reactions   TEXT    DEFAULT '{}',
       is_deleted  INTEGER DEFAULT 0,
       is_read     INTEGER DEFAULT 0
@@ -179,6 +182,9 @@ async function initDBOnce(): Promise<void> {
   // The blob is uploaded/downloaded over HTTP (mediaLane) — only this pointer
   // rides the chat WS. NULL for text and legacy inline-media rows.
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN media_ptr  TEXT`);                 } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN auto_retry_blocked INTEGER DEFAULT 0`); } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN transfer_error_code TEXT`); } catch {}
+  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN transfer_error_message TEXT`); } catch {}
   try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN expected_peer_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
   try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN acked_by_user_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
 }
@@ -487,6 +493,10 @@ export interface LocalMessage {
   duration_ms: number | null;
   /** Out-of-band media pointer (Phase 2). NULL for text / legacy inline media. */
   media_ptr?: MediaPointer | null;
+  /** Transfer failure is independent from pending/delivered/read lifecycle state. */
+  transfer_error_code?: string | null;
+  transfer_error_message?: string | null;
+  auto_retry_blocked?: boolean;
 }
 
 /** Partial mutation that can be applied to a message and relayed to other devices. */
@@ -574,6 +584,53 @@ export async function getMediaPointer(id: string): Promise<MediaPointer | null> 
   try { return JSON.parse(row.media_ptr) as MediaPointer; } catch { return null; }
 }
 
+/** Record a visible media-transfer failure without changing lifecycle state. */
+export async function setMessageTransferFailure(
+  id: string,
+  code: string,
+  message: string,
+  blockAutomaticRetry: boolean,
+): Promise<void> {
+  const db = await getDB();
+  await db.runAsync(
+    `UPDATE messages
+       SET transfer_error_code = ?, transfer_error_message = ?, auto_retry_blocked = ?
+     WHERE id = ?`,
+    code, message, blockAutomaticRetry ? 1 : 0, id,
+  );
+}
+
+export async function clearMessageTransferFailure(id: string): Promise<void> {
+  const db = await getDB();
+  await db.runAsync(
+    `UPDATE messages
+       SET transfer_error_code = NULL, transfer_error_message = NULL, auto_retry_blocked = 0
+     WHERE id = ?`,
+    id,
+  );
+}
+
+export async function getMessageTransferFailure(
+  id: string,
+): Promise<{ code: string; message: string; blocked: boolean } | null> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{
+    transfer_error_code: string | null;
+    transfer_error_message: string | null;
+    auto_retry_blocked: number;
+  }>(
+    `SELECT transfer_error_code, transfer_error_message, auto_retry_blocked
+       FROM messages WHERE id = ?`,
+    id,
+  );
+  if (!row?.transfer_error_code) return null;
+  return {
+    code: row.transfer_error_code,
+    message: row.transfer_error_message || 'The transfer could not be completed.',
+    blocked: row.auto_retry_blocked === 1,
+  };
+}
+
 /** A received pointer-media row whose blob hasn't been downloaded yet. */
 export interface IncompletePointerRow {
   id: string;
@@ -590,15 +647,15 @@ export interface IncompletePointerRow {
 
 /** Received out-of-band media in a room whose blob is still missing locally.
  *  Used to re-attempt downloads that were missed (e.g. app killed at receipt). */
-export async function getIncompletePointerMedia(roomId: string): Promise<IncompletePointerRow[]> {
+export async function getIncompletePointerMedia(roomId?: string, limit = 50): Promise<IncompletePointerRow[]> {
   const db = await getDB();
-  return await db.getAllAsync<IncompletePointerRow>(
-    `SELECT id, room_id, sender_id, sender_name, content, type, created_at, reply_to, duration_ms, media_ptr
+  const base = `SELECT id, room_id, sender_id, sender_name, content, type, created_at, reply_to, duration_ms, media_ptr
      FROM messages
-     WHERE room_id = ? AND is_mine = 0 AND media_ptr IS NOT NULL
-       AND (file_uri IS NULL OR file_uri = '')`,
-    roomId,
-  );
+     WHERE is_mine = 0 AND media_ptr IS NOT NULL
+       AND (file_uri IS NULL OR file_uri = '')`;
+  return roomId
+    ? await db.getAllAsync<IncompletePointerRow>(`${base} AND room_id = ? ORDER BY created_at ASC LIMIT ?`, roomId, limit)
+    : await db.getAllAsync<IncompletePointerRow>(`${base} ORDER BY created_at ASC LIMIT ?`, limit);
 }
 
 export async function markDelivered(
@@ -816,6 +873,7 @@ export async function getPendingOutbox(
        ON dt.message_id = m.id AND dt.recipient_id = ?
      WHERE m.room_id = ?
        AND m.sender_id = ?
+       AND COALESCE(m.auto_retry_blocked, 0) = 0
        AND (dt.delivered IS NULL OR dt.delivered = 0)
      ORDER BY m.created_at ASC`,
     recipientId, roomId, myUserId
@@ -1117,6 +1175,7 @@ export async function getUndeliveredSentMessages(
      WHERE m.room_id = ?
        AND m.sender_id = ?
        AND m.is_deleted = 0
+       AND COALESCE(m.auto_retry_blocked, 0) = 0
        AND m.created_at >= ?
        AND NOT EXISTS (
          SELECT 1 FROM delivery_tracking dt
@@ -1174,6 +1233,7 @@ export async function getPendingUnsyncedOutgoingMessages(
        AND created_at >= ?
        AND accepted_at IS NULL
        AND status = 'pending'
+       AND COALESCE(auto_retry_blocked, 0) = 0
      ORDER BY created_at ASC`,
     roomId, myUserId, since,
   );
@@ -1313,7 +1373,8 @@ export async function getRoomsWithPendingOutgoingMessages(
   const since = new Date(Date.now() - sinceMs).toISOString();
   const rows = await db.getAllAsync<{ room_id: string }>(
     `SELECT DISTINCT room_id FROM messages
-     WHERE is_mine = 1 AND sender_id = ? AND accepted_at IS NULL AND created_at >= ?`,
+     WHERE is_mine = 1 AND sender_id = ? AND accepted_at IS NULL
+       AND COALESCE(auto_retry_blocked, 0) = 0 AND created_at >= ?`,
     myUserId,
     since,
   );
@@ -1382,14 +1443,14 @@ export async function setOutboxExpectedPeers(id: string, peerIds: number[]): Pro
  *  Used by the notification "Mark as read" action to send read receipts. */
 export async function getUnreadReceivedIds(roomId: string): Promise<string[]> {
   const db = await getDB();
-  // Exclude media placeholders (voice/image/video whose file hasn't downloaded
+  // Exclude media placeholders (voice/image/video/document whose file hasn't downloaded
   // yet): sending a read receipt for those would give the sender a false ✓✓
   // read for a file the recipient never actually received. They become
   // readable once the media hydrates (file_uri set).
   const rows = await db.getAllAsync<{ id: string }>(
     `SELECT id FROM messages
      WHERE room_id = $rid AND is_mine = 0 AND is_read = 0 AND is_deleted = 0
-       AND NOT (type IN ('voice','image','video') AND (file_uri IS NULL OR file_uri = ''))`,
+       AND NOT (type IN ('voice','image','video','document') AND (file_uri IS NULL OR file_uri = ''))`,
     { $rid: roomId },
   );
   return rows.map((r) => r.id);

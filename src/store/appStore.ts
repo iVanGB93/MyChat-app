@@ -19,6 +19,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage, PersistOptions } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { User } from '../types';
+import { expirePresenceLease, type PresenceLease, type PresenceStatus } from '../services/presencePolicy';
 
 /* Lazily dismiss the grouped OS notification for a room without coupling the
    store to the notifications module at load time (avoids heavy/circular deps).
@@ -45,6 +46,8 @@ export type WsStatus =
 
 export type AppLifecycle = 'active' | 'background' | 'inactive' | 'unknown';
 export type NetStatus = 'online' | 'offline' | 'unknown';
+export type { PresenceStatus };
+export interface UserPresenceState extends PresenceLease {}
 
 export interface ActiveCall {
   callId: string;
@@ -95,6 +98,8 @@ export interface AppState {
   notifWs: NotifWsState;
   /** Per-room chat WS status, keyed by roomId */
   chatRooms: Record<string, ChatRoomWsState>;
+  /** Volatile, live Axion presence. Deliberately not persisted across launches. */
+  presenceByUserId: Record<number, UserPresenceState>;
 
   /* --- App lifecycle --- */
   appLifecycle: AppLifecycle;
@@ -159,6 +164,11 @@ export interface AppState {
   setNotifWsInboundAt: (at?: number) => void;
   setNotifWsClose: (code: number | null) => void;
   setNotifWsSuspendedUntil: (until: number) => void;
+
+  // Presence
+  setUserPresence: (userId: number, presence: UserPresenceState) => void;
+  setPresenceSnapshot: (entries: Array<{ userId: number; presence: UserPresenceState }>) => void;
+  pruneStalePresence: (at?: number) => void;
 
   // Chat room WS
   setChatRoomStatus: (roomId: string, status: WsStatus) => void;
@@ -242,6 +252,7 @@ const initialState = {
   net: 'unknown' as NetStatus,
   notifWs: initialNotifWs,
   chatRooms: {} as Record<string, ChatRoomWsState>,
+  presenceByUserId: {} as Record<number, UserPresenceState>,
   appLifecycle: 'unknown' as AppLifecycle,
   foregroundServiceRunning: false,
   activeRoomId: null as string | null,
@@ -296,6 +307,32 @@ export const useAppStore = create<AppState>()(
     set((s) => ({ notifWs: { ...s.notifWs, lastCloseCode: code, authenticated: false } })),
   setNotifWsSuspendedUntil: (until) =>
     set((s) => ({ notifWs: { ...s.notifWs, suspendedUntil: until } })),
+
+  /* --- Presence --- */
+  setUserPresence: (userId, presence) =>
+    set((s) => ({
+      presenceByUserId: { ...s.presenceByUserId, [userId]: presence },
+    })),
+  setPresenceSnapshot: (entries) =>
+    set((s) => {
+      if (!entries.length) return s;
+      const next = { ...s.presenceByUserId };
+      for (const entry of entries) next[entry.userId] = entry.presence;
+      return { presenceByUserId: next };
+    }),
+  pruneStalePresence: (at = Date.now()) =>
+    set((s) => {
+      let changed = false;
+      const next = { ...s.presenceByUserId };
+      for (const [rawUserId, presence] of Object.entries(next)) {
+        const expired = expirePresenceLease(presence, at);
+        if (expired !== presence) {
+          changed = true;
+          next[Number(rawUserId)] = expired;
+        }
+      }
+      return changed ? { presenceByUserId: next } : s;
+    }),
 
   /* --- Chat room WS --- */
   setChatRoomStatus: (roomId, status) =>

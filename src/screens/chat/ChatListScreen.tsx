@@ -224,6 +224,7 @@ export default function ChatListScreen() {
   const lastMessageByRoom = useAppStore((s) => s.lastMessageByRoom);
   const typingByRoom = useAppStore((s) => s.typingByRoom);
   const mutedRooms = useAppStore((s) => s.mutedRooms);
+  const presenceByUserId = useAppStore((s) => s.presenceByUserId);
   const { confirm } = useConfirm();
   const totalUnread = Object.values(unreadByRoom).reduce((a, b) => a + b, 0);
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
@@ -495,7 +496,7 @@ export default function ChatListScreen() {
           displayName={displayName}
           avatarUri={resolveMediaUrl(item.room_type === 'group' ? item.avatar : other?.avatar ?? null)}
           isDirect={item.room_type === 'direct'}
-          isOnline={other?.is_online ?? false}
+          isOnline={other?.id != null ? (presenceByUserId[other.id]?.isOnline ?? false) : false}
           otherUserId={other?.id}
           lastMsgContent={lastMsg ? (lastMsg.content ?? '') : null}
           lastMsgTime={lastMsg ? formatTime(lastMsg.created_at) : null}
@@ -515,6 +516,7 @@ export default function ChatListScreen() {
       unreadByRoom,
       typingByRoom,
       mutedRooms,
+      presenceByUserId,
       lastMessageByRoom,
       localLastMessages,
       user?.id,

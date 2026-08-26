@@ -83,6 +83,9 @@ export interface Message {
   sync?: boolean;
   /** Persisted message status for the sender-side UI. */
   status?: 'pending' | 'delivered' | 'read';
+  /** Media transfer failure; lifecycle status remains pending until delivered. */
+  transfer_error_code?: string | null;
+  transfer_error_message?: string | null;
   is_read: boolean;
   created_at: string;
   reactions?: Record<string, string[]>;

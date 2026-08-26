@@ -24,6 +24,7 @@ import { createGroupRoom } from '../../services/chatService';
 import { cacheContacts, getCachedContacts } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
+import { useAppStore } from '../../store/appStore';
 import type { Contact, RootStackParamList } from '../../types';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -38,6 +39,7 @@ export default function GroupCreateScreen() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const presenceByUserId = useAppStore((s) => s.presenceByUserId);
 
   useEffect(() => {
     let active = true;
@@ -125,7 +127,7 @@ export default function GroupCreateScreen() {
               onPress={() => toggleContact(person.id)}
               activeOpacity={0.7}
             >
-              <Avatar name={primary} uri={person.avatar} size={46} showOnline isOnline={person.is_online} />
+              <Avatar name={primary} uri={person.avatar} size={46} showOnline isOnline={presenceByUserId[person.id]?.isOnline ?? false} />
               <View style={styles.contactInfo}>
                 <Text style={[styles.contactName, { color: Colors.text }]} numberOfLines={1}>{primary}</Text>
                 <Text style={[styles.contactSub, { color: Colors.textSecondary }]} numberOfLines={1}>@{person.username}</Text>

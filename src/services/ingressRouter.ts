@@ -46,6 +46,7 @@ import { enqueueMessageAck } from './messageAckRetryQueue';
 import { toEnvelope, idempotencyId } from './rrp/envelope';
 import type { RrpType } from './rrp/envelope';
 import api, { resolveMediaUrl } from './api';
+import { applyPresenceSnapshot, applyPresenceUpdate } from './presenceService';
 
 /** Where an incoming event came from. Drives the notification decision: only
  *  the `ws` source renders a local notification — for push sources the OS has
@@ -283,7 +284,7 @@ async function hydratePointerMedia(evt: CanonicalMessage): Promise<boolean> {
  * missing locally (e.g. the app was killed when the pointer arrived, so the
  * ingest-time download never ran). Call on room open / reconnect. Best-effort.
  */
-export async function retryPointerDownloads(roomId: string): Promise<void> {
+export async function retryPointerDownloads(roomId?: string): Promise<void> {
   try {
     const { getIncompletePointerMedia } = await import('./localMessageStore');
     const rows = await getIncompletePointerMedia(roomId);
@@ -316,7 +317,7 @@ export async function retryPointerDownloads(roomId: string): Promise<void> {
         mediaMime: ptr.mime ?? null,
         pushFloor: null,
       };
-      void hydratePointerMedia(evt);
+      await hydratePointerMedia(evt);
     }
   } catch { /* best-effort */ }
 }
@@ -708,6 +709,16 @@ export async function routeInbound(
       return { type: env.type, handled: true };
     }
 
+    /* ---- live presence lease/snapshot from Axion ---- */
+    case 'presence': {
+      if ((p.event ?? p.type) === 'presence_snapshot') {
+        applyPresenceSnapshot(Array.isArray(p.presences) ? p.presences : []);
+      } else {
+        applyPresenceUpdate(p);
+      }
+      return { type: env.type, handled: true };
+    }
+
     /* ---- peer sent the digest of ids they hold → request any we're missing ---- */
     case 'sync.digest': {
       const ids = (p.ids as unknown[] | undefined)?.map((x) => String(x)) ?? [];
@@ -758,7 +769,7 @@ export async function routeInbound(
       return { type: env.type, handled: true };
     }
 
-    /* ---- everything else (calls, signaling, control, presence) ---- */
+    /* ---- everything else (calls, signaling, control) ---- */
     default:
       return { type: env.type, handled: false };
   }

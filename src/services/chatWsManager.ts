@@ -6,8 +6,9 @@
 /*  and React subscriptions for each logical room.                     */
 /* ------------------------------------------------------------------ */
 
-import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers } from './localMessageStore';
-import { uploadMedia, type MediaType } from './mediaLane';
+import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers, setMessageTransferFailure, clearMessageTransferFailure, getMessageTransferFailure } from './localMessageStore';
+import { uploadMedia, toMediaTransferFailure, type MediaType } from './mediaLane';
+import type { MediaTransferFailure } from './mediaTransferPolicy';
 import { useAppStore } from '../store/appStore';
 import { ensureWsAlive, isNotifWsReady, reconnectWsNow, sendRawNotif, subscribeStatus } from './notificationWsManager';
 import { applyMessageLifecycleEvent, mergeMessageById } from './messageLifecycle';
@@ -62,6 +63,8 @@ export interface WsMessage {
   /** Sender-side: true while this message's media is still being uploaded
    *  (large media streamed as chunks). Cleared when the stream finishes. */
   uploading?: boolean;
+  transfer_error_code?: string | null;
+  transfer_error_message?: string | null;
 }
 
 /** Optional extra payload accepted by sendChatMessage for media messages. */
@@ -134,6 +137,17 @@ let _axionStatusUnsub: (() => void) | null = null;
 
 function isAxionReady(): boolean {
   return isNotifWsReady();
+}
+
+export interface SendChatResult {
+  messageId: string | null;
+  state: 'sent' | 'queued' | 'failed';
+  error?: MediaTransferFailure;
+}
+
+interface SendAttemptResult {
+  sent: boolean;
+  error?: MediaTransferFailure;
 }
 
 function flushAxionRoom(roomId: string, s: RoomState): void {
@@ -446,7 +460,7 @@ export function disconnectAllRooms(): void {
 /* ------------------------------------------------------------------ */
 /*  Media delivery (Phase 2): out-of-band via HTTP                      */
 /*                                                                     */
-/*  Media (voice/image/video) is uploaded to / downloaded from the      */
+/*  Media (voice/image/video/document) is uploaded/downloaded over HTTP */
 /*  backend over HTTP (see mediaLane.ts). The chat frame carries only a */
 /*  lightweight pointer (media_id + md5 + metadata) — never the bytes.  */
 /*  This keeps text fast (no head-of-line blocking) and sidesteps the   */
@@ -468,6 +482,28 @@ function markUploading(s: RoomState, roomId: string, messageId: string, uploadin
   ];
   s.lastMutationAt = Date.now();
   s.lastMutationIds = [];
+  notifyListeners(roomId, s);
+}
+
+function markTransferFailure(
+  s: RoomState,
+  roomId: string,
+  messageId: string,
+  failure: MediaTransferFailure | null,
+): void {
+  const idx = s.messages.findIndex((m) => m.id === messageId);
+  if (idx === -1) return;
+  s.messages = [
+    ...s.messages.slice(0, idx),
+    {
+      ...s.messages[idx],
+      transfer_error_code: failure?.code ?? null,
+      transfer_error_message: failure?.message ?? null,
+    },
+    ...s.messages.slice(idx + 1),
+  ];
+  s.lastMutationAt = Date.now();
+  s.lastMutationIds = [messageId];
   notifyListeners(roomId, s);
 }
 
@@ -503,8 +539,8 @@ async function sendOutboxFrame(
     file_uri?: string | null;
   },
   opts?: { hydration?: boolean; audioMime?: string | null; imageMime?: string | null; mediaMime?: string | null },
-): Promise<boolean> {
-  if (!isAxionReady()) return false;
+): Promise<SendAttemptResult> {
+  if (!isAxionReady()) return { sent: false };
   const isVoice = msg.type === 'voice';
   const isMedia = isVoice || msg.type === 'image' || msg.type === 'video' || msg.type === 'document';
 
@@ -523,10 +559,12 @@ async function sendOutboxFrame(
     // send a lightweight pointer frame on the WS. The bytes NEVER ride the WS.
     let ptr = await getMediaPointer(msg.id);
     if (!ptr?.media_id) {
-      if (!msg.file_uri) return false; // nothing to upload yet — retried later
+      if (!msg.file_uri) return { sent: false }; // nothing to upload yet — retried later
       const mime = isVoice ? (opts?.audioMime ?? 'audio/m4a') : (opts?.mediaMime ?? opts?.imageMime ?? fallbackMediaMime(msg.type, msg.file_uri));
       const mediaType: MediaType = msg.type === 'video' ? 'video' : msg.type === 'document' ? 'document' : isVoice ? 'voice' : 'image';
       markUploading(s, roomId, msg.id, true);
+      await clearMessageTransferFailure(msg.id).catch(() => {});
+      markTransferFailure(s, roomId, msg.id, null);
       try {
         const up = await uploadMedia({
           roomId,
@@ -539,14 +577,17 @@ async function sendOutboxFrame(
         ptr = { media_id: up.media_id, md5: up.md5, sha256: up.sha256, size: up.size_bytes, mime: up.mime };
         await setMediaPointer(msg.id, ptr);
       } catch (err) {
-        console.warn('[ChatWsManager] media upload failed, keeping pending', msg.id, err);
+        const failure = toMediaTransferFailure(err);
+        await setMessageTransferFailure(msg.id, failure.code, failure.message, !failure.retryable).catch(() => {});
+        markTransferFailure(s, roomId, msg.id, failure);
+        console.warn('[ChatWsManager] media upload failed, keeping pending', msg.id, failure.code, failure.status);
         markUploading(s, roomId, msg.id, false);
-        return false;
+        return { sent: false, error: failure };
       }
       markUploading(s, roomId, msg.id, false);
     }
     // The upload may have taken a while — re-check Axion before sending.
-    if (!isAxionReady()) return false;
+    if (!isAxionReady()) return { sent: false };
     try {
       const sent = sendRawNotif({
         type: 'send_message',
@@ -558,30 +599,30 @@ async function sendOutboxFrame(
         media_size: ptr.size,
         ...(isVoice ? { audio_mime: ptr.mime } : msg.type === 'image' ? { image_mime: ptr.mime } : { media_mime: ptr.mime }),
       });
-      if (!sent) return false;
+      if (!sent) return { sent: false };
     } catch (err) {
       console.warn('[ChatWsManager] media pointer send failed', msg.id, err);
-      return false;
+      return { sent: false };
     }
     watchForServerAck(msg.id);
-    return true;
+    return { sent: true };
   }
 
   // Text — single frame.
   try {
-    if (!sendRawNotif({ type: 'send_message', room_id: roomId, ...base })) return false;
+    if (!sendRawNotif({ type: 'send_message', room_id: roomId, ...base })) return { sent: false };
   } catch (err) {
     console.warn('[ChatWsManager] frame send failed', msg.id, err);
-    return false;
+    return { sent: false };
   }
   watchForServerAck(msg.id);
-  return true;
+  return { sent: true };
 }
 
 /**
  * Send a chat message.
  * Always saves to local DB first, then attempts WS delivery.
- * Returns the client-generated message UUID.
+ * Returns the client-generated UUID plus sent/queued/failed state.
  */
 export async function sendChatMessage(
   roomId: string,
@@ -589,7 +630,7 @@ export async function sendChatMessage(
   messageType = 'text',
   replyTo: import('./localMessageStore').ReplyRef | null = null,
   extras: SendExtras | null = null,
-): Promise<string | null> {
+): Promise<SendChatResult> {
   if (__DEV__) console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId, 'type:', messageType);
   const msgId = generateUUID();
   const createdAt = new Date().toISOString();
@@ -599,6 +640,7 @@ export async function sendChatMessage(
   const audioMime = extras?.audio_mime ?? null;
   const imageMime = extras?.image_mime ?? null;
   const mediaMime = extras?.media_mime ?? null;
+  const isMediaMessage = messageType === 'voice' || messageType === 'image' || messageType === 'video' || messageType === 'document';
 
   // A reply can be composed immediately after a notification opens a room,
   // before React has mounted `useChat` and subscribed its logical room. Always
@@ -668,10 +710,14 @@ export async function sendChatMessage(
     })()
     : Promise.resolve();
 
+  let attempt: SendAttemptResult = { sent: false };
   if (isAxionReady()) {
-    // Delivers text/small media in one frame; large media is chunked. Reads the
-    // media base64 from `file_uri` internally.
-    await sendOutboxFrame(
+    // The media pointer and any transfer failure are UPDATEs to this row. Ensure
+    // it exists before the HTTP request so a fast upload cannot race SQLite.
+    if (isMediaMessage) await persistLocalMessage;
+    // Text uses Axion directly. Media uploads over HTTP first, then Axion
+    // carries only its lightweight pointer.
+    attempt = await sendOutboxFrame(
       s,
       roomId,
       { id: msgId, content, type: messageType, created_at: createdAt, reply_to: replyTo, duration_ms: durationMs, file_uri: fileUri },
@@ -695,7 +741,11 @@ export async function sendChatMessage(
     });
   }
 
-  return msgId;
+  return {
+    messageId: msgId,
+    state: attempt.sent ? 'sent' : attempt.error && !attempt.error.retryable ? 'failed' : 'queued',
+    ...(attempt.error ? { error: attempt.error } : {}),
+  };
 }
 
 /**
@@ -886,21 +936,37 @@ export async function resendMessagesByIds(
 export async function retryOutgoingMessage(
   roomId: string,
   messageId: string,
-): Promise<'sent' | 'queued' | 'missing'> {
-  if (_myUserId === null || !messageId) return 'missing';
+): Promise<{ state: 'sent' | 'queued' | 'missing' | 'failed'; error?: MediaTransferFailure }> {
+  if (_myUserId === null || !messageId) return { state: 'missing' };
   const state = getOrCreate(roomId);
+  const priorFailure = await getMessageTransferFailure(messageId).catch(() => null);
+  if (priorFailure?.blocked) {
+    return {
+      state: 'failed',
+      error: {
+        code: priorFailure.code as MediaTransferFailure['code'],
+        message: priorFailure.message,
+        retryable: false,
+        status: priorFailure.code === 'too_large' ? 413 : 0,
+      },
+    };
+  }
   if (!isAxionReady()) {
     if (!state.pendingManualRetryIds.includes(messageId)) {
       state.pendingManualRetryIds.push(messageId);
     }
     ensureWsAlive();
     connectRoom(roomId);
-    return 'queued';
+    return { state: 'queued' };
   }
   const messages = await getMessagesByIdsForResend(roomId, _myUserId, [messageId]);
   const message = messages[0];
-  if (!message) return 'missing';
-  return (await sendOutboxFrame(state, roomId, message)) ? 'sent' : 'queued';
+  if (!message) return { state: 'missing' };
+  const attempt = await sendOutboxFrame(state, roomId, message);
+  return {
+    state: attempt.sent ? 'sent' : attempt.error && !attempt.error.retryable ? 'failed' : 'queued',
+    ...(attempt.error ? { error: attempt.error } : {}),
+  };
 }
 
 /**

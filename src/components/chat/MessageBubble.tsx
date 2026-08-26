@@ -263,6 +263,11 @@ function MessageBubbleBase({
                   {item.content}
                 </SmartMessageText>
               )}
+              {isMine && item.transfer_error_message ? (
+                <Text style={[styles.transferError, { color: Colors.error }]} numberOfLines={2}>
+                  Not sent · {item.transfer_error_message}
+                </Text>
+              ) : null}
               <View style={styles.metaRow}>
                 <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
                   {dayjs(item.created_at).format('HH:mm')}
@@ -346,6 +351,8 @@ function areBubblePropsEqual(previous: MessageBubbleProps, next: MessageBubblePr
     && a.is_read === b.is_read
     && a.is_deleted === b.is_deleted
     && a.status === b.status
+    && a.transfer_error_code === b.transfer_error_code
+    && a.transfer_error_message === b.transfer_error_message
     && a.sync === b.sync
     && a.sender === b.sender
     && a.sender_username === b.sender_username
@@ -390,6 +397,7 @@ const styles = StyleSheet.create({
   },
   timeText: { fontSize: 10, letterSpacing: 0.3 },
   statusIcon: { fontSize: 10 },
+  transferError: { fontSize: 11, lineHeight: 15, marginTop: 5, fontWeight: '600' },
   imageBubble: {
     width: 220,
     height: 220,

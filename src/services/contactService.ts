@@ -4,16 +4,19 @@
 
 import api from './api';
 import type { Contact, PaginatedResponse, User } from '../types';
+import { seedPresenceFromUsers } from './presenceService';
 
 export async function getContacts(): Promise<Contact[]> {
   const { data } = await api.get<PaginatedResponse<Contact> | Contact[]>('/api/users/contacts/');
   // Handle both paginated and non-paginated responses
-  if (Array.isArray(data)) return data;
-  return data.results;
+  const contacts = Array.isArray(data) ? data : data.results;
+  seedPresenceFromUsers(contacts.map((contact) => contact.contact_detail));
+  return contacts;
 }
 
 export async function addContact(contactUserId: number): Promise<Contact> {
   const { data } = await api.post<Contact>('/api/users/contacts/', { contact: contactUserId });
+  seedPresenceFromUsers([data.contact_detail]);
   return data;
 }
 

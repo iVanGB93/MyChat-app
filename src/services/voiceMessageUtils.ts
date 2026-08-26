@@ -1,13 +1,11 @@
 /* ------------------------------------------------------------------ */
 /*  Media Message Utils                                                 */
 /*                                                                      */
-/*  Helpers to read recorded/picked local files as base64 (for          */
-/*  sending over the chat WS) and to materialize an incoming base64     */
-/*  payload back into a local file so the receiver can play/view it.    */
+/*  Helpers to persist recorded/picked media locally and to support     */
+/*  legacy base64 messages that may still exist on older clients.       */
 /*                                                                      */
-/*  Media bytes never touch the server's storage: the backend is a      */
-/*  dumb relay, the bytes ride in the WS frame as base64, both sides    */
-/*  keep their own copy on disk under cache/voice/ or cache/images/.    */
+/*  New media bytes upload through the HTTP media lane; Axion carries   */
+/*  only a pointer. Each phone keeps a local copy for fast rendering.    */
 /* ------------------------------------------------------------------ */
 
 import { Directory, File, Paths } from 'expo-file-system';
@@ -22,10 +20,8 @@ const MAX_IMAGE_DIMENSION = 1600;
 const IMAGE_COMPRESS_QUALITY = 0.6;
 
 /**
- * Downscale + re-encode a picked/captured photo so it stays small enough to
- * ride in a single WS frame (media is sent inline as base64). A full-resolution
- * phone photo can be several MB, which produces an oversized frame the server/
- * proxy rejects — dropping the message and blocking the rest of the outbox.
+ * Downscale + re-encode a picked/captured photo before HTTP upload. This keeps
+ * transfers fast and reduces storage and mobile-data use.
  * Returns a new local URI + mime; falls back to the original on any failure.
  */
 export async function compressImageForSend(

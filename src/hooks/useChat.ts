@@ -53,7 +53,7 @@ export function useChat(roomId: string, currentUserId?: number) {
       // even though the file never arrived (false read/delivered). Skip it here;
       // once the media hydrates, loadFromDB re-runs and sends the receipt.
       const isIncompleteMedia = (m: typeof msgs[number]) =>
-        (m.message_type === 'voice' || m.message_type === 'image' || m.message_type === 'video')
+        (m.message_type === 'voice' || m.message_type === 'image' || m.message_type === 'video' || m.message_type === 'document')
         && !m.file_uri;
       const unreadIds = currentUserId
         ? newMsgs
@@ -73,9 +73,7 @@ export function useChat(roomId: string, currentUserId?: number) {
       messageType = 'text',
       replyTo: import('../services/localMessageStore').ReplyRef | null = null,
       extras: import('../services/chatWsManager').SendExtras | null = null,
-    ) => {
-      sendChatMessage(roomId, content, messageType, replyTo, extras);
-    },
+    ) => sendChatMessage(roomId, content, messageType, replyTo, extras),
     [roomId],
   );
 

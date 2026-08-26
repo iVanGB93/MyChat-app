@@ -6,6 +6,7 @@ import api, { saveTokens } from './api';
 import { getInstallationId } from './installationIdentity';
 import type { PushRegistrationPayload } from './pushNotificationService';
 import type { TokenPair, User } from '../types';
+import { seedPresenceFromUsers } from './presenceService';
 
 export async function register(
   username: string,
@@ -197,8 +198,9 @@ export async function logoutAllSessions(): Promise<void> {
 export async function searchUsers(query: string): Promise<User[]> {
   const { data } = await api.get<{ results: User[] } | User[]>('/api/users/search/', { params: { q: query } });
   // Backend uses PageNumberPagination → response is { count, results: [...] }
-  if (Array.isArray(data)) return data;
-  return (data as { results: User[] }).results ?? [];
+  const users = Array.isArray(data) ? data : ((data as { results: User[] }).results ?? []);
+  seedPresenceFromUsers(users);
+  return users;
 }
 
 /**

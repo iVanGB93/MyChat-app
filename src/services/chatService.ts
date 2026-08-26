@@ -4,15 +4,23 @@
 
 import api from './api';
 import type { ChatRoom, PaginatedResponse } from '../types';
+import { seedPresenceFromUsers } from './presenceService';
+
+function seedRoomPresence(room: ChatRoom): ChatRoom {
+  seedPresenceFromUsers(room.members_detail);
+  return room;
+}
 
 export async function getRooms(): Promise<ChatRoom[]> {
   const { data } = await api.get<PaginatedResponse<ChatRoom>>('/api/chat/rooms/');
-  return data.results;
+  const rooms = data.results;
+  seedPresenceFromUsers(rooms.flatMap((room) => room.members_detail));
+  return rooms;
 }
 
 export async function getOrCreateDirect(userId: number): Promise<ChatRoom> {
   const { data } = await api.post<ChatRoom>('/api/chat/rooms/direct/', { user_id: userId });
-  return data;
+  return seedRoomPresence(data);
 }
 
 export async function createGroupRoom(name: string, memberIds: number[]): Promise<ChatRoom> {
@@ -21,38 +29,38 @@ export async function createGroupRoom(name: string, memberIds: number[]): Promis
     room_type: 'group',
     members: memberIds,
   });
-  return data;
+  return seedRoomPresence(data);
 }
 
 export async function addMemberToRoom(roomId: string, userId: number): Promise<ChatRoom> {
   const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/add-member/`, {
     user_id: userId,
   });
-  return data;
+  return seedRoomPresence(data);
 }
 
 export async function getRoom(roomId: string): Promise<ChatRoom> {
   const { data } = await api.get<ChatRoom>(`/api/chat/rooms/${roomId}/`);
-  return data;
+  return seedRoomPresence(data);
 }
 
 export async function removeMemberFromRoom(roomId: string, userId: number): Promise<ChatRoom> {
   const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/remove-member/`, {
     user_id: userId,
   });
-  return data;
+  return seedRoomPresence(data);
 }
 
 export async function renameGroupRoom(roomId: string, name: string): Promise<ChatRoom> {
   const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/rename/`, { name });
-  return data;
+  return seedRoomPresence(data);
 }
 
 export async function makeGroupAdmin(roomId: string, userId: number): Promise<ChatRoom> {
   const { data } = await api.post<ChatRoom>(`/api/chat/rooms/${roomId}/make-admin/`, {
     user_id: userId,
   });
-  return data;
+  return seedRoomPresence(data);
 }
 
 /** Upload a replacement group photo selected from the device library. */
@@ -69,7 +77,7 @@ export async function uploadGroupAvatar(
     headers: { 'Content-Type': 'multipart/form-data' },
     transformRequest: (request) => request,
   });
-  return data;
+  return seedRoomPresence(data);
 }
 
 /**

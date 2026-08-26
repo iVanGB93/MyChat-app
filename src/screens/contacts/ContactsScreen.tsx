@@ -46,6 +46,7 @@ export default function ContactsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [searching, setSearching] = useState(false);
+  const presenceByUserId = useAppStore((s) => s.presenceByUserId);
 
   const fetchContacts = useCallback(async () => {
     try {
@@ -187,7 +188,7 @@ export default function ContactsScreen() {
     const primary = (item.display_name?.trim() || item.username);
     return (
       <View style={[styles.item, { backgroundColor: Colors.surface }]}>
-        <Avatar name={primary} uri={item.avatar} size={44} showOnline isOnline={item.is_online} />
+        <Avatar name={primary} uri={item.avatar} size={44} showOnline isOnline={presenceByUserId[item.id]?.isOnline ?? false} />
         <View style={styles.info}>
           <Text style={[styles.name, { color: Colors.text }]} numberOfLines={1}>{primary}</Text>
           <Text style={[styles.sub, { color: Colors.textSecondary }]} numberOfLines={1}>
@@ -230,12 +231,12 @@ export default function ContactsScreen() {
           uri={item.contact_detail.avatar}
           size={48}
           showOnline
-          isOnline={item.contact_detail.is_online}
+          isOnline={presenceByUserId[item.contact_detail.id]?.isOnline ?? false}
         />
         <View style={styles.info}>
           <Text style={[styles.name, { color: Colors.text }]} numberOfLines={1}>{primary}</Text>
           <Text style={[styles.sub, { color: Colors.textSecondary }]} numberOfLines={1}>
-            {item.contact_detail.is_online ? '🟢 Online' : `@${item.contact_detail.username}`}
+            {presenceByUserId[item.contact_detail.id]?.isOnline ? '🟢 Online' : `@${item.contact_detail.username}`}
           </Text>
         </View>
       </TouchableOpacity>

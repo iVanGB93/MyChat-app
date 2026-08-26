@@ -84,6 +84,8 @@ const WIRE_EVENT_TO_TYPE: Record<string, RrpType> = {
   webrtc_signal: 'webrtc.signal',
   presence: 'presence',
   app_state: 'presence',
+  presence_update: 'presence',
+  presence_snapshot: 'presence',
   sync_digest: 'sync.digest',
   sync_request: 'sync.request',
   // control frames

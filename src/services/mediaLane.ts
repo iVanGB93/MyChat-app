@@ -16,6 +16,12 @@
 import { Directory, File, Paths } from 'expo-file-system';
 import api, { BASE_URL, getTokens } from './api';
 import { getInstallationId } from './installationIdentity';
+import {
+  classifyMediaHttpFailure,
+  MEDIA_UPLOAD_TIMEOUT_MS,
+  validateMediaSize,
+  type MediaTransferFailure,
+} from './mediaTransferPolicy';
 
 export type MediaType = 'image' | 'voice' | 'video' | 'document';
 
@@ -25,6 +31,29 @@ export interface UploadedMedia {
   md5: string;
   size_bytes: number;
   mime: string;
+}
+
+export class MediaTransferError extends Error {
+  readonly failure: MediaTransferFailure;
+
+  constructor(failure: MediaTransferFailure) {
+    super(failure.message);
+    this.name = 'MediaTransferError';
+    this.failure = failure;
+  }
+}
+
+export function toMediaTransferFailure(error: unknown): MediaTransferFailure {
+  if (error instanceof MediaTransferError) return error.failure;
+  if (error instanceof Error && error.name === 'AbortError') {
+    return { code: 'timeout', message: 'The transfer timed out and will be retried.', retryable: true, status: 0 };
+  }
+  return {
+    code: 'network',
+    message: 'The transfer was interrupted. Axonic will retry when the connection is available.',
+    retryable: true,
+    status: 0,
+  };
 }
 
 const MEDIA_ROOT = 'media';
@@ -47,9 +76,12 @@ function extFor(mediaType: MediaType, mime?: string | null): string {
   }
   if (mediaType === 'document') {
     if (m.includes('pdf')) return 'pdf';
-    if (m.includes('wordprocessingml') || m.includes('msword')) return 'docx';
-    if (m.includes('spreadsheetml') || m.includes('excel')) return 'xlsx';
-    if (m.includes('presentationml') || m.includes('powerpoint')) return 'pptx';
+    if (m.includes('wordprocessingml')) return 'docx';
+    if (m.includes('msword')) return 'doc';
+    if (m.includes('spreadsheetml')) return 'xlsx';
+    if (m.includes('ms-excel')) return 'xls';
+    if (m.includes('presentationml')) return 'pptx';
+    if (m.includes('ms-powerpoint')) return 'ppt';
     if (m.includes('zip')) return 'zip';
     if (m.includes('plain')) return 'txt';
     return 'bin';
@@ -84,6 +116,15 @@ export function fileMd5(fileUri: string): string | null {
   }
 }
 
+export function mediaFileSize(fileUri: string): number | null {
+  try {
+    const size = new File(fileUri).size;
+    return typeof size === 'number' && Number.isFinite(size) ? size : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Upload a local media file. Returns the server-assigned media_id + hashes.
  * Throws on failure (caller keeps the message pending and retries later).
@@ -99,6 +140,21 @@ export async function uploadMedia(params: {
   height?: number | null;
 }): Promise<UploadedMedia> {
   const { roomId, fileUri, mediaType, mime, messageId, durationMs, width, height } = params;
+
+  let localFile: File;
+  try {
+    localFile = new File(fileUri);
+    if (!localFile.exists) throw new Error('missing');
+  } catch {
+    throw new MediaTransferError({
+      code: 'invalid_file',
+      message: 'The attachment is no longer available on this phone.',
+      retryable: false,
+      status: 0,
+    });
+  }
+  const sizeFailure = validateMediaSize(localFile.size);
+  if (sizeFailure) throw new MediaTransferError(sizeFailure);
 
   const form = new FormData();
   form.append('file', {
@@ -117,16 +173,31 @@ export async function uploadMedia(params: {
   if (height != null) form.append('height', String(height));
 
   const tokens = await getTokens();
-  // Use fetch (not axios) so React Native sets the multipart boundary itself.
-  const res = await fetch(`${BASE_URL}/api/chat/media/`, {
-    method: 'POST',
-    headers: tokens?.access ? { Authorization: `Bearer ${tokens.access}` } : undefined,
-    body: form,
-  });
-  if (!res.ok) {
-    throw new Error(`[mediaLane] upload failed ${res.status}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
+  try {
+    // Use fetch (not axios) so React Native sets the multipart boundary itself.
+    const res = await fetch(`${BASE_URL}/api/chat/media/`, {
+      method: 'POST',
+      headers: tokens?.access ? { Authorization: `Bearer ${tokens.access}` } : undefined,
+      body: form,
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const payload = await res.json().catch(() => null) as { error?: string; max_bytes?: number } | null;
+      throw new MediaTransferError(classifyMediaHttpFailure(
+        res.status,
+        payload?.error,
+        payload?.max_bytes,
+      ));
+    }
+    return (await res.json()) as UploadedMedia;
+  } catch (error) {
+    if (error instanceof MediaTransferError) throw error;
+    throw new MediaTransferError(toMediaTransferFailure(error));
+  } finally {
+    clearTimeout(timeout);
   }
-  return (await res.json()) as UploadedMedia;
 }
 
 /**
