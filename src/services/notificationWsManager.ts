@@ -20,6 +20,17 @@ import { decideLocalIncomingCallNotification } from './notificationPresentationP
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
 import { classify } from './rrp/envelope';
 import { invalidateSession } from './sessionInvalidation';
+import type { ConnectionStatus, NotificationPayload } from './axionTypes';
+import {
+  acceptAxionMessageUpdates,
+  acceptAxionServerMessage,
+  checkAxionPendingNotifications,
+  connectAxionRoom,
+  notifyAxionAuthenticated,
+  reconcileAxionDelivery,
+  routeAxionInbound,
+} from './axionRuntimeBridge';
+export type { ConnectionStatus, NotificationPayload } from './axionTypes';
 // NOTE: checkPendingNotifications is imported lazily to avoid circular init
 
 const WS_BASE = BASE_URL.replace(/^http/, 'ws');
@@ -32,59 +43,15 @@ interface QueuedAck {
   room_id: string;
 }
 
-/* ---- Types ---- */
-export interface NotificationPayload {
-  event: string;
-  call_id?: string;
-  caller?: string;
-  caller_id?: number;
-  callee?: string;
-  callee_id?: number;
-  call_type?: 'voice' | 'video';
-  room_name?: string;
-  room_id?: string;
-  action?: string;
-  signal_type?: string;
-  data?: any;
-  from_user_id?: number;
-  from_username?: string;
-  sender?: string;
-  sender_id?: number;
-  content?: string;
-  message_id?: string;
-  created_at?: string;
-  correlation_id?: string;
-  correlationId?: string;
-  route_reason?: string;
-  routeReason?: string;
-  /** Server also queued an FCM/Expo push for this delivery. The WS path defers
-   *  the OS banner to that push to avoid double-notifying. */
-  push_floor?: boolean;
-  [key: string]: any;
-}
-
-export type ConnectionStatus =
-  | 'connected'
-  | 'connecting'
-  | 'reconnecting'
-  | 'disconnected'
-  | 'no-internet';
-
 type EventListener = (payload: NotificationPayload) => void;
 type StatusListener = (status: ConnectionStatus) => void;
 
-// These modules ultimately use the chat manager, which uses Axion.  Loading
-// them only when an event arrives keeps the singleton transport free of
-// require cycles and avoids partially-initialised exports on Android.
 function reconcileDeliveryInBackground(): void {
-  import('./deliveryReconciler')
-    .then((m) => m.reconcileSentDeliveryStatus())
-    .catch(() => {});
+  reconcileAxionDelivery();
 }
 
 function routeInboundInBackground(payload: NotificationPayload): void {
-  import('./ingressRouter')
-    .then(({ routeInbound }) => routeInbound(payload, 'ws'))
+  routeAxionInbound(payload)
     .then((res) => {
       if (
         res.ackUpdateIds && res.ackUpdateIds.length > 0 && res.ackSenderId &&
@@ -486,12 +453,9 @@ async function connectWs() {
         // ---- Pending deliveries bootstrap can arrive before auth_ok ----
         if ((payload as any).type === 'pending_deliveries') {
           const deliveries: Array<{ room_id: string }> = (payload as any).deliveries ?? [];
-          // Avoid a module-init cycle: chatWsManager now uses this always-on
-          // socket (Axion) as its transport, while this bootstrap only needs to
-          // create logical room state for any pending local outbox work.
           for (const d of deliveries) {
             if (d.room_id) {
-              import('./chatWsManager').then((m) => m.connectRoom(d.room_id)).catch(() => {});
+              connectAxionRoom(d.room_id);
             }
           }
           // Continue; auth_ok may follow in the same burst.
@@ -510,34 +474,17 @@ async function connectWs() {
           // Flush any message acks that were queued while WS was offline (both WS and HTTP retry queues)
           _flushPendingAcks().catch(() => {});
           flushHttpAckRetryQueue().catch(() => {});
-          // Restarted senders may have durable local messages whose chat
-          // screens are not mounted yet. Register those rooms so Axion can
-          // retry only the messages that never received server acceptance.
-          import('./chatWsManager')
-            .then((m) => m.recoverPendingOutgoingMessages())
-            .catch(() => {});
-          // Catch up on delivery ticks we may have missed while disconnected.
-          reconcileDeliveryInBackground();
-          // RRP sync.digest: advertise the message ids we hold so the peer can
-          // detect and request any gaps (best-effort, re-emitted each connect).
-          import('./outboundRouter')
-            .then((m) => {
-              m.emitRoomDigests().catch(() => {});
-              // Also ask peers to re-send media we received without its blob
-              // (e.g. saved from a push that stripped the base64).
-              m.requestIncompleteMedia().catch(() => {});
-            })
-            .catch(() => {});
+          // The application composition root owns chat recovery, delivery
+          // reconciliation and digest exchange. Axion only announces that the
+          // authenticated transport is ready.
+          notifyAxionAuthenticated();
           if (SEND_APP_STATE_ON_AUTH_OK) {
             const currentAppState = AppState.currentState === 'active' ? 'active' : 'background';
             _sendAppState(currentAppState as 'active' | 'background');
           }
           if (_hasConnectedBefore) {
             console.log('[WsManager] reconnected — checking missed notifications');
-            try {
-              const { checkPendingNotifications } = require('./backgroundNotificationService');
-              checkPendingNotifications().catch(() => {});
-            } catch { /* ignore */ }
+            checkAxionPendingNotifications();
           }
           _hasConnectedBefore = true;
           return;
@@ -569,9 +516,7 @@ async function connectWs() {
           const roomId = String((payload as any).room_id ?? '');
           const messageId = String((payload as any).message_id ?? '');
           if (roomId && messageId) {
-            import('./chatWsManager')
-              .then((m) => m.markServerMessageAccepted(roomId, messageId))
-              .catch(() => {});
+            acceptAxionServerMessage(roomId, messageId);
           }
           return;
         }
@@ -580,9 +525,7 @@ async function connectWs() {
           const roomId = String((payload as any).room_id ?? '');
           const updates = Array.isArray((payload as any).updates) ? (payload as any).updates : [];
           if (roomId && updates.length) {
-            import('./chatWsManager')
-              .then((m) => m.applyMessageUpdateServerAck(roomId, updates))
-              .catch(() => {});
+            acceptAxionMessageUpdates(roomId, updates);
           }
           return;
         }

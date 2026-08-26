@@ -15,6 +15,7 @@
 
 import { Directory, File, Paths } from 'expo-file-system';
 import api, { BASE_URL, getTokens } from './api';
+import { getInstallationId } from './installationIdentity';
 
 export type MediaType = 'image' | 'voice' | 'video' | 'document';
 
@@ -169,10 +170,6 @@ export async function downloadAndPersistMedia(params: {
  * window. Best-effort: failures are retried by the caller.
  */
 export async function confirmDownloaded(mediaId: string): Promise<boolean> {
-  // Lazy import breaks the require cycle chatWsManager → mediaLane →
-  // pushNotificationService → … → chatWsManager (getInstallationId is only
-  // needed at call time, never at module init).
-  const { getInstallationId } = await import('./pushNotificationService');
   const installation_id = await getInstallationId();
   const res = await api.post(`/api/chat/media/${mediaId}/downloaded/`, { installation_id });
   return !!res.data?.all_confirmed;

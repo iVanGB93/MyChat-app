@@ -7,11 +7,10 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { getFcmToken } from './fcmService';
-
-const INSTALLATION_ID_KEY = '@axonic_installation_id';
+import { getInstallationId } from './installationIdentity';
+export { getInstallationId } from './installationIdentity';
 
 export type PushRegistrationPayload = {
   token: string;
@@ -21,25 +20,6 @@ export type PushRegistrationPayload = {
   device_name: string;
   app_version: string;
 };
-
-function generateInstallationId(): string {
-  try {
-    return crypto.randomUUID();
-  } catch {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-      const r = (Math.random() * 16) | 0;
-      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-    });
-  }
-}
-
-export async function getInstallationId(): Promise<string> {
-  const existing = await AsyncStorage.getItem(INSTALLATION_ID_KEY);
-  if (existing) return existing;
-  const created = generateInstallationId();
-  await AsyncStorage.setItem(INSTALLATION_ID_KEY, created);
-  return created;
-}
 
 /* ---- Default notification handler (show when app is foreground) ---- */
 Notifications.setNotificationHandler({

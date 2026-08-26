@@ -41,7 +41,7 @@ import {
 import type { WsMessage } from './chatWsManager';
 import { useAppStore } from '../store/appStore';
 import { decideLocalMessageNotification } from './notificationPresentationPolicy';
-import type { NotificationPayload } from './notificationWsManager';
+import type { NotificationPayload } from './axionTypes';
 import { enqueueMessageAck } from './messageAckRetryQueue';
 import { toEnvelope, idempotencyId } from './rrp/envelope';
 import type { RrpType } from './rrp/envelope';

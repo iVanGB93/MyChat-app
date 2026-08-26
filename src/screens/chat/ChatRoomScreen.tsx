@@ -25,9 +25,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Swipeable } from 'react-native-gesture-handler';
-import dayjs from 'dayjs';
-import { Font, Spacing, Radius, type ThemeColors } from '../../theme';
+import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import {
   useAudioRecorder,
@@ -37,8 +35,6 @@ import {
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Clipboard from 'expo-clipboard';
-import * as IntentLauncher from 'expo-intent-launcher';
-import { File } from 'expo-file-system';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
@@ -53,8 +49,8 @@ import { useAppStore } from '../../store/appStore';
 import { dismissRoomNotification } from '../../services/pushNotificationService';
 import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
-import VoiceMessageBubble from '../../components/VoiceMessageBubble';
-import SmartMessageText, { getFirstMessageUrl } from '../../components/SmartMessageText';
+import { getFirstMessageUrl } from '../../components/SmartMessageText';
+import ExtractedMessageBubble from '../../components/chat/MessageBubble';
 import { persistOutgoingImage, persistSharedFile, compressImageForSend } from '../../services/voiceMessageUtils';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 
@@ -161,326 +157,9 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/*  MessageBubble — memoized row. Extracted from the screen so the      */
-/*  FlatList only re-renders bubbles whose *content* actually changed   */
-/*  (custom comparator below), not the whole list on every WS frame.    */
-/* ------------------------------------------------------------------ */
-interface MessageBubbleProps {
-  item: Message;
-  isMine: boolean;
-  isPending: boolean;
-  isDelivered: boolean;
-  isRead: boolean;
-  isDirectChat: boolean;
-  Colors: ThemeColors;
-  currentUserId?: number;
-  onReply: (item: Message) => void;
-  onLongPress: (pageY: number, item: Message) => void;
-  onRetry: (messageId: string) => void;
-  onImagePress: (uri: string | null) => void;
-  onReaction: (item: Message, emoji: string) => void;
-}
-
-function SharedFileBubble({ type, fileUri, label, colors }: { type: 'video' | 'document'; fileUri: string; label: string; colors: ThemeColors }) {
-  const isVideo = type === 'video';
-  return (
-    <TouchableOpacity
-      style={[styles.sharedFile, { backgroundColor: colors.surfaceVariant, borderColor: colors.neonBorder }]}
-      onPress={() => openSharedFile(fileUri)}
-      activeOpacity={0.75}
-      accessibilityRole="button"
-      accessibilityLabel={isVideo ? 'Open shared video' : 'Open shared document'}
-    >
-      <View style={[styles.sharedFileIcon, { backgroundColor: colors.highlight }]}>
-        <Ionicons name={isVideo ? 'videocam-outline' : 'document-text-outline'} size={24} color={colors.primary} />
-      </View>
-      <View style={styles.sharedFileInfo}>
-        <Text style={[styles.sharedFileTitle, { color: colors.text }]} numberOfLines={2}>{label}</Text>
-        <Text style={[styles.sharedFileHint, { color: colors.textSecondary }]}>{isVideo ? 'Tap to open video' : 'Tap to open document'}</Text>
-      </View>
-      <Ionicons name="open-outline" size={17} color={colors.textTertiary} />
-    </TouchableOpacity>
-  );
-}
-
-async function openSharedFile(fileUri: string): Promise<void> {
-  try {
-    if (Platform.OS === 'android') {
-      const file = new File(fileUri);
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: file.contentUri,
-        type: file.type || '*/*',
-        // FLAG_GRANT_READ_URI_PERMISSION
-        flags: 1,
-      });
-      return;
-    }
-    await Linking.openURL(fileUri);
-  } catch {
-    // The receiving device may not have an app registered for this format.
-  }
-}
-
-function MessageBubbleBase({
-  item,
-  isMine,
-  isPending,
-  isDelivered,
-  isRead,
-  isDirectChat,
-  Colors,
-  currentUserId,
-  onReply,
-  onLongPress,
-  onRetry,
-  onImagePress,
-  onReaction,
-}: MessageBubbleProps) {
-  const isDeliveredPersisted = isMine && item.status === 'delivered';
-
-  let statusIcon: string;
-  let statusColor: string;
-  if (isPending) {
-    statusIcon = '⏱';
-    statusColor = Colors.textTertiary;
-  } else if (isRead) {
-    statusIcon = '✓✓';
-    statusColor = Colors.checkBlue;
-  } else if (isDelivered) {
-    statusIcon = '✓';
-    statusColor = Colors.textTertiary;
-  } else if (isDeliveredPersisted) {
-    statusIcon = '✓';
-    statusColor = Colors.textTertiary;
-  } else {
-    // Unknown local state defaults to pending to avoid false delivery ticks.
-    statusIcon = '⏱';
-    statusColor = Colors.textTertiary;
-  }
-
-  return (
-    <Swipeable
-      renderLeftActions={() => (
-        <View style={styles.swipeReplyHint}>
-          <Ionicons name="arrow-undo" size={22} color={Colors.primary} />
-        </View>
-      )}
-      leftThreshold={40}
-      friction={2}
-      overshootLeft={false}
-      enabled={!item.is_deleted}
-      onSwipeableOpen={(direction, swipeable) => {
-        if (direction === 'left') {
-          onReply(item);
-          swipeable.close();
-        }
-      }}
-    >
-      <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
-        <TouchableOpacity
-          onLongPress={(e) => {
-            if (!item.is_deleted) {
-              onLongPress(e.nativeEvent.pageY, item);
-            }
-          }}
-          delayLongPress={350}
-          activeOpacity={0.85}
-        >
-          <View style={[
-            styles.bubbleWrap,
-            item.reactions && Object.keys(item.reactions).length > 0 && !item.is_deleted && styles.bubbleWrapWithReactions,
-          ]}>
-          <View style={[
-            styles.bubble,
-            isMine
-              ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
-              : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
-          ]}>
-            {!isMine && !isDirectChat && (
-              <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
-            )}
-            {item.reply_to && !item.is_deleted && (
-              <View style={[styles.quoteBlock, {
-                borderLeftColor: Colors.primary,
-                backgroundColor: Colors.surfaceVariant,
-              }]}>
-                <Text style={[styles.quoteName, { color: Colors.primary }]} numberOfLines={1}>
-                  {item.reply_to.sender_name || 'Unknown'}
-                </Text>
-                <Text style={[styles.quoteText, { color: Colors.textSecondary }]} numberOfLines={2}>
-                  {item.reply_to.content
-                    || (item.reply_to.type && item.reply_to.type !== 'text'
-                      ? `[${item.reply_to.type}]`
-                      : '')}
-                </Text>
-              </View>
-            )}
-            {item.is_deleted ? (
-              <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>
-                🚫 This message was deleted.
-              </Text>
-            ) : item.message_type === 'voice' ? (
-              <VoiceMessageBubble
-                fileUri={item.file_uri ?? item.file ?? null}
-                durationMs={item.duration_ms ?? null}
-                loading={!(item.file_uri || item.file)}
-                tint={Colors.primary}
-                subtleColor={Colors.textSecondary}
-                trackBg={Colors.surfaceVariant}
-              />
-            ) : item.message_type === 'image' && (item.file_uri || item.file) ? (
-              <TouchableOpacity
-                activeOpacity={0.85}
-                onPress={() => onImagePress(item.file_uri ?? item.file ?? null)}
-                onLongPress={(e) => {
-                  if (!item.is_deleted) {
-                    onLongPress(e.nativeEvent.pageY, item);
-                  }
-                }}
-                delayLongPress={350}
-              >
-                <ExpoImage
-                  source={{ uri: item.file_uri ?? item.file ?? '' }}
-                  style={styles.imageBubble}
-                  contentFit="cover"
-                  cachePolicy="memory-disk"
-                  transition={100}
-                  recyclingKey={item.id}
-                />
-                {item.uploading && (
-                  <View style={styles.mediaOverlay}>
-                    <ActivityIndicator color="#fff" />
-                    <Text style={styles.mediaOverlayText}>Uploading…</Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-            ) : item.message_type === 'image' ? (
-              // Received image whose bytes haven't arrived yet (streaming over
-              // chunks). Show a receiving placeholder until it hydrates.
-              <View style={[styles.imageBubble, styles.mediaPlaceholder, { backgroundColor: Colors.surfaceVariant }]}>
-                <ActivityIndicator color={Colors.primary} />
-                <Text style={[styles.mediaPlaceholderText, { color: Colors.textSecondary }]}>Receiving…</Text>
-              </View>
-            ) : (item.message_type === 'video' || item.message_type === 'document') && (item.file_uri || item.file) ? (
-              <SharedFileBubble type={item.message_type} fileUri={item.file_uri ?? item.file ?? ''} label={item.content || (item.message_type === 'video' ? 'Video' : 'Document')} colors={Colors} />
-            ) : item.message_type === 'video' || item.message_type === 'document' ? (
-              <View style={[styles.sharedFile, { backgroundColor: Colors.surfaceVariant, borderColor: Colors.neonBorder }]}>
-                <ActivityIndicator color={Colors.primary} />
-                <Text style={[styles.sharedFileHint, { color: Colors.textSecondary, marginLeft: Spacing.sm }]}>Receiving {item.message_type}…</Text>
-              </View>
-            ) : (
-              <>
-                <SmartMessageText
-                  style={[styles.messageText, { color: Colors.text }]}
-                  linkColor={Colors.primary}
-                >
-                  {item.content}
-                </SmartMessageText>
-              </>
-            )}
-            <View style={styles.metaRow}>
-              <Text style={[styles.timeText, { color: Colors.textTertiary }]}>
-                {dayjs(item.created_at).format('HH:mm')}
-              </Text>
-              {isMine && !item.is_deleted && (
-                <>
-                {isPending && (
-                  <TouchableOpacity
-                    onPress={() => onRetry(item.id)}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Resend pending message"
-                  >
-                    <Ionicons name="refresh" size={14} color={Colors.primary} />
-                  </TouchableOpacity>
-                )}
-                <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
-                </>
-              )}
-            </View>
-          </View>
-          {!item.is_deleted && item.reactions && Object.keys(item.reactions).length > 0 && (
-            <View
-              style={[styles.reactionsOverlay, styles.reactionsOverlayLeft]}
-            >
-              {Object.entries(item.reactions).map(([emoji, users]) => {
-                const mine = users.includes(String(currentUserId));
-                return (
-                  <TouchableOpacity
-                    key={emoji}
-                    onPress={() => onReaction(item, emoji)}
-                    style={[styles.reactionBadge, {
-                      backgroundColor: mine ? Colors.neonGlow : Colors.surface,
-                      borderColor: mine ? Colors.primary : Colors.neonBorder,
-                      shadowColor: Colors.primary,
-                    }]}
-                  >
-                    <Text style={styles.reactionEmojiInBadge}>{emoji}</Text>
-                    <Text
-                      style={[
-                        styles.reactionBadgeText,
-                        { color: mine ? Colors.primary : Colors.text },
-                      ]}
-                    >
-                      {users.length}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-          </View>
-        </TouchableOpacity>
-      </View>
-    </Swipeable>
-  );
-}
-
-/** Only re-render a bubble when its own content/state changed. */
-function areBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps): boolean {
-  if (
-    prev.isMine !== next.isMine ||
-    prev.isPending !== next.isPending ||
-    prev.isDelivered !== next.isDelivered ||
-    prev.isRead !== next.isRead ||
-    prev.isDirectChat !== next.isDirectChat ||
-    prev.Colors !== next.Colors ||
-    prev.currentUserId !== next.currentUserId ||
-    prev.onReply !== next.onReply ||
-    prev.onLongPress !== next.onLongPress ||
-    prev.onRetry !== next.onRetry ||
-    prev.onImagePress !== next.onImagePress ||
-    prev.onReaction !== next.onReaction
-  ) {
-    return false;
-  }
-  const a = prev.item;
-  const b = next.item;
-  return (
-    a.id === b.id &&
-    a.content === b.content &&
-    a.message_type === b.message_type &&
-    a.file === b.file &&
-    a.file_uri === b.file_uri &&
-    a.duration_ms === b.duration_ms &&
-    a.uploading === b.uploading &&
-    a.is_read === b.is_read &&
-    a.is_deleted === b.is_deleted &&
-    a.status === b.status &&
-    a.sync === b.sync &&
-    a.sender === b.sender &&
-    a.sender_username === b.sender_username &&
-    a.created_at === b.created_at &&
-    JSON.stringify(a.reactions) === JSON.stringify(b.reactions) &&
-    JSON.stringify(a.reply_to) === JSON.stringify(b.reply_to)
-  );
-}
-
-const MessageBubble = React.memo(MessageBubbleBase, areBubblePropsEqual);
-
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
+  const [retryStartedAtById, setRetryStartedAtById] = useState<Record<string, number>>({});
   // `otherUserId` is navigation context, not room metadata.  A group opened
   // from a notification has the sender id populated too, so use the locally
   // cached room type as the authority for group-only message UI.
@@ -1231,6 +910,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   }, [roomId, user?.id, otherUserId]);
 
   const handleRetryMessage = useCallback(async (messageId: string) => {
+    setRetryStartedAtById((current) => ({ ...current, [messageId]: Date.now() }));
     try {
       const result = await retryOutgoingMessage(roomId, messageId);
       if (result === 'queued') {
@@ -1251,10 +931,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     const isDelivered = isMine && deliveredIds.has(item.id);
     const isRead = isMine && (item.is_read || readIds.has(item.id) || item.status === 'read');
     return (
-      <MessageBubble
+      <ExtractedMessageBubble
         item={item}
         isMine={isMine}
         isPending={isPending}
+        retryStartedAt={retryStartedAtById[item.id] ?? 0}
         isDelivered={isDelivered}
         isRead={isRead}
         isDirectChat={isDirectChat}
@@ -1267,7 +948,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         onReaction={handleReactionToggle}
       />
     );
-  }, [user?.id, pendingIds, deliveredIds, readIds, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleRetryMessage, handleImagePress, handleReactionToggle]);
+  }, [user?.id, pendingIds, deliveredIds, readIds, retryStartedAtById, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleRetryMessage, handleImagePress, handleReactionToggle]);
 
   const handleAcceptRequest = useCallback(async () => {
     if (!otherUserId || requestBusy) return;
@@ -1776,48 +1457,6 @@ const styles = StyleSheet.create({
   messagesList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, flexGrow: 1 },
   historyLoader: { paddingVertical: Spacing.md, alignItems: 'center' },
 
-  bubbleRow: { marginBottom: Spacing.md },
-  bubbleRowRight: { alignItems: 'flex-end' },
-  bubbleRowLeft: { alignItems: 'flex-start' },
-
-  bubble: {
-    minWidth: 96,
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.xs,
-    borderRadius: Radius.lg,
-    borderWidth: 1,
-    elevation: 2,
-  },
-  bubbleSent: {
-    borderBottomRightRadius: Radius.xs ?? 4,
-  },
-  bubbleReceived: {
-    borderBottomLeftRadius: Radius.xs ?? 4,
-  },
-
-  senderName: {
-    fontSize: Font.size.xs,
-    marginBottom: 2,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-
-  messageText: {
-    fontSize: Font.size.md,
-    lineHeight: 22,
-    letterSpacing: 0.2,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    marginTop: 3,
-    gap: 4,
-  },
-  timeText: { fontSize: 10, letterSpacing: 0.3 },
-  statusIcon: { fontSize: 10 },
-
   inputBar: {
     flexDirection: 'column',
     paddingHorizontal: Spacing.sm,
@@ -1889,39 +1528,6 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     marginHorizontal: Spacing.lg,
   },
-  imageBubble: {
-    width: 220,
-    height: 220,
-    borderRadius: Radius.sm,
-    backgroundColor: '#0002',
-  },
-  sharedFile: { flexDirection: 'row', alignItems: 'center', minWidth: 220, maxWidth: 280, borderWidth: 1, borderRadius: Radius.sm, padding: Spacing.sm },
-  sharedFileIcon: { width: 42, height: 42, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center', marginRight: Spacing.sm },
-  sharedFileInfo: { flex: 1, minWidth: 0, paddingRight: Spacing.xs },
-  sharedFileTitle: { fontSize: Font.size.sm, fontWeight: '700' },
-  sharedFileHint: { fontSize: Font.size.xs, marginTop: 3 },
-  mediaPlaceholder: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-  },
-  mediaPlaceholderText: {
-    fontSize: Font.size.sm,
-    letterSpacing: 0.3,
-  },
-  mediaOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    borderRadius: Radius.sm,
-  },
-  mediaOverlayText: {
-    color: '#fff',
-    fontSize: Font.size.sm,
-    letterSpacing: 0.3,
-  },
   fullscreenBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.95)',
@@ -1946,58 +1552,6 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   sendIcon: { fontSize: 16, fontWeight: '700' },
-
-  deletedText: {
-    fontSize: Font.size.sm,
-    fontStyle: 'italic',
-    lineHeight: 20,
-  },
-  reactionsDisplay: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-    marginTop: 4,
-    marginBottom: 2,
-  },
-  /**
-   * Reactions chip strip is rendered AFTER the bubble inside `bubbleWrap` and
-   * pulled upward so it overlaps the bubble's bottom edge — like iMessage /
-   * WhatsApp. We only reserve the extra bottom space when reactions exist so
-   * empty bubbles don't get a phantom gap.
-   */
-  bubbleWrap: {
-    maxWidth: '80%',
-  },
-  bubbleWrapWithReactions: {
-    paddingBottom: 12,
-  },
-  reactionsOverlay: {
-    position: 'absolute',
-    bottom: 0,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-  },
-  reactionsOverlayRight: {
-    right: 8,
-  },
-  reactionsOverlayLeft: {
-    left: 8,
-  },
-  reactionBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: Radius.pill,
-    borderWidth: 1,
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 1 },
-    elevation: 2,
-  },
-  reactionBadgeText: { fontSize: 13, lineHeight: 18, fontWeight: '700', marginLeft: 3 },
-  reactionEmojiInBadge: { fontSize: 13, lineHeight: 18 },
 
   modalBackdrop: {
     flex: 1,
@@ -2069,30 +1623,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
-  /* ---- Reply: swipe hint, quoted block in bubble, preview strip ---- */
-  swipeReplyHint: {
-    width: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingLeft: Spacing.sm,
-  },
-  quoteBlock: {
-    borderLeftWidth: 3,
-    paddingLeft: Spacing.sm,
-    paddingVertical: 4,
-    paddingRight: Spacing.sm,
-    marginBottom: 6,
-    borderRadius: 4,
-  },
-  quoteName: {
-    fontSize: Font.size.xs,
-    fontWeight: '700',
-    letterSpacing: 0.3,
-  },
-  quoteText: {
-    fontSize: Font.size.xs,
-    marginTop: 1,
-  },
+  /* ---- Reply composer preview ---- */
   replyPreview: {
     flexDirection: 'row',
     alignItems: 'center',

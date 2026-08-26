@@ -18,6 +18,10 @@ registerNotificationBackgroundHandler();
 import { registerFcmBackgroundHandler } from './src/services/fcmService';
 registerFcmBackgroundHandler();
 
+// Compose the higher-level chat/ingress runtime around the dependency-free
+// Axion transport. This must run before authentication can start the socket.
+import './src/services/axionRuntimeBootstrap';
+
 import { registerRootComponent } from 'expo';
 
 // Freeze inactive navigation screens (react-native-screens + react-freeze):

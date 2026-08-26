@@ -1,48 +1,16 @@
 /* ------------------------------------------------------------------ */
-/*  Chat WebSocket Manager (module-level singleton per room)           */
+/*  Axion chat-room coordinator (module-level logical state per room)  */
 /*                                                                     */
-/*  Manages per-room /ws/chat/<roomId>/ WebSocket connections at       */
-/*  MODULE level so they survive React component unmounts.             */
-/*                                                                     */
-/*  Each room has its own connection, message list, and reconnect      */
-/*  state. React hooks subscribe via callbacks and receive snapshots   */
-/*  without owning the connection lifecycle.                           */
-/*                                                                     */
-/*  Fixes applied vs. the old hook-based approach:                     */
-/*   - Survives navigation / component unmounts                        */
-/*   - Post-connect JWT auth (no token in URL)                         */
-/*   - Read receipt retry queue (flush on reconnect)                   */
-/*   - Exponential backoff (300ms → 60s) reset ONLY on auth_ok        */
-/*   - 8s hard connection timeout                                      */
-/*   - NetInfo listener — instant reconnect on network restore         */
-/*   - Pong timeout does NOT reset backoff                             */
-/*   - 5s token refresh with AbortController                           */
+/*  Axion owns the app's only authenticated WebSocket. This module     */
+/*  keeps local message snapshots, durable outboxes, delivery state,   */
+/*  and React subscriptions for each logical room.                     */
 /* ------------------------------------------------------------------ */
 
-import { AppState } from 'react-native';
-import NetInfo from '@react-native-community/netinfo';
-import axios from 'axios';
-import { getTokens, saveTokens, BASE_URL } from './api';
 import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers } from './localMessageStore';
 import { uploadMedia, type MediaType } from './mediaLane';
 import { useAppStore } from '../store/appStore';
-import type { InboundResult } from './ingressRouter';
 import { ensureWsAlive, isNotifWsReady, reconnectWsNow, sendRawNotif, subscribeStatus } from './notificationWsManager';
-
-const WS_BASE = BASE_URL.replace(/^http/, 'ws');
-
-/* ------------------------------------------------------------------ */
-/*  Unified inbound router binding                                     */
-/*                                                                     */
-/*  All inbound DATA frames (chat messages, read receipts, reactions/  */
-/*  edits, typing) are handed to the single `routeInbound` dispatcher  */
-/*  so every transport funnels through one place. Bound lazily to      */
-/*  avoid a static import cycle (ingressRouter statically imports many  */
-/*  helpers from this module).                                         */
-/* ------------------------------------------------------------------ */
-let _routeInbound:
-  | ((raw: Record<string, any>, source: 'ws') => Promise<InboundResult>)
-  | null = null;
+import { applyMessageLifecycleEvent, mergeMessageById } from './messageLifecycle';
 // An Axion acknowledgement can arrive before the sender's asynchronous local
 // SQLite insert finishes. Keep the acceptance briefly so the insert cannot turn
 // an already-accepted message back into a permanently retrying pending row.
@@ -65,37 +33,13 @@ function clearServerAckWatch(messageId: string): void {
   if (timer) clearTimeout(timer);
   _serverAckTimers.delete(messageId);
 }
-async function routeInboundFrame(raw: Record<string, any>): Promise<InboundResult | null> {
-  if (!_routeInbound) {
-    try {
-      _routeInbound = (await import('./ingressRouter')).routeInbound;
-    } catch {
-      return null;
-    }
-  }
-  return _routeInbound(raw, 'ws');
-}
-
 /* ---- Timing constants ---- */
-const INITIAL_RECONNECT_MS = 1500;
-const MAX_RECONNECT_MS = 60_000;
-const PING_INTERVAL_MS = 25_000;
-const PONG_TIMEOUT_MS = 15_000;
-const CONNECTION_TIMEOUT_MS = 8_000;
-const TOKEN_REFRESH_MARGIN_MS = 2 * 60_000; // refresh when <2 min left
-// Must be >= server's WS_AUTH_TIMEOUT_SECONDS (10s) so we don't give up before the
-// server has a chance to acknowledge our auth frame on slow networks.
-const AUTH_TIMEOUT_MS = 10_000;
 // A content update may legitimately wait for an offline group member.  Keep
 // that durable outbox reliable without waking the radio every eight seconds
 // until the member next opens Axonic (the timestamp reconciliation will also
 // converge it then).
 const INITIAL_UPDATE_RETRY_MS = 15_000;
 const MAX_UPDATE_RETRY_MS = 5 * 60_000;
-// Server is now hardened with try/except in ChatConsumer.receive, so re-enabling
-// ready_to_receive lets the server flush any pending deliveries for this room.
-const SEND_READY_TO_RECEIVE_ON_AUTH_OK = true;
-const WS_1011_COOLDOWN_MS = 30_000;
 
 /* ---- Public types ---- */
 export interface WsMessage {
@@ -152,11 +96,7 @@ type RoomListener = (snapshot: RoomSnapshot) => void;
 
 /* ---- Internal room state ---- */
 interface RoomState {
-  ws: WebSocket | null;
-  connecting: boolean;
-  connectingStartedAt: number;
   authenticated: boolean;
-  connectedAt: number;
   status: RoomStatus;
   messages: WsMessage[];
   readIds: Set<string>;
@@ -170,16 +110,8 @@ interface RoomState {
   updateRetryTimer: ReturnType<typeof setTimeout> | null;
   /** Backoff for a durable update that still awaits an offline peer's ACK. */
   updateRetryDelay: number;
-  reconnectDelay: number;
   reconnectCount: number;
-  close1011Count: number;
-  suspendReconnectUntil: number;
   hasConnectedBefore: boolean;
-  reconnectTimer: ReturnType<typeof setTimeout> | null;
-  pingTimer: ReturnType<typeof setInterval> | null;
-  pongTimer: ReturnType<typeof setTimeout> | null;
-  connectionTimeoutTimer: ReturnType<typeof setTimeout> | null;
-  authTimeoutTimer: ReturnType<typeof setTimeout> | null;
   pendingFlushes: number[];
   /** Queued media-hydration resends (specific ids) for a recipient, awaiting WS open. */
   pendingResends: Array<{ recipientId: number; ids: string[] }>;
@@ -205,8 +137,9 @@ function isAxionReady(): boolean {
 }
 
 function flushAxionRoom(roomId: string, s: RoomState): void {
+  const isReconnect = s.hasConnectedBefore && !s.authenticated;
   s.authenticated = true;
-  s.connecting = false;
+  if (isReconnect) s.reconnectCount += 1;
   s.hasConnectedBefore = true;
   // The chat UI reads both the logical room status and this authentication
   // flag.  Axion authenticates once for the whole app, so promote every open
@@ -251,10 +184,6 @@ function ensureAxionStatusListener(): void {
   });
 }
 
-let _netInfoUnsub: (() => void) | null = null;
-let _appStateUnsub: { remove: () => void } | null = null;
-let _hasInternet = true;
-let _appStateDebouncing = false; // prevent duplicate fires vs notificationWsManager
 let _myUserId: number | null = null;
 let _myUsername = 'me';
 
@@ -284,11 +213,7 @@ function generateUUID(): string {
 
 function createRoomState(): RoomState {
   return {
-    ws: null,
-    connecting: false,
-    connectingStartedAt: 0,
     authenticated: false,
-    connectedAt: 0,
     status: 'disconnected',
     messages: [],
     readIds: new Set(),
@@ -298,16 +223,8 @@ function createRoomState(): RoomState {
     inFlightUpdateIds: new Set(),
     updateRetryTimer: null,
     updateRetryDelay: INITIAL_UPDATE_RETRY_MS,
-    reconnectDelay: INITIAL_RECONNECT_MS,
     reconnectCount: 0,
-    close1011Count: 0,
-    suspendReconnectUntil: 0,
     hasConnectedBefore: false,
-    reconnectTimer: null,
-    pingTimer: null,
-    pongTimer: null,
-    connectionTimeoutTimer: null,
-    authTimeoutTimer: null,
     pendingFlushes: [],
     pendingResends: [],
     pendingManualRetryIds: [],
@@ -345,43 +262,12 @@ function setStatus(roomId: string, state: RoomState, status: RoomStatus) {
   notifyListeners(roomId, state);
 }
 
-function clearTimers(s: RoomState) {
-  if (s.reconnectTimer) { clearTimeout(s.reconnectTimer); s.reconnectTimer = null; }
-  if (s.pingTimer) { clearInterval(s.pingTimer); s.pingTimer = null; }
-  if (s.pongTimer) { clearTimeout(s.pongTimer); s.pongTimer = null; }
-  if (s.connectionTimeoutTimer) { clearTimeout(s.connectionTimeoutTimer); s.connectionTimeoutTimer = null; }
-  if (s.authTimeoutTimer) { clearTimeout(s.authTimeoutTimer); s.authTimeoutTimer = null; }
-  if (s.updateRetryTimer) { clearTimeout(s.updateRetryTimer); s.updateRetryTimer = null; }
-  s.inFlightUpdateIds.clear();
-}
-
-function closeWs(s: RoomState) {
-  if (s.ws) {
-    s.ws.onopen = null;
-    s.ws.onclose = null;
-    s.ws.onmessage = null;
-    s.ws.onerror = null;
-    s.ws.close();
-    s.ws = null;
+function clearRoomRetryState(state: RoomState): void {
+  if (state.updateRetryTimer) {
+    clearTimeout(state.updateRetryTimer);
+    state.updateRetryTimer = null;
   }
-  s.connecting = false;
-  s.authenticated = false;
-}
-
-function startPing(roomId: string, s: RoomState) {
-  if (s.pingTimer) clearInterval(s.pingTimer);
-  s.pingTimer = setInterval(() => {
-    if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
-      try { s.ws.send(JSON.stringify({ type: 'ping' })); } catch { /* ignore */ }
-      // Pong timeout: close + schedule reconnect WITHOUT resetting backoff
-      s.pongTimer = setTimeout(() => {
-        console.warn('[ChatWsManager] pong timeout room', roomId, '— reconnecting');
-        closeWs(s);
-        setStatus(roomId, s, 'reconnecting');
-        scheduleReconnect(roomId, s);
-      }, PONG_TIMEOUT_MS);
-    }
-  }, PING_INTERVAL_MS);
+  state.inFlightUpdateIds.clear();
 }
 
 /** Send in-memory pending updates now (if connected). ACK deletes outbox rows. */
@@ -471,32 +357,6 @@ export function ackMessageUpdates(roomId: string, ids: string[], ackedByUserId?:
   ackOutboxUpdates(ids, ackedByUserId).catch(() => {});
 }
 
-function scheduleReconnect(roomId: string, s: RoomState) {
-  if (s.listeners.size === 0) return; // no subscribers — skip
-  if (s.reconnectTimer) return;       // already scheduled
-  if (!_hasInternet) { setStatus(roomId, s, 'disconnected'); return; }
-
-  const now = Date.now();
-  if (s.suspendReconnectUntil > now) {
-    const wait = s.suspendReconnectUntil - now;
-    console.warn('[ChatWsManager] room', roomId, 'reconnect suspended for', wait, 'ms after repeated 1011');
-    s.reconnectTimer = setTimeout(() => {
-      s.reconnectTimer = null;
-      if (s.listeners.size > 0 && _hasInternet) connectRoom(roomId);
-    }, wait);
-    return;
-  }
-
-  const delay = s.reconnectDelay;
-  console.log(`[ChatWsManager] room ${roomId} reconnect in ${delay}ms`);
-  s.reconnectTimer = setTimeout(() => {
-    s.reconnectTimer = null;
-    if (s.listeners.size > 0 && _hasInternet) connectRoom(roomId);
-  }, delay);
-  // Advance backoff (capped at MAX) — only reset on auth_ok, not here
-  s.reconnectDelay = Math.min(delay * 2, MAX_RECONNECT_MS);
-}
-
 function _syncRoomPendingNow(roomId: string, s: RoomState): void {
   if (!isAxionReady()) return;
   _flushPendingUpdates(roomId, s);
@@ -504,418 +364,24 @@ function _syncRoomPendingNow(roomId: string, s: RoomState): void {
   _retryPendingUnsyncedMessages(roomId, s).catch(() => {});
 }
 
-/** Refresh the JWT access token with a 5-second hard timeout. */
-async function refreshTokenIfNeeded(): Promise<string | null> {
-  try {
-    const tokens = await getTokens();
-    if (!tokens?.access) return null;
-
-    if (tokens.refresh) {
-      let needsRefresh = false;
-      try {
-        // JWTs use base64url (- and _ instead of + and /). atob() only
-        // handles standard base64, so normalise first to avoid a decode
-        // error that would previously set needsRefresh=true on every call,
-        // triggering a network round-trip on every WebSocket connect.
-        const b64 = tokens.access.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-        const payload = JSON.parse(atob(b64));
-        needsRefresh = (payload.exp * 1000) - Date.now() < TOKEN_REFRESH_MARGIN_MS;
-      } catch {
-        needsRefresh = true;
-      }
-      if (needsRefresh) {
-        const controller = new AbortController();
-        const tid = setTimeout(() => controller.abort(), 5_000);
-        try {
-          const { data } = await axios.post(
-            `${BASE_URL}/api/users/token/refresh/`,
-            { refresh: tokens.refresh },
-            { signal: controller.signal },
-          );
-          await saveTokens(data.access, data.refresh ?? tokens.refresh);
-          console.log('[ChatWsManager] JWT refreshed');
-          return data.access;
-        } finally {
-          clearTimeout(tid);
-        }
-      }
-    }
-    return tokens.access;
-  } catch (err: any) {
-    console.warn('[ChatWsManager] token refresh failed:', err?.message ?? err);
-    const fallback = await getTokens();
-    return fallback?.access ?? null;
-  }
-}
-
 /* ================================================================== */
 /*  Core connect                                                       */
 /* ================================================================== */
 
 export async function connectRoom(roomId: string): Promise<void> {
-  const s = getOrCreate(roomId);
+  const state = getOrCreate(roomId);
 
-  // Axion is shared by every room. Opening a chat only registers a logical
-  // room with the local outbox; it must never create a second room WebSocket.
+  // Axion is shared by every room. Opening a chat registers only a logical
+  // room with the local outbox and never creates another WebSocket.
   ensureAxionStatusListener();
   if (isAxionReady()) {
-    flushAxionRoom(roomId, s);
+    flushAxionRoom(roomId, state);
     return;
   }
-  s.connecting = true;
-  s.connectingStartedAt = Date.now();
-  setStatus(roomId, s, s.hasConnectedBefore ? 'reconnecting' : 'connecting');
+
+  setStatus(roomId, state, state.hasConnectedBefore ? 'reconnecting' : 'connecting');
   await ensureWsAlive().catch(() => {});
-  if (isAxionReady()) {
-    flushAxionRoom(roomId, s);
-  }
-  // The status subscription above updates this logical room when Axion's
-  // authentication/reconnect completes. Do not fall through into legacy room
-  // socket setup.
-  return;
-
-  if (s.suspendReconnectUntil > Date.now()) return;
-
-  if (s.ws?.readyState === WebSocket.OPEN && s.authenticated) {
-    // Room already connected: still force a sync pass so pending local messages
-    // are retried every time the user opens the chat.
-    _syncRoomPendingNow(roomId, s);
-    return;
-  }
-  // If the socket is already OPEN but auth handshake is still in progress,
-  // don't start another connect attempt.
-  if (s.ws?.readyState === WebSocket.OPEN && !s.authenticated) return;
-
-  // Detect stuck connecting (guard against concurrent calls)
-  if (s.connecting) {
-    if (Date.now() - s.connectingStartedAt < CONNECTION_TIMEOUT_MS) return;
-    console.warn('[ChatWsManager] room', roomId, 'stuck connecting — resetting');
-    closeWs(s);
-  }
-
-  if (!_hasInternet) { setStatus(roomId, s, 'disconnected'); return; }
-
-  s.connecting = true;
-  s.connectingStartedAt = Date.now();
-  setStatus(roomId, s, s.hasConnectedBefore ? 'reconnecting' : 'connecting');
-
-  const token = await refreshTokenIfNeeded();
-  if (!token) {
-    s.connecting = false;
-    setStatus(roomId, s, 'disconnected');
-    return;
-  }
-
-  closeWs(s);
-  clearTimers(s);
-
-  // Connect WITHOUT token in URL — auth sent as first message after open
-  const url = `${WS_BASE}/ws/chat/${roomId}/`;
-  console.log('[ChatWsManager] connecting room', roomId);
-
-  try {
-    const socket = new WebSocket(url);
-    s.ws = socket;
-
-    // Hard connection timeout
-    s.connectionTimeoutTimer = setTimeout(() => {
-      if (s.ws === socket && s.connecting) {
-        console.warn('[ChatWsManager] connection timeout room', roomId);
-        s.connecting = false;
-        closeWs(s);
-        setStatus(roomId, s, 'reconnecting');
-        scheduleReconnect(roomId, s);
-      }
-    }, CONNECTION_TIMEOUT_MS);
-
-    socket.onopen = () => {
-      if (s.connectionTimeoutTimer) {
-        clearTimeout(s.connectionTimeoutTimer);
-        s.connectionTimeoutTimer = null;
-      }
-      console.log('[ChatWsManager] socket open room', roomId, '— sending auth');
-
-      // Use the token refreshed just before the socket was created — no second
-      // async call here, which previously introduced a gap long enough for the
-      // server to time-out the unauthenticated connection and close it, causing
-      // an infinite reconnect loop.
-      if (!token || s.ws !== socket) {
-        socket.close();
-        return;
-      }
-      try {
-        socket.send(JSON.stringify({ type: 'auth', token }));
-      } catch {
-        socket.close();
-        return;
-      }
-
-      // Auth response timeout
-      s.authTimeoutTimer = setTimeout(() => {
-        if (s.ws === socket && !s.authenticated) {
-          console.warn('[ChatWsManager] auth_ok timeout room', roomId);
-          closeWs(s);
-          setStatus(roomId, s, 'reconnecting');
-          scheduleReconnect(roomId, s);
-        }
-      }, AUTH_TIMEOUT_MS);
-    };
-
-    socket.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        const msgType: string = data.type ?? data.event ?? '';
-
-        // ---- Authentication ----
-        if (msgType === 'auth_ok') {
-          if (s.authTimeoutTimer) { clearTimeout(s.authTimeoutTimer); s.authTimeoutTimer = null; }
-          s.authenticated = true;
-          s.connecting = false;
-          s.connectedAt = Date.now();
-          try { useAppStore.getState().setChatRoomAuthenticated(roomId, true); } catch {}
-          // Do NOT reset backoff here. If the socket flaps (auth_ok then close
-          // immediately), resetting to 300ms creates a reconnect storm.
-          // We reset after a stable open period in onclose.
-          if (s.hasConnectedBefore) {
-            s.reconnectCount += 1;
-          }
-          s.hasConnectedBefore = true;
-          setStatus(roomId, s, 'connected');
-          startPing(roomId, s);
-          // Flush in-memory pending updates + any SQLite outbox entries from previous sessions
-          _flushPendingUpdates(roomId, s);
-          _flushSQLiteOutbox(roomId, s).catch(() => {});
-          // Tell the server we are ready to receive pending messages
-          if (SEND_READY_TO_RECEIVE_ON_AUTH_OK) {
-            try { socket.send(JSON.stringify({ type: 'ready_to_receive' })); } catch { /* ignore */ }
-          }
-          // Flush any outbox entries queued while the WS was offline
-          if (s.pendingFlushes.length > 0) {
-            const toFlush = [...s.pendingFlushes];
-            s.pendingFlushes = [];
-            toFlush.forEach((recipientId) => _doFlush(roomId, s, recipientId));
-          }
-          // Process any media-hydration resends queued while the WS was offline
-          // (peer asked us to re-send media for a b64-stripped push delivery).
-          if (s.pendingResends.length > 0) {
-            const toResend = [...s.pendingResends];
-            s.pendingResends = [];
-            toResend.forEach(({ recipientId, ids }) => {
-              resendMessagesByIds(roomId, recipientId, ids).catch(() => {});
-            });
-          }
-          // Ask peers to re-send any media we're still missing (e.g. chunks that
-          // streamed while we weren't in this room). Now that the room WS is
-          // open, the re-streamed chunks will reach us.
-          import('./outboundRouter')
-            .then((m) => m.requestIncompleteMedia())
-            .catch(() => {});
-          return;
-        }
-
-        if (msgType === 'auth_failed') {
-          console.warn('[ChatWsManager] auth_failed room', roomId);
-          closeWs(s);
-          setStatus(roomId, s, 'disconnected');
-          return;
-        }
-
-        if (msgType === 'server_error') {
-          console.warn('[ChatWsManager] server_error room', roomId, 'op', data.op ?? 'unknown');
-          return;
-        }
-
-        // Drop all messages until auth handshake completes
-        if (!s.authenticated) return;
-
-        // ---- Server received & relayed the message: mark it synced locally ----
-        if (msgType === 'message_server_ack') {
-          const ackId = data.message_id;
-          console.log('[ChatWsManager] server_ack', ackId, 'room', roomId);
-          if (ackId) {
-            setMessageSyncState(ackId, true)
-              .then(() => {
-                // Refresh the focused room after server acceptance.
-                s.lastMutationAt = Date.now();
-                notifyListeners(roomId, s);
-              })
-              .catch(() => { /* ignore */ });
-          }
-          return;
-        }
-
-        // The relay accepted a mutation and returns the authoritative member
-        // snapshot. This lets SQLite retain the update until every peer applies it.
-        if (msgType === 'message_update_server_ack') {
-          const updates = Array.isArray(data.updates) ? data.updates : [];
-          updates.forEach((update: any) => {
-            const id = typeof update?.id === 'string' ? update.id : '';
-            const peers = Array.isArray(update?.expected_peer_ids)
-              ? update.expected_peer_ids.map(Number).filter((userId: number) => Number.isInteger(userId) && userId > 0)
-              : [];
-            if (id) setOutboxExpectedPeers(id, peers).then(() => _flushSQLiteOutbox(roomId, s)).catch(() => {});
-          });
-          return;
-        }
-
-        // ---- Keep-alive ----
-        if (msgType === 'pong') {
-          if (s.pongTimer) { clearTimeout(s.pongTimer); s.pongTimer = null; }
-          return;
-        }
-
-        // ---- Media chunk (a slice of a large media message) ----
-        // Reassembled by mediaChunkTransfer; when complete it feeds the bytes
-        // through the normal ingest pipeline. Not a message frame → handled here
-        // rather than the inbound router.
-        if (msgType === 'media_chunk') {
-          import('./mediaChunkTransfer')
-            .then((m) => m.receiveMediaChunk({ ...data, room_id: data.room_id ?? roomId }))
-            .catch(() => {});
-          return;
-        }
-
-        // ---- All inbound DATA frames go through the single inbound router ----
-        // The room WS is room-scoped, so the server omits room_id on its relays;
-        // stamp it on so the router can address state. The router owns
-        // persistence, dedupe, delivery-ack, read/reaction state and typing.
-        routeInboundFrame({ ...data, room_id: data.room_id ?? roomId })
-          .then((res) => {
-            if (!res) return;
-            // message.update → confirm the applied mutations back over THIS socket.
-            if (res.ackUpdateIds && res.ackUpdateIds.length > 0 && res.ackSenderId && res.ackSenderId > 0) {
-              try {
-                s.ws?.send(JSON.stringify({
-                  type: 'message_update_ack',
-                  room_id: roomId,
-                  sender_id: res.ackSenderId,
-                  update_ids: res.ackUpdateIds,
-                }));
-              } catch { /* ignore */ }
-            }
-          })
-          .catch(() => { /* ignore */ });
-      } catch { /* ignore malformed frames */ }
-    };
-
-    socket.onclose = (ev) => {
-      if (s.connectionTimeoutTimer) { clearTimeout(s.connectionTimeoutTimer); s.connectionTimeoutTimer = null; }
-      if (s.authTimeoutTimer) { clearTimeout(s.authTimeoutTimer); s.authTimeoutTimer = null; }
-      console.log('[ChatWsManager] closed room', roomId, ev.code);
-      const wasCurrentSocket = s.ws === socket;
-      const connectedMs = s.connectedAt ? Date.now() - s.connectedAt : 0;
-      if (wasCurrentSocket) {
-        s.ws = null;
-        s.connecting = false;
-        s.authenticated = false;
-        try { useAppStore.getState().setChatRoomAuthenticated(roomId, false); } catch {}
-        if (ev.code === 1011) {
-          s.close1011Count += 1;
-          // Slow down immediately on first server internal-error close.
-          s.reconnectDelay = Math.max(s.reconnectDelay, 5000);
-          if (s.close1011Count >= 2) {
-            s.suspendReconnectUntil = Date.now() + WS_1011_COOLDOWN_MS;
-          }
-        } else {
-          s.close1011Count = 0;
-          s.suspendReconnectUntil = 0;
-        }
-        // Consider the session stable after 10s. Only then reset backoff.
-        if (connectedMs >= 10_000) {
-          s.reconnectDelay = INITIAL_RECONNECT_MS;
-          s.close1011Count = 0;
-          s.suspendReconnectUntil = 0;
-        }
-        s.connectedAt = 0;
-      }
-      if (s.pingTimer) { clearInterval(s.pingTimer); s.pingTimer = null; }
-      if (s.pongTimer) { clearTimeout(s.pongTimer); s.pongTimer = null; }
-
-      if (wasCurrentSocket && s.listeners.size > 0 && _hasInternet) {
-        setStatus(roomId, s, 'reconnecting');
-        scheduleReconnect(roomId, s);
-      } else if (wasCurrentSocket) {
-        setStatus(roomId, s, 'disconnected');
-      }
-    };
-
-    socket.onerror = () => {
-      // onclose always fires after onerror — reconnect handled there
-    };
-  } catch (err) {
-    console.warn('[ChatWsManager] connect exception room', roomId, err);
-    s.connecting = false;
-    setStatus(roomId, s, 'reconnecting');
-    scheduleReconnect(roomId, s);
-  }
-}
-
-/* ================================================================== */
-/*  Network & AppState listeners (module-level, shared across rooms)  */
-/* ================================================================== */
-
-function ensureNetworkListener() {
-  if (_netInfoUnsub) return;
-  _netInfoUnsub = NetInfo.addEventListener((netState) => {
-    const online = netState.isConnected === true && netState.isInternetReachable !== false;
-    const wasOffline = !_hasInternet;
-    _hasInternet = online;
-
-    if (!online) {
-      rooms.forEach((s, roomId) => {
-        if (s.ws || s.connecting) {
-          closeWs(s);
-          clearTimers(s);
-          setStatus(roomId, s, 'disconnected');
-        }
-      });
-    } else if (wasOffline && online) {
-      console.log('[ChatWsManager] internet restored — reconnecting active rooms');
-      rooms.forEach((s, roomId) => {
-        if (s.listeners.size > 0) {
-          s.reconnectDelay = INITIAL_RECONNECT_MS;
-          connectRoom(roomId);
-        }
-      });
-    }
-  });
-}
-
-function ensureAppStateListener() {
-  if (_appStateUnsub) return;
-  _appStateUnsub = AppState.addEventListener('change', (appState) => {
-    if (appState !== 'active') {
-      // App going to background — close all room sockets so the Django consumer
-      // stops treating this device as "in-room". Subsequent messages will be
-      // delivered via the notification WS channel (and show as local push
-      // notifications) instead of being silently dropped into the backgrounded
-      // chat socket where no UI is listening.
-      rooms.forEach((s, roomId) => {
-        if (s.ws) {
-          console.log('[ChatWsManager] app backgrounded — closing room WS', roomId);
-          clearTimers(s);
-          closeWs(s);
-          setStatus(roomId, s, 'disconnected');
-          // Reset backoff so the reconnect on foreground is instant.
-          s.reconnectDelay = INITIAL_RECONNECT_MS;
-        }
-      });
-      return;
-    }
-
-    // App came to foreground — debounce, then reconnect any room with listeners.
-    if (_appStateDebouncing) return;
-    _appStateDebouncing = true;
-    setTimeout(() => { _appStateDebouncing = false; }, 60);
-
-    rooms.forEach((s, roomId) => {
-      if (s.listeners.size > 0) {
-        console.log('[ChatWsManager] app foregrounded — reconnecting room', roomId);
-        s.reconnectDelay = INITIAL_RECONNECT_MS;
-        connectRoom(roomId);
-      }
-    });
-  });
+  if (isAxionReady()) flushAxionRoom(roomId, state);
 }
 
 /* ================================================================== */
@@ -924,22 +390,13 @@ function ensureAppStateListener() {
 
 /**
  * Subscribe to state updates for a room.
- * Automatically connects the room if not already connected.
+ * Registers the logical room with Axion and flushes its durable outbox.
  *
  * The returned unsubscribe function removes this listener. If it was the LAST
- * listener for the room we also disconnect the room WebSocket (after a short
- * grace period to absorb React StrictMode / quick navigation remounts).
- *
- * Why disconnect on last unsubscribe?
- *   The Django consumer treats users who are connected to the chat room WS as
- *   "currently in the room" and skips sending them a `new_message` event over
- *   the notification WS. If we kept the room socket open after the screen
- *   unmounted, the user would never get an in-app toast or local push for
- *   subsequent messages in that room — exactly the bug we are fixing.
+ * listener for the room we discard only its local state after a short grace
+ * period. Axion itself remains connected for the whole authenticated app.
  */
 export function subscribeRoom(roomId: string, listener: RoomListener): () => void {
-  ensureNetworkListener();
-  ensureAppStateListener();
   const s = getOrCreate(roomId);
   // If a pending disconnect was scheduled (from a recent unsubscribe), cancel it.
   if (s.disconnectTimer) {
@@ -947,13 +404,7 @@ export function subscribeRoom(roomId: string, listener: RoomListener): () => voi
     s.disconnectTimer = null;
   }
   s.listeners.add(listener);
-  // Connect if not already open
-  if (!s.ws || s.ws.readyState !== WebSocket.OPEN || !s.authenticated) {
-    connectRoom(roomId);
-  } else {
-    // User re-opened an already-connected room: re-run pending sync now.
-    _syncRoomPendingNow(roomId, s);
-  }
+  void connectRoom(roomId);
   return () => {
     s.listeners.delete(listener);
     if (s.listeners.size === 0) {
@@ -972,15 +423,13 @@ export function subscribeRoom(roomId: string, listener: RoomListener): () => voi
 }
 
 /**
- * Forcefully disconnect a room and remove it from the manager.
- * Use on logout or when the room is permanently left.
+ * Remove one logical room from the coordinator without closing Axion.
  */
 export function disconnectRoom(roomId: string): void {
   const s = rooms.get(roomId);
   if (!s) return;
   if (s.disconnectTimer) { clearTimeout(s.disconnectTimer); s.disconnectTimer = null; }
-  clearTimers(s);
-  closeWs(s);
+  clearRoomRetryState(s);
   rooms.delete(roomId);
   try { useAppStore.getState().removeChatRoom(roomId); } catch {}
 }
@@ -988,8 +437,10 @@ export function disconnectRoom(roomId: string): void {
 /** Disconnect all rooms. Call on logout. */
 export function disconnectAllRooms(): void {
   rooms.forEach((_, id) => disconnectRoom(id));
-  if (_netInfoUnsub) { _netInfoUnsub(); _netInfoUnsub = null; }
-  if (_appStateUnsub) { _appStateUnsub.remove(); _appStateUnsub = null; }
+  if (_axionStatusUnsub) {
+    _axionStatusUnsub();
+    _axionStatusUnsub = null;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1150,7 +601,7 @@ export async function sendChatMessage(
   const mediaMime = extras?.media_mime ?? null;
 
   // A reply can be composed immediately after a notification opens a room,
-  // before React has mounted `useChat` and subscribed the room socket. Always
+  // before React has mounted `useChat` and subscribed its logical room. Always
   // create the room state here so the message has an owner and can actively
   // establish the transport instead of remaining pending indefinitely.
   const s = getOrCreate(roomId);
@@ -1227,8 +678,8 @@ export async function sendChatMessage(
       { audioMime, imageMime, mediaMime },
     );
   } else {
-    // The message is safely persisted above. Start (or resume) the room socket
-    // now; its auth_ok path flushes SQLite outbox rows, including this one.
+    // The message is safely persisted above. Start (or resume) Axion now; its
+    // connected-status path flushes SQLite outbox rows, including this one.
     // This covers notification/deep-link cold starts and transient disconnects.
     await persistLocalMessage;
     connectRoom(roomId).catch(() => {});
@@ -1279,7 +730,7 @@ async function _retryPendingUnsyncedMessages(roomId: string, s: RoomState): Prom
     const msgs = await getPendingUnsyncedOutgoingMessages(roomId, _myUserId);
     if (msgs.length === 0) return;
     for (const msg of msgs) {
-      // Stop if the socket dropped mid-retry; the rest is retried on next auth_ok.
+      // Stop if Axion dropped mid-retry; the rest is retried after reconnecting.
       if (!isAxionReady()) break;
       try {
         await sendOutboxFrame(s, roomId, msg);
@@ -1294,7 +745,7 @@ async function _retryPendingUnsyncedMessages(roomId: string, s: RoomState): Prom
 
 /**
  * Apply a batch of remote mutation updates to the room's in-memory state and SQLite.
- * Used both by the chat WS onmessage handler and by notificationWsManager.
+ * Called by Axion's notification ingress path.
  */
 function _applyUpdatesToState(
   roomId: string,
@@ -1340,8 +791,7 @@ function _applyUpdatesToState(
 }
 
 /**
- * Called by notificationWsManager when a message_update event arrives while
- * the user is NOT connected to the chat-room WebSocket.
+ * Called by notificationWsManager when a message_update event arrives.
  */
 export function applyRemoteMessageUpdates(
   roomId: string,
@@ -1400,8 +850,7 @@ export async function resendMessagesByIds(
   if (_myUserId === null || !ids.length) return;
   const s = rooms.get(roomId);
   if (!s || !isAxionReady()) {
-    // Not connected to this room yet — queue the resend and open the socket.
-    // The auth_ok handler drains pendingResends once the WS is authenticated.
+    // Axion is not ready yet — queue the resend for its connected-status flush.
     const rs = getOrCreate(roomId);
     rs.pendingResends.push({ recipientId, ids });
     connectRoom(roomId);
@@ -1417,7 +866,7 @@ export async function resendMessagesByIds(
         // Media-hydration re-send: the recipient already has the message row +
         // its notification (it arrived via a b64-stripped push or a lost chunk
         // stream). The `hydration` flag tells the relay to deliver over the room
-        // WS only and NOT fire a second push/notification. Large media is
+        // Axion only and NOT fire a second push/notification. Large media is
         // re-streamed as chunks; small media rides inline.
         await sendOutboxFrame(s, roomId, msg, { hydration: true });
         console.log('[ChatWsManager] re-sent media for', msg.id, 'to', recipientId);
@@ -1514,7 +963,10 @@ export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
 export function markIdsAsReadInRoom(roomId: string, ids: string[]): void {
   const s = rooms.get(roomId);
   if (!s || ids.length === 0) return;
-  s.readIds = new Set([...s.readIds, ...ids]);
+  const next = applyMessageLifecycleEvent(s, { type: 'read', ids });
+  s.pendingIds = next.pendingIds;
+  s.deliveredIds = next.deliveredIds;
+  s.readIds = next.readIds;
   notifyListeners(roomId, s);
 }
 
@@ -1532,8 +984,10 @@ export function getSnapshot(roomId: string): RoomSnapshot {
 export function markIdsAsDeliveredInRoom(roomId: string, ids: string[]): void {
   const s = rooms.get(roomId);
   if (!s || ids.length === 0) return;
-  s.pendingIds = new Set([...s.pendingIds].filter((id) => !ids.includes(id)));
-  s.deliveredIds = new Set([...s.deliveredIds, ...ids]);
+  const next = applyMessageLifecycleEvent(s, { type: 'delivered', ids });
+  s.pendingIds = next.pendingIds;
+  s.deliveredIds = next.deliveredIds;
+  s.readIds = next.readIds;
   try {
     const store = useAppStore.getState();
     for (const id of ids) {
@@ -1559,19 +1013,13 @@ export function injectReceivedMessage(
 ): void {
   const s = rooms.get(roomId);
   if (!s || s.listeners.size === 0) return;
-  const idx = s.messages.findIndex((m) => m.id === msg.id);
-  if (idx !== -1) {
-    if (opts?.updateExisting) {
-      const prev = s.messages[idx];
-      const merged: WsMessage = { ...prev, ...msg, file_uri: msg.file_uri ?? prev.file_uri };
-      s.messages = [...s.messages.slice(0, idx), merged, ...s.messages.slice(idx + 1)];
-      s.lastMutationAt = Date.now();
-      s.lastMutationIds = [msg.id];
-      notifyListeners(roomId, s);
-    }
-    return; // dedup
+  const result = mergeMessageById(s.messages, msg, opts?.updateExisting === true);
+  if (!result.changed) return;
+  s.messages = result.messages;
+  if (!result.inserted) {
+    s.lastMutationAt = Date.now();
+    s.lastMutationIds = [msg.id];
   }
-  s.messages = [...s.messages, msg];
   notifyListeners(roomId, s);
 }
 

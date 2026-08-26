@@ -3,7 +3,7 @@
 /* ------------------------------------------------------------------ */
 
 import api, { saveTokens } from './api';
-import { getInstallationId } from './pushNotificationService';
+import { getInstallationId } from './installationIdentity';
 import type { PushRegistrationPayload } from './pushNotificationService';
 import type { TokenPair, User } from '../types';
 
