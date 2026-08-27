@@ -20,6 +20,7 @@ import { decideLocalIncomingCallNotification } from './notificationPresentationP
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
 import { classify } from './rrp/envelope';
 import { invalidateSession } from './sessionInvalidation';
+import { getInstallationId } from './installationIdentity';
 import type { ConnectionStatus, NotificationPayload } from './axionTypes';
 import {
   acceptAxionMessageUpdates,
@@ -394,6 +395,7 @@ async function connectWs() {
     setStatus('disconnected');
     return;
   }
+  const installationId = await getInstallationId().catch(() => '');
 
   closeWs();
   clearAllTimers();
@@ -428,7 +430,11 @@ async function connectWs() {
       // trigger a server-side auth-timeout reconnect loop.
       try {
         if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'auth', token: tokens.access }));
+          socket.send(JSON.stringify({
+            type: 'auth',
+            token: tokens.access,
+            installation_id: installationId,
+          }));
         }
       } catch (err) {
         console.warn('[WsManager] failed to send auth frame:', err);
@@ -544,10 +550,15 @@ async function connectWs() {
 
         const correlationId = String(payload.correlation_id ?? payload.correlationId ?? '');
         const routeReason = String(payload.route_reason ?? payload.routeReason ?? '');
-        console.log('[WsManager] event:', payload.event, payload.call_id ?? '', {
-          correlation_id: correlationId,
-          route_reason: routeReason,
-        });
+        // Presence snapshots are frequent lease maintenance, not actionable
+        // diagnostics. Logging every snapshot made long Metro sessions retain
+        // gigabytes of terminal output.
+        if (payload.event !== 'presence_snapshot' && payload.event !== 'presence_update') {
+          console.log('[WsManager] event:', payload.event, payload.call_id ?? '', {
+            correlation_id: correlationId,
+            route_reason: routeReason,
+          });
+        }
 
         // ---- incoming_call ack: mark call invite as received by this session ----
         if (payload.event === 'incoming_call' && payload.call_id) {

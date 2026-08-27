@@ -108,6 +108,7 @@ export default function useWebRTC({
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const mediaAcquirePromiseRef = useRef<Promise<MediaStream> | null>(null);
   const pendingCandidates = useRef<RTCIceCandidate[]>([]);
   const hasRemoteDesc = useRef(false);
   const cleanedUp = useRef(false);
@@ -169,41 +170,50 @@ export default function useWebRTC({
     if (localStreamRef.current) {
       return localStreamRef.current;
     }
-    const prewarmed = callType === 'video' ? takePrewarmedVideoCallMedia() : null;
-    if (prewarmed) {
-      localStreamRef.current = prewarmed;
-      setLocalStream(prewarmed);
-      return prewarmed;
-    }
-    const constraints: any = {
-      audio: true,
-      video: callType === 'video'
-        ? {
-            facingMode: 'user',
-            width: { ideal: 1280, min: 640 },
-            height: { ideal: 720, min: 360 },
-            frameRate: { ideal: 30, max: 30 },
-          }
-        : false,
-    };
-    let stream: MediaStream;
-    try {
-      stream = await mediaDevices.getUserMedia(constraints) as MediaStream;
-    } catch (err) {
-      // Some emulators and older devices reject ideal constraints. Keep the
-      // call usable with the previous low-bandwidth profile as a fallback.
-      console.warn('[WebRTC] preferred camera constraints failed, using fallback:', err);
-      stream = await mediaDevices.getUserMedia({
+    if (mediaAcquirePromiseRef.current) return mediaAcquirePromiseRef.current;
+
+    mediaAcquirePromiseRef.current = (async () => {
+      const prewarmed = callType === 'video' ? takePrewarmedVideoCallMedia() : null;
+      if (prewarmed) return prewarmed;
+      const constraints: any = {
         audio: true,
         video: callType === 'video'
-          ? { facingMode: 'user', width: 640, height: 480, frameRate: 24 }
+          ? {
+              facingMode: 'user',
+              width: { ideal: 1280, min: 640 },
+              height: { ideal: 720, min: 360 },
+              frameRate: { ideal: 30, max: 30 },
+            }
           : false,
-      }) as MediaStream;
+      };
+      try {
+        return await mediaDevices.getUserMedia(constraints) as MediaStream;
+      } catch (err) {
+        // Some emulators and older devices reject ideal constraints. Keep the
+        // call usable with the previous low-bandwidth profile as a fallback.
+        console.warn('[WebRTC] preferred camera constraints failed, using fallback:', err);
+        return await mediaDevices.getUserMedia({
+          audio: true,
+          video: callType === 'video'
+            ? { facingMode: 'user', width: 640, height: 480, frameRate: 24 }
+            : false,
+        }) as MediaStream;
+      }
+    })();
+
+    try {
+      const stream = await mediaAcquirePromiseRef.current;
+      if (cleanedUp.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error('Call ended while acquiring local media');
+      }
+      localStreamRef.current = stream;
+      setLocalStream(stream);
+      console.log('[WebRTC] local media acquired, tracks:', stream.getTracks().length);
+      return stream;
+    } finally {
+      mediaAcquirePromiseRef.current = null;
     }
-    localStreamRef.current = stream as MediaStream;
-    setLocalStream(stream as MediaStream);
-    console.log('[WebRTC] local media acquired, tracks:', (stream as MediaStream).getTracks().length);
-    return stream as MediaStream;
   }, [callType]);
 
   const applyVideoBitrate = useCallback(async (
@@ -470,11 +480,12 @@ export default function useWebRTC({
         if (signal_type === 'offer') {
           console.log('[WebRTC] received offer from', from_user_id);
           try {
-            const stream = localStreamRef.current;
-            if (!stream) {
-              console.warn('[WebRTC] no local stream when offer arrived');
-              return;
-            }
+            // The offer can beat microphone/camera acquisition on a fast
+            // local connection. Await the same single-flight media promise
+            // instead of dropping the offer and leaving a fake call timer
+            // with no peer connection.
+            const stream = localStreamRef.current ?? await acquireMedia();
+            if (cleanedUp.current) return;
             // Create PC if not yet created
             const pc = pcRef.current ?? createPeerConnection(stream);
 
@@ -523,7 +534,7 @@ export default function useWebRTC({
     });
 
     return unsub;
-  }, [subscribe, peerUserId, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
+  }, [subscribe, peerUserId, acquireMedia, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
 
   /* ---- Kick off the right flow on mount ---- */
   useEffect(() => {

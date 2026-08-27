@@ -116,6 +116,10 @@ interface RoomState {
   reconnectCount: number;
   hasConnectedBefore: boolean;
   pendingFlushes: number[];
+  /** Last receiver-ready flush per peer. Channel reconnects may emit the same
+   * readiness frame twice; a short cooldown prevents duplicate hydration and
+   * mutation frames while preserving later recovery attempts. */
+  lastReceiverReadyFlushAt: Map<number, number>;
   /** Queued media-hydration resends (specific ids) for a recipient, awaiting WS open. */
   pendingResends: Array<{ recipientId: number; ids: string[] }>;
   /** User-requested retries. These preserve the original message id for dedupe. */
@@ -240,6 +244,7 @@ function createRoomState(): RoomState {
     reconnectCount: 0,
     hasConnectedBefore: false,
     pendingFlushes: [],
+    lastReceiverReadyFlushAt: new Map(),
     pendingResends: [],
     pendingManualRetryIds: [],
     lastMutationAt: 0,
@@ -538,7 +543,13 @@ async function sendOutboxFrame(
     duration_ms?: number | null;
     file_uri?: string | null;
   },
-  opts?: { hydration?: boolean; audioMime?: string | null; imageMime?: string | null; mediaMime?: string | null },
+  opts?: {
+    hydration?: boolean;
+    targetRecipientId?: number;
+    audioMime?: string | null;
+    imageMime?: string | null;
+    mediaMime?: string | null;
+  },
 ): Promise<SendAttemptResult> {
   if (!isAxionReady()) return { sent: false };
   const isVoice = msg.type === 'voice';
@@ -552,6 +563,7 @@ async function sendOutboxFrame(
     ...(msg.reply_to ? { reply_to: msg.reply_to } : {}),
     ...(msg.duration_ms != null ? { duration_ms: msg.duration_ms } : {}),
     ...(opts?.hydration ? { hydration: true } : {}),
+    ...(opts?.targetRecipientId ? { target_recipient_id: opts.targetRecipientId } : {}),
   };
 
   if (isMedia) {
@@ -760,7 +772,12 @@ async function _doFlush(roomId: string, s: RoomState, recipientId: number): Prom
       // Stop if the socket dropped mid-flush; the rest is retried on next auth_ok.
       if (!isAxionReady()) break;
       try {
-        await sendOutboxFrame(s, roomId, msg);
+        // Recovery is a targeted, notification-silent hydration. The server
+        // must not rebroadcast it to every group member or send another FCM.
+        await sendOutboxFrame(s, roomId, msg, {
+          hydration: true,
+          targetRecipientId: recipientId,
+        });
       } catch (err) {
         // One bad message must never abort the loop — continue with the rest.
         console.warn('[ChatWsManager] outbox flush send failed, skipping', msg.id, err);
@@ -872,6 +889,13 @@ export function applyRemoteMessageUpdates(
 export function flushOutboxForRecipient(roomId: string, recipientId: number): void {
   const s = rooms.get(roomId);
   if (s && isAxionReady()) {
+    const now = Date.now();
+    const lastFlushAt = s.lastReceiverReadyFlushAt.get(recipientId) ?? 0;
+    if (now - lastFlushAt < 5_000) {
+      console.log('[ChatWsManager] duplicate receiver_ready suppressed', roomId, recipientId);
+      return;
+    }
+    s.lastReceiverReadyFlushAt.set(recipientId, now);
     // The peer explicitly came online, so permit a durable mutation retry now
     // rather than waiting for its normal bounded retry timer.
     s.inFlightUpdateIds.clear();
@@ -918,7 +942,10 @@ export async function resendMessagesByIds(
         // stream). The `hydration` flag tells the relay to deliver over the room
         // Axion only and NOT fire a second push/notification. Large media is
         // re-streamed as chunks; small media rides inline.
-        await sendOutboxFrame(s, roomId, msg, { hydration: true });
+        await sendOutboxFrame(s, roomId, msg, {
+          hydration: true,
+          targetRecipientId: recipientId,
+        });
         console.log('[ChatWsManager] re-sent media for', msg.id, 'to', recipientId);
       } catch (err) {
         console.warn('[ChatWsManager] media hydration resend failed, skipping', msg.id, err);
@@ -1008,12 +1035,17 @@ export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
   const s = getOrCreate(roomId);
   for (const msgId of messageIds) {
     const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9);
+    const authorId = s.messages.find((message) => message.id === msgId)?.sender_id;
+    const changes: MessageChanges = {
+      is_read: true,
+      ...(authorId && authorId !== _myUserId ? { receipt_target_id: authorId } : {}),
+    };
     // Persist first; read receipts use the server-provided room membership
     // snapshot when their relay acknowledgement arrives.
-    queueMessageUpdate(roomId, msgId, { is_read: true }, { id })
+    queueMessageUpdate(roomId, msgId, changes, { id, expectedPeerIds: authorId ? [authorId] : [] })
       .then(() => {
         s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
-        s.pendingUpdates.push({ id, message_id: msgId, changes: { is_read: true } });
+        s.pendingUpdates.push({ id, message_id: msgId, changes });
         _flushPendingUpdates(roomId, s);
       })
       .catch(() => {});

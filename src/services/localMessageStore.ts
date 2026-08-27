@@ -12,7 +12,7 @@ import { File, Paths } from 'expo-file-system';
 let _db: SQLite.SQLiteDatabase | null = null;
 let _dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let _initPromise: Promise<void> | null = null;
-let _exclusiveWriteTail: Promise<void> = Promise.resolve();
+let _writeTail: Promise<void> = Promise.resolve();
 
 async function getDB(): Promise<SQLite.SQLiteDatabase> {
   if (_db) return _db;
@@ -30,17 +30,46 @@ async function getDB(): Promise<SQLite.SQLiteDatabase> {
 }
 
 /**
- * Expo's exclusive transactions use a dedicated connection. Serializing the
- * short cache replacement jobs prevents room/contact/call refreshes that all
- * start at login from contending for SQLite's single writer lock.
+ * Cache replacement jobs use the same primary connection and global writer
+ * queue as chat messages. Expo's exclusive transaction API opens a second
+ * connection, which can remain blocked by ordinary writes on the primary
+ * connection and fail while finalizing a prepared statement.
  */
-function runExclusiveWrite(task: (tx: SQLite.SQLiteDatabase) => Promise<void>): Promise<void> {
-  const run = _exclusiveWriteTail.then(async () => {
+function isBusyError(error: unknown): boolean {
+  const detail = String((error as any)?.message ?? error ?? '').toLowerCase();
+  return detail.includes('database is locked') || detail.includes('database_busy');
+}
+
+/**
+ * Funnel every foreground writer through one queue and retry when Android's
+ * headless FCM runtime briefly owns the same WAL.  Serializing only the cache
+ * replacement transactions was not enough: a chat send could race one of
+ * those jobs and lose its optimistic message while finalising the statement.
+ */
+function runSerializedWrite<T>(task: (db: SQLite.SQLiteDatabase) => Promise<T>): Promise<T> {
+  const run = _writeTail.then(async () => {
     const db = await getDB();
-    await db.withExclusiveTransactionAsync(task);
+    let lastError: unknown = null;
+    // A headless FCM/background task can briefly own SQLite from a separate JS
+    // runtime, outside this module's in-process queue. Allow that short writer
+    // to finish instead of dropping the authoritative cache refresh.
+    for (const delayMs of [0, 100, 300, 700, 1_500, 3_000]) {
+      if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        return await task(db);
+      } catch (error) {
+        lastError = error;
+        if (!isBusyError(error)) throw error;
+      }
+    }
+    throw lastError;
   });
-  _exclusiveWriteTail = run.catch(() => {});
+  _writeTail = run.then(() => {}, () => {});
   return run;
+}
+
+function runExclusiveWrite(task: (tx: SQLite.SQLiteDatabase) => Promise<void>): Promise<void> {
+  return runSerializedWrite((db) => db.withTransactionAsync(() => task(db)));
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +216,33 @@ async function initDBOnce(): Promise<void> {
   try { await db.execAsync(`ALTER TABLE messages ADD COLUMN transfer_error_message TEXT`); } catch {}
   try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN expected_peer_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
   try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN acked_by_user_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
+
+  // Repair read receipts created before author-targeted routing existed. Those
+  // rows waited for every group member and kept retrying whenever one member
+  // stayed offline. The original sender is available in the local message row,
+  // so narrow the durable plan without deleting any user data.
+  try {
+    const legacyReceipts = await db.getAllAsync<{
+      id: string;
+      changes: string;
+      sender_id: number | null;
+    }>(`
+      SELECT o.id, o.changes, m.sender_id
+      FROM update_outbox o
+      LEFT JOIN messages m ON m.id = o.message_id
+    `);
+    for (const row of legacyReceipts) {
+      let changes: MessageChanges;
+      try { changes = JSON.parse(row.changes) as MessageChanges; } catch { continue; }
+      const authorId = Number(row.sender_id ?? 0);
+      if (changes.is_read !== true || changes.receipt_target_id || authorId <= 0) continue;
+      changes.receipt_target_id = authorId;
+      await db.runAsync(
+        `UPDATE update_outbox SET changes = ?, expected_peer_ids = ? WHERE id = ?`,
+        JSON.stringify(changes), JSON.stringify([authorId]), row.id,
+      );
+    }
+  } catch { /* best-effort legacy repair */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +565,9 @@ export type MessageChanges = {
   revision?: number;
   /** Display hint — which emoji was just toggled. NOT persisted to SQLite. */
   reacted_emoji?: string;
+  /** Internal routing hint. A read receipt only needs to reach the original
+   * message author; edits/reactions/deletes still fan out to every peer. */
+  receipt_target_id?: number;
 };
 
 export interface OutboxEntry {
@@ -530,7 +589,6 @@ function genOutboxId(): string {
 // ---------------------------------------------------------------------------
 
 export async function saveMessage(msg: LocalMessage): Promise<void> {
-  const db = await getDB();
   // expo-sqlite passes primitiveParams as Map<String, Any> in Kotlin — Any is
   // non-nullable, so passing JS null through the bridge throws the
   // "Cannot convert '[object Object]' to a Kotlin type" error.
@@ -555,22 +613,21 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
   if (msg.duration_ms != null) params.$duration_ms = Number(msg.duration_ms);
   if (msg.media_ptr != null) params.$media_ptr = JSON.stringify(msg.media_ptr);
 
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `INSERT OR IGNORE INTO messages
        (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, updated_at, revision, accepted_at, is_mine, sync, status, reply_to, duration_ms, media_ptr)
      VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $updated_at, $revision, $accepted_at, $is_mine, $sync, $status, $reply_to, $duration_ms, $media_ptr)`,
     params,
-  );
+  ));
 }
 
 /** Store/replace the out-of-band media pointer for a message (after upload, or
  *  when a received pointer is persisted). */
 export async function setMediaPointer(id: string, ptr: MediaPointer): Promise<void> {
-  const db = await getDB();
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `UPDATE messages SET media_ptr = ? WHERE id = ?`,
     JSON.stringify(ptr), id,
-  );
+  ));
 }
 
 /** Read the out-of-band media pointer for a message, or null if none. */
@@ -591,23 +648,21 @@ export async function setMessageTransferFailure(
   message: string,
   blockAutomaticRetry: boolean,
 ): Promise<void> {
-  const db = await getDB();
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `UPDATE messages
        SET transfer_error_code = ?, transfer_error_message = ?, auto_retry_blocked = ?
      WHERE id = ?`,
     code, message, blockAutomaticRetry ? 1 : 0, id,
-  );
+  ));
 }
 
 export async function clearMessageTransferFailure(id: string): Promise<void> {
-  const db = await getDB();
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `UPDATE messages
        SET transfer_error_code = NULL, transfer_error_message = NULL, auto_retry_blocked = 0
      WHERE id = ?`,
     id,
-  );
+  ));
 }
 
 export async function getMessageTransferFailure(
@@ -662,27 +717,28 @@ export async function markDelivered(
   messageId: string,
   recipientId: number
 ): Promise<void> {
-  const db = await getDB();
-  await db.runAsync(
-    `INSERT OR REPLACE INTO delivery_tracking (message_id, recipient_id, delivered)
-     VALUES (?, ?, 1)`,
-    messageId, recipientId,
-  );
+  await runSerializedWrite(async (db) => {
+    await db.runAsync(
+      `INSERT OR REPLACE INTO delivery_tracking (message_id, recipient_id, delivered)
+       VALUES (?, ?, 1)`,
+      messageId, recipientId,
+    );
 
-  const rows = await db.getAllAsync<{ total: number; delivered: number }>(
-    `SELECT
-       COUNT(*) AS total,
-       COALESCE(SUM(CASE WHEN delivered = 1 THEN 1 ELSE 0 END), 0) AS delivered
-     FROM delivery_tracking
-     WHERE message_id = ?`,
-    messageId,
-  );
-  const first = rows.length > 0 ? rows[0] : null;
-  if (!first) return;
-  const { total, delivered } = first;
-  if (total > 0 && total === delivered) {
-    await db.runAsync(`UPDATE messages SET status = 'delivered' WHERE id = ?`, messageId);
-  }
+    const rows = await db.getAllAsync<{ total: number; delivered: number }>(
+      `SELECT
+         COUNT(*) AS total,
+         COALESCE(SUM(CASE WHEN delivered = 1 THEN 1 ELSE 0 END), 0) AS delivered
+       FROM delivery_tracking
+       WHERE message_id = ?`,
+      messageId,
+    );
+    const first = rows.length > 0 ? rows[0] : null;
+    if (!first) return;
+    const { total, delivered } = first;
+    if (total > 0 && total === delivered) {
+      await db.runAsync(`UPDATE messages SET status = 'delivered' WHERE id = ?`, messageId);
+    }
+  });
 }
 
 /**
@@ -772,22 +828,20 @@ export async function isEventProcessed(id: string): Promise<boolean> {
 /** Record a protocol-event id as fully processed (idempotent). */
 export async function markEventProcessed(id: string, type?: string): Promise<void> {
   if (!id) return;
-  const db = await getDB();
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `INSERT OR IGNORE INTO processed_events (id, type, ts) VALUES (?, ?, ?)`,
     id,
     type ?? null,
     Date.now()
-  );
+  ));
 }
 
 /** Drop ledger rows older than the retention window. Call occasionally. */
 export async function pruneProcessedEvents(): Promise<void> {
-  const db = await getDB();
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `DELETE FROM processed_events WHERE ts < ?`,
     Date.now() - PROCESSED_EVENT_TTL_MS
-  );
+  ));
 }
 
 // ---------------------------------------------------------------------------
@@ -902,8 +956,9 @@ export async function getMessageFileUri(messageId: string): Promise<string | nul
 
 /** Backfill a message's media file_uri (e.g. after hydrating a push-only row). */
 export async function setMessageFileUri(messageId: string, fileUri: string): Promise<void> {
-  const db = await getDB();
-  await db.runAsync(`UPDATE messages SET file_uri = ? WHERE id = ?`, fileUri, messageId);
+  await runSerializedWrite((db) =>
+    db.runAsync(`UPDATE messages SET file_uri = ? WHERE id = ?`, fileUri, messageId)
+  );
 }
 
 /**
@@ -1000,32 +1055,33 @@ export async function toggleReaction(
   emoji: string,
   userId: string,
 ): Promise<Record<string, string[]>> {
-  const db = await getDB();
-  const row = await db.getFirstAsync<{ reactions: string }>(
-    `SELECT reactions FROM messages WHERE id = ?`,
-    messageId,
-  );
-  const reactions: Record<string, string[]> = row?.reactions
-    ? JSON.parse(row.reactions)
-    : {};
+  return runSerializedWrite(async (db) => {
+    const row = await db.getFirstAsync<{ reactions: string }>(
+      `SELECT reactions FROM messages WHERE id = ?`,
+      messageId,
+    );
+    const reactions: Record<string, string[]> = row?.reactions
+      ? JSON.parse(row.reactions)
+      : {};
 
-  const alreadyOnThisEmoji = reactions[emoji]?.includes(userId) ?? false;
-  // Remove userId from ALL emoji (one reaction per user)
-  for (const key of Object.keys(reactions)) {
-    reactions[key] = reactions[key].filter((id) => id !== userId);
-    if (reactions[key].length === 0) delete reactions[key];
-  }
-  // Add to selected emoji only if it wasn't already there (toggle off if same)
-  if (!alreadyOnThisEmoji) {
-    if (!reactions[emoji]) reactions[emoji] = [];
-    reactions[emoji].push(userId);
-  }
+    const alreadyOnThisEmoji = reactions[emoji]?.includes(userId) ?? false;
+    // Remove userId from ALL emoji (one reaction per user)
+    for (const key of Object.keys(reactions)) {
+      reactions[key] = reactions[key].filter((id) => id !== userId);
+      if (reactions[key].length === 0) delete reactions[key];
+    }
+    // Add to selected emoji only if it wasn't already there (toggle off if same)
+    if (!alreadyOnThisEmoji) {
+      if (!reactions[emoji]) reactions[emoji] = [];
+      reactions[emoji].push(userId);
+    }
 
-  await db.runAsync(
-    `UPDATE messages SET reactions = $json WHERE id = $id`,
-    { $json: JSON.stringify(reactions), $id: messageId },
-  );
-  return reactions;
+    await db.runAsync(
+      `UPDATE messages SET reactions = $json WHERE id = $id`,
+      { $json: JSON.stringify(reactions), $id: messageId },
+    );
+    return reactions;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,26 +1095,27 @@ export async function queueMessageUpdate(
   changes: MessageChanges,
   opts: { id?: string; expectedPeerIds?: number[] } = {},
 ): Promise<string> {
-  const db = await getDB();
   const id = opts.id ?? genOutboxId();
   const peers = [...new Set((opts.expectedPeerIds ?? []).filter((userId) => Number.isInteger(userId) && userId > 0))];
-  // Delivery acceptance is separate from content convergence. Stamp every
-  // mutation with an edit version instead of resetting a sync boolean.
-  const current = await db.getFirstAsync<{ revision: number | null }>(
-    `SELECT revision FROM messages WHERE id = ?`, messageId,
-  );
-  if (!changes.updated_at) changes.updated_at = new Date().toISOString();
-  if (changes.revision == null) changes.revision = (Number(current?.revision) || 0) + 1;
-  await db.runAsync(
-    `INSERT OR IGNORE INTO update_outbox
-       (id, room_id, message_id, changes, expected_peer_ids, acked_by_user_ids, created_at)
-     VALUES (?, ?, ?, ?, ?, '[]', ?)`,
-    id, roomId, messageId, JSON.stringify(changes), JSON.stringify(peers), Date.now(),
-  );
-  await db.runAsync(
-    `UPDATE messages SET updated_at = ?, revision = ? WHERE id = ?`,
-    changes.updated_at, changes.revision, messageId,
-  );
+  await runSerializedWrite(async (db) => {
+    // Delivery acceptance is separate from content convergence. Stamp every
+    // mutation with an edit version instead of resetting a sync boolean.
+    const current = await db.getFirstAsync<{ revision: number | null }>(
+      `SELECT revision FROM messages WHERE id = ?`, messageId,
+    );
+    if (!changes.updated_at) changes.updated_at = new Date().toISOString();
+    if (changes.revision == null) changes.revision = (Number(current?.revision) || 0) + 1;
+    await db.runAsync(
+      `INSERT OR IGNORE INTO update_outbox
+         (id, room_id, message_id, changes, expected_peer_ids, acked_by_user_ids, created_at)
+       VALUES (?, ?, ?, ?, ?, '[]', ?)`,
+      id, roomId, messageId, JSON.stringify(changes), JSON.stringify(peers), Date.now(),
+    );
+    await db.runAsync(
+      `UPDATE messages SET updated_at = ?, revision = ? WHERE id = ?`,
+      changes.updated_at, changes.revision, messageId,
+    );
+  });
   return id;
 }
 
@@ -1252,20 +1309,20 @@ export async function getPendingUnsyncedOutgoingMessages(
 /** Delete outbox entries that have been successfully relayed. */
 export async function deleteOutboxUpdates(ids: string[]): Promise<void> {
   if (!ids.length) return;
-  const db = await getDB();
-  for (const id of ids) {
-    await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
-  }
+  await runSerializedWrite(async (db) => {
+    for (const id of ids) {
+      await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
+    }
+  });
 }
 
 /** Record server acceptance without conflating it with content consistency. */
 export async function setMessageSyncState(messageId: string, synced: boolean): Promise<void> {
-  const db = await getDB();
   if (!synced) return;
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `UPDATE messages SET accepted_at = COALESCE(accepted_at, ?) WHERE id = ?`,
     new Date().toISOString(), messageId,
-  );
+  ));
 }
 
 /**
@@ -1276,40 +1333,30 @@ export async function setMessageSyncState(messageId: string, synced: boolean): P
  */
 export async function ackOutboxUpdates(ids: string[], ackedByUserId?: number): Promise<void> {
   if (!ids.length) return;
-  const db = await getDB();
-
-  const msgRows = await db.getAllAsync<{ message_id: string }>(
-    `SELECT DISTINCT message_id FROM update_outbox WHERE id IN (${ids.map(() => '?').join(',')})`,
-    ...ids,
-  );
-  const messageIds = msgRows.map((r) => r.message_id);
-
-  for (const id of ids) {
-    const row = await db.getFirstAsync<{ expected_peer_ids?: string; acked_by_user_ids?: string }>(
-      `SELECT expected_peer_ids, acked_by_user_ids FROM update_outbox WHERE id = ?`, id,
-    );
-    if (!row) continue;
-    const expected = row.expected_peer_ids ? JSON.parse(row.expected_peer_ids) as number[] : [];
-    const acked = row.acked_by_user_ids ? JSON.parse(row.acked_by_user_ids) as number[] : [];
-    const nextAcked = ackedByUserId && ackedByUserId > 0
-      ? [...new Set([...acked, ackedByUserId])]
-      : acked;
-    // Existing outbox rows have no delivery plan, so preserve their old
-    // first-ack behaviour. Newly created rows wait for every planned peer.
-    const complete = expected.length === 0 || expected.every((peerId) => nextAcked.includes(peerId));
-    if (complete) {
-      await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
-    } else {
-      await db.runAsync(
-        `UPDATE update_outbox SET acked_by_user_ids = ? WHERE id = ?`,
-        JSON.stringify(nextAcked), id,
+  await runSerializedWrite(async (db) => {
+    for (const id of ids) {
+      const row = await db.getFirstAsync<{ expected_peer_ids?: string; acked_by_user_ids?: string }>(
+        `SELECT expected_peer_ids, acked_by_user_ids FROM update_outbox WHERE id = ?`, id,
       );
+      if (!row) continue;
+      const expected = row.expected_peer_ids ? JSON.parse(row.expected_peer_ids) as number[] : [];
+      const acked = row.acked_by_user_ids ? JSON.parse(row.acked_by_user_ids) as number[] : [];
+      const nextAcked = ackedByUserId && ackedByUserId > 0
+        ? [...new Set([...acked, ackedByUserId])]
+        : acked;
+      // Existing outbox rows have no delivery plan, so preserve their old
+      // first-ack behaviour. Newly created rows wait for every planned peer.
+      const complete = expected.length === 0 || expected.every((peerId) => nextAcked.includes(peerId));
+      if (complete) {
+        await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
+      } else {
+        await db.runAsync(
+          `UPDATE update_outbox SET acked_by_user_ids = ? WHERE id = ?`,
+          JSON.stringify(nextAcked), id,
+        );
+      }
     }
-  }
-
-  // An outbox acknowledgement confirms transport only. Each message's
-  // updated_at/revision is the source of truth for content reconciliation.
-  void messageIds;
+  });
 }
 
 /**
@@ -1320,48 +1367,49 @@ export async function applyMessageChanges(
   messageId: string,
   changes: MessageChanges,
 ): Promise<void> {
-  const db = await getDB();
-  const current = await db.getFirstAsync<{ updated_at: string | null; revision: number | null }>(
-    `SELECT updated_at, revision FROM messages WHERE id = ?`, messageId,
-  );
-  // A delayed frame can arrive through a second transport. Apply only the
-  // newest edit; old clients without version metadata remain compatible.
-  if (changes.updated_at && current?.updated_at) {
-    const incomingRevision = Number(changes.revision ?? 0);
-    const currentRevision = Number(current.revision ?? 0);
-    if (changes.updated_at < current.updated_at ||
-        (changes.updated_at === current.updated_at && incomingRevision < currentRevision)) return;
-  }
-  if (changes.is_read !== undefined) {
-    await db.runAsync(`UPDATE messages SET is_read = ? WHERE id = ?`, changes.is_read ? 1 : 0, messageId);
-    if (changes.is_read) {
-      await db.runAsync(`UPDATE messages SET status = 'read' WHERE id = ?`, messageId);
+  await runSerializedWrite(async (db) => {
+    const current = await db.getFirstAsync<{ updated_at: string | null; revision: number | null }>(
+      `SELECT updated_at, revision FROM messages WHERE id = ?`, messageId,
+    );
+    // A delayed frame can arrive through a second transport. Apply only the
+    // newest edit; old clients without version metadata remain compatible.
+    if (changes.updated_at && current?.updated_at) {
+      const incomingRevision = Number(changes.revision ?? 0);
+      const currentRevision = Number(current.revision ?? 0);
+      if (changes.updated_at < current.updated_at ||
+          (changes.updated_at === current.updated_at && incomingRevision < currentRevision)) return;
     }
-  }
-  if (changes.reactions !== undefined) {
-    await db.runAsync(
-      `UPDATE messages SET reactions = $json WHERE id = $id`,
-      { $json: JSON.stringify(changes.reactions), $id: messageId },
-    );
-  }
-  if (changes.is_deleted) {
-    await db.runAsync(
-      `UPDATE messages SET is_deleted = 1, content = NULL WHERE id = $id`,
-      { $id: messageId },
-    );
-  }
-  if (changes.content !== undefined && !changes.is_deleted) {
-    await db.runAsync(
-      `UPDATE messages SET content = $content WHERE id = $id`,
-      { $content: changes.content, $id: messageId },
-    );
-  }
-  if (changes.updated_at) {
-    await db.runAsync(
-      `UPDATE messages SET updated_at = ?, revision = MAX(COALESCE(revision, 0), ?) WHERE id = ?`,
-      changes.updated_at, Number(changes.revision ?? 0), messageId,
-    );
-  }
+    if (changes.is_read !== undefined) {
+      await db.runAsync(`UPDATE messages SET is_read = ? WHERE id = ?`, changes.is_read ? 1 : 0, messageId);
+      if (changes.is_read) {
+        await db.runAsync(`UPDATE messages SET status = 'read' WHERE id = ?`, messageId);
+      }
+    }
+    if (changes.reactions !== undefined) {
+      await db.runAsync(
+        `UPDATE messages SET reactions = $json WHERE id = $id`,
+        { $json: JSON.stringify(changes.reactions), $id: messageId },
+      );
+    }
+    if (changes.is_deleted) {
+      await db.runAsync(
+        `UPDATE messages SET is_deleted = 1, content = NULL WHERE id = $id`,
+        { $id: messageId },
+      );
+    }
+    if (changes.content !== undefined && !changes.is_deleted) {
+      await db.runAsync(
+        `UPDATE messages SET content = $content WHERE id = $id`,
+        { $content: changes.content, $id: messageId },
+      );
+    }
+    if (changes.updated_at) {
+      await db.runAsync(
+        `UPDATE messages SET updated_at = ?, revision = MAX(COALESCE(revision, 0), ?) WHERE id = ?`,
+        changes.updated_at, Number(changes.revision ?? 0), messageId,
+      );
+    }
+  });
 }
 
 /** Rooms that still have an outgoing message awaiting Axion acceptance. */
@@ -1383,28 +1431,30 @@ export async function getRoomsWithPendingOutgoingMessages(
 
 /** Soft-delete a message locally (content cleared, is_deleted=1). */
 export async function deleteMessage(messageId: string): Promise<void> {
-  const db = await getDB();
-  await db.runAsync(
+  await runSerializedWrite((db) => db.runAsync(
     `UPDATE messages SET is_deleted = 1, content = NULL WHERE id = $id`,
     { $id: messageId },
-  );
+  ));
 }
 
 /** Delete every locally-cached message + outbox entry for a room.
  *  Used when the user chooses "Delete chat" from the chat list. */
 export async function deleteRoomMessages(roomId: string): Promise<void> {
-  const db = await getDB();
-  const fileRows = await db.getAllAsync<{ file_uri: string }>(
-    `SELECT DISTINCT file_uri FROM messages WHERE room_id = $rid AND file_uri IS NOT NULL AND file_uri != ''`,
-    { $rid: roomId },
-  );
-  await db.runAsync(`DELETE FROM messages WHERE room_id = $rid`, { $rid: roomId });
-  await db.runAsync(`DELETE FROM update_outbox WHERE room_id = $rid`, { $rid: roomId });
+  const fileRows = await runSerializedWrite(async (db) => {
+    const rows = await db.getAllAsync<{ file_uri: string }>(
+      `SELECT DISTINCT file_uri FROM messages WHERE room_id = $rid AND file_uri IS NOT NULL AND file_uri != ''`,
+      { $rid: roomId },
+    );
+    await db.runAsync(`DELETE FROM messages WHERE room_id = $rid`, { $rid: roomId });
+    await db.runAsync(`DELETE FROM update_outbox WHERE room_id = $rid`, { $rid: roomId });
+    return rows;
+  });
 
   // Delete only files owned by this app, and only when no other cached room
   // references them. Picker/source URIs outside the app's directories are left
   // untouched deliberately.
   for (const { file_uri: uri } of fileRows) {
+    const db = await getDB();
     const stillReferenced = await db.getFirstAsync<{ count: number }>(
       `SELECT COUNT(*) AS count FROM messages WHERE file_uri = $uri`,
       { $uri: uri },
@@ -1422,21 +1472,22 @@ export async function deleteRoomMessages(roomId: string): Promise<void> {
 
 /** Update the recipient plan after the server accepts and validates a relay. */
 export async function setOutboxExpectedPeers(id: string, peerIds: number[]): Promise<void> {
-  const db = await getDB();
   const expected = [...new Set(peerIds.filter((userId) => Number.isInteger(userId) && userId > 0))];
-  const row = await db.getFirstAsync<{ acked_by_user_ids?: string }>(
-    `SELECT acked_by_user_ids FROM update_outbox WHERE id = ?`, id,
-  );
-  if (!row) return;
-  const acked = row.acked_by_user_ids ? JSON.parse(row.acked_by_user_ids) as number[] : [];
-  if (expected.length === 0 || expected.every((peerId) => acked.includes(peerId))) {
-    await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
-    return;
-  }
-  await db.runAsync(
-    `UPDATE update_outbox SET expected_peer_ids = ? WHERE id = ?`,
-    JSON.stringify(expected), id,
-  );
+  await runSerializedWrite(async (db) => {
+    const row = await db.getFirstAsync<{ acked_by_user_ids?: string }>(
+      `SELECT acked_by_user_ids FROM update_outbox WHERE id = ?`, id,
+    );
+    if (!row) return;
+    const acked = row.acked_by_user_ids ? JSON.parse(row.acked_by_user_ids) as number[] : [];
+    if (expected.length === 0 || expected.every((peerId) => acked.includes(peerId))) {
+      await db.runAsync(`DELETE FROM update_outbox WHERE id = ?`, id);
+      return;
+    }
+    await db.runAsync(
+      `UPDATE update_outbox SET expected_peer_ids = ? WHERE id = ?`,
+      JSON.stringify(expected), id,
+    );
+  });
 }
 
 /** Ids of received (not-mine), unread, non-deleted messages in a room.

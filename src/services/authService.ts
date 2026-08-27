@@ -207,12 +207,14 @@ export async function searchUsers(query: string): Promise<User[]> {
  * Register the device's Expo push token with the backend.
  * Should be called after every login/register and when the token refreshes.
  */
-export async function registerPushToken(payload: PushRegistrationPayload): Promise<void> {
+export async function registerPushToken(payload: PushRegistrationPayload): Promise<boolean> {
   try {
     await api.post('/api/users/push-token/', payload);
     console.log('[Auth] Push token registered with backend');
+    return true;
   } catch (err) {
     console.warn('[Auth] Failed to register push token:', err);
+    return false;
   }
 }
 

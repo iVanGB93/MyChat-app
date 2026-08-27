@@ -6,6 +6,37 @@ import {
   type PresenceWireValue,
 } from './presencePolicy';
 
+// HTTP room/contact refreshes can overlap. Keep one desired subscription set
+// and send only the delta for the current Axion session instead of requesting
+// the same full presence snapshot after every response.
+const desiredPresenceUserIds = new Set<number>();
+const subscribedThisSession = new Set<number>();
+let subscriptionFlushRunning = false;
+
+async function flushPresenceSubscriptions(): Promise<void> {
+  if (subscriptionFlushRunning) return;
+  subscriptionFlushRunning = true;
+  try {
+    while (true) {
+      const pending = [...desiredPresenceUserIds].filter((id) => !subscribedThisSession.has(id));
+      if (!pending.length) return;
+      const { sendRawNotif } = await import('./notificationWsManager');
+      if (!sendRawNotif({ type: 'presence_subscribe', user_ids: pending })) return;
+      pending.forEach((id) => subscribedThisSession.add(id));
+    }
+  } catch {
+    // Authentication/reconnect will replay the desired set.
+  } finally {
+    subscriptionFlushRunning = false;
+  }
+}
+
+/** A new Axion socket has no subscriptions; replay the deduplicated desired set. */
+export function resetPresenceSessionSubscriptions(): void {
+  subscribedThisSession.clear();
+  void flushPresenceSubscriptions();
+}
+
 export function toPresenceState(value: PresenceWireValue): UserPresenceState {
   return toPresenceLease(value);
 }
@@ -34,13 +65,8 @@ export function seedPresenceFromUsers(users: Array<Pick<User | RoomMember, 'id' 
   }));
   applyPresenceSnapshot(values);
   const userIds = [...new Set(users.map((user) => user.id).filter((id) => id > 0))];
-  if (userIds.length) {
-    // Lazy import avoids a notificationWsManager → ingressRouter → presence
-    // service cycle during module initialization.
-    import('./notificationWsManager')
-      .then(({ sendRawNotif }) => sendRawNotif({ type: 'presence_subscribe', user_ids: userIds }))
-      .catch(() => {});
-  }
+  userIds.forEach((id) => desiredPresenceUserIds.add(id));
+  if (userIds.length) void flushPresenceSubscriptions();
 }
 
 export function isUserOnline(userId: number | null | undefined): boolean {

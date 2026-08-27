@@ -20,9 +20,11 @@ import {
   Animated,
   PanResponder,
   Linking,
+  AppState,
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useIsFocused } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Font, Spacing, Radius } from '../../theme';
@@ -165,6 +167,8 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
 
 export default function ChatRoomScreen({ route, navigation }: Props) {
   const { roomId, otherUserId } = route.params;
+  const isScreenFocused = useIsFocused();
+  const [appState, setAppState] = useState(AppState.currentState);
   const [retryStartedAtById, setRetryStartedAtById] = useState<Record<string, number>>({});
   // `otherUserId` is navigation context, not room metadata.  A group opened
   // from a notification has the sender id populated too, so use the locally
@@ -262,6 +266,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
 
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', setAppState);
+    return () => subscription.remove();
+  }, []);
+
   /* Load (or reload) messages from the local SQLite DB */
   const loadFromDB = useCallback(async (cancelled?: { current: boolean }) => {
     const dbMsgs = await getRecentMessages(roomId, loadedHistoryLimitRef.current);
@@ -282,10 +291,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     const idsFromOthers = dbMsgs
       .filter(m => !m.is_mine && !m.is_read && !isIncompleteMedia(m))
       .map(m => m.id);
-    if (idsFromOthers.length > 0) {
+    // A mounted room can remain subscribed while Android backgrounds/freezes
+    // the app. Receipt semantics must mean "the user could see this", not just
+    // "the screen component still exists in memory". On resume/focus this
+    // callback is recreated and the unread rows are marked then.
+    if (idsFromOthers.length > 0 && isScreenFocused && appState === 'active') {
       markRoomAsRead(roomId, idsFromOthers);
     }
-  }, [roomId]);
+  }, [roomId, isScreenFocused, appState]);
 
   const loadOlderMessages = useCallback(async () => {
     if (loadingOlderMessages || !hasOlderMessages) return;
@@ -1072,8 +1085,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
        On iOS, KeyboardAvoidingView with behavior="padding" is needed. */
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: Colors.chatBg }]}
-      behavior="padding"
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 80}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {isMessageRequest && (
         <View style={[styles.requestBanner, {

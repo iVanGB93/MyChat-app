@@ -2,12 +2,13 @@
 /*  Auth context — provides user state & auth actions across the app   */
 /* ------------------------------------------------------------------ */
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearTokens, getTokens } from '../services/api';
 import { getProfile, login as loginApi, register as registerApi, registerPushToken, unregisterPushToken } from '../services/authService';
 import { getPushRegistrationPayload } from '../services/pushNotificationService';
+import { onFcmTokenRefresh } from '../services/fcmService';
 import {
   registerBackgroundTask,
   registerPushReceiveTask,
@@ -23,6 +24,12 @@ import { useAppStore } from '../store/appStore';
 import type { User } from '../types';
 
 const USER_CACHE_KEY = '@axonic_user_cache';
+const PUSH_SYNC_FRESH_MS = 6 * 60 * 60 * 1000;
+const PUSH_SYNC_RETRY_DELAYS_MS = [0, 1_500, 5_000, 15_000] as const;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function isAuthFailure(err: any): boolean {
   const status = err?.response?.status;
@@ -73,6 +80,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isLoading: true,
     isAuthenticated: false,
   });
+  const pushSyncInFlightRef = useRef<Promise<boolean> | null>(null);
+  const lastPushSyncSuccessAtRef = useRef(0);
 
   // Mirror auth state into the global app store on every change.
   useEffect(() => {
@@ -82,14 +91,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [state.user, state.isLoading]);
 
   /** Register push token with backend after authentication */
-  const syncPushToken = useCallback(async () => {
-    try {
-      const payload = await getPushRegistrationPayload();
-      if (payload) {
-        await registerPushToken(payload);
+  const syncPushToken = useCallback(async (force = false): Promise<boolean> => {
+    if (!force && Date.now() - lastPushSyncSuccessAtRef.current < PUSH_SYNC_FRESH_MS) {
+      return true;
+    }
+    if (pushSyncInFlightRef.current) return pushSyncInFlightRef.current;
+
+    const task = (async () => {
+      let payload: Awaited<ReturnType<typeof getPushRegistrationPayload>>;
+      try {
+        payload = await getPushRegistrationPayload();
+      } catch (err) {
+        console.warn('[Auth] push registration payload failed:', err);
+        return false;
       }
-    } catch (err) {
-      console.warn('[Auth] push token sync failed:', err);
+      if (!payload) return false;
+
+      for (let attempt = 0; attempt < PUSH_SYNC_RETRY_DELAYS_MS.length; attempt += 1) {
+        const delay = PUSH_SYNC_RETRY_DELAYS_MS[attempt];
+        if (delay > 0) await wait(delay);
+        if (await registerPushToken(payload)) {
+          lastPushSyncSuccessAtRef.current = Date.now();
+          return true;
+        }
+        if (attempt < PUSH_SYNC_RETRY_DELAYS_MS.length - 1) {
+          console.log('[Auth] retrying push token registration', {
+            attempt: attempt + 2,
+            delay_ms: PUSH_SYNC_RETRY_DELAYS_MS[attempt + 1],
+          });
+        }
+      }
+      return false;
+    })();
+
+    pushSyncInFlightRef.current = task;
+    try {
+      return await task;
+    } finally {
+      if (pushSyncInFlightRef.current === task) pushSyncInFlightRef.current = null;
     }
   }, []);
 
@@ -104,6 +143,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.warn('[Auth] cached relationship load failed:', err);
     }
   }, []);
+
+  // FCM tokens can rotate without a logout or app update. Keep the current
+  // installation row authoritative instead of waiting until the next launch.
+  useEffect(() => {
+    if (!state.isAuthenticated) return;
+    return onFcmTokenRefresh(() => {
+      console.log('[FCM] token refreshed — registering current installation');
+      void syncPushToken(true);
+    });
+  }, [state.isAuthenticated, syncPushToken]);
+
+  // A transient failure during startup must not leave this installation with
+  // a stale server-side token until the next full app launch. Retry on the
+  // next foreground transition, while the success timestamp prevents routine
+  // app switching from generating unnecessary backend requests.
+  useEffect(() => {
+    if (!state.isAuthenticated) return;
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') void syncPushToken();
+    });
+    return () => sub.remove();
+  }, [state.isAuthenticated, syncPushToken]);
 
   /** Background task registration is removed on logout. Re-install it after a
    * successful login in the same running process, otherwise a later account
@@ -156,9 +217,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setCurrentUserId(cachedUser.id, cachedUser.username);
             setState({ user: cachedUser, isLoading: false, isAuthenticated: true });
             loadCachedContactSets(cachedUser.id);
-            syncPushToken();
             ensureBackgroundServices();
-            syncContactSets(cachedUser.id);
           }
           try {
             const user = await getProfile();
@@ -167,13 +226,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setState({ user, isLoading: false, isAuthenticated: true });
             loadCachedContactSets(user.id);
             // Register push token with backend on session restore
-            syncPushToken();
+            syncPushToken(true);
             ensureBackgroundServices();
             syncContactSets(user.id);
           } catch (err) {
             if (cachedUser && !isAuthFailure(err)) {
               // Keep user logged in with cached profile on transient failures.
               setState({ user: cachedUser, isLoading: false, isAuthenticated: true });
+              syncPushToken(true);
+              syncContactSets(cachedUser.id);
             } else {
               await clearTokens();
               await setCachedUser(null);
@@ -207,7 +268,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ user, isLoading: false, isAuthenticated: true });
     loadCachedContactSets(user.id);
     // Register push token with backend after login
-    syncPushToken();
+    syncPushToken(true);
     ensureBackgroundServices();
     syncContactSets(user.id);
   }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);
@@ -221,7 +282,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setState({ user, isLoading: false, isAuthenticated: true });
     loadCachedContactSets(user.id);
     // Register push token with backend after registration
-    syncPushToken();
+    syncPushToken(true);
     ensureBackgroundServices();
     syncContactSets(user.id);
   }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);
@@ -229,6 +290,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     destroyWsManager();
     await unregisterPushToken();
+    lastPushSyncSuccessAtRef.current = 0;
     await clearTokens();
     await setCachedUser(null);
     await unregisterBackgroundTask();
@@ -261,7 +323,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setCurrentUserId(user.id, user.username);
     setState({ user, isLoading: false, isAuthenticated: true });
     loadCachedContactSets(user.id);
-    syncPushToken();
+    syncPushToken(true);
     ensureBackgroundServices();
     syncContactSets(user.id);
   }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);

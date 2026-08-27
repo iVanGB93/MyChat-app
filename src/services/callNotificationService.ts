@@ -31,6 +31,7 @@ const NOTIFICATION_ID_PREFIX = 'incoming-call:';
 const ACTION_ACCEPT = 'accept';
 const ACTION_DECLINE = 'decline';
 const IOS_CATEGORY_ID = 'incoming-call';
+const FCM_CALL_FLOOR_TAG_PREFIX = 'axonic-call-floor:';
 
 export interface IncomingCallData {
   callId: string;
@@ -167,6 +168,49 @@ export async function setupCallNotifications() {
 }
 
 /**
+ * A hybrid FCM call push deliberately includes a notification block as a
+ * killed-app reliability floor. When Android also wakes our background JS,
+ * Notifee replaces that generic alert with the richer CallStyle notification
+ * below. Firebase posts its floor with id=0 and an `FCM-Notification:*` tag,
+ * so both alerts otherwise remain visible for the same call.
+ */
+async function cancelFcmCallFloorNotifications(callId?: string): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    if (callId) {
+      // Firebase uses notification id=0 together with the server-provided tag.
+      // Supplying both values cancels only the generic floor for this call.
+      await notifee.cancelDisplayedNotification(
+        '0',
+        FCM_CALL_FLOOR_TAG_PREFIX + callId,
+      );
+      return;
+    }
+    const displayed = await notifee.getDisplayedNotifications();
+    await Promise.all(
+      displayed
+        .filter((entry) => {
+          const android = entry.notification.android;
+          return (
+            android?.channelId === CHANNEL_ID &&
+            android?.tag?.startsWith(FCM_CALL_FLOOR_TAG_PREFIX)
+          );
+        })
+        .map((entry) =>
+          notifee.cancelDisplayedNotification(
+            String(entry.id ?? '0'),
+            entry.notification.android?.tag,
+          ),
+        ),
+    );
+  } catch (err) {
+    // Best effort: retaining the generic floor is safer than failing the rich
+    // incoming-call notification when an OEM restricts active-notification access.
+    console.warn('[CallNotif] could not replace FCM call floor:', err);
+  }
+}
+
+/**
  * Display a CallStyle (Android) / category notification (iOS) for an
  * incoming call. Safe to call repeatedly with the same `callId` — the
  * notification is updated in-place.
@@ -231,6 +275,10 @@ export async function displayIncomingCallNotification(data: IncomingCallData) {
       interruptionLevel: 'timeSensitive',
     },
   });
+
+  // Keep exactly one visible alert: the actionable Notifee CallStyle replaces
+  // the generic notification that Google Play Services rendered first.
+  await cancelFcmCallFloorNotifications(data.callId);
 }
 
 /** Cancel the incoming-call notification for a given callId (or all). */
@@ -246,4 +294,7 @@ export async function cancelIncomingCallNotification(callId?: string) {
         .map((d) => notifee.cancelNotification(d.id!)),
     );
   }
+  // A call may end before background JS had a chance to replace Firebase's
+  // generic floor. Remove that floor as part of the same teardown operation.
+  await cancelFcmCallFloorNotifications(callId);
 }
