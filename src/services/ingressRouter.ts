@@ -558,8 +558,8 @@ export async function ingestMessage(
     }
   } catch { /* store not hydrated yet (cold launch) */ }
 
-  // 7. Local notification — ONLY for the WS path. For push sources the OS has
-  //    already displayed the notification; rendering another would duplicate.
+  // 7. Local notification — ONLY for the WS path. The FCM handler owns the
+  //    actionable notification for push sources; rendering here would duplicate.
   if (source === 'ws') {
     await maybeNotify(evt);
   }

@@ -2,12 +2,9 @@
 /*  FCM Service — raw Firebase Cloud Messaging device token            */
 /*                                                                      */
 /*  Powers the WhatsApp-style background pipeline. The backend sends    */
-/*  high-priority HYBRID FCM messages (a `notification` block so Google */
-/*  Play Services draws the banner even when the app is fully killed,   */
-/*  plus a `data` payload). When the app IS alive the handlers below    */
-/*  persist the message + send the delivery ack; for pure data messages */
-/*  they also render the banner via notifee. Distinct from the Expo     */
-/*  push token.                                                         */
+/*  high-priority DATA FCM messages so this headless handler can persist */
+/*  them and render Axonic's actionable Notifee notification even when  */
+/*  the UI process is not active. Distinct from the Expo push token.     */
 /* ------------------------------------------------------------------ */
 
 import {
@@ -62,11 +59,9 @@ export function onFcmTokenRefresh(cb: (token: string) => void): () => void {
  * Shared handling for an FCM message carrying a chat message:
  *   1. persist it to SQLite + send the delivery ack (via the central ingress
  *      router) — runs whenever this handler fires;
- *   2. render the WhatsApp-style MessagingStyle notification, but ONLY for a
- *      pure data message. When the message carries a `notification` block the
- *      banner is drawn by Google Play Services itself (this is what lets a
- *      fully-killed app show a notification without starting its process), so
- *      drawing our own here would produce a DUPLICATE.
+ *   2. render the WhatsApp-style MessagingStyle notification for a data push.
+ *      Legacy servers may still attach a `notification` block; in that case
+ *      Google Play Services already drew a generic card, so skip the duplicate.
  */
 async function handleDataMessage(
   remoteMessage: FirebaseMessagingTypes.RemoteMessage,

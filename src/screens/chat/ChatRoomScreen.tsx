@@ -241,6 +241,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /** Message currently being replied to — when set, shows a preview strip above the input. */
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const { height: winHeight } = useWindowDimensions();
+  const fullWindowHeightRef = useRef(winHeight);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -265,6 +267,41 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const loadedHistoryLimitRef = useRef(LOCAL_HISTORY_PAGE_SIZE);
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
+
+  /* Android 15+ enforces edge-to-edge layout. On some production devices
+   * adjustResize shrinks the React window; on others it only dispatches IME
+   * insets. Track both signals and add only the portion the OS did not already
+   * consume. This keeps the composer above the keyboard without double-lifting
+   * it on devices where native resize works correctly. */
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const shown = Keyboard.addListener('keyboardDidShow', (event) => {
+      setKeyboardHeight(Math.max(0, event.endCoordinates.height));
+    });
+    const hidden = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardHeight(0);
+    });
+    return () => {
+      shown.remove();
+      hidden.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (keyboardHeight === 0) {
+      fullWindowHeightRef.current = Math.max(fullWindowHeightRef.current, winHeight);
+    }
+  }, [keyboardHeight, winHeight]);
+
+  const androidNativeResize = Platform.OS === 'android' && keyboardHeight > 0
+    ? Math.max(0, fullWindowHeightRef.current - winHeight)
+    : 0;
+  const androidKeyboardInset = Platform.OS === 'android' && keyboardHeight > 0
+    ? Math.max(0, keyboardHeight - androidNativeResize)
+    : 0;
+  const composerBottomPadding = Platform.OS === 'android' && keyboardHeight > 0
+    ? Spacing.sm + androidKeyboardInset
+    : insets.bottom + Spacing.sm;
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', setAppState);
@@ -1081,12 +1118,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   }
 
   return (
-    /* On Android, windowSoftInputMode=adjustResize in manifest handles keyboard natively.
-       On iOS, KeyboardAvoidingView with behavior="padding" is needed. */
+    /* Android uses adjustResize plus the measured IME-inset fallback above.
+       Letting KeyboardAvoidingView also change height causes double/zero resize
+       behavior across edge-to-edge production devices. */
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: Colors.chatBg }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
+      enabled={Platform.OS === 'ios'}
     >
       {isMessageRequest && (
         <View style={[styles.requestBanner, {
@@ -1145,7 +1184,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         ) : null}
       />
 
-      <View style={[styles.inputBar, { backgroundColor: Colors.chatBg, borderTopColor: Colors.neonBorder, paddingBottom: insets.bottom + Spacing.sm }]}>
+      <View style={[styles.inputBar, {
+        backgroundColor: Colors.chatBg,
+        borderTopColor: Colors.neonBorder,
+        paddingBottom: composerBottomPadding,
+      }]}>
         {typers.length > 0 && (
           <Text style={[styles.typingHint, { color: Colors.textSecondary }]}>
             {typers.length === 1

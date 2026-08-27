@@ -10,7 +10,7 @@
 /*  service does not keep the JS runtime / WebSocket alive after a swipe */
 /*  — it only keeps an empty process + a persistent notification, which  */
 /*  drains battery and confuses users. Background/killed delivery relies */
-/*  entirely on the hybrid FCM push floor (and APNs on iOS), which is    */
+/*  on high-priority FCM data delivery (and APNs on iOS), which is       */
 /*  the cross-platform notification surface. iOS has no foreground       */
 /*  service, so all calls here no-op there.                            */
 /* ------------------------------------------------------------------ */

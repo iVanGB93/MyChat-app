@@ -103,8 +103,8 @@ export function decideLocalMessageNotification(
   if (context.appActive) return { allow: false, reason: 'app_active' };
   if (isViewingRoom(payload, context)) return { allow: false, reason: 'viewing_room' };
   if (isMutedRoom(payload, context)) return { allow: false, reason: 'room_muted' };
-  // The OS renders the server push floor for background/killed recipients.
-  // Only fall back to a locally rendered notification when no floor was sent.
+  // The FCM headless handler renders the server push floor for background or
+  // killed-process recipients. Only use the Axion fallback when no push was sent.
   if (payload.push_floor) return { allow: false, reason: 'push_floor' };
   return { allow: true, reason: 'eligible' };
 }
