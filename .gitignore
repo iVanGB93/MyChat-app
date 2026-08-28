@@ -40,5 +40,11 @@ yarn-error.*
 /ios
 /android
 
+# generated local Expo-module Android output
+/modules/**/android/build/
+
+# local installable test artifacts
+/builds/
+
 # Google services (contains API keys — keep out of version control)
 google-services.json
