@@ -44,7 +44,17 @@ function withManifest(config) {
         perms.push({ $: { 'android:name': name } });
     };
     addPerm('android.permission.FOREGROUND_SERVICE');
-    addPerm('android.permission.FOREGROUND_SERVICE_SPECIAL_USE');
+    addPerm('android.permission.FOREGROUND_SERVICE_MICROPHONE');
+    addPerm('android.permission.FOREGROUND_SERVICE_CAMERA');
+
+    // Remove the obsolete special-use declaration. Axonic only starts this
+    // service for a user-visible voice/video call, which is covered by the
+    // microphone and camera service types.
+    manifest['uses-permission'] = manifest['uses-permission'].filter(
+      (permission) =>
+        permission.$?.['android:name'] !==
+        'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+    );
 
     // Strip permissions Google Play flags that we do NOT actually use.
     // FOREGROUND_SERVICE_MEDIA_PLAYBACK is pulled in transitively by older
@@ -52,17 +62,18 @@ function withManifest(config) {
     // from a foreground service. Remove via the manifest merger so it does
     // not appear in the merged manifest uploaded to the Play Store.
     const removePermViaMerger = (name) => {
-      const existing = perms.find(
-        (p) => p.$?.['android:name'] === name && p.$?.['tools:node'] === 'remove',
+      // A config plugin may already have inserted the permission into this
+      // main manifest. Delete every local declaration first; otherwise an
+      // added entry can survive beside the tools:node="remove" marker.
+      manifest['uses-permission'] = manifest['uses-permission'].filter(
+        (permission) => permission.$?.['android:name'] !== name,
       );
-      if (!existing) {
-        perms.push({
-          $: {
-            'android:name': name,
-            'tools:node': 'remove',
-          },
-        });
-      }
+      manifest['uses-permission'].push({
+        $: {
+          'android:name': name,
+          'tools:node': 'remove',
+        },
+      });
     };
     removePermViaMerger('android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK');
     // Older Firebase Messaging stubs sometimes inject these too — keep them
@@ -84,31 +95,16 @@ function withManifest(config) {
         (s) => !stale.includes(s.$?.['android:name'])
       );
 
-      // Add our service with specialUse foreground type + property.
-      // The subtype value documents the use case for the Play Console
-      // "FOREGROUND_SERVICE_SPECIAL_USE" review form:
-      //   - Real-time chat & voice/video call signaling that needs to stay
-      //     connected (WebSocket + WebRTC ICE) while the app is in the
-      //     background, so incoming messages and calls are delivered with
-      //     low latency. Cannot be replaced by JobScheduler/WorkManager
-      //     because both impose minimum delays that break ringing/typing.
+      // The service exists only for an active, user-visible call. At runtime
+      // the native module starts it with microphone for a voice call and
+      // microphone|camera for a video call.
       app.service.push({
         $: {
           'android:name': '.MyChatForegroundService',
           'android:exported': 'false',
-          'android:foregroundServiceType': 'specialUse',
+          'android:foregroundServiceType': 'microphone|camera',
           'android:stopWithTask': 'false',
         },
-        property: [
-          {
-            $: {
-              'android:name':
-                'android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE',
-              'android:value':
-                'Persistent realtime chat connection and incoming call signaling',
-            },
-          },
-        ],
       });
     }
 

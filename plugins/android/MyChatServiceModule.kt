@@ -12,9 +12,11 @@ class MyChatServiceModule(private val reactContext: ReactApplicationContext) :
     override fun getName() = "MyChatService"
 
     @ReactMethod
-    fun start(promise: Promise) {
+    fun start(callType: String, promise: Promise) {
         try {
-            val intent = Intent(reactContext, MyChatForegroundService::class.java)
+            val intent = Intent(reactContext, MyChatForegroundService::class.java).apply {
+                putExtra(MyChatForegroundService.EXTRA_CALL_TYPE, callType)
+            }
             reactContext.startForegroundService(intent)
             promise.resolve(null)
         } catch (e: Exception) {

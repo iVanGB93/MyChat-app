@@ -21,9 +21,11 @@ import { useAppStore } from '../store/appStore';
 const { MyChatService } = NativeModules;
 
 type FgReason = 'call';
+type ForegroundCallType = 'voice' | 'video';
 
 const _reasons = new Set<FgReason>();
 let _nativeRunning = false;
+let _nativeCallType: ForegroundCallType | null = null;
 let _storeUnsub: (() => void) | null = null;
 
 /* ---- Build notification text from store ---- */
@@ -42,11 +44,15 @@ function _pushUpdate(): void {
   } catch { /* ignore */ }
 }
 
-async function _ensureNativeStarted(): Promise<void> {
-  if (_nativeRunning) { _pushUpdate(); return; }
+async function _ensureNativeStarted(callType: ForegroundCallType): Promise<void> {
+  if (_nativeRunning && _nativeCallType === callType) {
+    _pushUpdate();
+    return;
+  }
   try {
-    await MyChatService.start();
+    await MyChatService.start(callType);
     _nativeRunning = true;
+    _nativeCallType = callType;
     try { useAppStore.getState().setForegroundServiceRunning(true); } catch {}
     _pushUpdate();
     console.log('[ForegroundService] native service started');
@@ -66,6 +72,7 @@ async function _maybeStopNative(): Promise<void> {
     console.warn('[ForegroundService] stop error:', err?.message ?? err);
   }
   _nativeRunning = false;
+  _nativeCallType = null;
   try { useAppStore.getState().setForegroundServiceRunning(false); } catch {}
 }
 
@@ -74,10 +81,13 @@ async function _maybeStopNative(): Promise<void> {
  * Safe to call repeatedly. Must be called while the app is in the foreground
  * (Android 12+ forbids starting a foreground service from the background).
  */
-export async function startForegroundService(reason: FgReason = 'call'): Promise<void> {
+export async function startForegroundService(
+  reason: FgReason = 'call',
+  callType: ForegroundCallType = 'voice',
+): Promise<void> {
   if (Platform.OS !== 'android') return;
   _reasons.add(reason);
-  await _ensureNativeStarted();
+  await _ensureNativeStarted(callType);
 }
 
 /**

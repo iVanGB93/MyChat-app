@@ -59,7 +59,9 @@ async function ensureAudioMode() {
   try {
     await setAudioModeAsync({
       playsInSilentMode: true,
-      shouldPlayInBackground: true,
+      // WebRTC owns active-call audio. App sound effects and ringback do not
+      // need Expo Audio's separate media-playback foreground service.
+      shouldPlayInBackground: false,
     });
   } catch { /* ignore */ }
 }
