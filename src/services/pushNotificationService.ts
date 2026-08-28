@@ -39,7 +39,6 @@ export async function setupNotificationChannels() {
       importance: Notifications.AndroidImportance.HIGH,
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#7C3AED',
-      sound: 'default',
     });
 
     await Notifications.setNotificationChannelAsync('calls', {
@@ -47,7 +46,6 @@ export async function setupNotificationChannels() {
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 500, 500, 500],
       lightColor: '#7C3AED',
-      sound: 'default',
     });
 
     await Notifications.setNotificationChannelAsync('general', {

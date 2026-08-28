@@ -63,6 +63,28 @@ type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
 const LOCAL_HISTORY_PAGE_SIZE = 60;
 
+/**
+ * Android edge-to-edge can report an IME height of zero even when the docked
+ * keyboard covers the bottom of the screen. Its top edge (`screenY`) remains
+ * reliable, so derive the covered area from that coordinate. A floating
+ * keyboard does not touch the bottom edge and must not move the composer.
+ */
+function getAndroidKeyboardCoveredHeight(
+  coordinates: { screenY: number; height: number },
+  fullWindowHeight: number,
+): number {
+  const screenY = Math.max(0, coordinates.screenY);
+  const reportedHeight = Math.max(0, coordinates.height);
+  if (screenY >= fullWindowHeight) return 0;
+
+  const bottomTolerance = Math.max(24, fullWindowHeight * 0.02);
+  const isFloating = reportedHeight > 0
+    && screenY + reportedHeight < fullWindowHeight - bottomTolerance;
+  if (isFloating) return 0;
+
+  return Math.max(0, fullWindowHeight - screenY);
+}
+
 /** Compact header signal shown while the room socket is reconnecting. */
 function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing: boolean; color: string }) {
   const letters = useMemo(() => Array.from(title.slice(0, 24)), [title]);
@@ -242,7 +264,13 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const { height: winHeight } = useWindowDimensions();
   const fullWindowHeightRef = useRef(winHeight);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [keyboardHeight, setKeyboardHeight] = useState(() => {
+    if (Platform.OS !== 'android' || !Keyboard.isVisible()) return 0;
+    const metrics = Keyboard.metrics();
+    return metrics
+      ? getAndroidKeyboardCoveredHeight(metrics, winHeight)
+      : 0;
+  });
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -264,6 +292,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /** Distance the user has to drag left before the recording is cancelled. */
   const CANCEL_THRESHOLD_PX = 90;
   const flatListRef = useRef<FlatList>(null);
+  const composerInputRef = useRef<TextInput>(null);
   const loadedHistoryLimitRef = useRef(LOCAL_HISTORY_PAGE_SIZE);
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
@@ -273,19 +302,60 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
    * insets. Track both signals and add only the portion the OS did not already
    * consume. This keeps the composer above the keyboard without double-lifting
    * it on devices where native resize works correctly. */
+  const syncKeyboardMetrics = useCallback(() => {
+    if (Platform.OS !== 'android') return;
+    const metrics = Keyboard.metrics();
+    setKeyboardHeight(Keyboard.isVisible() && metrics
+      ? getAndroidKeyboardCoveredHeight(metrics, fullWindowHeightRef.current)
+      : 0);
+  }, []);
+
   useEffect(() => {
     if (Platform.OS !== 'android') return;
+
+    // The screen may mount or refresh while the keyboard is already visible,
+    // in which case Android does not emit a new keyboardDidShow event.
+    syncKeyboardMetrics();
     const shown = Keyboard.addListener('keyboardDidShow', (event) => {
-      setKeyboardHeight(Math.max(0, event.endCoordinates.height));
+      setKeyboardHeight(getAndroidKeyboardCoveredHeight(
+        event.endCoordinates,
+        fullWindowHeightRef.current,
+      ));
+    });
+    const changed = Keyboard.addListener('keyboardDidChangeFrame', (event) => {
+      setKeyboardHeight(getAndroidKeyboardCoveredHeight(
+        event.endCoordinates,
+        fullWindowHeightRef.current,
+      ));
     });
     const hidden = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardHeight(0);
     });
     return () => {
       shown.remove();
+      changed.remove();
       hidden.remove();
     };
-  }, []);
+  }, [syncKeyboardMetrics]);
+
+  useEffect(() => {
+    const dismissKeyboard = () => {
+      Keyboard.dismiss();
+      setKeyboardHeight(0);
+    };
+
+    // Native-stack screens can stay mounted during a transition, so relying on
+    // component cleanup alone leaves the IME visible over the chat list. Dismiss
+    // before the route is removed and again on blur for replace/reset navigation.
+    const unsubscribeBeforeRemove = navigation.addListener('beforeRemove', dismissKeyboard);
+    const unsubscribeBlur = navigation.addListener('blur', dismissKeyboard);
+
+    return () => {
+      unsubscribeBeforeRemove();
+      unsubscribeBlur();
+      Keyboard.dismiss();
+    };
+  }, [navigation]);
 
   useEffect(() => {
     if (keyboardHeight === 0) {
@@ -1001,6 +1071,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /* ── Stable per-row callbacks so memoized MessageBubble rows don't re-render ── */
   const handleReply = useCallback((m: Message) => {
     setReplyingTo(m);
+    // Wait for the reply preview to be committed before focusing so Android
+    // measures the final composer position when it opens the keyboard.
+    requestAnimationFrame(() => composerInputRef.current?.focus());
   }, []);
 
   const handleBubbleLongPress = useCallback((pageY: number, m: Message) => {
@@ -1269,11 +1342,17 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           ) : (
             <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
               <TextInput
+                ref={composerInputRef}
                 style={[styles.textInput, { color: Colors.text }]}
                 value={text}
                 onChangeText={(t) => {
                   setText(t);
                   if (t.length > 0) notifyTyping();
+                }}
+                onFocus={() => {
+                  if (Platform.OS !== 'android') return;
+                  requestAnimationFrame(syncKeyboardMetrics);
+                  setTimeout(syncKeyboardMetrics, 300);
                 }}
                 placeholder="Compose message…"
                 placeholderTextColor={Colors.textTertiary}

@@ -32,6 +32,7 @@ import { useAppStore } from '../store/appStore';
 import { isCallEnded } from '../services/callDedupe';
 import { shouldHandleIncomingCallInApp, shouldShowInAppMessageToast } from '../services/notificationPresentationPolicy';
 import { decideIncomingCallInApp, decideInAppMessageToast } from '../services/notificationPresentationPolicy';
+import { markAppInteractive } from '../services/observability';
 
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -399,6 +400,10 @@ function MessageNotificationListener() {
 export default function AppNavigator() {
   const { isAuthenticated, isLoading } = useAuth();
   const { colors: Colors, isDark } = useTheme();
+
+  useEffect(() => {
+    if (!isLoading) markAppInteractive(isAuthenticated);
+  }, [isAuthenticated, isLoading]);
 
   if (isLoading) {
     return (

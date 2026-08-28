@@ -7,7 +7,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-screen.png",
       "resizeMode": "contain",
@@ -26,7 +25,6 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#020413"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
@@ -79,6 +77,7 @@
       "./plugins/withNotifeeRepo",
       "./plugins/withFirebaseManifestFix",
       "./plugins/withCallActivityFlags",
+      "./plugins/withGradleWindowsLockFix",
       [
         "expo-share-intent",
         {

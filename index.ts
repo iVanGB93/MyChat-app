@@ -2,6 +2,13 @@
 // the FIRST import so the flag is set before any Firebase module is used.
 import './src/config/silenceFirebaseWarnings';
 
+// EAS Observe must be configured before the React tree mounts. Development
+// measurements are tagged separately from release data; see the service for
+// the privacy contract governing all attached attributes.
+import { AppMetricsRoot } from 'expo-observe';
+import { configureObservability } from './src/services/observability';
+configureObservability();
+
 // Notifee REQUIRES the background event handler to be registered at the
 // module top-level of the entry file so it can fire when the app is killed
 // or backgrounded (e.g. when the user taps Accept / Decline on the call
@@ -36,4 +43,4 @@ import App from './App';
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);
 // It also ensures that whether you load the app in Expo Go or in a native build,
 // the environment is set up appropriately
-registerRootComponent(App);
+registerRootComponent(AppMetricsRoot.wrap(App));
