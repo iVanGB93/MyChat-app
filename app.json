@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.29",
+    "version": "1.0.32",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -21,6 +21,9 @@
       "bitcode": false
     },
     "android": {
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#020413"
@@ -28,15 +31,11 @@
       "predictiveBackGestureEnabled": false,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
-        "CAMERA",
-        "RECORD_AUDIO",
-        "MODIFY_AUDIO_SETTINGS",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.CAMERA",
         "android.permission.INTERNET",
-        "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WAKE_LOCK",
         "android.permission.BLUETOOTH",
         "android.permission.POST_NOTIFICATIONS",
@@ -77,6 +76,7 @@
       "expo-background-task",
       "expo-task-manager",
       "expo-sqlite",
+      "expo-secure-store",
       "./plugins/withForegroundService",
       "./plugins/withRingtoneRaw",
       "./plugins/withNotifeeRepo",

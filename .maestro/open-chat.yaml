@@ -1,0 +1,20 @@
+appId: com.axonic
+---
+- launchApp:
+    stopApp: false
+- runFlow:
+    when:
+      visible: http://10.0.2.2:8081
+    commands:
+      - tapOn: http://10.0.2.2:8081
+- extendedWaitUntil:
+    visible: ${CHAT_NAME}
+    timeout: 30000
+- tapOn:
+    text: ${CHAT_NAME}
+- extendedWaitUntil:
+    visible:
+      id: axonic-message-composer
+    timeout: 30000
+- assertVisible:
+    id: axonic-message-composer

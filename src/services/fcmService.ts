@@ -17,6 +17,7 @@ import {
   type FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
 import { Platform } from 'react-native';
+import { debugLog } from './diagnostics';
 import { savePushMessage } from './pushMessageStore';
 import {
   ensureMessageChannel,
@@ -37,7 +38,7 @@ export async function getFcmToken(): Promise<string | null> {
       await registerDeviceForRemoteMessages(getMessaging());
     }
     const token = await getToken(getMessaging());
-    if (token) console.log('[FCM] device token ready', `…${token.slice(-12)}`);
+    if (token) debugLog('[FCM] device token ready', `…${token.slice(-12)}`);
     return token || null;
   } catch (err) {
     console.warn('[FCM] failed to get token:', err);

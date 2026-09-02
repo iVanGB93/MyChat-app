@@ -13,6 +13,7 @@ import { handleCallNotificationEvent } from './callNotificationService';
 import { handleMessageReplyEvent } from './notificationReplyService';
 import { handleMarkReadEvent } from './notificationActionService';
 import { setPendingRoomNav } from './pendingRoomNav';
+import { debugLog } from './diagnostics';
 
 export function registerNotificationBackgroundHandler() {
   notifee.onBackgroundEvent(async (event) => {
@@ -46,7 +47,7 @@ export function registerNotificationBackgroundHandler() {
         data.type === 'new_message' &&
         data.roomId
       ) {
-        console.log('[BgEvent] message notification pressed → pending nav', data.roomId);
+        debugLog('[BgEvent] message notification pressed → pending nav', data.roomId);
         setPendingRoomNav({
           roomId: String(data.roomId),
           roomName: String(data.roomName ?? ''),

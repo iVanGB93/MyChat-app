@@ -1,5 +1,7 @@
-export const MEDIA_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-export const MEDIA_UPLOAD_TIMEOUT_MS = 2 * 60 * 1000;
+export const MEDIA_MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
+// Large uploads can take several minutes on a mobile connection. Keep the
+// request bounded, but do not abort a healthy 250 MB transfer after 2 minutes.
+export const MEDIA_UPLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 export const MEDIA_BATCH_CONCURRENCY = 2;
 
 export type MediaTransferErrorCode =
@@ -103,4 +105,3 @@ export async function mapWithConcurrency<T, R>(
   }));
   return results;
 }
-

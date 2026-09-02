@@ -11,15 +11,29 @@ import { uploadMedia, toMediaTransferFailure, type MediaType } from './mediaLane
 import type { MediaTransferFailure } from './mediaTransferPolicy';
 import { useAppStore } from '../store/appStore';
 import { ensureWsAlive, isNotifWsReady, reconnectWsNow, sendRawNotif, subscribeStatus } from './notificationWsManager';
-import { applyMessageLifecycleEvent, mergeMessageById } from './messageLifecycle';
+import { applyMessageLifecycleEvent, mergeMessageById, shouldSuppressOutboxReplay } from './messageLifecycle';
+import { debugLog } from './diagnostics';
 // An Axion acknowledgement can arrive before the sender's asynchronous local
 // SQLite insert finishes. Keep the acceptance briefly so the insert cannot turn
 // an already-accepted message back into a permanently retrying pending row.
 const _earlyServerAcceptedMessageIds = new Set<string>();
 const _serverAckTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const _serverAcceptedAt = new Map<string, number>();
+let _lastLocalMutationMs = 0;
+
+function versionLocalMutation(changes: MessageChanges): MessageChanges {
+  const mutatesMessage = changes.content !== undefined
+    || changes.reactions !== undefined
+    || changes.is_deleted !== undefined;
+  if (!mutatesMessage || changes.updated_at) return changes;
+  const now = Math.max(Date.now(), _lastLocalMutationMs + 1);
+  _lastLocalMutationMs = now;
+  return { ...changes, updated_at: new Date(now).toISOString(), revision: now };
+}
 
 function watchForServerAck(messageId: string): void {
   if (!messageId || _serverAckTimers.has(messageId)) return;
+  debugLog('[Axion] awaiting server ACK', messageId);
   _serverAckTimers.set(messageId, setTimeout(() => {
     _serverAckTimers.delete(messageId);
     console.warn('[Axion] server ACK timed out — reconnecting to retry', messageId);
@@ -314,7 +328,7 @@ function _flushPendingUpdates(roomId: string, s: RoomState): void {
         _flushSQLiteOutbox(roomId, s).catch(() => {});
       }, retryAfterMs);
     }
-    console.log('[ChatWsManager] sent', batch.length, 'pending updates for room', roomId);
+    debugLog('[ChatWsManager] sent', batch.length, 'pending updates for room', roomId);
   } catch {
     // Keep queued entries; they will be retried on next reconnect/flush.
   }
@@ -351,7 +365,7 @@ function _ackPendingUpdates(roomId: string, s: RoomState, ids: string[], ackedBy
   // SQLite owns completion: an update stays queued until every planned peer
   // has acknowledged it. Removing it from memory here would lose retries.
   ackOutboxUpdates(ids, ackedByUserId).then(() => _flushSQLiteOutbox(roomId, s)).catch(() => {});
-  console.log('[ChatWsManager] acked', ids.length, 'message updates for room', roomId);
+  debugLog('[ChatWsManager] acked', ids.length, 'message updates for room', roomId);
 }
 
 /** Recover durable sends after an app process restart, even if their chat
@@ -546,12 +560,23 @@ async function sendOutboxFrame(
   opts?: {
     hydration?: boolean;
     targetRecipientId?: number;
+    /** Durable reconnect paths can overlap (auth recovery + receiver_ready).
+     * Suppress a second frame while the first still awaits Axion acceptance. */
+    skipIfAwaitingAck?: boolean;
     audioMime?: string | null;
     imageMime?: string | null;
     mediaMime?: string | null;
   },
 ): Promise<SendAttemptResult> {
   if (!isAxionReady()) return { sent: false };
+  if (opts?.skipIfAwaitingAck && shouldSuppressOutboxReplay(
+    _serverAckTimers.has(msg.id),
+    _serverAcceptedAt.get(msg.id),
+    Date.now(),
+  )) {
+    debugLog('[Axion] duplicate accepted/in-flight replay suppressed', msg.id, 'room', roomId);
+    return { sent: true };
+  }
   const isVoice = msg.type === 'voice';
   const isMedia = isVoice || msg.type === 'image' || msg.type === 'video' || msg.type === 'document';
 
@@ -643,7 +668,7 @@ export async function sendChatMessage(
   replyTo: import('./localMessageStore').ReplyRef | null = null,
   extras: SendExtras | null = null,
 ): Promise<SendChatResult> {
-  if (__DEV__) console.log('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId, 'type:', messageType);
+  debugLog('[ChatWsManager] sendChatMessage called — room:', roomId, '_myUserId:', _myUserId, 'type:', messageType);
   const msgId = generateUUID();
   const createdAt = new Date().toISOString();
 
@@ -676,7 +701,7 @@ export async function sendChatMessage(
     };
     s.pendingIds = new Set([...s.pendingIds, msgId]);
     s.messages = [...s.messages, optimisticMsg];
-    if (__DEV__) console.log('[ChatWsManager] optimistic update — listeners:', s.listeners.size, 'total msgs:', s.messages.length);
+    debugLog('[ChatWsManager] optimistic update — listeners:', s.listeners.size, 'total msgs:', s.messages.length);
     notifyListeners(roomId, s);
   } else {
     console.warn('[ChatWsManager] skipped optimistic update — _myUserId:', _myUserId, 'roomState:', !!s);
@@ -771,12 +796,17 @@ async function _doFlush(roomId: string, s: RoomState, recipientId: number): Prom
     for (const msg of msgs) {
       // Stop if the socket dropped mid-flush; the rest is retried on next auth_ok.
       if (!isAxionReady()) break;
+      if (s.deliveredIds.has(msg.id) || s.readIds.has(msg.id)) {
+        debugLog('[Axion] delivered outbox replay suppressed', msg.id, 'room', roomId);
+        continue;
+      }
       try {
         // Recovery is a targeted, notification-silent hydration. The server
         // must not rebroadcast it to every group member or send another FCM.
         await sendOutboxFrame(s, roomId, msg, {
           hydration: true,
           targetRecipientId: recipientId,
+          skipIfAwaitingAck: true,
         });
       } catch (err) {
         // One bad message must never abort the loop — continue with the rest.
@@ -800,7 +830,7 @@ async function _retryPendingUnsyncedMessages(roomId: string, s: RoomState): Prom
       // Stop if Axion dropped mid-retry; the rest is retried after reconnecting.
       if (!isAxionReady()) break;
       try {
-        await sendOutboxFrame(s, roomId, msg);
+        await sendOutboxFrame(s, roomId, msg, { skipIfAwaitingAck: true });
       } catch (err) {
         // One bad message must never abort the loop — continue with the rest.
         console.warn('[ChatWsManager] pending-unsynced retry send failed, skipping', msg.id, err);
@@ -892,7 +922,7 @@ export function flushOutboxForRecipient(roomId: string, recipientId: number): vo
     const now = Date.now();
     const lastFlushAt = s.lastReceiverReadyFlushAt.get(recipientId) ?? 0;
     if (now - lastFlushAt < 5_000) {
-      console.log('[ChatWsManager] duplicate receiver_ready suppressed', roomId, recipientId);
+      debugLog('[ChatWsManager] duplicate receiver_ready suppressed', roomId, recipientId);
       return;
     }
     s.lastReceiverReadyFlushAt.set(recipientId, now);
@@ -934,21 +964,18 @@ export async function resendMessagesByIds(
     const msgs = await getMessagesByIdsForResend(roomId, _myUserId, ids);
     for (const msg of msgs) {
       if (!isAxionReady()) break;
-      // Nothing to hydrate if this row carries no media file.
-      if (!msg.file_uri || (msg.type !== 'voice' && msg.type !== 'image')) continue;
       try {
-        // Media-hydration re-send: the recipient already has the message row +
-        // its notification (it arrived via a b64-stripped push or a lost chunk
-        // stream). The `hydration` flag tells the relay to deliver over the room
-        // Axion only and NOT fire a second push/notification. Large media is
-        // re-streamed as chunks; small media rides inline.
-        await sendOutboxFrame(s, roomId, msg, {
+        // Delta hydration is notification-silent and works for every message
+        // type. A deleted row uses a harmless placeholder; the targeted
+        // sync.state frame that follows immediately reapplies its tombstone.
+        const resend = msg.is_deleted ? { ...msg, content: 'Deleted message' } : msg;
+        await sendOutboxFrame(s, roomId, resend, {
           hydration: true,
           targetRecipientId: recipientId,
         });
-        console.log('[ChatWsManager] re-sent media for', msg.id, 'to', recipientId);
+        debugLog('[ChatWsManager] re-sent delta row for', msg.id, 'to', recipientId);
       } catch (err) {
-        console.warn('[ChatWsManager] media hydration resend failed, skipping', msg.id, err);
+        console.warn('[ChatWsManager] delta hydration resend failed, skipping', msg.id, err);
         continue;
       }
     }
@@ -1008,18 +1035,19 @@ export function sendMessageUpdate(
   expectedPeerIds: number[] = [],
 ): void {
   const s = getOrCreate(roomId);
+  const versionedChanges = versionLocalMutation(changes);
   // Apply to in-memory WS state immediately → triggers notifyListeners → UI re-renders
   // (also writes to SQLite internally via applyMessageChanges)
-  _applyUpdatesToState(roomId, s, [{ message_id: messageId, changes }]);
+  _applyUpdatesToState(roomId, s, [{ message_id: messageId, changes: versionedChanges }]);
   const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   // Persist before sending. The same id is used in memory, on the wire and in
   // SQLite, so an acknowledgement can never strand a second phantom outbox row.
-  queueMessageUpdate(roomId, messageId, changes, { id, expectedPeerIds })
+  queueMessageUpdate(roomId, messageId, versionedChanges, { id, expectedPeerIds })
     .then(() => {
       // A fresh local action deserves the prompt first retry; only a stale
       // offline-peer wait is exponentially slowed down.
       s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
-      s.pendingUpdates.push({ id, message_id: messageId, changes });
+      s.pendingUpdates.push({ id, message_id: messageId, changes: versionedChanges });
       _flushPendingUpdates(roomId, s);
     })
     .catch(() => {});
@@ -1059,6 +1087,7 @@ export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
  * (e.g. confirmations arriving via the notification channel).
  */
 export function markIdsAsReadInRoom(roomId: string, ids: string[]): void {
+  ids.forEach((id) => _serverAcceptedAt.delete(id));
   const s = rooms.get(roomId);
   if (!s || ids.length === 0) return;
   const next = applyMessageLifecycleEvent(s, { type: 'read', ids });
@@ -1080,6 +1109,7 @@ export function getSnapshot(roomId: string): RoomSnapshot {
  * (called when message_delivery_ack arrives via the notification channel).
  */
 export function markIdsAsDeliveredInRoom(roomId: string, ids: string[]): void {
+  ids.forEach((id) => _serverAcceptedAt.delete(id));
   const s = rooms.get(roomId);
   if (!s || ids.length === 0) return;
   const next = applyMessageLifecycleEvent(s, { type: 'delivered', ids });
@@ -1134,7 +1164,15 @@ export function sendTyping(roomId: string, isTyping: boolean): void {
  * waiting for a delivery receipt from each recipient. */
 export function markServerMessageAccepted(roomId: string, messageId: string): void {
   if (!messageId) return;
+  debugLog('[Axion] server ACK received', messageId, 'room', roomId);
   clearServerAckWatch(messageId);
+  const acceptedAt = Date.now();
+  _serverAcceptedAt.set(messageId, acceptedAt);
+  setTimeout(() => {
+    if (_serverAcceptedAt.get(messageId) === acceptedAt) {
+      _serverAcceptedAt.delete(messageId);
+    }
+  }, 60_000);
   _earlyServerAcceptedMessageIds.add(messageId);
   // A failed/delayed local write should not leave an unbounded in-memory entry.
   setTimeout(() => _earlyServerAcceptedMessageIds.delete(messageId), 60_000);

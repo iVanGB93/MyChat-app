@@ -24,6 +24,7 @@ import {
 } from 'react-native-webrtc';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { getIceConfig } from '../services/callService';
+import { debugLog } from '../services/diagnostics';
 import type { CallType, IceConfig } from '../types';
 
 /** The ICE gather timeout — same as web app */
@@ -135,7 +136,7 @@ export default function useWebRTC({
   useEffect(() => {
     getIceConfig().then((cfg) => {
       iceConfigRef.current = cfg;
-      console.log(
+      debugLog(
         `[WebRTC] ICE config loaded — policy: ${cfg.ice_transport_policy}, servers: ${cfg.ice_servers.length}`
       );
     });
@@ -209,7 +210,7 @@ export default function useWebRTC({
       }
       localStreamRef.current = stream;
       setLocalStream(stream);
-      console.log('[WebRTC] local media acquired, tracks:', stream.getTracks().length);
+      debugLog('[WebRTC] local media acquired, tracks:', stream.getTracks().length);
       return stream;
     } finally {
       mediaAcquirePromiseRef.current = null;
@@ -345,7 +346,7 @@ export default function useWebRTC({
           const isRelayed =
             local?.candidateType === 'relay' || remote?.candidateType === 'relay';
           setConnectionType(isRelayed ? 'relayed' : 'p2p');
-          console.log(
+          debugLog(
             `[WebRTC] connection path: ${isRelayed ? 'relayed via TURN' : 'direct P2P'}`,
             `(local: ${local?.candidateType ?? '?'}, remote: ${remote?.candidateType ?? '?'})`
           );
@@ -382,7 +383,7 @@ export default function useWebRTC({
 
       // Remote stream
       (pc as any).ontrack = (event: any) => {
-        console.log('[WebRTC] remote track received');
+        debugLog('[WebRTC] remote track received');
         if (event.streams && event.streams[0]) {
           setRemoteStream(event.streams[0]);
         }
@@ -398,7 +399,7 @@ export default function useWebRTC({
       // Connection state
       (pc as any).oniceconnectionstatechange = () => {
         const state = pc.iceConnectionState;
-        console.log('[WebRTC] ICE state:', state);
+        debugLog('[WebRTC] ICE state:', state);
 
         if (state === 'connected' || state === 'completed') {
           onConnected?.();
@@ -406,7 +407,7 @@ export default function useWebRTC({
           detectConnectionType(pc);
         } else if (state === 'disconnected' || state === 'failed') {
           if (state === 'failed' && isOutgoing) {
-            console.log('[WebRTC] ICE failed, attempting restart');
+            debugLog('[WebRTC] ICE failed, attempting restart');
             pc.createOffer({ iceRestart: true } as any)
               .then((offer: any) => pc.setLocalDescription(offer))
               .then(() => waitForIceGathering(pc))
@@ -431,7 +432,7 @@ export default function useWebRTC({
   /* ---- Caller flow: called after call_accepted ---- */
   const startAsOfferer = useCallback(async () => {
     if (cleanedUp.current) return;
-    console.log('[WebRTC] startAsOfferer');
+    debugLog('[WebRTC] startAsOfferer');
     try {
       const stream = await acquireMedia();
       const pc = createPeerConnection(stream);
@@ -443,7 +444,7 @@ export default function useWebRTC({
       await waitForIceGathering(pc);
 
       if (pc.localDescription && !cleanedUp.current) {
-        console.log('[WebRTC] sending offer');
+        debugLog('[WebRTC] sending offer');
         sendSignal(peerUserId, 'offer', pc.localDescription.toJSON());
       }
     } catch (err) {
@@ -454,7 +455,7 @@ export default function useWebRTC({
   /* ---- Callee flow: called on mount (media acquired, waits for offer) ---- */
   const startAsAnswerer = useCallback(async () => {
     if (cleanedUp.current) return;
-    console.log('[WebRTC] startAsAnswerer — acquiring media, waiting for offer');
+    debugLog('[WebRTC] startAsAnswerer — acquiring media, waiting for offer');
     try {
       await acquireMedia();
       // PeerConnection is created when the offer arrives (in signal handler)
@@ -478,7 +479,7 @@ export default function useWebRTC({
         if (cleanedUp.current) return;
 
         if (signal_type === 'offer') {
-          console.log('[WebRTC] received offer from', from_user_id);
+          debugLog('[WebRTC] received offer from', from_user_id);
           try {
             // The offer can beat microphone/camera acquisition on a fast
             // local connection. Await the same single-flight media promise
@@ -499,7 +500,7 @@ export default function useWebRTC({
             await waitForIceGathering(pc);
 
             if (pc.localDescription && !cleanedUp.current) {
-              console.log('[WebRTC] sending answer');
+              debugLog('[WebRTC] sending answer');
               sendSignal(from_user_id!, 'answer', pc.localDescription.toJSON());
             }
           } catch (err) {
@@ -507,7 +508,7 @@ export default function useWebRTC({
           }
 
         } else if (signal_type === 'answer') {
-          console.log('[WebRTC] received answer');
+          debugLog('[WebRTC] received answer');
           try {
             const pc = pcRef.current;
             if (!pc) return;
@@ -589,7 +590,7 @@ export default function useWebRTC({
 
   /* ---- Cleanup ---- */
   const cleanup = useCallback(() => {
-    console.log('[WebRTC] cleanup');
+    debugLog('[WebRTC] cleanup');
     cleanedUp.current = true;
 
     if (qualityTimerRef.current) {

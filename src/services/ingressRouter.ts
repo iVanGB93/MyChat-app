@@ -25,6 +25,7 @@ import {
   isEventProcessed,
   markEventProcessed,
   filterMissingMessageIds,
+  getMessageDeltaRequests,
   getMessageFileUri,
   setMessageFileUri,
 } from './localMessageStore';
@@ -47,6 +48,8 @@ import { toEnvelope, idempotencyId } from './rrp/envelope';
 import type { RrpType } from './rrp/envelope';
 import api, { resolveMediaUrl } from './api';
 import { applyPresenceSnapshot, applyPresenceUpdate } from './presenceService';
+import type { MessageDigestEntry } from './syncDelta';
+import { debugLog } from './diagnostics';
 
 /** Where an incoming event came from. Drives the notification decision: only
  *  the `ws` source renders a local notification — for push sources the OS has
@@ -213,7 +216,7 @@ async function ackDelivery(messageId: string, senderId: number, roomId: string):
     room_id: roomId,
     delivered_at: now,
   }).then(() => {
-    console.log('[Ingress] delivery ack submitted', messageId);
+    debugLog('[Ingress] delivery ack submitted', messageId);
   }).catch(() => {});
 }
 
@@ -259,9 +262,15 @@ async function hydratePointerMedia(evt: CanonicalMessage): Promise<boolean> {
     const uri = await downloadAndPersistMedia({
       mediaId: evt.mediaId,
       mediaType: mt,
-      mime: evt.mediaMime ?? (mt === 'voice' ? 'audio/m4a' : mt === 'video' ? 'video/mp4' : 'image/jpeg'),
+      mime: evt.mediaMime ?? (
+        mt === 'voice' ? 'audio/m4a'
+          : mt === 'video' ? 'video/mp4'
+          : mt === 'document' ? 'application/octet-stream'
+          : 'image/jpeg'
+      ),
       md5: evt.mediaMd5,
       messageId: evt.messageId,
+      fileName: evt.content,
     });
     await setMessageFileUri(evt.messageId, uri);
     injectReceivedMessage(evt.roomId, toWsMessage(evt, uri), { updateExisting: true });
@@ -269,7 +278,7 @@ async function hydratePointerMedia(evt: CanonicalMessage): Promise<boolean> {
     // the real file, and confirm so the server can delete the blob after grace.
     await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
     confirmDownloaded(evt.mediaId).catch(() => {});
-    console.log('[Ingress] downloaded pointer media for', evt.messageId);
+    debugLog('[Ingress] downloaded pointer media for', evt.messageId);
     return true;
   } catch (err) {
     console.warn('[Ingress] pointer media download failed', evt.messageId, err);
@@ -352,7 +361,7 @@ async function maybeNotify(evt: CanonicalMessage): Promise<void> {
     push_floor: evt.pushFloor ?? undefined,
   };
   const decision = decideLocalMessageNotification(payload, store);
-  console.log('[Ingress] notify decision', { allow: decision.allow, reason: decision.reason, room_id: evt.roomId, message_id: evt.messageId });
+  debugLog('[Ingress] notify decision', { allow: decision.allow, reason: decision.reason, room_id: evt.roomId, message_id: evt.messageId });
   if (!decision.allow || !evt.content) return;
 
   // Reframe messages from strangers (not in contacts) as a contact request.
@@ -388,11 +397,11 @@ export async function ingestMessage(
 ): Promise<void> {
   const evt = normalizeMessage(raw);
   if (!evt) {
-    console.log('[Ingress] skipped — missing identity fields', { source });
+    debugLog('[Ingress] skipped — missing identity fields', { source });
     return;
   }
   if (isBlockedSender(evt.senderId)) {
-    console.log('[Ingress] dropped blocked sender', evt.senderId);
+    debugLog('[Ingress] dropped blocked sender', evt.senderId);
     return;
   }
 
@@ -427,7 +436,7 @@ export async function ingestMessage(
   // self-heal — and a killed receiver would silently lose the message.
   if (!evt.content && !hasMedia && !isMediaType) {
     void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
-    console.log('[Ingress] acked but not persisted — content missing (truncated)', evt.messageId);
+    debugLog('[Ingress] acked but not persisted — content missing (truncated)', evt.messageId);
     return;
   }
 
@@ -451,7 +460,7 @@ export async function ingestMessage(
               // 3b. Media bytes are now fully present → ack delivery NOW so the
               //     sender's ✓ appears only once the real file has been received.
               void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
-              console.log('[Ingress] hydrated media for', evt.messageId);
+              debugLog('[Ingress] hydrated media for', evt.messageId);
               return;
             }
           } finally {
@@ -564,7 +573,7 @@ export async function ingestMessage(
     await maybeNotify(evt);
   }
 
-  console.log('[Ingress] processed message', evt.messageId, 'room', evt.roomId, 'via', source);
+  debugLog('[Ingress] processed message', evt.messageId, 'room', evt.roomId, 'via', source);
 }
 
 /* ================================================================== */
@@ -629,11 +638,15 @@ export async function routeInbound(
       if (!messageId || byUserId == null) return { type: env.type, handled: false };
       const dedupeId = idempotencyId('message.delivered', p);
       if (await alreadyProcessed(dedupeId)) return { type: env.type, handled: true };
-      await markDelivered(messageId, byUserId).catch(() => {});
+      // Update in-memory state before the SQLite await. A receiver_ready frame
+      // can arrive immediately behind this ACK; marking the room synchronously
+      // prevents that concurrent recovery path from replaying a message that
+      // the recipient has already stored.
       if (env.room_id) {
         try { markIdsAsDeliveredInRoom(env.room_id, [messageId]); } catch {}
         try { useAppStore.getState().setRoomLastMessageStatus(env.room_id, messageId, 'delivered'); } catch {}
       }
+      await markDelivered(messageId, byUserId).catch(() => {});
       await rememberProcessed(dedupeId, env.type);
       return { type: env.type, handled: true };
     }
@@ -721,10 +734,25 @@ export async function routeInbound(
 
     /* ---- peer sent the digest of ids they hold → request any we're missing ---- */
     case 'sync.digest': {
-      const ids = (p.ids as unknown[] | undefined)?.map((x) => String(x)) ?? [];
+      const entries: MessageDigestEntry[] = Array.isArray(p.entries)
+        ? p.entries.slice(0, 100).flatMap((raw: any) => {
+            const id = asStr(raw?.id);
+            if (!id) return [];
+            return [{
+              id,
+              updated_at: asStr(raw?.updated_at) ?? '',
+              revision: asNum(raw?.revision) ?? 0,
+              is_deleted: raw?.is_deleted === true,
+            }];
+          })
+        : [];
+      const ids = (p.ids as unknown[] | undefined)?.map((x) => String(x))
+        ?? entries.map((entry) => entry.id);
       if (!env.room_id || ids.length === 0) return { type: env.type, handled: false };
       try {
-        const missing = await filterMissingMessageIds(env.room_id, ids);
+        const delta = entries.length
+          ? await getMessageDeltaRequests(env.room_id, entries)
+          : { missingIds: await filterMissingMessageIds(env.room_id, ids), staleIds: [] };
         const now = Date.now();
         // Keep the in-memory map bounded on long-lived app sessions.
         if (_missingRequestRetryAfter.size > 1_000) {
@@ -732,17 +760,29 @@ export async function routeInbound(
             if (retryAfter <= now) _missingRequestRetryAfter.delete(key);
           }
         }
-        const eligible = missing.filter((id) => {
-          const key = `${env.room_id}:${id}`;
+        const eligibleMissing = delta.missingIds.filter((id) => {
+          const key = `${env.room_id}:missing:${id}`;
           return (_missingRequestRetryAfter.get(key) ?? 0) <= now;
         });
-        if (eligible.length > 0) {
-          for (const id of eligible) {
-            _missingRequestRetryAfter.set(`${env.room_id}:${id}`, now + MISSING_REQUEST_COOLDOWN_MS);
+        const eligibleUpdates = delta.staleIds.filter((id) => {
+          const key = `${env.room_id}:update:${id}`;
+          return (_missingRequestRetryAfter.get(key) ?? 0) <= now;
+        });
+        if (eligibleMissing.length > 0 || eligibleUpdates.length > 0) {
+          for (const id of eligibleMissing) {
+            _missingRequestRetryAfter.set(`${env.room_id}:missing:${id}`, now + MISSING_REQUEST_COOLDOWN_MS);
+          }
+          for (const id of eligibleUpdates) {
+            _missingRequestRetryAfter.set(`${env.room_id}:update:${id}`, now + MISSING_REQUEST_COOLDOWN_MS);
           }
           const { requestMissing } = await import('./outboundRouter');
-          await requestMissing(env.room_id, eligible).catch(() => {});
-          console.log('[Ingress] sync.digest — requested', eligible.length, 'missing in', env.room_id);
+          const targetUserId = asNum(p.from_user_id ?? p.sender_id) ?? undefined;
+          await requestMissing(env.room_id, eligibleMissing, eligibleUpdates, targetUserId).catch(() => {});
+          debugLog('[Ingress] sync.digest delta', {
+            room: env.room_id,
+            missing: eligibleMissing.length,
+            updates: eligibleUpdates.length,
+          });
         }
       } catch { /* best-effort */ }
       return { type: env.type, handled: true };
@@ -759,13 +799,37 @@ export async function routeInbound(
       // delivered — covers media rows the peer saved from a b64-stripped push
       // and now needs hydrated (outbox flush skips delivered messages).
       const reqIds = (p.ids as unknown[] | undefined)?.map((x) => String(x)) ?? [];
+      const updateIds = (p.update_ids as unknown[] | undefined)?.map((x) => String(x)) ?? [];
       if (reqIds.length > 0) {
         try { await resendMessagesByIds(env.room_id, requesterId, reqIds); } catch {}
+      }
+      if (reqIds.length > 0 || updateIds.length > 0) {
+        try {
+          const { sendMessageStateDeltas } = await import('./outboundRouter');
+          await sendMessageStateDeltas(
+            env.room_id,
+            requesterId,
+            [...new Set([...reqIds, ...updateIds])],
+          );
+        } catch {}
       }
       try {
         const { reconcileSentDeliveryStatus } = await import('./deliveryReconciler');
         await reconcileSentDeliveryStatus().catch(() => {});
       } catch {}
+      return { type: env.type, handled: true };
+    }
+
+    /* ---- targeted repair for edits, reactions, and deletion tombstones ---- */
+    case 'sync.state': {
+      if (!env.room_id || !Array.isArray(p.states)) return { type: env.type, handled: false };
+      const updates = p.states.slice(0, 100).flatMap((state: any) => {
+        const messageId = asStr(state?.message_id);
+        const changes = state?.changes;
+        if (!messageId || !changes || typeof changes !== 'object') return [];
+        return [{ message_id: messageId, changes }];
+      });
+      if (updates.length) applyRemoteMessageUpdates(env.room_id, updates);
       return { type: env.type, handled: true };
     }
 

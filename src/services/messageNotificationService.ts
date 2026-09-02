@@ -186,6 +186,8 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
       roomId: data.roomId,
       roomName: data.roomName,
       type: 'new_message',
+      isGroup: String(isGroup),
+      senderName: data.senderName,
       messages: JSON.stringify(messages),
       count: String(count),
       shownIds: nextShownIds.join(','),
@@ -242,5 +244,13 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
 
 /** Cancel the message notification for a room (e.g. after the chat is read). */
 export async function cancelMessageNotification(roomId: string) {
-  await notifee.cancelNotification(NOTIFICATION_ID_PREFIX + roomId);
+  await notifee.cancelNotification(NOTIFICATION_ID_PREFIX + roomId).catch(() => {});
+  // New messages use Notifee only. Clear the old Expo room identifier too so
+  // upgraded installations cannot leave a stale duplicate behind.
+  try {
+    const Notifications = await import('expo-notifications');
+    await Notifications.dismissNotificationAsync(`msg-room-${roomId || 'unknown'}`);
+  } catch {
+    // Already dismissed or unavailable in the current runtime.
+  }
 }

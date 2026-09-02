@@ -37,6 +37,7 @@ export type RrpType =
   | 'presence'            // app_state / online indicator
   | 'sync.digest'         // "here are the message ids I have for this room"
   | 'sync.request'        // "please resend these ids I'm missing"
+  | 'sync.state'          // requested versioned edit/delete/reaction delta
   | 'control'             // auth_ok / auth_failed / pong / server_error / …
   | 'unknown';
 
@@ -88,6 +89,7 @@ const WIRE_EVENT_TO_TYPE: Record<string, RrpType> = {
   presence_snapshot: 'presence',
   sync_digest: 'sync.digest',
   sync_request: 'sync.request',
+  sync_state: 'sync.state',
   // control frames
   auth_ok: 'control',
   auth_failed: 'control',
@@ -113,6 +115,7 @@ const TYPE_TO_WIRE_EVENT: Partial<Record<RrpType, string>> = {
   presence: 'app_state',
   'sync.digest': 'sync_digest',
   'sync.request': 'sync_request',
+  'sync.state': 'sync_state',
 };
 
 /** Event types that are NEVER persisted or deduped. */
@@ -176,6 +179,7 @@ export function idempotencyId(type: RrpType, raw: Record<string, any>): string |
     }
     case 'sync.digest':
     case 'sync.request':
+    case 'sync.state':
     case 'receiver_ready':
     case 'message.read':
     case 'message.update':

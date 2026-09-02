@@ -8,11 +8,18 @@
 
 import * as SQLite from "expo-sqlite";
 import { File, Paths } from 'expo-file-system';
+import { partitionRemoteDigest, type MessageDigestEntry } from './syncDelta';
 
 let _db: SQLite.SQLiteDatabase | null = null;
 let _dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let _initPromise: Promise<void> | null = null;
 let _writeTail: Promise<void> = Promise.resolve();
+
+const LOCAL_DB_SCHEMA_VERSION = 4;
+const PROCESSED_EVENT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const DELETED_MESSAGE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+const MAX_PROCESSED_EVENTS = 50_000;
+const MAX_CACHED_CALLS_PER_ACCOUNT = 1_000;
 
 async function getDB(): Promise<SQLite.SQLiteDatabase> {
   if (_db) return _db;
@@ -108,7 +115,10 @@ async function initDBOnce(): Promise<void> {
       transfer_error_message TEXT,
       reactions   TEXT    DEFAULT '{}',
       is_deleted  INTEGER DEFAULT 0,
-      is_read     INTEGER DEFAULT 0
+      is_read     INTEGER DEFAULT 0,
+      reply_to    TEXT,
+      duration_ms INTEGER,
+      media_ptr   TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room_id, created_at);
@@ -123,6 +133,7 @@ async function initDBOnce(): Promise<void> {
       delivered    INTEGER DEFAULT 0,
       PRIMARY KEY (message_id, recipient_id)
     );
+    CREATE INDEX IF NOT EXISTS idx_delivery_tracking_message ON delivery_tracking (message_id);
 
     CREATE TABLE IF NOT EXISTS update_outbox (
       id                 TEXT    PRIMARY KEY,
@@ -133,6 +144,7 @@ async function initDBOnce(): Promise<void> {
       acked_by_user_ids  TEXT    NOT NULL DEFAULT '[]',
       created_at         INTEGER NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_update_outbox_room_created ON update_outbox (room_id, created_at);
 
     -- RRP: persistent idempotency ledger. Every inbound protocol event whose
     -- id has been fully processed is recorded here so the same event arriving
@@ -142,6 +154,7 @@ async function initDBOnce(): Promise<void> {
       type TEXT,
       ts   INTEGER NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_processed_events_ts ON processed_events (ts);
 
     -- Room metadata is separate from messages so the chat list can render
     -- instantly on app start, even while the network refresh is still running.
@@ -192,36 +205,52 @@ async function initDBOnce(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_call_cache_owner_started
       ON call_cache (owner_user_id, started_at DESC);
   `);
-  // Migrations for DBs created before new columns existed
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reactions  TEXT    DEFAULT '{}'`); } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0`);    } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN is_read    INTEGER DEFAULT 0`);    } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN sync       INTEGER DEFAULT 0`);    } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN status     TEXT    DEFAULT 'pending'`); } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN updated_at TEXT`); } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN revision INTEGER DEFAULT 0`); } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN accepted_at TEXT`); } catch {}
-  // Legacy rows used a boolean sync flag. Preserve their already-accepted
-  // state once, then use acceptance timestamps and edit versions going forward.
-  await db.execAsync(`UPDATE messages SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = ''`);
-  await db.execAsync(`UPDATE messages SET accepted_at = created_at WHERE accepted_at IS NULL AND sync = 1`);
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN reply_to   TEXT`);                 } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN duration_ms INTEGER`);              } catch {}
-  // Phase 2 out-of-band media: JSON pointer {media_id, md5, sha256, size, mime}.
-  // The blob is uploaded/downloaded over HTTP (mediaLane) — only this pointer
-  // rides the chat WS. NULL for text and legacy inline-media rows.
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN media_ptr  TEXT`);                 } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN auto_retry_blocked INTEGER DEFAULT 0`); } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN transfer_error_code TEXT`); } catch {}
-  try { await db.execAsync(`ALTER TABLE messages ADD COLUMN transfer_error_message TEXT`); } catch {}
-  try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN expected_peer_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
-  try { await db.execAsync(`ALTER TABLE update_outbox ADD COLUMN acked_by_user_ids TEXT NOT NULL DEFAULT '[]'`); } catch {}
+  const versionRow = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  const currentVersion = Number(versionRow?.user_version ?? 0);
 
-  // Repair read receipts created before author-targeted routing existed. Those
-  // rows waited for every group member and kept retrying whenever one member
-  // stayed offline. The original sender is available in the local message row,
-  // so narrow the durable plan without deleting any user data.
-  try {
+  if (currentVersion < 1) {
+    await addColumnsIfMissing(db, 'messages', {
+      reactions: `TEXT DEFAULT '{}'`,
+      is_deleted: 'INTEGER DEFAULT 0',
+      is_read: 'INTEGER DEFAULT 0',
+      sync: 'INTEGER DEFAULT 0',
+      status: `TEXT DEFAULT 'pending'`,
+      reply_to: 'TEXT',
+      duration_ms: 'INTEGER',
+    });
+  }
+
+  if (currentVersion < 2) {
+    await addColumnsIfMissing(db, 'messages', {
+      media_ptr: 'TEXT',
+      auto_retry_blocked: 'INTEGER DEFAULT 0',
+      transfer_error_code: 'TEXT',
+      transfer_error_message: 'TEXT',
+    });
+    await addColumnsIfMissing(db, 'update_outbox', {
+      expected_peer_ids: `TEXT NOT NULL DEFAULT '[]'`,
+      acked_by_user_ids: `TEXT NOT NULL DEFAULT '[]'`,
+    });
+  }
+
+  if (currentVersion < 3) {
+    await addColumnsIfMissing(db, 'messages', {
+      updated_at: 'TEXT',
+      revision: 'INTEGER DEFAULT 0',
+      accepted_at: 'TEXT',
+    });
+    // Legacy rows used a boolean sync flag. Preserve their already-accepted
+    // state once, then use acceptance timestamps and edit versions going forward.
+    await db.execAsync(`
+      UPDATE messages SET updated_at = created_at WHERE updated_at IS NULL OR updated_at = '';
+      UPDATE messages SET accepted_at = created_at WHERE accepted_at IS NULL AND sync = 1;
+    `);
+  }
+
+  if (currentVersion < 4) {
+    // Repair read receipts created before author-targeted routing existed. Those
+    // rows waited for every group member and kept retrying whenever one member
+    // stayed offline. Narrow the durable plan without deleting user data.
     const legacyReceipts = await db.getAllAsync<{
       id: string;
       changes: string;
@@ -242,7 +271,33 @@ async function initDBOnce(): Promise<void> {
         JSON.stringify(changes), JSON.stringify([authorId]), row.id,
       );
     }
-  } catch { /* best-effort legacy repair */ }
+  }
+
+  if (currentVersion < LOCAL_DB_SCHEMA_VERSION) {
+    await db.execAsync(`PRAGMA user_version = ${LOCAL_DB_SCHEMA_VERSION}`);
+  }
+
+  await db.execAsync(`
+    CREATE INDEX IF NOT EXISTS idx_messages_room_updated ON messages (room_id, updated_at DESC);
+  `);
+
+  // Startup cleanup is deliberately metadata-first and bounded. It never
+  // removes pending messages or active outbox work.
+  await pruneLocalDataWithDb(db).catch((error) => {
+    console.warn('[LocalDB] startup pruning failed:', error);
+  });
+}
+
+async function addColumnsIfMissing(
+  db: SQLite.SQLiteDatabase,
+  table: 'messages' | 'update_outbox',
+  columns: Record<string, string>,
+): Promise<void> {
+  const existing = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+  const names = new Set(existing.map((column) => column.name));
+  for (const [name, definition] of Object.entries(columns)) {
+    if (!names.has(name)) await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -812,8 +867,6 @@ export async function messageExists(id: string): Promise<boolean> {
 // RRP idempotency ledger (processed_events)
 // ---------------------------------------------------------------------------
 
-const PROCESSED_EVENT_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-
 /** Has this protocol-event id already been fully processed? */
 export async function isEventProcessed(id: string): Promise<boolean> {
   if (!id) return false;
@@ -855,12 +908,18 @@ export async function pruneProcessedEvents(): Promise<void> {
 export async function getRecentMessageDigest(
   perRoom = 40,
   lookbackDays = 14,
-): Promise<Array<{ room_id: string; ids: string[] }>> {
+): Promise<Array<{ room_id: string; ids: string[]; entries: MessageDigestEntry[] }>> {
   const db = await getDB();
   const since = new Date(Date.now() - lookbackDays * 86_400_000).toISOString();
-  const rows = await db.getAllAsync<{ id: string; room_id: string }>(
-    `SELECT id, room_id FROM (
-       SELECT id, room_id,
+  const rows = await db.getAllAsync<{
+    id: string;
+    room_id: string;
+    updated_at: string | null;
+    revision: number | null;
+    is_deleted: number;
+  }>(
+    `SELECT id, room_id, updated_at, revision, is_deleted FROM (
+       SELECT id, room_id, updated_at, revision, is_deleted,
               ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) AS room_rank
        FROM messages
        WHERE created_at >= ?
@@ -868,15 +927,159 @@ export async function getRecentMessageDigest(
     since,
     perRoom,
   );
-  const byRoom = new Map<string, string[]>();
+  const byRoom = new Map<string, MessageDigestEntry[]>();
   for (const r of rows) {
     const arr = byRoom.get(r.room_id) ?? [];
     if (arr.length < perRoom) {
-      arr.push(r.id);
+      arr.push({
+        id: r.id,
+        updated_at: r.updated_at || '',
+        revision: Number(r.revision ?? 0),
+        is_deleted: r.is_deleted === 1,
+      });
       byRoom.set(r.room_id, arr);
     }
   }
-  return Array.from(byRoom.entries()).map(([room_id, ids]) => ({ room_id, ids }));
+  return Array.from(byRoom.entries()).map(([room_id, entries]) => ({
+    room_id,
+    ids: entries.map((entry) => entry.id),
+    entries,
+  }));
+}
+
+/**
+ * Bound internal metadata without discarding normal chat history. Deleted
+ * tombstones remain for six months (well beyond the 14-day delta window), and
+ * are removed only after their update outbox is fully acknowledged.
+ */
+export async function pruneLocalData(): Promise<void> {
+  await runSerializedWrite(pruneLocalDataWithDb);
+}
+
+async function pruneLocalDataWithDb(db: SQLite.SQLiteDatabase): Promise<void> {
+  const now = Date.now();
+  const deletedBefore = new Date(now - DELETED_MESSAGE_RETENTION_MS).toISOString();
+  const removableFiles = await db.getAllAsync<{ file_uri: string }>(`
+    SELECT DISTINCT m.file_uri
+    FROM messages m
+    WHERE m.is_deleted = 1
+      AND COALESCE(m.updated_at, m.created_at) < ?
+      AND m.file_uri IS NOT NULL AND m.file_uri != ''
+      AND NOT EXISTS (SELECT 1 FROM update_outbox o WHERE o.message_id = m.id)
+  `, deletedBefore);
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(`DELETE FROM processed_events WHERE ts < ?`, now - PROCESSED_EVENT_TTL_MS);
+    await db.runAsync(`
+      DELETE FROM processed_events
+      WHERE id IN (
+        SELECT id FROM processed_events ORDER BY ts DESC LIMIT -1 OFFSET ?
+      )
+    `, MAX_PROCESSED_EVENTS);
+    await db.runAsync(`
+      DELETE FROM messages
+      WHERE is_deleted = 1
+        AND COALESCE(updated_at, created_at) < ?
+        AND NOT EXISTS (SELECT 1 FROM update_outbox o WHERE o.message_id = messages.id)
+    `, deletedBefore);
+    await db.runAsync(`DELETE FROM delivery_tracking WHERE message_id NOT IN (SELECT id FROM messages)`);
+    await db.runAsync(`DELETE FROM update_outbox WHERE message_id NOT IN (SELECT id FROM messages)`);
+
+    const owners = await db.getAllAsync<{ owner_user_id: number }>(
+      `SELECT DISTINCT owner_user_id FROM call_cache`,
+    );
+    for (const { owner_user_id: ownerId } of owners) {
+      await db.runAsync(`
+        DELETE FROM call_cache
+        WHERE owner_user_id = ? AND call_id NOT IN (
+          SELECT call_id FROM call_cache
+          WHERE owner_user_id = ?
+          ORDER BY started_at DESC
+          LIMIT ?
+        )
+      `, ownerId, ownerId, MAX_CACHED_CALLS_PER_ACCOUNT);
+    }
+  });
+
+  for (const { file_uri: uri } of removableFiles) {
+    if (!uri.startsWith(Paths.cache.uri) && !uri.startsWith(Paths.document.uri)) continue;
+    const stillReferenced = await db.getFirstAsync<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM messages WHERE file_uri = ?`, uri,
+    );
+    if ((Number(stillReferenced?.count) || 0) > 0) continue;
+    try {
+      const file = new File(uri);
+      if (file.exists) file.delete();
+    } catch {
+      // A system-cleaned cache file needs no further work.
+    }
+  }
+}
+
+/** Compare a peer's versioned digest with local rows for one room. */
+export async function getMessageDeltaRequests(
+  roomId: string,
+  entries: MessageDigestEntry[],
+): Promise<{ missingIds: string[]; staleIds: string[] }> {
+  if (!entries.length) return { missingIds: [], staleIds: [] };
+  const db = await getDB();
+  const ids = [...new Set(entries.map((entry) => entry.id).filter(Boolean))];
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = await db.getAllAsync<{
+    id: string;
+    updated_at: string | null;
+    revision: number | null;
+    is_deleted: number;
+  }>(
+    `SELECT id, updated_at, revision, is_deleted
+       FROM messages WHERE room_id = ? AND id IN (${placeholders})`,
+    roomId,
+    ...ids,
+  );
+  return partitionRemoteDigest(entries, rows.map((row) => ({
+    id: row.id,
+    updated_at: row.updated_at || '',
+    revision: Number(row.revision ?? 0),
+    is_deleted: row.is_deleted === 1,
+  })));
+}
+
+export interface MessageStateDelta {
+  message_id: string;
+  changes: MessageChanges;
+}
+
+/** Return the latest local state for peer-requested message rows. */
+export async function getMessageStateDeltas(
+  roomId: string,
+  ids: string[],
+): Promise<MessageStateDelta[]> {
+  if (!ids.length) return [];
+  const db = await getDB();
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  const placeholders = uniqueIds.map(() => '?').join(',');
+  const rows = await db.getAllAsync<{
+    id: string;
+    content: string | null;
+    reactions: string | null;
+    is_deleted: number;
+    updated_at: string | null;
+    revision: number | null;
+  }>(
+    `SELECT id, content, reactions, is_deleted, updated_at, revision
+       FROM messages WHERE room_id = ? AND id IN (${placeholders})`,
+    roomId,
+    ...uniqueIds,
+  );
+  return rows.map((row) => ({
+    message_id: row.id,
+    changes: {
+      ...(row.is_deleted === 1 ? { is_deleted: true } : { content: row.content ?? '' }),
+      reactions: row.reactions ? JSON.parse(row.reactions) : {},
+      updated_at: row.updated_at || '',
+      revision: Number(row.revision ?? 0),
+    },
+  }));
 }
 
 /** Of the given candidate ids, return the subset we do NOT have for this room. */
@@ -1028,7 +1231,6 @@ export async function getMessagesByIdsForResend(
     `SELECT * FROM messages
      WHERE room_id = ?
        AND sender_id = ?
-       AND is_deleted = 0
        AND id IN (${placeholders})
      ORDER BY created_at ASC`,
     roomId, myUserId, ...ids,

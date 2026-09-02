@@ -57,15 +57,10 @@ export async function markRoomReadFromNotification(
 
   if (!dismiss) return;
 
-  // Dismiss the notification (both the Notifee MessagingStyle one and any Expo
-  // grouped one for this room).
+  // The consolidated helper also removes any legacy Expo room card.
   try {
     const { cancelMessageNotification } = await import('./messageNotificationService');
     await cancelMessageNotification(roomId);
-  } catch { /* ignore */ }
-  try {
-    const { dismissRoomNotification } = await import('./pushNotificationService');
-    await dismissRoomNotification(roomId);
   } catch { /* ignore */ }
 }
 

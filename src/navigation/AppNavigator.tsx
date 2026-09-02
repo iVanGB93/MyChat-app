@@ -33,6 +33,7 @@ import { isCallEnded } from '../services/callDedupe';
 import { shouldHandleIncomingCallInApp, shouldShowInAppMessageToast } from '../services/notificationPresentationPolicy';
 import { decideIncomingCallInApp, decideInAppMessageToast } from '../services/notificationPresentationPolicy';
 import { markAppInteractive } from '../services/observability';
+import { debugLog } from '../services/diagnostics';
 
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -176,7 +177,7 @@ function IncomingCallListener() {
       const store = useAppStore.getState();
       const incomingDecision = decideIncomingCallInApp(payload, store);
       if (payload.event === 'incoming_call') {
-        console.log('[NotifPolicy] in_app_call', {
+        debugLog('[NotifPolicy] in_app_call', {
           allow: incomingDecision.allow,
           reason: incomingDecision.reason,
           call_id: String(payload.call_id ?? ''),
@@ -195,7 +196,7 @@ function IncomingCallListener() {
         if (cur && cur.callId === payload.call_id && cur.state !== 'ended') {
           return;
         }
-        console.log('[IncomingCallListener] incoming_call →', payload.call_id);
+        debugLog('[IncomingCallListener] incoming_call →', payload.call_id);
         handled.current = payload.call_id;
 
         const callerName = payload.caller ?? 'Unknown';
@@ -303,7 +304,7 @@ function MessageNotificationListener() {
       if (payload.event === 'new_message') {
         const store = useAppStore.getState();
         const toastDecision = decideInAppMessageToast(payload, store);
-        console.log('[NotifPolicy] in_app_message', {
+        debugLog('[NotifPolicy] in_app_message', {
           allow: toastDecision.allow,
           reason: toastDecision.reason,
           room_id: String(payload.room_id ?? ''),
@@ -325,7 +326,7 @@ function MessageNotificationListener() {
       if (payload.event === 'message_update' && payload.from_username) {
         const store = useAppStore.getState();
         const toastDecision = decideInAppMessageToast(payload, store);
-        console.log('[NotifPolicy] in_app_message_update', {
+        debugLog('[NotifPolicy] in_app_message_update', {
           allow: toastDecision.allow,
           reason: toastDecision.reason,
           room_id: String(payload.room_id ?? ''),

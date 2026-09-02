@@ -26,9 +26,6 @@ import { expirePresenceLease, type PresenceLease, type PresenceStatus } from '..
    Cancels BOTH the Expo (alive/backgrounded WS path) and the Notifee
    MessagingStyle (killed-app FCM path) notifications for the room. */
 function dismissRoomNotificationSafe(roomId: string): void {
-  import('../services/pushNotificationService')
-    .then((m) => m.dismissRoomNotification(roomId))
-    .catch(() => {});
   import('../services/messageNotificationService')
     .then((m) => m.cancelMessageNotification(roomId))
     .catch(() => {});

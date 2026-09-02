@@ -7,6 +7,7 @@ import { getInstallationId } from './installationIdentity';
 import type { PushRegistrationPayload } from './pushNotificationService';
 import type { TokenPair, User } from '../types';
 import { seedPresenceFromUsers } from './presenceService';
+import { debugLog } from './diagnostics';
 
 export async function register(
   username: string,
@@ -210,7 +211,7 @@ export async function searchUsers(query: string): Promise<User[]> {
 export async function registerPushToken(payload: PushRegistrationPayload): Promise<boolean> {
   try {
     await api.post('/api/users/push-token/', payload);
-    console.log('[Auth] Push token registered with backend');
+    debugLog('[Auth] Push token registered with backend');
     return true;
   } catch (err) {
     console.warn('[Auth] Failed to register push token:', err);
@@ -222,7 +223,7 @@ export async function unregisterPushToken(): Promise<void> {
   try {
     const installation_id = await getInstallationId();
     await api.post('/api/users/push-token/unregister/', { installation_id });
-    console.log('[Auth] Push token unregistered from backend');
+    debugLog('[Auth] Push token unregistered from backend');
   } catch (err) {
     console.warn('[Auth] Failed to unregister push token:', err);
   }

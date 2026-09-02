@@ -14,11 +14,13 @@
 /* ------------------------------------------------------------------ */
 
 import { Directory, File, Paths } from 'expo-file-system';
+import { fetch } from 'expo/fetch';
 import api, { BASE_URL, getTokens } from './api';
 import { getInstallationId } from './installationIdentity';
 import {
   classifyMediaHttpFailure,
   MEDIA_UPLOAD_TIMEOUT_MS,
+  mapWithConcurrency,
   validateMediaSize,
   type MediaTransferFailure,
 } from './mediaTransferPolicy';
@@ -31,6 +33,16 @@ export interface UploadedMedia {
   md5: string;
   size_bytes: number;
   mime: string;
+}
+
+interface DirectUploadPreparation extends UploadedMedia {
+  uploaded: boolean;
+  upload_mode?: 'single' | 'multipart';
+  upload_url?: string;
+  upload_headers?: Record<string, string>;
+  part_size?: number;
+  parts?: Array<{ part_number: number; uploaded: boolean; upload_url?: string }>;
+  direct_upload?: boolean;
 }
 
 export class MediaTransferError extends Error {
@@ -62,7 +74,26 @@ function subdirFor(mediaType: MediaType): string {
   return mediaType === 'voice' ? 'voice' : mediaType === 'video' ? 'video' : mediaType === 'document' ? 'documents' : 'images';
 }
 
-function extFor(mediaType: MediaType, mime?: string | null): string {
+// Document mimeType detection from content-provider-backed pickers (Google
+// Drive, Files app, etc.) is unreliable and often generic/missing, which used
+// to make every such document fall back to a useless `.bin` extension that
+// Android has no app registered for. The transmitted filename (the message's
+// `content`) usually still carries the real extension, so prefer that for
+// document type when the mime sniff comes up empty. Allowlisted to avoid
+// treating a stray dot in a filename as a bogus "extension".
+const KNOWN_DOCUMENT_EXTENSIONS = new Set([
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'zip', 'txt', 'csv',
+  'rtf', 'odt', 'ods', 'odp', 'json', 'xml', 'html', 'md',
+]);
+
+function extFromFileName(fileName?: string | null): string | null {
+  const match = /\.([a-zA-Z0-9]{1,6})$/.exec(fileName ?? '');
+  if (!match) return null;
+  const ext = match[1].toLowerCase();
+  return KNOWN_DOCUMENT_EXTENSIONS.has(ext) ? ext : null;
+}
+
+function extFor(mediaType: MediaType, mime?: string | null, fileName?: string | null): string {
   const m = (mime || '').toLowerCase();
   if (mediaType === 'voice') {
     if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
@@ -84,7 +115,7 @@ function extFor(mediaType: MediaType, mime?: string | null): string {
     if (m.includes('ms-powerpoint')) return 'ppt';
     if (m.includes('zip')) return 'zip';
     if (m.includes('plain')) return 'txt';
-    return 'bin';
+    return extFromFileName(fileName) ?? 'bin';
   }
   // image
   if (m.includes('png')) return 'png';
@@ -156,6 +187,155 @@ export async function uploadMedia(params: {
   const sizeFailure = validateMediaSize(localFile.size);
   if (sizeFailure) throw new MediaTransferError(sizeFailure);
 
+  const md5 = fileMd5(fileUri);
+  if (md5) {
+    try {
+      const prepared = await api.post<DirectUploadPreparation>(
+        '/api/chat/media/initiate/',
+        {
+          room_id: roomId,
+          media_type: mediaType,
+          mime,
+          message_id: messageId,
+          size_bytes: localFile.size,
+          md5,
+          ...(durationMs != null ? { duration_ms: durationMs } : {}),
+          ...(width != null ? { width } : {}),
+          ...(height != null ? { height } : {}),
+        },
+        { timeout: 30_000 },
+      );
+
+      if (prepared.data.uploaded) return prepared.data;
+      if (prepared.data.upload_mode === 'multipart') {
+        const partSize = Number(prepared.data.part_size ?? 0);
+        const parts = prepared.data.parts ?? [];
+        if (partSize <= 0 || parts.length === 0) {
+          throw new MediaTransferError({
+            code: 'server_error',
+            message: 'The server did not prepare the resumable attachment upload.',
+            retryable: true,
+            status: 500,
+          });
+        }
+        await mapWithConcurrency(
+          parts.filter((part) => !part.uploaded),
+          3,
+          async (part) => {
+            if (!part.upload_url) {
+              throw new MediaTransferError({
+                code: 'server_error',
+                message: `Upload part ${part.part_number} was not prepared.`,
+                retryable: true,
+                status: 500,
+              });
+            }
+            const start = (part.part_number - 1) * partSize;
+            const body = localFile.slice(start, Math.min(start + partSize, localFile.size), mime);
+            let lastStatus = 0;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              const controller = new AbortController();
+              const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
+              try {
+                const response = await fetch(part.upload_url, {
+                  method: 'PUT',
+                  body,
+                  signal: controller.signal,
+                });
+                lastStatus = response.status;
+                if (response.ok) return;
+                if (response.status < 500 && response.status !== 408 && response.status !== 429) break;
+              } catch (error) {
+                if (attempt === 2) throw error;
+              } finally {
+                clearTimeout(timeout);
+              }
+            }
+            throw new MediaTransferError({
+              code: lastStatus === 403 ? 'network' : 'server_error',
+              message: 'A resumable upload part was interrupted. Retry to continue from completed parts.',
+              retryable: true,
+              status: lastStatus,
+            });
+          },
+        );
+      } else {
+        if (!prepared.data.upload_url || !prepared.data.upload_headers) {
+          throw new MediaTransferError({
+            code: 'server_error',
+            message: 'The server did not prepare the attachment upload.',
+            retryable: true,
+            status: 500,
+          });
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
+        try {
+          // The signed URL is intentionally unauthenticated: the signature grants
+          // access to this one object for a few minutes. File implements Blob, so
+          // React Native streams it without constructing a 250 MB JS byte array.
+          const uploaded = await fetch(prepared.data.upload_url, {
+            method: 'PUT',
+            headers: prepared.data.upload_headers,
+            body: localFile as unknown as BodyInit,
+            signal: controller.signal,
+          });
+          if (!uploaded.ok) {
+            throw new MediaTransferError(classifyMediaHttpFailure(uploaded.status));
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+
+      const completed = await api.post<UploadedMedia>(
+        `/api/chat/media/${prepared.data.media_id}/complete/`,
+        {},
+        { timeout: 30_000 },
+      );
+      return completed.data;
+    } catch (error: any) {
+      if (error instanceof MediaTransferError) throw error;
+      const status = Number(error?.response?.status || 0);
+      const payload = error?.response?.data as {
+        error?: string;
+        max_bytes?: number;
+        direct_upload?: boolean;
+      } | undefined;
+      // Local/older servers keep using the original multipart endpoint.
+      if (status === 404 || (status === 409 && payload?.direct_upload === false)) {
+        return uploadMediaViaBackend(params, localFile, md5);
+      }
+      if (status > 0) {
+        throw new MediaTransferError(
+          classifyMediaHttpFailure(status, payload?.error, payload?.max_bytes),
+        );
+      }
+      throw new MediaTransferError(toMediaTransferFailure(error));
+    }
+  }
+
+  // MD5 is native and normally available. Keep the compatibility path for
+  // unusual content providers that do not expose it.
+  return uploadMediaViaBackend(params, localFile, null);
+}
+
+async function uploadMediaViaBackend(
+  params: {
+    roomId: string;
+    fileUri: string;
+    mediaType: MediaType;
+    mime: string;
+    messageId: string;
+    durationMs?: number | null;
+    width?: number | null;
+    height?: number | null;
+  },
+  localFile: File,
+  knownMd5: string | null,
+): Promise<UploadedMedia> {
+  const { roomId, fileUri, mediaType, mime, messageId, durationMs, width, height } = params;
+
   const form = new FormData();
   form.append('file', {
     uri: fileUri,
@@ -166,7 +346,7 @@ export async function uploadMedia(params: {
   form.append('media_type', mediaType);
   form.append('mime', mime);
   form.append('message_id', messageId);
-  const md5 = fileMd5(fileUri);
+  const md5 = knownMd5 ?? fileMd5(fileUri);
   if (md5) form.append('md5', md5);
   if (durationMs != null) form.append('duration_ms', String(durationMs));
   if (width != null) form.append('width', String(width));
@@ -210,10 +390,13 @@ export async function downloadAndPersistMedia(params: {
   mime: string;
   md5?: string | null;
   messageId: string;
+  /** Original filename (e.g. the document's message content), used as an
+   *  extension fallback when `mime` is missing or too generic to sniff. */
+  fileName?: string | null;
 }): Promise<string> {
-  const { mediaId, mediaType, mime, md5, messageId } = params;
+  const { mediaId, mediaType, mime, md5, messageId, fileName } = params;
   const dir = persistentDir(mediaType);
-  const dest = new File(dir, `${messageId}.${extFor(mediaType, mime)}`);
+  const dest = new File(dir, `${messageId}.${extFor(mediaType, mime, fileName)}`);
 
   // Already have a verified copy? Reuse it.
   if (dest.exists) {

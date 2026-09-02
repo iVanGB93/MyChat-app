@@ -21,6 +21,7 @@ import { setCurrentUserId } from '../services/chatWsManager';
 import { cacheContacts, cacheRelationshipSets, getCachedRelationshipSets, initDB } from '../services/localMessageStore';
 import { getContacts, getBlockedUsers } from '../services/contactService';
 import { useAppStore } from '../store/appStore';
+import { debugLog } from '../services/diagnostics';
 import type { User } from '../types';
 
 const USER_CACHE_KEY = '@axonic_user_cache';
@@ -115,7 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return true;
         }
         if (attempt < PUSH_SYNC_RETRY_DELAYS_MS.length - 1) {
-          console.log('[Auth] retrying push token registration', {
+          debugLog('[Auth] retrying push token registration', {
             attempt: attempt + 2,
             delay_ms: PUSH_SYNC_RETRY_DELAYS_MS[attempt + 1],
           });
@@ -149,7 +150,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!state.isAuthenticated) return;
     return onFcmTokenRefresh(() => {
-      console.log('[FCM] token refreshed — registering current installation');
+      debugLog('[FCM] token refreshed — registering current installation');
       void syncPushToken(true);
     });
   }, [state.isAuthenticated, syncPushToken]);

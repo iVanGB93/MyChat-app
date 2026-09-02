@@ -11,6 +11,7 @@
 import api from './api';
 import { getPendingSentMessageIds, markDelivered } from './localMessageStore';
 import { markIdsAsDeliveredInRoom } from './chatWsManager';
+import { debugLog } from './diagnostics';
 
 interface DeliveredEntry {
   message_id: string;
@@ -70,7 +71,7 @@ export async function reconcileSentDeliveryStatus(): Promise<void> {
     }
 
     if (delivered.length > 0) {
-      console.log('[DeliveryReconciler] reconciled', delivered.length, 'delivered message(s)');
+      debugLog('[DeliveryReconciler] reconciled', delivered.length, 'delivered message(s)');
     }
   } catch (err: any) {
     // Network/auth errors are expected when offline — silently retry next trigger.

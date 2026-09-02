@@ -102,6 +102,8 @@ function ChatListRowBase({
 
   const row = (
     <TouchableOpacity
+      testID={`chat-row-${roomId}`}
+      accessibilityLabel={`Open chat with ${displayName}`}
       style={[styles.chatItem, { borderColor: Colors.neonBorder, backgroundColor: Colors.background }]}
       activeOpacity={0.7}
       onLongPress={() => onLongPress(roomId, displayName)}
@@ -536,7 +538,11 @@ export default function ChatListScreen() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: Colors.background }]}>
+    <View
+      testID="axonic-ready"
+      collapsable={false}
+      style={[styles.container, { backgroundColor: Colors.background }]}
+    >
       {totalUnread > 50 && (
         <TouchableOpacity
           style={[styles.markAllBar, { borderBottomColor: Colors.divider }]}

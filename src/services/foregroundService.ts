@@ -17,6 +17,7 @@
 
 import { Platform, NativeModules } from 'react-native';
 import { useAppStore } from '../store/appStore';
+import { debugLog } from './diagnostics';
 
 const { MyChatService } = NativeModules;
 
@@ -55,7 +56,7 @@ async function _ensureNativeStarted(callType: ForegroundCallType): Promise<void>
     _nativeCallType = callType;
     try { useAppStore.getState().setForegroundServiceRunning(true); } catch {}
     _pushUpdate();
-    console.log('[ForegroundService] native service started');
+    debugLog('[ForegroundService] native service started');
   } catch (err: any) {
     console.warn('[ForegroundService] start error:', err?.message ?? err);
   }
@@ -67,7 +68,7 @@ async function _maybeStopNative(): Promise<void> {
   if (_storeUnsub) { _storeUnsub(); _storeUnsub = null; }
   try {
     await MyChatService.stop();
-    console.log('[ForegroundService] native service stopped');
+    debugLog('[ForegroundService] native service stopped');
   } catch (err: any) {
     console.warn('[ForegroundService] stop error:', err?.message ?? err);
   }
@@ -102,4 +103,17 @@ export async function stopForegroundService(reason: FgReason = 'call'): Promise<
 
 export function isForegroundServiceRunning(): boolean {
   return _nativeRunning;
+}
+
+/**
+ * Enable Android's system Picture-in-Picture transition for a connected
+ * video call. This is deliberately disabled for voice/ringing/ended states.
+ */
+export async function setCallPictureInPictureEnabled(enabled: boolean): Promise<void> {
+  if (Platform.OS !== 'android' || !MyChatService?.setPictureInPictureEnabled) return;
+  try {
+    await MyChatService.setPictureInPictureEnabled(enabled);
+  } catch (err: any) {
+    console.warn('[ForegroundService] PiP state error:', err?.message ?? err);
+  }
 }

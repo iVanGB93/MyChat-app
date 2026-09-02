@@ -16,11 +16,13 @@ import {
   Keyboard,
   Modal,
   Pressable,
+  Dimensions,
   useWindowDimensions,
   Animated,
   PanResponder,
   Linking,
   AppState,
+  Vibration,
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -48,7 +50,6 @@ import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
-import { dismissRoomNotification } from '../../services/pushNotificationService';
 import { addContact, blockUser } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import { getFirstMessageUrl } from '../../components/SmartMessageText';
@@ -57,6 +58,8 @@ import { persistOutgoingImage, persistSharedFile, compressImageForSend } from '.
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import { mediaFileSize } from '../../services/mediaLane';
 import { mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, validateMediaSize } from '../../services/mediaTransferPolicy';
+import { resolveOutgoingMessageStatus } from '../../services/messageLifecycle';
+import { debugLog } from '../../services/diagnostics';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
@@ -64,25 +67,44 @@ const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
 const LOCAL_HISTORY_PAGE_SIZE = 60;
 
 /**
- * Android edge-to-edge can report an IME height of zero even when the docked
- * keyboard covers the bottom of the screen. Its top edge (`screenY`) remains
- * reliable, so derive the covered area from that coordinate. A floating
- * keyboard does not touch the bottom edge and must not move the composer.
+ * Keyboard coordinates are reported in screen space, while
+ * `useWindowDimensions()` is expressed in React-window space. Comparing those
+ * two coordinate systems works on some Android devices but fails on others
+ * (notably with edge-to-edge, gesture navigation, or vendor keyboards). Use
+ * the chat viewport's measured screen position so both values share the same
+ * coordinate system, and fall back to the physical screen height when
+ * `screenY` itself isn't trustworthy. A floating keyboard must not move the
+ * composer.
  */
-function getAndroidKeyboardCoveredHeight(
+function getAndroidKeyboardOverlap(
   coordinates: { screenY: number; height: number },
-  fullWindowHeight: number,
+  viewportY: number,
+  viewportHeight: number,
 ): number {
-  const screenY = Math.max(0, coordinates.screenY);
   const reportedHeight = Math.max(0, coordinates.height);
-  if (screenY >= fullWindowHeight) return 0;
+  if (reportedHeight <= 0) return 0;
 
-  const bottomTolerance = Math.max(24, fullWindowHeight * 0.02);
-  const isFloating = reportedHeight > 0
-    && screenY + reportedHeight < fullWindowHeight - bottomTolerance;
+  const viewportBottom = viewportY + viewportHeight;
+  const screenHeight = Dimensions.get('screen').height;
+
+  // Some Android builds (notably edge-to-edge on Android 15+) report a stale
+  // or zeroed `screenY` even though `height` is correct, which used to make
+  // this whole function bail with 0 overlap and leave the keyboard covering
+  // the composer. Derive the keyboard's top edge from the physical screen
+  // height (which never depends on the app window's own resize state)
+  // whenever screenY looks unusable, and only trust screenY for the
+  // floating-keyboard check when it's plausible.
+  const screenY = coordinates.screenY;
+  const hasUsableScreenY = Number.isFinite(screenY) && screenY > 0 && screenY < screenHeight;
+  const keyboardTop = hasUsableScreenY ? screenY : Math.max(0, screenHeight - reportedHeight);
+  if (keyboardTop >= viewportBottom) return 0;
+
+  const bottomTolerance = Math.max(24, viewportHeight * 0.02);
+  const isFloating = hasUsableScreenY
+    && screenY + reportedHeight < screenHeight - bottomTolerance;
   if (isFloating) return 0;
 
-  return Math.max(0, fullWindowHeight - screenY);
+  return Math.min(viewportHeight, Math.max(0, viewportBottom - keyboardTop));
 }
 
 /** Compact header signal shown while the room socket is reconnecting. */
@@ -238,8 +260,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   useEffect(() => {
     useAppStore.getState().setActiveRoom(roomId);
     // Clear any grouped notification for this conversation now that it's open.
-    // Both the Expo (WS path) and Notifee MessagingStyle (killed-app FCM path).
-    dismissRoomNotification(roomId).catch(() => {});
+    // Consolidated Notifee path plus cleanup of any legacy Expo room card.
     import('../../services/messageNotificationService')
       .then((m) => m.cancelMessageNotification(roomId))
       .catch(() => {});
@@ -263,14 +284,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /** Message currently being replied to — when set, shows a preview strip above the input. */
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const { height: winHeight } = useWindowDimensions();
-  const fullWindowHeightRef = useRef(winHeight);
-  const [keyboardHeight, setKeyboardHeight] = useState(() => {
-    if (Platform.OS !== 'android' || !Keyboard.isVisible()) return 0;
-    const metrics = Keyboard.metrics();
-    return metrics
-      ? getAndroidKeyboardCoveredHeight(metrics, winHeight)
-      : 0;
-  });
+  const [androidKeyboardOverlap, setAndroidKeyboardOverlap] = useState(0);
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -293,55 +307,94 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const CANCEL_THRESHOLD_PX = 90;
   const flatListRef = useRef<FlatList>(null);
   const composerInputRef = useRef<TextInput>(null);
+  const chatViewportRef = useRef<View>(null);
+  const composerFocusedRef = useRef(false);
+  const keyboardResyncTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const loadedHistoryLimitRef = useRef(LOCAL_HISTORY_PAGE_SIZE);
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
 
-  /* Android 15+ enforces edge-to-edge layout. On some production devices
-   * adjustResize shrinks the React window; on others it only dispatches IME
-   * insets. Track both signals and add only the portion the OS did not already
-   * consume. This keeps the composer above the keyboard without double-lifting
-   * it on devices where native resize works correctly. */
-  const syncKeyboardMetrics = useCallback(() => {
+  /* Android 15+ enforces edge-to-edge layout. Some devices resize the React
+   * viewport for the IME and some leave it full-height. Measure the viewport in
+   * screen coordinates after each keyboard/layout change and add only the
+   * overlap that native adjustResize did not consume. */
+  const measureAndroidKeyboardOverlap = useCallback((
+    coordinates: { screenY: number; height: number },
+  ) => {
+    if (Platform.OS !== 'android') return;
+    chatViewportRef.current?.measureInWindow((_x, viewportY, _width, viewportHeight) => {
+      const overlap = getAndroidKeyboardOverlap(coordinates, viewportY, viewportHeight);
+      setAndroidKeyboardOverlap((current) => current === overlap ? current : overlap);
+    });
+  }, []);
+
+  const syncKeyboardMetrics = useCallback((allowFocusedFallback = false) => {
     if (Platform.OS !== 'android') return;
     const metrics = Keyboard.metrics();
-    setKeyboardHeight(Keyboard.isVisible() && metrics
-      ? getAndroidKeyboardCoveredHeight(metrics, fullWindowHeightRef.current)
-      : 0);
-  }, []);
+    const expectsKeyboard = Keyboard.isVisible()
+      || (allowFocusedFallback && composerFocusedRef.current);
+    if (!metrics || !expectsKeyboard) {
+      if (!composerFocusedRef.current) setAndroidKeyboardOverlap(0);
+      return;
+    }
+    requestAnimationFrame(() => measureAndroidKeyboardOverlap(metrics));
+  }, [measureAndroidKeyboardOverlap]);
+
+  const scheduleKeyboardMetricSync = useCallback((
+    coordinates?: { screenY: number; height: number },
+  ) => {
+    if (Platform.OS !== 'android') return;
+    keyboardResyncTimersRef.current.forEach(clearTimeout);
+    keyboardResyncTimersRef.current = [];
+
+    if (coordinates) {
+      requestAnimationFrame(() => measureAndroidKeyboardOverlap(coordinates));
+    } else {
+      syncKeyboardMetrics(true);
+    }
+
+    // Several OEM keyboards publish their final frame after focus or after the
+    // didShow event. Re-measure briefly instead of assuming the first frame is
+    // final. This also covers Android versions that omit keyboardDidShow while
+    // adjustResize is active.
+    for (const delay of [80, 250, 500]) {
+      keyboardResyncTimersRef.current.push(setTimeout(() => {
+        syncKeyboardMetrics(true);
+      }, delay));
+    }
+  }, [measureAndroidKeyboardOverlap, syncKeyboardMetrics]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
 
     // The screen may mount or refresh while the keyboard is already visible,
     // in which case Android does not emit a new keyboardDidShow event.
-    syncKeyboardMetrics();
+    syncKeyboardMetrics(true);
     const shown = Keyboard.addListener('keyboardDidShow', (event) => {
-      setKeyboardHeight(getAndroidKeyboardCoveredHeight(
-        event.endCoordinates,
-        fullWindowHeightRef.current,
-      ));
+      scheduleKeyboardMetricSync(event.endCoordinates);
     });
     const changed = Keyboard.addListener('keyboardDidChangeFrame', (event) => {
-      setKeyboardHeight(getAndroidKeyboardCoveredHeight(
-        event.endCoordinates,
-        fullWindowHeightRef.current,
-      ));
+      scheduleKeyboardMetricSync(event.endCoordinates);
     });
     const hidden = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
+      keyboardResyncTimersRef.current.forEach(clearTimeout);
+      keyboardResyncTimersRef.current = [];
+      setAndroidKeyboardOverlap(0);
     });
     return () => {
       shown.remove();
       changed.remove();
       hidden.remove();
+      keyboardResyncTimersRef.current.forEach(clearTimeout);
+      keyboardResyncTimersRef.current = [];
     };
-  }, [syncKeyboardMetrics]);
+  }, [scheduleKeyboardMetricSync, syncKeyboardMetrics]);
 
   useEffect(() => {
     const dismissKeyboard = () => {
       Keyboard.dismiss();
-      setKeyboardHeight(0);
+      composerFocusedRef.current = false;
+      setAndroidKeyboardOverlap(0);
     };
 
     // Native-stack screens can stay mounted during a transition, so relying on
@@ -357,20 +410,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     };
   }, [navigation]);
 
-  useEffect(() => {
-    if (keyboardHeight === 0) {
-      fullWindowHeightRef.current = Math.max(fullWindowHeightRef.current, winHeight);
-    }
-  }, [keyboardHeight, winHeight]);
-
-  const androidNativeResize = Platform.OS === 'android' && keyboardHeight > 0
-    ? Math.max(0, fullWindowHeightRef.current - winHeight)
-    : 0;
-  const androidKeyboardInset = Platform.OS === 'android' && keyboardHeight > 0
-    ? Math.max(0, keyboardHeight - androidNativeResize)
-    : 0;
-  const composerBottomPadding = Platform.OS === 'android' && keyboardHeight > 0
-    ? Spacing.sm + androidKeyboardInset
+  const composerBottomPadding = Platform.OS === 'android' && androidKeyboardOverlap > 0
+    ? Spacing.sm + androidKeyboardOverlap
     : insets.bottom + Spacing.sm;
 
   useEffect(() => {
@@ -381,7 +422,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /* Load (or reload) messages from the local SQLite DB */
   const loadFromDB = useCallback(async (cancelled?: { current: boolean }) => {
     const dbMsgs = await getRecentMessages(roomId, loadedHistoryLimitRef.current);
-    if (__DEV__) console.log('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
+    debugLog('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
     if (cancelled?.current) return;
     setSqliteMessages(dbMsgs.map(toMsg));
     setHasOlderMessages(dbMsgs.length >= loadedHistoryLimitRef.current);
@@ -623,6 +664,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           )}
           {isDirectChat && !!otherUserId && <>
           <TouchableOpacity
+            testID="axonic-video-call"
+            accessibilityLabel="Start video call"
             onPress={() => handleCall('video')}
             activeOpacity={0.7}
             style={{
@@ -635,6 +678,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             <Ionicons name="videocam-outline" size={18} color="#00E5FF" />
           </TouchableOpacity>
           <TouchableOpacity
+            testID="axonic-voice-call"
+            accessibilityLabel="Start voice call"
             onPress={() => handleCall('voice')}
             activeOpacity={0.7}
             style={{
@@ -655,7 +700,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const handleSend = () => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    console.log('[ChatRoom] sending:', trimmed.slice(0, 30));
+    debugLog('[ChatRoom] sending:', trimmed.slice(0, 30));
     const reply = replyingTo
       ? {
           id: replyingTo.id,
@@ -679,6 +724,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
+      Vibration.vibrate(40);
       cancelRecordingRef.current = false;
       recordingStartedAtRef.current = Date.now();
       setRecordingMs(0);
@@ -1108,11 +1154,15 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   const renderMessage = useCallback(({ item }: { item: Message }) => {
     const isMine = item.sender === user?.id;
-    // The in-memory set covers this live session; persisted pending status
-    // keeps the retry control available after an app restart.
-    const isPending = isMine && (pendingIds.has(item.id) || item.status === 'pending');
-    const isDelivered = isMine && deliveredIds.has(item.id);
-    const isRead = isMine && (item.is_read || readIds.has(item.id) || item.status === 'read');
+    const outgoingStatus = resolveOutgoingMessageStatus(
+      item.id,
+      item.status,
+      { pendingIds, deliveredIds, readIds },
+      item.is_read,
+    );
+    const isRead = isMine && outgoingStatus === 'read';
+    const isDelivered = isMine && outgoingStatus === 'delivered';
+    const isPending = isMine && outgoingStatus === 'pending';
     return (
       <ExtractedMessageBubble
         item={item}
@@ -1191,15 +1241,26 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   }
 
   return (
-    /* Android uses adjustResize plus the measured IME-inset fallback above.
-       Letting KeyboardAvoidingView also change height causes double/zero resize
-       behavior across edge-to-edge production devices. */
-    <KeyboardAvoidingView
+    <View
+      testID="axonic-ready"
+      collapsable={false}
+      ref={chatViewportRef}
       style={[styles.container, { backgroundColor: Colors.chatBg }]}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
-      enabled={Platform.OS === 'ios'}
+      onLayout={() => {
+        if (Platform.OS === 'android' && composerFocusedRef.current) {
+          scheduleKeyboardMetricSync();
+        }
+      }}
     >
+      {/* Android uses adjustResize plus the measured IME-overlap fallback.
+          Letting KeyboardAvoidingView also change height causes double/zero
+          resize behavior across edge-to-edge production devices. */}
+      <KeyboardAvoidingView
+        style={styles.container}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? headerHeight : 0}
+        enabled={Platform.OS === 'ios'}
+      >
       {isMessageRequest && (
         <View style={[styles.requestBanner, {
           backgroundColor: Colors.surface,
@@ -1342,6 +1403,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           ) : (
             <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
               <TextInput
+                testID="axonic-message-composer"
                 ref={composerInputRef}
                 style={[styles.textInput, { color: Colors.text }]}
                 value={text}
@@ -1351,8 +1413,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 }}
                 onFocus={() => {
                   if (Platform.OS !== 'android') return;
-                  requestAnimationFrame(syncKeyboardMetrics);
-                  setTimeout(syncKeyboardMetrics, 300);
+                  composerFocusedRef.current = true;
+                  scheduleKeyboardMetricSync();
+                }}
+                onBlur={() => {
+                  if (Platform.OS === 'android') composerFocusedRef.current = false;
                 }}
                 placeholder="Compose message…"
                 placeholderTextColor={Colors.textTertiary}
@@ -1363,6 +1428,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           )}
           {text.trim().length > 0 ? (
             <TouchableOpacity
+              testID="axonic-send-message"
+              accessibilityLabel="Send message"
               style={[
                 styles.sendBtn,
                 {
@@ -1598,7 +1665,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           </Pressable>
         </Pressable>
       </Modal>
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 

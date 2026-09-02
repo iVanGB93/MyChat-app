@@ -20,12 +20,14 @@
 
 import { makeEnvelope, toWire } from './rrp/envelope';
 import type { RrpEnvelope, RrpType } from './rrp/envelope';
-import { getRecentMessageDigest, getIncompleteMediaDigest } from './localMessageStore';
+import { getRecentMessageDigest, getIncompleteMediaDigest, getMessageStateDeltas } from './localMessageStore';
+import { debugLog } from './diagnostics';
 
 /** Canonical RrpType → the backend `type` field for an OUTBOUND frame. */
 const TYPE_TO_SEND_TYPE: Partial<Record<RrpType, string>> = {
   'sync.digest': 'sync_digest',
   'sync.request': 'sync_request',
+  'sync.state': 'sync_state',
 };
 
 /**
@@ -64,7 +66,7 @@ export async function emitRoomDigests(): Promise<void> {
     return;
   }
 
-  let digest: Array<{ room_id: string; ids: string[] }> = [];
+  let digest: Array<{ room_id: string; ids: string[]; entries: import('./syncDelta').MessageDigestEntry[] }> = [];
   try {
     digest = await getRecentMessageDigest();
   } catch {
@@ -75,7 +77,7 @@ export async function emitRoomDigests(): Promise<void> {
     if (!room.ids.length) continue;
     const env = makeEnvelope(
       'sync.digest',
-      { room_id: room.room_id, ids: room.ids },
+      { room_id: room.room_id, ids: room.ids, entries: room.entries },
       { room_id: room.room_id },
     );
     await sendEvent(env).catch(() => {});
@@ -86,11 +88,38 @@ export async function emitRoomDigests(): Promise<void> {
  * Ask the peer to resend a set of message ids we are missing in a room.
  * Best-effort over the notification WS.
  */
-export async function requestMissing(roomId: string, ids: string[]): Promise<void> {
-  if (!ids.length) return;
+export async function requestMissing(
+  roomId: string,
+  ids: string[],
+  updateIds: string[] = [],
+  targetUserId?: number,
+): Promise<void> {
+  if (!ids.length && !updateIds.length) return;
   const env = makeEnvelope(
     'sync.request',
-    { room_id: roomId, ids },
+    {
+      room_id: roomId,
+      ids,
+      update_ids: updateIds,
+      ...(targetUserId ? { target_user_id: targetUserId } : {}),
+    },
+    { room_id: roomId },
+  );
+  await sendEvent(env).catch(() => {});
+}
+
+/** Return only requested mutation state to the peer that advertised an older row. */
+export async function sendMessageStateDeltas(
+  roomId: string,
+  targetUserId: number,
+  ids: string[],
+): Promise<void> {
+  if (!targetUserId || !ids.length) return;
+  const states = await getMessageStateDeltas(roomId, ids).catch(() => []);
+  if (!states.length) return;
+  const env = makeEnvelope(
+    'sync.state',
+    { room_id: roomId, target_user_id: targetUserId, states },
     { room_id: roomId },
   );
   await sendEvent(env).catch(() => {});
@@ -119,6 +148,6 @@ export async function requestIncompleteMedia(): Promise<void> {
   for (const room of digest) {
     if (!room.ids.length) continue;
     await requestMissing(room.room_id, room.ids).catch(() => {});
-    console.log('[OutboundRouter] requested media hydration for', room.ids.length, 'in', room.room_id);
+    debugLog('[OutboundRouter] requested media hydration for', room.ids.length, 'in', room.room_id);
   }
 }

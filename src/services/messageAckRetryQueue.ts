@@ -8,6 +8,7 @@
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from './api';
+import { debugLog } from './diagnostics';
 
 const RETRY_QUEUE_KEY = '@axonic_message_ack_retry_queue';
 const MAX_RETRY_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -53,7 +54,7 @@ export async function enqueueMessageAck(ack: Omit<QueuedMessageAck, 'id' | 'crea
       (q) => q.message_id === ack.message_id && q.room_id === ack.room_id && q.sender_id === ack.sender_id
     );
     if (alreadyQueued) {
-      console.log('[AckRetryQueue] ack already queued:', ack.message_id);
+      debugLog('[AckRetryQueue] ack already queued:', ack.message_id);
       return true;
     }
     
@@ -69,7 +70,7 @@ export async function enqueueMessageAck(ack: Omit<QueuedMessageAck, 'id' | 'crea
     queue.push(queuedItem);
     await AsyncStorage.setItem(RETRY_QUEUE_KEY, JSON.stringify(queue));
     
-    console.log('[AckRetryQueue] enqueued ack:', ack.message_id, '(queue size:', queue.length, ')');
+    debugLog('[AckRetryQueue] enqueued ack:', ack.message_id, '(queue size:', queue.length, ')');
       return true;
     } catch (err) {
       console.warn('[AckRetryQueue] failed to enqueue:', err);
@@ -95,7 +96,7 @@ export async function flushPendingAcks(): Promise<{ flushed: number; failed: num
     const readyToRetry = queue.filter((q) => q.next_retry_at <= now);
     
     if (!readyToRetry.length) {
-      console.log('[AckRetryQueue] no acks ready to retry yet');
+      debugLog('[AckRetryQueue] no acks ready to retry yet');
       return { flushed: 0, failed: 0 };
     }
     
@@ -125,7 +126,7 @@ export async function flushPendingAcks(): Promise<{ flushed: number; failed: num
         });
         
         if (response.status === 200) {
-          console.log('[AckRetryQueue] flushed ack:', ack.message_id);
+          debugLog('[AckRetryQueue] flushed ack:', ack.message_id);
           toRemove.add(ack.id);
           flushed++;
           continue;
@@ -169,7 +170,7 @@ export async function flushPendingAcks(): Promise<{ flushed: number; failed: num
     }
     
     if (flushed > 0 || failed > 0) {
-      console.log('[AckRetryQueue] flush complete:', { flushed, failed, remaining: updated.length });
+      debugLog('[AckRetryQueue] flush complete:', { flushed, failed, remaining: updated.length });
     }
     
       return { flushed, failed };
@@ -199,7 +200,7 @@ export async function clearQueue(): Promise<void> {
   return serializeQueue(async () => {
     try {
       await AsyncStorage.removeItem(RETRY_QUEUE_KEY);
-      console.log('[AckRetryQueue] queue cleared');
+      debugLog('[AckRetryQueue] queue cleared');
     } catch (err) {
       console.warn('[AckRetryQueue] failed to clear queue:', err);
     }

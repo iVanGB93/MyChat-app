@@ -11,6 +11,7 @@ import api, { getTokens } from './api';
 import { displayIncomingCallNotification } from './callNotificationService';
 import { useAppStore } from '../store/appStore';
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
+import { debugLog } from './diagnostics';
 
 const TASK_NAME = 'BACKGROUND_NOTIFICATION_CHECK';
 const PUSH_RECEIVE_TASK = 'PUSH_NOTIFICATION_RECEIVE';
@@ -53,7 +54,7 @@ async function checkPendingNotifications(): Promise<boolean> {
   try {
     const tokens = await getTokens();
     if (!tokens?.access) {
-      console.log('[BackgroundTask] No auth tokens, skipping');
+      debugLog('[BackgroundTask] No auth tokens, skipping');
       return false;
     }
 
@@ -80,7 +81,7 @@ async function checkPendingNotifications(): Promise<boolean> {
         continue;
       }
       if (!lastShownCallIds.has(call.call_id)) {
-        console.log('[BackgroundTask] local_call', {
+        debugLog('[BackgroundTask] local_call', {
           call_id: call.call_id,
           correlation_id: call.correlation_id ?? '',
           route_reason: call.route_reason ?? '',
@@ -101,7 +102,7 @@ async function checkPendingNotifications(): Promise<boolean> {
     const currentCallIds = new Set(data.calls.map((c) => c.call_id));
     lastShownCallIds = currentCallIds;
 
-    console.log(
+    debugLog(
       `[BackgroundTask] checked: ${data.messages.length} unread rooms, ${data.calls.length} calls, hasNew=${hasNew}`,
     );
 
@@ -140,9 +141,9 @@ export async function registerBackgroundTask(): Promise<void> {
         // Interval is in MINUTES for expo-background-task.
         minimumInterval: 15,
       });
-      console.log('[BackgroundTask] Task registered successfully');
+      debugLog('[BackgroundTask] Task registered successfully');
     } else {
-      console.log('[BackgroundTask] Task already registered');
+      debugLog('[BackgroundTask] Task already registered');
     }
   } catch (err) {
     console.warn('[BackgroundTask] Registration failed:', err);
@@ -157,7 +158,7 @@ export async function unregisterBackgroundTask(): Promise<void> {
     const isRegistered = await TaskManager.isTaskRegisteredAsync(TASK_NAME);
     if (isRegistered) {
       await BackgroundTask.unregisterTaskAsync(TASK_NAME);
-      console.log('[BackgroundTask] Task unregistered');
+      debugLog('[BackgroundTask] Task unregistered');
     }
   } catch (err) {
     console.warn('[BackgroundTask] Unregister failed:', err);
@@ -194,7 +195,7 @@ TaskManager.defineTask(PUSH_RECEIVE_TASK, async ({ data, error }: { data: any; e
 export async function registerPushReceiveTask(): Promise<void> {
   try {
     await Notifications.registerTaskAsync(PUSH_RECEIVE_TASK);
-    console.log('[PushReceiveTask] registered');
+    debugLog('[PushReceiveTask] registered');
   } catch (err) {
     // Fails silently on platforms that don\'t support it (web, old SDK)
     console.warn('[PushReceiveTask] registration failed (may not be supported):', err);
@@ -206,7 +207,7 @@ export async function unregisterPushReceiveTask(): Promise<void> {
     const isRegistered = await TaskManager.isTaskRegisteredAsync(PUSH_RECEIVE_TASK);
     if (isRegistered) {
       await Notifications.unregisterTaskAsync(PUSH_RECEIVE_TASK);
-      console.log('[PushReceiveTask] unregistered');
+      debugLog('[PushReceiveTask] unregistered');
     }
   } catch (err) {
     console.warn('[PushReceiveTask] unregister failed:', err);

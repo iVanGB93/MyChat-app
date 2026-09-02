@@ -8,6 +8,7 @@ const {
 } = require('../src/services/mediaTransferPolicy.ts');
 
 test('rejects an oversized attachment before upload', () => {
+  assert.equal(MEDIA_MAX_UPLOAD_BYTES, 250 * 1024 * 1024);
   assert.equal(validateMediaSize(MEDIA_MAX_UPLOAD_BYTES), null);
   const failure = validateMediaSize(MEDIA_MAX_UPLOAD_BYTES + 1);
   assert.equal(failure.code, 'too_large');
@@ -35,4 +36,3 @@ test('bounded mapper preserves result order and never exceeds its limit', async 
   assert.deepEqual(results, [10, 20, 30, 40]);
   assert.equal(peak, 2);
 });
-

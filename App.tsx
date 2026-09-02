@@ -37,6 +37,7 @@ import { takePendingRoomNav } from './src/services/pendingRoomNav';
 import { takePendingCallNav } from './src/services/pendingCallNav';
 import { markCallEnded, isCallEnded } from './src/services/callDedupe';
 import { useAppStore } from './src/store/appStore';
+import { navigateFromNotification } from './src/services/notificationNavigation';
 
 export default function App() {
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
@@ -125,32 +126,6 @@ export default function App() {
     ensureMessageChannel().catch(() => {});
     const unsubFcmForeground = registerFcmForegroundHandler();
 
-    // Navigate to the chat when a MessagingStyle (Notifee) message notification
-    // is tapped. On a COLD start the `ChatRoom` route only exists once the user
-    // is authenticated, so a single navigate would no-op and leave the user on
-    // the default screen — we retry until we actually land on the room.
-    const navigateToRoomWhenReady = (
-      d: Record<string, string>,
-      attempt = 0,
-    ) => {
-      if (attempt > 150) return; // ~30s cap (covers auth loading on cold start)
-      if (!navigationRef.isReady()) {
-        setTimeout(() => navigateToRoomWhenReady(d, attempt + 1), 200);
-        return;
-      }
-      const senderIdNum = d.senderId != null ? Number(d.senderId) : undefined;
-      navigationRef.navigate('ChatRoom', {
-        roomId: String(d.roomId),
-        roomName: String(d.roomName ?? ''),
-        otherUserId: senderIdNum && !Number.isNaN(senderIdNum) ? senderIdNum : undefined,
-      });
-      // The navigate above is a no-op until the authed stack (with ChatRoom) is
-      // mounted. Keep retrying until the current route is actually the room.
-      const current = navigationRef.getCurrentRoute();
-      if (current?.name !== 'ChatRoom') {
-        setTimeout(() => navigateToRoomWhenReady(d, attempt + 1), 200);
-      }
-    };
     const unsubNotifeeMsg = notifee.onForegroundEvent(({ type, detail }) => {
       // Direct-reply action typed on a message notification while the app is
       // foregrounded — relay it the same way the background dispatcher does.
@@ -171,7 +146,7 @@ export default function App() {
       const d = detail.notification?.data as Record<string, string> | undefined;
       console.log('[Notif] foreground PRESS', { type: d?.type, roomId: d?.roomId });
       if (!d || d.type !== 'new_message' || !d.roomId) return;
-      navigateToRoomWhenReady(d);
+      navigateFromNotification(d);
     });
 
     // Cold start: if the app was launched by tapping a message notification,
@@ -179,17 +154,17 @@ export default function App() {
     notifee.getInitialNotification().then((initial) => {
       const d = initial?.notification?.data as Record<string, string> | undefined;
       console.log('[Notif] getInitialNotification', { type: d?.type, roomId: d?.roomId });
-      if (d?.type === 'new_message' && d.roomId) navigateToRoomWhenReady(d);
+      navigateFromNotification(d);
     }).catch(() => {});
 
     // A message notification pressed while BACKGROUNDED is delivered to the
     // background handler, which stashes the target. Consume it now (on mount)
     // and whenever the app returns to the foreground, then navigate.
-    const consumePendingNav = () => {
-      const pending = takePendingRoomNav();
+    const consumePendingNav = async () => {
+      const pending = await takePendingRoomNav();
       if (pending?.roomId) {
         console.log('[Notif] consuming pending nav →', pending.roomId);
-        navigateToRoomWhenReady({
+        navigateFromNotification({
           type: 'new_message',
           roomId: pending.roomId,
           roomName: pending.roomName ?? '',
@@ -242,32 +217,8 @@ export default function App() {
       if (!data || !data.type) return;
       if (data.type === 'new_message') {
         savePushMessage(data).catch(() => {});
-        const roomId = data.roomId ?? data.room_id;
-        if (roomId) {
-          navigateToRoomWhenReady({
-            ...data,
-            roomId: String(roomId),
-            roomName: String(data.roomName ?? data.room_name ?? ''),
-            senderId: String(data.senderId ?? data.sender_id ?? ''),
-          });
-        }
-      } else if (data.type === 'incoming_call') {
-        const navCall = (attempt = 0) => {
-          if (!navigationRef.isReady()) {
-            if (attempt > 100) return;
-            setTimeout(() => navCall(attempt + 1), 100);
-            return;
-          }
-          navigationRef.navigate('IncomingCall', {
-            callId: String(data.callId ?? data.call_id ?? ''),
-            callerName: String(data.callerName ?? data.caller_name ?? 'Unknown'),
-            callerId: Number(data.callerId ?? data.caller_id ?? 0),
-            callType: (data.callType as 'voice' | 'video') ?? 'voice',
-            roomName: String(data.roomName ?? data.room_name ?? ''),
-          });
-        };
-        navCall();
       }
+      navigateFromNotification(data);
     };
     // Background → foreground tap.
     const unsubFcmOpened = onNotificationOpenedApp(getMessaging(), handleFcmOpen);
@@ -286,38 +237,7 @@ export default function App() {
 
       if (!data) return;
 
-      // On a cold launch from a killed app the navigation container isn't ready
-      // yet when this fires — retry until it is, otherwise the navigate is a
-      // no-op and the user lands on the default (chat list) instead of the room.
-      const navigateWhenReady = (run: () => void, attempt = 0) => {
-        if (!navigationRef.isReady()) {
-          if (attempt > 100) return; // ~10s safety cap
-          setTimeout(() => navigateWhenReady(run, attempt + 1), 100);
-          return;
-        }
-        run();
-      };
-
-      if (data.type === 'incoming_call') {
-        navigateWhenReady(() => {
-          navigationRef.navigate('IncomingCall', {
-            callId: String(data.callId ?? ''),
-            callerName: String(data.callerName ?? 'Unknown'),
-            callerId: Number(data.callerId ?? 0),
-            callType: (data.callType as 'voice' | 'video') ?? 'voice',
-            roomName: String(data.roomName ?? ''),
-          });
-        });
-      } else if (data.type === 'new_message' && data.roomId) {
-        const senderIdNum = data.senderId != null ? Number(data.senderId) : undefined;
-        navigateWhenReady(() => {
-          navigationRef.navigate('ChatRoom', {
-            roomId: String(data.roomId),
-            roomName: String(data.roomName ?? ''),
-            otherUserId: senderIdNum && !Number.isNaN(senderIdNum) ? senderIdNum : undefined,
-          });
-        });
-      }
+      navigateFromNotification(data);
     });
 
     // Save message to SQLite when push arrives while app is in background

@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const {
   applyMessageLifecycleEvent,
   mergeMessageById,
+  resolveOutgoingMessageStatus,
+  shouldSuppressOutboxReplay,
 } = require('../src/services/messageLifecycle.ts');
 
 function state() {
@@ -23,6 +25,14 @@ test('server acceptance keeps the first-attempt message pending', () => {
   assert.deepEqual([...after.pendingIds], ['m1']);
 });
 
+test('server acceptance suppresses only immediate recovery replays', () => {
+  const now = 50_000;
+  assert.equal(shouldSuppressOutboxReplay(true, undefined, now), true);
+  assert.equal(shouldSuppressOutboxReplay(false, now - 2_000, now), true);
+  assert.equal(shouldSuppressOutboxReplay(false, now - 10_000, now), false);
+  assert.equal(shouldSuppressOutboxReplay(false, undefined, now), false);
+});
+
 test('delivery and read acknowledgements advance status idempotently', () => {
   const delivered = applyMessageLifecycleEvent(state(), {
     type: 'delivered',
@@ -39,6 +49,20 @@ test('delivery and read acknowledgements advance status idempotently', () => {
   assert.equal(read.pendingIds.has('m1'), false);
   assert.equal(read.deliveredIds.has('m1'), true);
   assert.equal(read.readIds.has('m1'), true);
+});
+
+test('a live receipt wins over a stale persisted pending status', () => {
+  const delivered = applyMessageLifecycleEvent(state(), {
+    type: 'delivered',
+    ids: ['m1'],
+  });
+  assert.equal(resolveOutgoingMessageStatus('m1', 'pending', delivered), 'delivered');
+
+  const read = applyMessageLifecycleEvent(delivered, {
+    type: 'read',
+    ids: ['m1'],
+  });
+  assert.equal(resolveOutgoingMessageStatus('m1', 'pending', read), 'read');
 });
 
 test('duplicate incoming message ids are ignored', () => {

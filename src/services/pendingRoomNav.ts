@@ -9,6 +9,8 @@
 /*  getInitialNotification.                                             */
 /* ------------------------------------------------------------------ */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 export interface PendingRoomNav {
   roomId: string;
   roomName: string;
@@ -16,13 +18,24 @@ export interface PendingRoomNav {
 }
 
 let _pending: PendingRoomNav | null = null;
+const PENDING_ROOM_NAV_KEY = '@axonic_pending_room_navigation';
 
 export function setPendingRoomNav(nav: PendingRoomNav): void {
   _pending = nav;
+  AsyncStorage.setItem(PENDING_ROOM_NAV_KEY, JSON.stringify(nav)).catch(() => {});
 }
 
-export function takePendingRoomNav(): PendingRoomNav | null {
-  const v = _pending;
+export async function takePendingRoomNav(): Promise<PendingRoomNav | null> {
+  let value = _pending;
   _pending = null;
-  return v;
+  if (!value) {
+    try {
+      const raw = await AsyncStorage.getItem(PENDING_ROOM_NAV_KEY);
+      value = raw ? JSON.parse(raw) as PendingRoomNav : null;
+    } catch {
+      value = null;
+    }
+  }
+  await AsyncStorage.removeItem(PENDING_ROOM_NAV_KEY).catch(() => {});
+  return value;
 }

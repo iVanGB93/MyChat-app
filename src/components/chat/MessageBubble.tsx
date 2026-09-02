@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Platform,
   StyleSheet,
@@ -88,7 +89,8 @@ async function openSharedFile(fileUri: string): Promise<void> {
     }
     await Linking.openURL(fileUri);
   } catch {
-    // The receiving device may not have an app registered for this format.
+    // No app on the device is registered to view this file's type.
+    Alert.alert('Cannot open file', 'No app on this device can open this type of file.');
   }
 }
 

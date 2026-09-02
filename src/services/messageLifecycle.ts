@@ -9,6 +9,36 @@ export type MessageLifecycleEvent =
   | { type: 'delivered'; ids: string[] }
   | { type: 'read'; ids: string[] };
 
+export type OutgoingMessageStatus = 'pending' | 'delivered' | 'read';
+
+export const SERVER_ACCEPTED_REPLAY_GRACE_MS = 10_000;
+
+/** Recovery triggers can race with a successful server ACK. Give the persisted
+ * server copy time to reach the recipient before replaying the same frame. */
+export function shouldSuppressOutboxReplay(
+  awaitingServerAck: boolean,
+  serverAcceptedAt: number | undefined,
+  now: number,
+  graceMs = SERVER_ACCEPTED_REPLAY_GRACE_MS,
+): boolean {
+  if (awaitingServerAck) return true;
+  if (serverAcceptedAt === undefined) return false;
+  return now - serverAcceptedAt >= 0 && now - serverAcceptedAt < graceMs;
+}
+
+/** Resolve the visible receipt state while SQLite and live Axion state converge.
+ * A newer delivery/read receipt always wins over a stale persisted `pending`. */
+export function resolveOutgoingMessageStatus(
+  messageId: string,
+  persistedStatus: OutgoingMessageStatus | null | undefined,
+  lifecycle: MessageLifecycleState,
+  persistedRead = false,
+): OutgoingMessageStatus {
+  if (persistedRead || lifecycle.readIds.has(messageId) || persistedStatus === 'read') return 'read';
+  if (lifecycle.deliveredIds.has(messageId) || persistedStatus === 'delivered') return 'delivered';
+  return 'pending';
+}
+
 /** Pure status transition used by the room coordinator and unit tests.
  * Server acceptance deliberately keeps the pending clock: only a recipient's
  * delivery/read acknowledgement can promote the user-visible status. */

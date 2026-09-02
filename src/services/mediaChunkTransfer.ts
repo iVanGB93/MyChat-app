@@ -1,3 +1,5 @@
+import { debugLog } from './diagnostics';
+
 /* ------------------------------------------------------------------ */
 /*  Media Chunk Transfer (receiver reassembly)                          */
 /*                                                                      */
@@ -123,7 +125,7 @@ export async function receiveMediaChunk(frame: Record<string, any>): Promise<voi
   try {
     const { ingestMessage } = await import('./ingressRouter');
     await ingestMessage(frameForIngest, 'ws');
-    console.log('[MediaChunk] reassembled', t.total, 'chunks for', messageId);
+    debugLog('[MediaChunk] reassembled', t.total, 'chunks for', messageId);
   } catch (err) {
     console.warn('[MediaChunk] reassembly ingest failed:', err);
   }

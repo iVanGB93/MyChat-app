@@ -5,7 +5,7 @@
 /* ------------------------------------------------------------------ */
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Pressable, Platform } from 'react-native';
+import { AppState, View, Text, StyleSheet, TouchableOpacity, Pressable, Platform } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useKeepAwake } from 'expo-keep-awake';
 import { RTCView } from 'react-native-webrtc';
@@ -16,8 +16,13 @@ import { endCall, getCallStatus } from '../../services/callService';
 import { markCallEnded } from '../../services/callDedupe';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playSound, playLooping, stopLooping } from '../../services/soundService';
-import { startForegroundService, stopForegroundService } from '../../services/foregroundService';
+import {
+  setCallPictureInPictureEnabled,
+  startForegroundService,
+  stopForegroundService,
+} from '../../services/foregroundService';
 import { useAppStore } from '../../store/appStore';
+import { debugLog } from '../../services/diagnostics';
 import useWebRTC from '../../hooks/useWebRTC';
 import Avatar from '../../components/ui/Avatar';
 import type { RootStackParamList } from '../../types';
@@ -26,6 +31,7 @@ type Props = NativeStackScreenProps<RootStackParamList, 'ActiveCall'>;
 
 export default function ActiveCallScreen({ route, navigation }: Props) {
   const { callId, otherName, callType, isOutgoing, peerUserId } = route.params;
+  const isVideo = callType === 'video';
   const { colors: Colors } = useTheme();
   const CALLER_RINGBACK_CYCLE_MS = 10_200;
 
@@ -39,6 +45,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   // Video is unobstructed once controls are dismissed. A transparent press
   // target beneath the controls makes any unused part of the screen toggle it.
   const [showVideoControls, setShowVideoControls] = useState(true);
+  const [appIsActive, setAppIsActive] = useState(AppState.currentState === 'active');
   const [status, setStatus] = useState<'connecting' | 'ringing' | 'connected' | 'ended'>(
     isOutgoing ? 'connecting' : 'connected',
   );
@@ -76,10 +83,10 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     isOutgoing,
     peerUserId,
     onConnected: () => {
-      console.log('[ActiveCall] WebRTC peer connected');
+      debugLog('[ActiveCall] WebRTC peer connected');
     },
     onDisconnected: () => {
-      console.log('[ActiveCall] WebRTC peer disconnected');
+      debugLog('[ActiveCall] WebRTC peer disconnected');
     },
   });
 
@@ -88,6 +95,25 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     startForegroundService('call', callType);
     return () => { stopForegroundService('call'); };
   }, [callType]);
+
+  /* ---- Android system Picture-in-Picture for connected video calls ---- */
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !isVideo) return;
+    const enabled = status === 'connected';
+    setCallPictureInPictureEnabled(enabled);
+    return () => { setCallPictureInPictureEnabled(false); };
+  }, [isVideo, status]);
+
+  useEffect(() => {
+    if (!isVideo) return;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const active = nextState === 'active';
+      setAppIsActive(active);
+      // PiP should contain clean video rather than scaled-down call controls.
+      setShowVideoControls(active);
+    });
+    return () => subscription.remove();
+  }, [isVideo]);
 
   /* ---- mirror call into global store on mount + status changes ---- */
   useEffect(() => {
@@ -152,14 +178,14 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       if (call_id && call_id !== callId) return;
 
       if (event === 'call_accepted') {
-        console.log('[ActiveCall] call_accepted → starting WebRTC offer');
+        debugLog('[ActiveCall] call_accepted → starting WebRTC offer');
         setStatus('connected');
         if (!offerStartedRef.current) {
           offerStartedRef.current = true;
           startAsOfferer();
         }
       } else if (event === 'call_ended' || event === 'call_rejected') {
-        console.log('[ActiveCall] call ended/rejected');
+        debugLog('[ActiveCall] call ended/rejected');
         stopLooping();
         if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
         setStatus('ended');
@@ -241,7 +267,6 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     setTimeout(() => dismiss(), 800);
   };
 
-  const isVideo = callType === 'video';
   const remoteStreamUrl = remoteStream ? (remoteStream as any).toURL() : null;
   const localStreamUrl = localStream ? (localStream as any).toURL() : null;
 
@@ -285,7 +310,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       )}
 
       {/* PIP local preview only when remote is fullscreen */}
-      {showRemoteFullscreen && localStreamUrl && (
+      {showRemoteFullscreen && localStreamUrl && appIsActive && (
         <View style={styles.pipWrap} pointerEvents="none">
           <RTCView
             streamURL={localStreamUrl}
@@ -377,7 +402,13 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
             />
           )}
 
-          <TouchableOpacity style={styles.endBtn} onPress={handleEndCall} activeOpacity={0.8}>
+          <TouchableOpacity
+            testID="axonic-end-call"
+            accessibilityLabel="End call"
+            style={styles.endBtn}
+            onPress={handleEndCall}
+            activeOpacity={0.8}
+          >
             <Ionicons
               name="call"
               size={28}

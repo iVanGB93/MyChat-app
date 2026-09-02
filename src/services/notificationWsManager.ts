@@ -13,7 +13,8 @@
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import api, { clearTokens, getTokens, saveTokens, BASE_URL } from './api';
+import api, { clearTokens, BASE_URL } from './api';
+import { getValidAccessToken } from './tokenRefresh';
 import { useAppStore } from '../store/appStore';
 import { shouldShowLocalIncomingCallNotification } from './notificationPresentationPolicy';
 import { decideLocalIncomingCallNotification } from './notificationPresentationPolicy';
@@ -22,6 +23,7 @@ import { classify } from './rrp/envelope';
 import { invalidateSession } from './sessionInvalidation';
 import { getInstallationId } from './installationIdentity';
 import type { ConnectionStatus, NotificationPayload } from './axionTypes';
+import { debugLog } from './diagnostics';
 import {
   acceptAxionMessageUpdates,
   acceptAxionServerMessage,
@@ -102,7 +104,7 @@ const CONNECTION_TIMEOUT_MS = 8_000;
 // authentication work after the TCP/WebSocket handshake.  Keep this safely
 // above the server-side budget so a healthy socket is not needlessly recycled.
 const AUTH_TIMEOUT_MS = 35_000;
-const TOKEN_REFRESH_MARGIN_MS = 2 * 60_000; // refresh JWT only when <2 min left
+const TOKEN_REFRESH_MARGIN_MS = 2 * 60_000;
 // Server is now hardened with try/except in NotificationConsumer.receive, so it's
 // safe to inform the server of our app state. The server uses this to decide whether
 // the user is "online" (foreground) or merely "connected" (background).
@@ -200,7 +202,7 @@ function _sendAppState(state: 'active' | 'background') {
     try {
       ws.send(JSON.stringify({ type: 'app_state', state }));
       _lastReportedAppState = state;
-      console.log('[WsManager] sent app_state:', state);
+      debugLog('[WsManager] sent app_state:', state);
     } catch { /* ignore */ }
   }
 }
@@ -224,7 +226,7 @@ export function sendRawNotif(frame: Record<string, any>): boolean {
   try {
     ws.send(JSON.stringify(frame));
     if (__DEV__ && frame.type === 'send_message') {
-      console.log('[Axion] frame handed to WebSocket', frame.id ?? '', 'room', frame.room_id ?? '');
+      debugLog('[Axion] frame handed to WebSocket', frame.id ?? '', 'room', frame.room_id ?? '');
     }
     return true;
   } catch {
@@ -236,7 +238,7 @@ export async function sendOrQueueMessageAck(ack: QueuedAck): Promise<void> {
   if (ws?.readyState === WebSocket.OPEN && _wsAuthenticated) {
     try {
       ws.send(JSON.stringify({ type: 'message_ack', ...ack }));
-      console.log('[WsManager] ack sent immediately', ack.message_id);
+      debugLog('[WsManager] ack sent immediately', ack.message_id);
       return;
     } catch { /* fall through to queue */ }
   }
@@ -248,7 +250,7 @@ export async function sendOrQueueMessageAck(ack: QueuedAck): Promise<void> {
     if (!queue.some((q) => q.message_id === ack.message_id && q.room_id === ack.room_id)) {
       queue.push(ack);
       await AsyncStorage.setItem(PENDING_ACKS_KEY, JSON.stringify(queue));
-      console.log('[WsManager] ack queued for later', ack.message_id, '(queue size:', queue.length, ')');
+      debugLog('[WsManager] ack queued for later', ack.message_id, '(queue size:', queue.length, ')');
     }
   } catch (err) {
     console.warn('[WsManager] failed to queue ack:', err);
@@ -266,7 +268,7 @@ async function _flushPendingAcks(): Promise<void> {
     for (const ack of queue) {
       try {
         ws.send(JSON.stringify({ type: 'message_ack', ...ack }));
-        console.log('[WsManager] flushed queued ack', ack.message_id);
+        debugLog('[WsManager] flushed queued ack', ack.message_id);
       } catch {
         failed.push(ack);
       }
@@ -301,7 +303,7 @@ function scheduleReconnect() {
   }
 
   const delay = _reconnectDelay;
-  console.log(`[WsManager] reconnect in ${delay}ms`);
+  debugLog(`[WsManager] reconnect in ${delay}ms`);
 
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
@@ -338,41 +340,14 @@ async function connectWs() {
 
   setStatus(_status === 'disconnected' || _status === 'no-internet' ? 'connecting' : 'reconnecting');
 
-  // Only refresh JWT if it's close to expiring (saves 1-3s on most reconnects)
+  // All HTTP and Axion callers share one refresh operation, so concurrent
+  // reconnects cannot race and rotate the same refresh token twice.
+  let accessToken: string | null = null;
   try {
-    const currentTokens = await getTokens();
-    if (currentTokens?.access && currentTokens?.refresh) {
-      let needsRefresh = false;
-      try {
-        // JWT payload is base64url; normalise for atob.
-        const payloadB64 = currentTokens.access.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-        const payload = JSON.parse(atob(payloadB64));
-        const expiresAt = payload.exp * 1000;
-        needsRefresh = expiresAt - Date.now() < TOKEN_REFRESH_MARGIN_MS;
-      } catch {
-        needsRefresh = true; // can't decode → refresh to be safe
-      }
-
-      if (needsRefresh) {
-        const { default: axios } = require('axios');
-        const controller = new AbortController();
-        const refreshTimeout = setTimeout(() => controller.abort(), 5_000);
-        try {
-          const { data } = await axios.post(
-            `${BASE_URL}/api/users/token/refresh/`,
-            { refresh: currentTokens.refresh },
-            { signal: controller.signal },
-          );
-          await saveTokens(data.access, data.refresh ?? currentTokens.refresh);
-          console.log('[WsManager] JWT refreshed (was near expiry)');
-        } finally {
-          clearTimeout(refreshTimeout);
-        }
-      }
-    }
+    accessToken = await getValidAccessToken(TOKEN_REFRESH_MARGIN_MS);
   } catch (err: any) {
     console.warn('[WsManager] token refresh failed:', err?.message ?? err);
-    const status = err?.response?.status;
+    const status = err?.status;
     if (status === 400 || status === 401 || status === 403) {
       // A rejected refresh token is not a connectivity fault. Continuing the
       // reconnect loop only produces repeated auth_failed frames and makes the
@@ -381,16 +356,13 @@ async function connectWs() {
       console.warn('[WsManager] refresh token rejected — ending session');
       _sessionRejected = true;
       _authenticated = false;
-      await clearTokens();
       connecting = false;
       setStatus('disconnected');
-      invalidateSession('refresh_rejected');
       return;
     }
   }
 
-  const tokens = await getTokens();
-  if (!tokens?.access) {
+  if (!accessToken) {
     connecting = false;
     setStatus('disconnected');
     return;
@@ -402,7 +374,7 @@ async function connectWs() {
 
   // Connect WITHOUT token in URL — auth sent as first message after open
   const url = `${WS_BASE}/ws/notifications/`;
-  console.log('[WsManager] connecting…');
+  debugLog('[WsManager] connecting…');
 
   try {
     const socket = new WebSocket(url);
@@ -422,7 +394,7 @@ async function connectWs() {
 
     socket.onopen = () => {
       if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
-      console.log('[WsManager] socket open — sending auth');
+      debugLog('[WsManager] socket open — sending auth');
       connecting = false;
       // CRITICAL: use the closure `socket` reference, not the module-level `ws`,
       // because `ws` can be reassigned/closed by a competing connect/closeWs() call
@@ -432,7 +404,7 @@ async function connectWs() {
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({
             type: 'auth',
-            token: tokens.access,
+            token: accessToken,
             installation_id: installationId,
           }));
         }
@@ -469,7 +441,7 @@ async function connectWs() {
 
         // ---- Post-connect authentication ----
         if ((payload as any).type === 'auth_ok') {
-          console.log('[WsManager] ✓ authenticated');
+          debugLog('[WsManager] ✓ authenticated');
           if (authTimeoutTimer) { clearTimeout(authTimeoutTimer); authTimeoutTimer = null; }
           _wsAuthenticated = true;
           _connectedAt = Date.now();
@@ -489,7 +461,7 @@ async function connectWs() {
             _sendAppState(currentAppState as 'active' | 'background');
           }
           if (_hasConnectedBefore) {
-            console.log('[WsManager] reconnected — checking missed notifications');
+            debugLog('[WsManager] reconnected — checking missed notifications');
             checkAxionPendingNotifications();
           }
           _hasConnectedBefore = true;
@@ -522,6 +494,7 @@ async function connectWs() {
           const roomId = String((payload as any).room_id ?? '');
           const messageId = String((payload as any).message_id ?? '');
           if (roomId && messageId) {
+            debugLog('[Axion] routing server ACK', messageId, 'room', roomId);
             acceptAxionServerMessage(roomId, messageId);
           }
           return;
@@ -554,7 +527,7 @@ async function connectWs() {
         // diagnostics. Logging every snapshot made long Metro sessions retain
         // gigabytes of terminal output.
         if (payload.event !== 'presence_snapshot' && payload.event !== 'presence_update') {
-          console.log('[WsManager] event:', payload.event, payload.call_id ?? '', {
+          debugLog('[WsManager] event:', payload.event, payload.call_id ?? '', {
             correlation_id: correlationId,
             route_reason: routeReason,
           });
@@ -606,7 +579,7 @@ async function connectWs() {
 
           const localCallDecision = decideLocalIncomingCallNotification(payload, storeState);
           if (payload.event === 'incoming_call') {
-            console.log('[NotifPolicy] local_call', {
+            debugLog('[NotifPolicy] local_call', {
               allow: localCallDecision.allow,
               reason: localCallDecision.reason,
               call_id: String(payload.call_id ?? ''),
@@ -671,7 +644,7 @@ async function connectWs() {
       const connectedMs = _connectedAt ? Date.now() - _connectedAt : 0;
       if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
       if (authTimeoutTimer) { clearTimeout(authTimeoutTimer); authTimeoutTimer = null; }
-      console.log('[WsManager] closed', ev.code, ev.reason);
+      debugLog('[WsManager] closed', ev.code, ev.reason);
       if (wasCurrentSocket) {
         connecting = false;
         _wsAuthenticated = false;
@@ -751,7 +724,7 @@ function startNetworkListener() {
       closeWs();
       clearAllTimers();
     } else if (wasOffline && online) {
-      console.log('[WsManager] internet restored — reconnecting and flushing retry queues');
+      debugLog('[WsManager] internet restored — reconnecting and flushing retry queues');
       _reconnectDelay = INITIAL_RECONNECT_MS;
       connectWs();
       // Flush HTTP retry queue now that network is back
@@ -786,7 +759,7 @@ function startAppStateListener() {
 
     if (state === 'active') {
       if (_status !== 'connected') {
-        console.log('[WsManager] app foregrounded — reconnecting');
+        debugLog('[WsManager] app foregrounded — reconnecting');
         _reconnectDelay = INITIAL_RECONNECT_MS;
         connectWs();
       }
@@ -808,7 +781,7 @@ function startSelfHealWatchdog() {
     if (_suspendReconnectUntil > Date.now()) return;
     if (_status === 'connected' || _status === 'connecting' || _status === 'reconnecting') return;
     if (connecting) return;
-    console.log('[WsManager] watchdog reconnect from disconnected state');
+    debugLog('[WsManager] watchdog reconnect from disconnected state');
     _reconnectDelay = INITIAL_RECONNECT_MS;
     connectWs();
   }, 12_000);
@@ -925,13 +898,28 @@ export function sendWsSignal(targetUserId: number, signalType: string, data: any
 export function reconnectWsNow(): void {
   clearAllTimers();
   _reconnectDelay = INITIAL_RECONNECT_MS;
-  connectWs();
+  // A WebSocket can remain OPEN at the JavaScript layer after its underlying
+  // mobile/proxy route has gone stale. `connectWs()` deliberately no-ops for an
+  // authenticated OPEN socket, so calling it alone cannot recover a frame that
+  // never received its server acknowledgement. Tear down the stale transport
+  // first; the authenticated callback will replay the durable SQLite outbox.
+  connecting = false;
+  _connectedAt = 0;
+  closeWs();
+
+  if (!_authenticated) return;
+  if (!_hasInternet) {
+    setStatus('no-internet');
+    return;
+  }
+  setStatus(_hasConnectedBefore ? 'reconnecting' : 'connecting');
+  void connectWs();
 }
 
 /**
  * Called periodically by the foreground service keepalive task.
  * SELF-HEALING: If running in a fresh HeadlessJS context (e.g. after
- * Activity was destroyed), reads stored credentials from AsyncStorage
+ * Activity was destroyed), reads the stored user id and secure credentials
  * and re-initializes the WS connection automatically.
  */
 export async function ensureWsAlive(): Promise<void> {
@@ -947,49 +935,17 @@ export async function ensureWsAlive(): Promise<void> {
   // If not initialized, try to self-heal from stored credentials
   if (!_authenticated || !_userId) {
     try {
-      const [storedId, tokens] = await Promise.all([
+      const [storedId, accessToken] = await Promise.all([
         AsyncStorage.getItem(USER_ID_KEY),
-        getTokens(),
+        getValidAccessToken(TOKEN_REFRESH_MARGIN_MS),
       ]);
 
-      if (!storedId || !tokens?.access) {
+      if (!storedId || !accessToken) {
         // No stored session — user is logged out, nothing to do
         return;
       }
 
-      // Refresh token only if near expiry during self-heal
-      try {
-        if (tokens.refresh) {
-          let needsRefresh = false;
-          try {
-            const payloadB64 = tokens.access.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-            const payload = JSON.parse(atob(payloadB64));
-            needsRefresh = payload.exp * 1000 - Date.now() < TOKEN_REFRESH_MARGIN_MS;
-          } catch {
-            needsRefresh = true;
-          }
-          if (needsRefresh) {
-            const { default: axios } = require('axios');
-            const controller = new AbortController();
-            const refreshTimeout = setTimeout(() => controller.abort(), 5_000);
-            try {
-              const { data } = await axios.post(
-                `${BASE_URL}/api/users/token/refresh/`,
-                { refresh: tokens.refresh },
-                { signal: controller.signal },
-              );
-              await saveTokens(data.access, data.refresh ?? tokens.refresh);
-              console.log('[WsManager] self-heal: JWT refreshed');
-            } finally {
-              clearTimeout(refreshTimeout);
-            }
-          }
-        }
-      } catch {
-        console.warn('[WsManager] self-heal: token refresh failed, using existing');
-      }
-
-      console.log('[WsManager] self-healing — restoring from stored credentials');
+      debugLog('[WsManager] self-healing — restoring from stored credentials');
       _userId = Number(storedId);
       _authenticated = true;
       startNetworkListener();
@@ -1002,7 +958,7 @@ export async function ensureWsAlive(): Promise<void> {
 
   // Now try to connect
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    console.log('[WsManager] keepalive — WS not open, reconnecting');
+    debugLog('[WsManager] keepalive — WS not open, reconnecting');
     _reconnectDelay = INITIAL_RECONNECT_MS;
     connectWs();
   }
