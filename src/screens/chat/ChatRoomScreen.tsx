@@ -17,6 +17,7 @@ import {
   Modal,
   Pressable,
   Dimensions,
+  StatusBar,
   useWindowDimensions,
   Animated,
   PanResponder,
@@ -50,62 +51,22 @@ import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
-import { addContact, blockUser } from '../../services/contactService';
+import { acceptContact, blockUser, contactErrorMessage } from '../../services/contactService';
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import { getFirstMessageUrl } from '../../components/SmartMessageText';
 import ExtractedMessageBubble from '../../components/chat/MessageBubble';
 import { persistOutgoingImage, persistSharedFile, compressImageForSend } from '../../services/voiceMessageUtils';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import { mediaFileSize } from '../../services/mediaLane';
-import { mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, validateMediaSize } from '../../services/mediaTransferPolicy';
+import { getTransferFeedback, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, validateMediaSize } from '../../services/mediaTransferPolicy';
 import { resolveOutgoingMessageStatus } from '../../services/messageLifecycle';
 import { debugLog } from '../../services/diagnostics';
+import { getAndroidKeyboardOverlap } from '../../utils/keyboard-layout';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
 const LOCAL_HISTORY_PAGE_SIZE = 60;
-
-/**
- * Keyboard coordinates are reported in screen space, while
- * `useWindowDimensions()` is expressed in React-window space. Comparing those
- * two coordinate systems works on some Android devices but fails on others
- * (notably with edge-to-edge, gesture navigation, or vendor keyboards). Use
- * the chat viewport's measured screen position so both values share the same
- * coordinate system, and fall back to the physical screen height when
- * `screenY` itself isn't trustworthy. A floating keyboard must not move the
- * composer.
- */
-function getAndroidKeyboardOverlap(
-  coordinates: { screenY: number; height: number },
-  viewportY: number,
-  viewportHeight: number,
-): number {
-  const reportedHeight = Math.max(0, coordinates.height);
-  if (reportedHeight <= 0) return 0;
-
-  const viewportBottom = viewportY + viewportHeight;
-  const screenHeight = Dimensions.get('screen').height;
-
-  // Some Android builds (notably edge-to-edge on Android 15+) report a stale
-  // or zeroed `screenY` even though `height` is correct, which used to make
-  // this whole function bail with 0 overlap and leave the keyboard covering
-  // the composer. Derive the keyboard's top edge from the physical screen
-  // height (which never depends on the app window's own resize state)
-  // whenever screenY looks unusable, and only trust screenY for the
-  // floating-keyboard check when it's plausible.
-  const screenY = coordinates.screenY;
-  const hasUsableScreenY = Number.isFinite(screenY) && screenY > 0 && screenY < screenHeight;
-  const keyboardTop = hasUsableScreenY ? screenY : Math.max(0, screenHeight - reportedHeight);
-  if (keyboardTop >= viewportBottom) return 0;
-
-  const bottomTolerance = Math.max(24, viewportHeight * 0.02);
-  const isFloating = hasUsableScreenY
-    && screenY + reportedHeight < screenHeight - bottomTolerance;
-  if (isFloating) return 0;
-
-  return Math.min(viewportHeight, Math.max(0, viewportBottom - keyboardTop));
-}
 
 /** Compact header signal shown while the room socket is reconnecting. */
 function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing: boolean; color: string }) {
@@ -310,23 +271,33 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const chatViewportRef = useRef<View>(null);
   const composerFocusedRef = useRef(false);
   const keyboardResyncTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const keyboardMeasurementGenerationRef = useRef(0);
   const loadedHistoryLimitRef = useRef(LOCAL_HISTORY_PAGE_SIZE);
   const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
 
   /* Android 15+ enforces edge-to-edge layout. Some devices resize the React
-   * viewport for the IME and some leave it full-height. Measure the viewport in
-   * screen coordinates after each keyboard/layout change and add only the
+   * viewport for the IME and some leave it full-height. Normalize the measured
+   * viewport to screen coordinates after each keyboard/layout change and add only the
    * overlap that native adjustResize did not consume. */
   const measureAndroidKeyboardOverlap = useCallback((
     coordinates: { screenY: number; height: number },
+    generation: number,
   ) => {
     if (Platform.OS !== 'android') return;
     chatViewportRef.current?.measureInWindow((_x, viewportY, _width, viewportHeight) => {
-      const overlap = getAndroidKeyboardOverlap(coordinates, viewportY, viewportHeight);
+      if (generation !== keyboardMeasurementGenerationRef.current || !Keyboard.isVisible()) return;
+      const overlap = getAndroidKeyboardOverlap({
+        keyboard: coordinates,
+        viewportY,
+        viewportHeight,
+        screenHeight: Dimensions.get('screen').height,
+        windowTopInset: StatusBar.currentHeight ?? insets.top,
+        navigationBarInset: insets.bottom,
+      });
       setAndroidKeyboardOverlap((current) => current === overlap ? current : overlap);
     });
-  }, []);
+  }, [insets.top, insets.bottom]);
 
   const syncKeyboardMetrics = useCallback((allowFocusedFallback = false) => {
     if (Platform.OS !== 'android') return;
@@ -337,7 +308,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       if (!composerFocusedRef.current) setAndroidKeyboardOverlap(0);
       return;
     }
-    requestAnimationFrame(() => measureAndroidKeyboardOverlap(metrics));
+    const generation = keyboardMeasurementGenerationRef.current;
+    requestAnimationFrame(() => measureAndroidKeyboardOverlap(metrics, generation));
   }, [measureAndroidKeyboardOverlap]);
 
   const scheduleKeyboardMetricSync = useCallback((
@@ -346,9 +318,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (Platform.OS !== 'android') return;
     keyboardResyncTimersRef.current.forEach(clearTimeout);
     keyboardResyncTimersRef.current = [];
+    const generation = ++keyboardMeasurementGenerationRef.current;
 
     if (coordinates) {
-      requestAnimationFrame(() => measureAndroidKeyboardOverlap(coordinates));
+      requestAnimationFrame(() => measureAndroidKeyboardOverlap(coordinates, generation));
     } else {
       syncKeyboardMetrics(true);
     }
@@ -377,11 +350,13 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       scheduleKeyboardMetricSync(event.endCoordinates);
     });
     const hidden = Keyboard.addListener('keyboardDidHide', () => {
+      keyboardMeasurementGenerationRef.current += 1;
       keyboardResyncTimersRef.current.forEach(clearTimeout);
       keyboardResyncTimersRef.current = [];
       setAndroidKeyboardOverlap(0);
     });
     return () => {
+      keyboardMeasurementGenerationRef.current += 1;
       shown.remove();
       changed.remove();
       hidden.remove();
@@ -392,6 +367,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     const dismissKeyboard = () => {
+      keyboardMeasurementGenerationRef.current += 1;
+      keyboardResyncTimersRef.current.forEach(clearTimeout);
+      keyboardResyncTimersRef.current = [];
       Keyboard.dismiss();
       composerFocusedRef.current = false;
       setAndroidKeyboardOverlap(0);
@@ -798,24 +776,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       alert('Could not send voice message', result.error?.message || 'The recording could not be sent.');
     } else {
       playSound('message_sent');
-      if (result.state === 'queued') {
-        alert('Voice message queued', 'Axonic will finish sending when the connection is available.');
-      }
+      const feedback = getTransferFeedback([result]);
+      if (feedback) alert(feedback.title, feedback.message);
     }
   }, [audioRecorder, slideX, pulseScale, replyingTo, sendMessage, alert]);
 
   const showTransferResults = useCallback((results: SendChatResult[]) => {
-    const failed = results.filter((result) => result.state === 'failed');
-    const queued = results.filter((result) => result.state === 'queued');
-    if (failed.length > 0) {
-      const detail = failed[0].error?.message || 'One or more attachments could not be sent.';
-      alert(
-        failed.length === results.length ? 'Could not send' : 'Some items were not sent',
-        `${results.length - failed.length} of ${results.length} queued or sent. ${detail}`,
-      );
-    } else if (queued.length > 0) {
-      alert('Transfer queued', 'Axonic will finish sending when the connection is available.');
-    }
+    const feedback = getTransferFeedback(results);
+    if (feedback) alert(feedback.title, feedback.message);
   }, [alert]);
 
   /* ---- Image attachment handlers ---- */
@@ -1105,9 +1073,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         alert('Could not forward', result.error?.message || 'The message could not be forwarded.');
       } else {
         playSound('message_sent');
-        if (result.state === 'queued') {
-          alert('Forward queued', 'Axonic will finish forwarding when the connection is available.');
-        }
+        const feedback = getTransferFeedback([result]);
+        if (feedback) alert(feedback.title, feedback.message);
       }
     } catch {
       alert('Could not forward', 'The message could not be forwarded. Please try again.');
@@ -1141,7 +1108,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     try {
       const result = await retryOutgoingMessage(roomId, messageId);
       if (result.state === 'queued') {
-        alert('Retry queued', 'Axonic will resend this message as soon as it reconnects.');
+        alert('Retry queued', result.error?.message || 'Axonic will resend this message as soon as it reconnects.');
       } else if (result.state === 'missing') {
         alert('Message unavailable', 'This message is no longer available to resend from this phone.');
       } else if (result.state === 'failed') {
@@ -1184,24 +1151,16 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   }, [user?.id, pendingIds, deliveredIds, readIds, retryStartedAtById, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleRetryMessage, handleImagePress, handleReactionToggle]);
 
   const handleAcceptRequest = useCallback(async () => {
-    if (!otherUserId || requestBusy) return;
+    if (!otherUserId || requestBusy || user?.id == null) return;
     setRequestBusy(true);
     try {
-      await addContact(otherUserId);
-      useAppStore.getState().addContactId(otherUserId);
-      if (user?.id != null) await setCachedRelationship(user.id, otherUserId, 'contact');
-    } catch (err: any) {
-      // Likely 400 because the contact already exists — treat that as accepted.
-      if (err?.response?.status === 400) {
-        useAppStore.getState().addContactId(otherUserId);
-        if (user?.id != null) await setCachedRelationship(user.id, otherUserId, 'contact');
-      } else {
-        alert('Could not accept', 'Please try again.');
-      }
+      await acceptContact(user.id, otherUserId);
+    } catch (err) {
+      alert('Could not accept', contactErrorMessage(err));
     } finally {
       setRequestBusy(false);
     }
-  }, [otherUserId, requestBusy, user?.id]);
+  }, [otherUserId, requestBusy, user?.id, alert]);
 
   const handleBlockRequest = useCallback(() => {
     if (!otherUserId || requestBusy) return;
@@ -1289,7 +1248,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               style={[styles.requestBtnPrimary, { backgroundColor: Colors.primary, opacity: requestBusy ? 0.5 : 1 }]}
               activeOpacity={0.7}
             >
-              <Text style={[styles.requestBtnText, { color: Colors.textInverse }]}>Accept</Text>
+              <Text style={[styles.requestBtnText, { color: Colors.textInverse }]}>{requestBusy ? 'Accepting…' : 'Accept'}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1318,7 +1277,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         ) : null}
       />
 
-      <View style={[styles.inputBar, {
+      <View testID="axonic-composer-bar" style={[styles.inputBar, {
         backgroundColor: Colors.chatBg,
         borderTopColor: Colors.neonBorder,
         paddingBottom: composerBottomPadding,
@@ -1721,6 +1680,7 @@ const styles = StyleSheet.create({
   historyLoader: { paddingVertical: Spacing.md, alignItems: 'center' },
 
   inputBar: {
+    flexShrink: 0,
     flexDirection: 'column',
     paddingHorizontal: Spacing.sm,
     paddingTop: Spacing.sm,

@@ -410,6 +410,23 @@ export async function cacheContacts(ownerUserId: number, contacts: import('../ty
   });
 }
 
+/** Save acceptance and picker metadata together without replacing other contacts. */
+export async function cacheAcceptedContact(ownerUserId: number, contact: import('../types').Contact): Promise<void> {
+  const now = Date.now();
+  await runExclusiveWrite(async (tx) => {
+    await tx.runAsync(
+      `INSERT INTO contact_cache (owner_user_id, contact_id, payload, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(owner_user_id, contact_id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at`,
+      ownerUserId, contact.contact, JSON.stringify(contact), now,
+    );
+    await tx.runAsync(
+      `INSERT INTO relationship_cache (owner_user_id, other_user_id, state, updated_at) VALUES (?, ?, 'contact', ?)
+       ON CONFLICT(owner_user_id, other_user_id) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+      ownerUserId, contact.contact, now,
+    );
+  });
+}
+
 /** Optimistically record an accepted contact or blocked sender immediately. */
 export async function setCachedRelationship(ownerUserId: number, otherUserId: number, state: 'contact' | 'blocked' | null): Promise<void> {
   // This can be triggered while the foreground relationship refresh is

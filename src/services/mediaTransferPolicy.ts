@@ -3,6 +3,7 @@ export const MEDIA_MAX_UPLOAD_BYTES = 250 * 1024 * 1024;
 // request bounded, but do not abort a healthy 250 MB transfer after 2 minutes.
 export const MEDIA_UPLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 export const MEDIA_BATCH_CONCURRENCY = 2;
+export const MEDIA_PART_CONCURRENCY = 2;
 
 export type MediaTransferErrorCode =
   | 'too_large'
@@ -22,6 +23,22 @@ export interface MediaTransferFailure {
   retryable: boolean;
   status: number;
   maxBytes?: number;
+}
+
+/** Queueing is normal during picker/app transitions, not a transfer error. */
+export function getTransferFeedback(results: readonly {
+  state: 'sent' | 'queued' | 'failed';
+  error?: MediaTransferFailure;
+}[]): { title: string; message: string } | null {
+  const failed = results.filter((result) => result.state === 'failed');
+  if (failed.length) {
+    return {
+      title: failed.length === results.length ? 'Could not send' : 'Some items were not sent',
+      message: `${results.length - failed.length} of ${results.length} queued or sent. ${failed[0].error?.message || 'One or more attachments could not be sent.'}`,
+    };
+  }
+  const interrupted = results.find((result) => result.state === 'queued' && result.error);
+  return interrupted ? { title: 'Transfer interrupted', message: interrupted.error!.message } : null;
 }
 
 export function formatBytes(bytes: number): string {
@@ -95,13 +112,60 @@ export async function mapWithConcurrency<T, R>(
   const limit = Math.max(1, Math.min(Math.floor(concurrency) || 1, items.length));
   const results = new Array<R>(items.length);
   let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
 
   await Promise.all(Array.from({ length: limit }, async () => {
-    while (nextIndex < items.length) {
+    while (!failed && nextIndex < items.length) {
       const index = nextIndex;
       nextIndex += 1;
-      results[index] = await worker(items[index], index);
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+      }
     }
   }));
+  // Drain already-started work before allowing a caller to retry. Otherwise
+  // uploads from a rejected batch keep running alongside the replacement.
+  if (failed) throw firstError;
   return results;
+}
+
+/** One operation per identity, with a global (not per-screen) concurrency cap. */
+export function createTransferScheduler<T>(concurrency: number) {
+  const pending = new Map<string, Promise<T>>();
+  const queue: Array<() => void> = [];
+  const limit = Math.max(1, Math.floor(concurrency) || 1);
+  let active = 0;
+
+  function drain() {
+    while (active < limit && queue.length) {
+      active += 1;
+      queue.shift()!();
+    }
+  }
+
+  return (key: string, operation: () => Promise<T>): Promise<T> => {
+    const existing = pending.get(key);
+    if (existing) return existing;
+    const task = new Promise<T>((resolve, reject) => {
+      queue.push(() => {
+        const finish = () => {
+          pending.delete(key);
+          active -= 1;
+          drain();
+        };
+        // Defer work until its identity is registered, including sync throws.
+        Promise.resolve().then(operation).then(
+          (value) => { finish(); resolve(value); },
+          (error) => { finish(); reject(error); },
+        );
+      });
+    });
+    pending.set(key, task);
+    drain();
+    return task;
+  };
 }

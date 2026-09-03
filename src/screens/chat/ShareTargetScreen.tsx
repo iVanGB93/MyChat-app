@@ -33,7 +33,7 @@ import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { connectRoom, sendChatMessage, type SendChatResult } from '../../services/chatWsManager';
 import { persistOutgoingImage, persistSharedFile } from '../../services/voiceMessageUtils';
 import { mediaFileSize } from '../../services/mediaLane';
-import { formatBytes, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, MEDIA_MAX_UPLOAD_BYTES, validateMediaSize } from '../../services/mediaTransferPolicy';
+import { formatBytes, getTransferFeedback, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, MEDIA_MAX_UPLOAD_BYTES, validateMediaSize } from '../../services/mediaTransferPolicy';
 import { cacheContacts, getCachedContacts, getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
 import { playSound } from '../../services/soundService';
 import Avatar from '../../components/ui/Avatar';
@@ -196,17 +196,9 @@ export default function ShareTargetScreen() {
           return result;
         });
 
-        const failed = results.filter((result) => result.state === 'failed');
-        const queued = results.filter((result) => result.state === 'queued');
         sentAnything = sentAnything || results.some((result) => result.state !== 'failed');
-        if (failed.length > 0) {
-          alert(
-            failed.length === results.length ? 'Nothing was sent' : 'Some items were not sent',
-            `${results.length - failed.length} of ${results.length} items were queued or sent. ${failed[0].error?.message || 'Please try the failed item again.'}`,
-          );
-        } else if (queued.length > 0) {
-          alert('Transfer queued', 'Axonic will finish sending when the connection is available.');
-        }
+        const feedback = getTransferFeedback(results);
+        if (feedback) alert(feedback.title, feedback.message);
       } else {
         const body = caption.trim();
         if (!body) {

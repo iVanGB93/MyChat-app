@@ -18,7 +18,7 @@ import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
-import { getContacts, addContact, removeContact } from '../../services/contactService';
+import { getContacts, acceptContact, contactErrorMessage, removeContact } from '../../services/contactService';
 import { searchUsers } from '../../services/authService';
 import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { useAuth } from '../../contexts/AuthContext';
@@ -131,14 +131,13 @@ export default function ContactsScreen() {
   }, [query]);
 
   const handleAddContact = async (userId: number) => {
+    if (user?.id == null) return;
     try {
-      await addContact(userId);
-      useAppStore.getState().addContactId(userId);
-      if (user?.id != null) await setCachedRelationship(user.id, userId, 'contact');
+      await acceptContact(user.id, userId);
       alert('Done', 'Contact added!');
       fetchContacts();
-    } catch {
-      alert('Error', 'Could not add contact');
+    } catch (error) {
+      alert('Could not add contact', contactErrorMessage(error));
     }
   };
 

@@ -38,6 +38,7 @@ import { takePendingCallNav } from './src/services/pendingCallNav';
 import { markCallEnded, isCallEnded } from './src/services/callDedupe';
 import { useAppStore } from './src/store/appStore';
 import { navigateFromNotification } from './src/services/notificationNavigation';
+import { DarkColors } from './src/theme';
 
 export default function App() {
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
@@ -265,7 +266,7 @@ export default function App() {
   }, []);
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: DarkColors.background }}>
       <SafeAreaProvider>
         <ThemeProvider>
           <AuthProvider>

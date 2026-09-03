@@ -5,6 +5,8 @@
 import api from './api';
 import type { Contact, PaginatedResponse, User } from '../types';
 import { seedPresenceFromUsers } from './presenceService';
+import { cacheAcceptedContact } from './localMessageStore';
+import { useAppStore } from '../store/appStore';
 
 export async function getContacts(): Promise<Contact[]> {
   const { data } = await api.get<PaginatedResponse<Contact> | Contact[]>('/api/users/contacts/');
@@ -15,9 +17,57 @@ export async function getContacts(): Promise<Contact[]> {
 }
 
 export async function addContact(contactUserId: number): Promise<Contact> {
-  const { data } = await api.post<Contact>('/api/users/contacts/', { contact: contactUserId });
-  seedPresenceFromUsers([data.contact_detail]);
-  return data;
+  let contact: Contact;
+  try {
+    const { data } = await api.post<Contact>('/api/users/contacts/', { contact: contactUserId });
+    contact = data;
+  } catch (error: any) {
+    const status = error?.response?.status;
+    // A lost response or an older backend's duplicate-contact 500 is not
+    // proof that acceptance failed. Confirm the exact contact with a read;
+    // never treat validation/authentication errors as successful acceptance.
+    if (status == null || status === 408 || status === 409 || status >= 500) {
+      const existing = await getContacts().then(
+        (contacts) => contacts.find((item) => item.contact === contactUserId),
+        () => undefined,
+      );
+      if (!existing) throw error;
+      contact = existing;
+    } else {
+      throw error;
+    }
+  }
+  seedPresenceFromUsers([contact.contact_detail]);
+  return contact;
+}
+
+/** Server acceptance is authoritative; a cache failure must not undo it. */
+export async function acceptContact(ownerUserId: number, contactUserId: number): Promise<Contact> {
+  const contact = await addContact(contactUserId);
+  const store = useAppStore.getState();
+  if (store.user?.id !== ownerUserId) throw new Error('Account changed during contact acceptance.');
+  store.addContactId(contactUserId);
+  try {
+    await cacheAcceptedContact(ownerUserId, contact);
+  } catch {
+    // The next foreground contact refresh repairs both caches from the server.
+    console.warn('[Contacts] Accepted contact; local cache will be repaired on refresh.');
+  }
+  return contact;
+}
+
+export function contactErrorMessage(error: any): string {
+  const status = error?.response?.status;
+  if (status === 400) {
+    const detail = error.response?.data?.contact;
+    const message = Array.isArray(detail) ? detail[0] : detail;
+    if (typeof message === 'string') return message;
+    return 'This contact could not be added. Please check the user and try again.';
+  }
+  if (status === 401) return 'Please sign in again to accept this chat.';
+  if (status === 403) return 'You do not have permission to add this contact.';
+  if (status == null || status === 408) return 'Please check your connection and try again.';
+  return 'The server could not confirm this contact. Please try again shortly.';
 }
 
 export async function removeContact(contactId: number): Promise<void> {

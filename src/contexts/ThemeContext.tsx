@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useMemo, useState, useCall
 import { Appearance } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LightColors, DarkColors, type ThemeColors } from '../theme';
+import StartupScreen from '../components/startup-screen';
 
 type ThemeMode = 'light' | 'dark';
 type ThemePreference = 'system' | 'light' | 'dark';
@@ -73,7 +74,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     };
   }, [systemScheme, preference, setPreference]);
 
-  if (!loaded) return null;
+  if (!loaded) return <StartupScreen />;
 
   return (
     <ThemeContext.Provider value={value}>

@@ -14,12 +14,17 @@
 /* ------------------------------------------------------------------ */
 
 import { Directory, File, Paths } from 'expo-file-system';
+import { createUploadTask, getInfoAsync, FileSystemUploadType, type FileSystemUploadOptions } from 'expo-file-system/legacy';
 import { fetch } from 'expo/fetch';
-import api, { BASE_URL, getTokens } from './api';
+import api, { BASE_URL } from './api';
+import { getValidAccessToken, refreshAccessToken } from './tokenRefresh';
 import { getInstallationId } from './installationIdentity';
 import {
   classifyMediaHttpFailure,
   MEDIA_UPLOAD_TIMEOUT_MS,
+  MEDIA_BATCH_CONCURRENCY,
+  MEDIA_PART_CONCURRENCY,
+  createTransferScheduler,
   mapWithConcurrency,
   validateMediaSize,
   type MediaTransferFailure,
@@ -55,8 +60,63 @@ export class MediaTransferError extends Error {
   }
 }
 
+const scheduleUpload = createTransferScheduler<UploadedMedia>(MEDIA_BATCH_CONCURRENCY);
+
+function httpStatus(error: unknown): number {
+  if (error instanceof MediaTransferError) return error.failure.status;
+  const value = error as { status?: number; response?: { status?: number }; message?: string } | null;
+  // Expo's native downloader reports HTTP errors as exception messages on both
+  // Android ("response has status: 401") and iOS ("response has status 401").
+  return Number(value?.response?.status ?? value?.status
+    ?? /response has status:?\s*(\d{3})\b/i.exec(value?.message ?? '')?.[1] ?? 0);
+}
+
+async function withMediaAuthentication<T>(operation: (access: string) => Promise<T>): Promise<T> {
+  const access = await getValidAccessToken();
+  if (!access) throw new MediaTransferError(classifyMediaHttpFailure(401));
+  try {
+    return await operation(access);
+  } catch (error) {
+    if (httpStatus(error) !== 401) throw error;
+    // Another request may already have refreshed this token. Share its result
+    // instead of rotating the session again. Never retry a 403/404 as auth.
+    const current = await getValidAccessToken();
+    if (!current) throw new MediaTransferError(classifyMediaHttpFailure(401));
+    const refreshed = current !== access ? current : (await refreshAccessToken()).access;
+    return operation(refreshed);
+  }
+}
+
+/** Native file-backed body: unlike expo/fetch's Blob/FormData normalization,
+ * this does not copy an entire file into JavaScript memory. */
+async function uploadFileNative(url: string, fileUri: string, options: FileSystemUploadOptions) {
+  const task = createUploadTask(url, fileUri, options);
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void task.cancelAsync().catch(() => {});
+  }, MEDIA_UPLOAD_TIMEOUT_MS);
+  try {
+    const response = await task.uploadAsync();
+    if (timedOut || !response) {
+      throw new MediaTransferError(classifyMediaHttpFailure(408));
+    }
+    return response;
+  } catch (error) {
+    if (timedOut) throw new MediaTransferError(classifyMediaHttpFailure(408));
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function toMediaTransferFailure(error: unknown): MediaTransferFailure {
   if (error instanceof MediaTransferError) return error.failure;
+  const status = httpStatus(error);
+  if (status) return classifyMediaHttpFailure(status);
+  if (/Creating blobs from|Unsupported BodyInit type/.test((error as Error | null)?.message ?? '')) {
+    return { code: 'invalid_file', message: 'The attachment could not be prepared. Please select it again.', retryable: false, status: 0 };
+  }
   if (error instanceof Error && error.name === 'AbortError') {
     return { code: 'timeout', message: 'The transfer timed out and will be retried.', retryable: true, status: 0 };
   }
@@ -138,10 +198,13 @@ function persistentDir(mediaType: MediaType): Directory {
   return dir;
 }
 
-/** Local md5 of a file (native, free via expo-file-system). Null on failure. */
-export function fileMd5(fileUri: string): string | null {
+/** Stream the native checksum off the JS thread. Expo 55's File.md5 getter
+ * reads the entire file into a native byte array, which can exhaust Android's
+ * heap on large attachments even though the transfer itself is streamed. */
+export async function fileMd5(fileUri: string): Promise<string | null> {
   try {
-    return new File(fileUri).md5 ?? null;
+    const info = await getInfoAsync(fileUri, { md5: true });
+    return info.exists ? info.md5 ?? null : null;
   } catch {
     return null;
   }
@@ -160,7 +223,7 @@ export function mediaFileSize(fileUri: string): number | null {
  * Upload a local media file. Returns the server-assigned media_id + hashes.
  * Throws on failure (caller keeps the message pending and retries later).
  */
-export async function uploadMedia(params: {
+export interface UploadMediaParams {
   roomId: string;
   fileUri: string;
   mediaType: MediaType;
@@ -169,7 +232,13 @@ export async function uploadMedia(params: {
   durationMs?: number | null;
   width?: number | null;
   height?: number | null;
-}): Promise<UploadedMedia> {
+}
+
+export function uploadMedia(params: UploadMediaParams): Promise<UploadedMedia> {
+  return scheduleUpload(`${params.roomId}:${params.messageId}`, () => uploadMediaOnce(params));
+}
+
+async function uploadMediaOnce(params: UploadMediaParams): Promise<UploadedMedia> {
   const { roomId, fileUri, mediaType, mime, messageId, durationMs, width, height } = params;
 
   let localFile: File;
@@ -187,8 +256,9 @@ export async function uploadMedia(params: {
   const sizeFailure = validateMediaSize(localFile.size);
   if (sizeFailure) throw new MediaTransferError(sizeFailure);
 
-  const md5 = fileMd5(fileUri);
+  const md5 = await fileMd5(fileUri);
   if (md5) {
+    let preparedUpload = false;
     try {
       const prepared = await api.post<DirectUploadPreparation>(
         '/api/chat/media/initiate/',
@@ -205,6 +275,7 @@ export async function uploadMedia(params: {
         },
         { timeout: 30_000 },
       );
+      preparedUpload = true;
 
       if (prepared.data.uploaded) return prepared.data;
       if (prepared.data.upload_mode === 'multipart') {
@@ -220,7 +291,7 @@ export async function uploadMedia(params: {
         }
         await mapWithConcurrency(
           parts.filter((part) => !part.uploaded),
-          3,
+          MEDIA_PART_CONCURRENCY,
           async (part) => {
             if (!part.upload_url) {
               throw new MediaTransferError({
@@ -231,7 +302,24 @@ export async function uploadMedia(params: {
               });
             }
             const start = (part.part_number - 1) * partSize;
-            const body = localFile.slice(start, Math.min(start + partSize, localFile.size), mime);
+            const length = Math.min(partSize, localFile.size - start);
+            if (start < 0 || length <= 0 || !Number.isSafeInteger(start) || !Number.isSafeInteger(length)) {
+              throw new MediaTransferError(classifyMediaHttpFailure(500, 'The server returned an invalid upload part.'));
+            }
+            // File.slice() in Expo 55 reads the WHOLE file and constructs a Blob
+            // from a Uint8Array, unsupported by React Native. Read only this
+            // range and pass its bytes directly to expo/fetch (no Blob).
+            const handle = localFile.open();
+            let body: Uint8Array;
+            try {
+              handle.offset = start;
+              body = handle.readBytes(length);
+            } finally {
+              handle.close();
+            }
+            if (body.byteLength !== length) {
+              throw new MediaTransferError(classifyMediaHttpFailure(400, 'The attachment changed or could not be fully read. Please select it again.'));
+            }
             let lastStatus = 0;
             for (let attempt = 0; attempt < 3; attempt += 1) {
               const controller = new AbortController();
@@ -239,7 +327,7 @@ export async function uploadMedia(params: {
               try {
                 const response = await fetch(part.upload_url, {
                   method: 'PUT',
-                  body,
+                  body: body as unknown as BodyInit,
                   signal: controller.signal,
                 });
                 lastStatus = response.status;
@@ -250,6 +338,7 @@ export async function uploadMedia(params: {
               } finally {
                 clearTimeout(timeout);
               }
+              if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * 2 ** attempt));
             }
             throw new MediaTransferError({
               code: lastStatus === 403 ? 'network' : 'server_error',
@@ -268,23 +357,17 @@ export async function uploadMedia(params: {
             status: 500,
           });
         }
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
-        try {
-          // The signed URL is intentionally unauthenticated: the signature grants
-          // access to this one object for a few minutes. File implements Blob, so
-          // React Native streams it without constructing a 250 MB JS byte array.
-          const uploaded = await fetch(prepared.data.upload_url, {
-            method: 'PUT',
-            headers: prepared.data.upload_headers,
-            body: localFile as unknown as BodyInit,
-            signal: controller.signal,
-          });
-          if (!uploaded.ok) {
-            throw new MediaTransferError(classifyMediaHttpFailure(uploaded.status));
+        // Never attach a bearer token to the signed object-storage URL.
+        const uploaded = await uploadFileNative(prepared.data.upload_url, localFile.uri, {
+          httpMethod: 'PUT',
+          uploadType: FileSystemUploadType.BINARY_CONTENT,
+          headers: prepared.data.upload_headers,
+        });
+        if (uploaded.status < 200 || uploaded.status >= 300) {
+          if (uploaded.status === 403) {
+            throw new MediaTransferError({ code: 'network', message: 'The upload link was rejected or expired. Retry to obtain a fresh link.', retryable: true, status: 403 });
           }
-        } finally {
-          clearTimeout(timeout);
+          throw new MediaTransferError(classifyMediaHttpFailure(uploaded.status));
         }
       }
 
@@ -303,7 +386,7 @@ export async function uploadMedia(params: {
         direct_upload?: boolean;
       } | undefined;
       // Local/older servers keep using the original multipart endpoint.
-      if (status === 404 || (status === 409 && payload?.direct_upload === false)) {
+      if (!preparedUpload && (status === 404 || (status === 409 && payload?.direct_upload === false))) {
         return uploadMediaViaBackend(params, localFile, md5);
       }
       if (status > 0) {
@@ -321,62 +404,40 @@ export async function uploadMedia(params: {
 }
 
 async function uploadMediaViaBackend(
-  params: {
-    roomId: string;
-    fileUri: string;
-    mediaType: MediaType;
-    mime: string;
-    messageId: string;
-    durationMs?: number | null;
-    width?: number | null;
-    height?: number | null;
-  },
+  params: UploadMediaParams,
   localFile: File,
   knownMd5: string | null,
 ): Promise<UploadedMedia> {
   const { roomId, fileUri, mediaType, mime, messageId, durationMs, width, height } = params;
 
-  const form = new FormData();
-  form.append('file', {
-    uri: fileUri,
-    name: `${messageId}.${extFor(mediaType, mime)}`,
-    type: mime,
-  } as any);
-  form.append('room_id', roomId);
-  form.append('media_type', mediaType);
-  form.append('mime', mime);
-  form.append('message_id', messageId);
-  const md5 = knownMd5 ?? fileMd5(fileUri);
-  if (md5) form.append('md5', md5);
-  if (durationMs != null) form.append('duration_ms', String(durationMs));
-  if (width != null) form.append('width', String(width));
-  if (height != null) form.append('height', String(height));
+  const parameters: Record<string, string> = { room_id: roomId, media_type: mediaType, mime, message_id: messageId };
+  const md5 = knownMd5 ?? await fileMd5(fileUri);
+  if (md5) parameters.md5 = md5;
+  if (durationMs != null) parameters.duration_ms = String(durationMs);
+  if (width != null) parameters.width = String(width);
+  if (height != null) parameters.height = String(height);
 
-  const tokens = await getTokens();
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
   try {
-    // Use fetch (not axios) so React Native sets the multipart boundary itself.
-    const res = await fetch(`${BASE_URL}/api/chat/media/`, {
-      method: 'POST',
-      headers: tokens?.access ? { Authorization: `Bearer ${tokens.access}` } : undefined,
-      body: form,
-      signal: controller.signal,
+    return await withMediaAuthentication(async (access) => {
+      const res = await uploadFileNative(`${BASE_URL}/api/chat/media/`, localFile.uri, {
+        httpMethod: 'POST',
+        uploadType: FileSystemUploadType.MULTIPART,
+        fieldName: 'file',
+        mimeType: mime,
+        parameters,
+        headers: { Authorization: `Bearer ${access}` },
+      });
+      let payload: (UploadedMedia & { error?: string; max_bytes?: number }) | null = null;
+      try { payload = JSON.parse(res.body); } catch { /* classified below */ }
+      if (res.status < 200 || res.status >= 300) {
+        throw new MediaTransferError(classifyMediaHttpFailure(res.status, payload?.error, payload?.max_bytes));
+      }
+      if (!payload?.media_id) throw new MediaTransferError(classifyMediaHttpFailure(502));
+      return payload;
     });
-    if (!res.ok) {
-      const payload = await res.json().catch(() => null) as { error?: string; max_bytes?: number } | null;
-      throw new MediaTransferError(classifyMediaHttpFailure(
-        res.status,
-        payload?.error,
-        payload?.max_bytes,
-      ));
-    }
-    return (await res.json()) as UploadedMedia;
   } catch (error) {
     if (error instanceof MediaTransferError) throw error;
     throw new MediaTransferError(toMediaTransferFailure(error));
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
@@ -390,32 +451,38 @@ export async function downloadAndPersistMedia(params: {
   mime: string;
   md5?: string | null;
   messageId: string;
+  sizeBytes?: number | null;
   /** Original filename (e.g. the document's message content), used as an
    *  extension fallback when `mime` is missing or too generic to sniff. */
   fileName?: string | null;
 }): Promise<string> {
-  const { mediaId, mediaType, mime, md5, messageId, fileName } = params;
+  const { mediaId, mediaType, mime, md5, messageId, fileName, sizeBytes } = params;
   const dir = persistentDir(mediaType);
   const dest = new File(dir, `${messageId}.${extFor(mediaType, mime, fileName)}`);
 
   // Already have a verified copy? Reuse it.
   if (dest.exists) {
-    if (!md5 || dest.md5 === md5) return dest.uri;
+    if ((!md5 || await fileMd5(dest.uri) === md5) && (sizeBytes == null || dest.size === sizeBytes)) return dest.uri;
     try { dest.delete(); } catch { /* re-download below */ }
   }
 
-  const tokens = await getTokens();
   const url = `${BASE_URL}/api/chat/media/${mediaId}/`;
-  const downloaded = await File.downloadFileAsync(url, dest, {
-    headers: tokens?.access ? { Authorization: `Bearer ${tokens.access}` } : undefined,
-    idempotent: true,
-  });
-
-  if (md5 && downloaded.md5 && downloaded.md5 !== md5) {
-    try { downloaded.delete(); } catch { /* ignore */ }
-    throw new Error('[mediaLane] downloaded md5 mismatch');
+  const partial = new File(dir, `${messageId}.${extFor(mediaType, mime, fileName)}.partial`);
+  try {
+    const downloaded = await withMediaAuthentication((access) => File.downloadFileAsync(url, partial, {
+      headers: { Authorization: `Bearer ${access}` },
+      idempotent: true,
+    }));
+    if ((md5 && await fileMd5(downloaded.uri) !== md5) || (sizeBytes != null && downloaded.size !== sizeBytes)) {
+      throw new MediaTransferError({ code: 'network', message: 'The attachment download was incomplete. Axonic will retry.', retryable: true, status: 0 });
+    }
+    downloaded.move(dest);
+    return dest.uri;
+  } catch (error) {
+    throw new MediaTransferError(toMediaTransferFailure(error));
+  } finally {
+    try { if (partial.exists) partial.delete(); } catch { /* stale partial is overwritten on retry */ }
   }
-  return downloaded.uri;
 }
 
 /**

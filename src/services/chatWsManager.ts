@@ -19,6 +19,7 @@ import { debugLog } from './diagnostics';
 const _earlyServerAcceptedMessageIds = new Set<string>();
 const _serverAckTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _serverAcceptedAt = new Map<string, number>();
+const _inFlightFrames = new Map<string, Promise<SendAttemptResult>>();
 let _lastLocalMutationMs = 0;
 
 function versionLocalMutation(changes: MessageChanges): MessageChanges {
@@ -545,7 +546,22 @@ function fallbackMediaMime(messageType: string, fileUri: string | null | undefin
  * Deliver one outgoing message over Axion. Media bytes travel over HTTP and the
  * shared realtime gateway carries only the lightweight message/pointer frame.
  */
-async function sendOutboxFrame(
+function sendOutboxFrame(...args: Parameters<typeof sendOutboxFrameOnce>): Promise<SendAttemptResult> {
+  const [, roomId, msg, opts] = args;
+  // Protect the entire upload -> persist pointer -> send path, not just the
+  // period after a WebSocket ACK timer exists. Keep targeted hydration distinct
+  // so one group member's recovery cannot consume another member's delivery.
+  const key = JSON.stringify([_myUserId, roomId, msg.id, !!opts?.hydration, opts?.targetRecipientId ?? null]);
+  const existing = _inFlightFrames.get(key);
+  if (existing) return existing;
+  const task = Promise.resolve().then(() => sendOutboxFrameOnce(...args)).finally(() => {
+    _inFlightFrames.delete(key);
+  });
+  _inFlightFrames.set(key, task);
+  return task;
+}
+
+async function sendOutboxFrameOnce(
   s: RoomState,
   roomId: string,
   msg: {
@@ -569,6 +585,7 @@ async function sendOutboxFrame(
   },
 ): Promise<SendAttemptResult> {
   if (!isAxionReady()) return { sent: false };
+  const sendingUserId = _myUserId;
   if (opts?.skipIfAwaitingAck && shouldSuppressOutboxReplay(
     _serverAckTimers.has(msg.id),
     _serverAcceptedAt.get(msg.id),
@@ -611,6 +628,9 @@ async function sendOutboxFrame(
           messageId: msg.id,
           durationMs: msg.duration_ms ?? null,
         });
+        // The active SQLite database may have changed while bytes uploaded.
+        // Do not persist the previous account's pointer into the new account.
+        if (_myUserId !== sendingUserId) return { sent: false };
         ptr = { media_id: up.media_id, md5: up.md5, sha256: up.sha256, size: up.size_bytes, mime: up.mime };
         await setMediaPointer(msg.id, ptr);
       } catch (err) {
@@ -618,13 +638,13 @@ async function sendOutboxFrame(
         await setMessageTransferFailure(msg.id, failure.code, failure.message, !failure.retryable).catch(() => {});
         markTransferFailure(s, roomId, msg.id, failure);
         console.warn('[ChatWsManager] media upload failed, keeping pending', msg.id, failure.code, failure.status);
-        markUploading(s, roomId, msg.id, false);
         return { sent: false, error: failure };
+      } finally {
+        markUploading(s, roomId, msg.id, false);
       }
-      markUploading(s, roomId, msg.id, false);
     }
     // The upload may have taken a while — re-check Axion before sending.
-    if (!isAxionReady()) return { sent: false };
+    if (!isAxionReady() || _myUserId !== sendingUserId) return { sent: false };
     try {
       const sent = sendRawNotif({
         type: 'send_message',

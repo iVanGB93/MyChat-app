@@ -13,7 +13,6 @@ import {
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import {
-  ActivityIndicator,
   View,
   Text,
   StyleSheet,
@@ -34,6 +33,7 @@ import { shouldHandleIncomingCallInApp, shouldShowInAppMessageToast } from '../s
 import { decideIncomingCallInApp, decideInAppMessageToast } from '../services/notificationPresentationPolicy';
 import { markAppInteractive } from '../services/observability';
 import { debugLog } from '../services/diagnostics';
+import StartupScreen from '../components/startup-screen';
 
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -54,46 +54,6 @@ import type { RootStackParamList } from '../types';
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator();
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
-
-/** Lightweight feedback on the startup screen while the saved session connects. */
-function ConnectingBrand({ color }: { color: string }) {
-  const letters = 'AXONIC'.split('');
-  const pulses = useRef(letters.map(() => new Animated.Value(0))).current;
-
-  useEffect(() => {
-    const wave = Animated.loop(
-      Animated.sequence([
-        Animated.stagger(70, pulses.map((pulse) => Animated.sequence([
-          Animated.timing(pulse, { toValue: 1, duration: 180, useNativeDriver: true }),
-          Animated.timing(pulse, { toValue: 0, duration: 280, useNativeDriver: true }),
-        ]))),
-        Animated.delay(320),
-      ]),
-    );
-    wave.start();
-    return () => wave.stop();
-  }, [pulses]);
-
-  return (
-    <View style={styles.splashBrand} accessibilityLabel="Axonic is connecting">
-      {letters.map((letter, index) => (
-        <Animated.Text
-          key={`${letter}-${index}`}
-          style={[
-            styles.splashTitle,
-            {
-              color,
-              opacity: pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] }),
-              transform: [{ translateY: pulses[index].interpolate({ inputRange: [0, 1], outputRange: [0, -3] }) }],
-            },
-          ]}
-        >
-          {letter}
-        </Animated.Text>
-      ))}
-    </View>
-  );
-}
 
 /* ---- Tab icons ---- */
 function TabIcon({ label, focused }: { label: string; focused: boolean }) {
@@ -407,15 +367,7 @@ export default function AppNavigator() {
   }, [isAuthenticated, isLoading]);
 
   if (isLoading) {
-    return (
-      <View style={[styles.splash, { backgroundColor: Colors.background }]}>
-        <View style={[styles.splashMark, { borderColor: Colors.primary, shadowColor: Colors.primary }]}>
-          <Text style={[styles.splashMarkText, { color: Colors.primary }]}>AX</Text>
-        </View>
-        <ConnectingBrand color={Colors.primary} />
-        <ActivityIndicator size="large" color={Colors.primary} style={{ marginTop: Spacing.lg }} />
-      </View>
-    );
+    return <StartupScreen />;
   }
 
   const baseTheme = isDark ? DarkTheme : DefaultTheme;
@@ -611,36 +563,6 @@ export default function AppNavigator() {
     </>
   );
 }
-
-const styles = StyleSheet.create({
-  splash: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  splashMark: {
-    width: 80,
-    height: 80,
-    borderRadius: 14,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowOpacity: 0.7,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 10,
-    marginBottom: Spacing.lg,
-  },
-  splashMarkText: {
-    fontSize: 28,
-    fontWeight: '800',
-    letterSpacing: 2,
-  },
-  splashBrand: {
-    flexDirection: 'row',
-  },
-  splashTitle: { fontSize: Font.size.title, marginTop: 0, fontWeight: '800', letterSpacing: 8 },
-});
 
 const toastStyles = StyleSheet.create({
   container: {

@@ -2,15 +2,16 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.32",
+    "version": "1.0.33",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "backgroundColor": "#010812",
     "splash": {
-      "image": "./assets/splash-screen.png",
+      "image": "./assets/icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#5B21B6"
+      "backgroundColor": "#010812"
     },
     "ios": {
       "supportsTablet": true,
@@ -49,6 +50,19 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/icon.png",
+          "imageWidth": 176,
+          "resizeMode": "contain",
+          "backgroundColor": "#010812",
+          "dark": {
+            "image": "./assets/icon.png",
+            "backgroundColor": "#010812"
+          }
+        }
+      ],
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
       [

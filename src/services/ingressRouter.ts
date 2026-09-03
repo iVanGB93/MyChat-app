@@ -270,6 +270,7 @@ async function hydratePointerMedia(evt: CanonicalMessage): Promise<boolean> {
       ),
       md5: evt.mediaMd5,
       messageId: evt.messageId,
+      sizeBytes: evt.mediaSize,
       fileName: evt.content,
     });
     await setMessageFileUri(evt.messageId, uri);
