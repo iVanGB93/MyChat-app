@@ -79,6 +79,20 @@ export async function enqueueMessageAck(ack: Omit<QueuedMessageAck, 'id' | 'crea
   });
 }
 
+/** Remove only a receipt the server actually accepted; preserve other retries. */
+export async function removeMessageAck(messageId: string, senderId: number, roomId: string): Promise<void> {
+  return serializeQueue(async () => {
+    const raw = await AsyncStorage.getItem(RETRY_QUEUE_KEY);
+    if (!raw) return;
+    const queue: QueuedMessageAck[] = JSON.parse(raw);
+    const remaining = queue.filter((ack) =>
+      ack.message_id !== messageId || ack.sender_id !== senderId || ack.room_id !== roomId);
+    if (remaining.length === queue.length) return;
+    if (remaining.length) await AsyncStorage.setItem(RETRY_QUEUE_KEY, JSON.stringify(remaining));
+    else await AsyncStorage.removeItem(RETRY_QUEUE_KEY);
+  });
+}
+
 /**
  * Flush pending ACKs by attempting HTTP POST to the backend.
  * Retries with exponential backoff; removes successful acks; re-queues failures.
@@ -125,7 +139,9 @@ export async function flushPendingAcks(): Promise<{ flushed: number; failed: num
           device_id: ack.device_id,
         });
         
-        if (response.status === 200) {
+        // A newly relayed message can arrive before its delivery row exists.
+        // HTTP 200 with not_found is not a receipt: keep it for a later retry.
+        if (response.status === 200 && response.data?.status !== 'not_found') {
           debugLog('[AckRetryQueue] flushed ack:', ack.message_id);
           toRemove.add(ack.id);
           flushed++;

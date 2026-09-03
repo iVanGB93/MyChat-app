@@ -159,10 +159,12 @@ export type RootStackParamList = {
   Contacts: { prefillTag?: string } | undefined;
   GroupCreate: undefined;
   GroupInfo: { roomId: string; roomName: string };
+  UserInfo: { roomId: string; roomName: string; userId: number };
   ScanTag: undefined;
   ChatRoom: { roomId: string; roomName: string; otherUserId?: number };
   EditAccount: undefined;
   ChatStorage: undefined;
+  ChatStorageMedia: { roomId: string; roomName: string };
   ChangePassword: undefined;
   BlockedUsers: undefined;
   /** Modal opened when the OS hands us a shared payload. */

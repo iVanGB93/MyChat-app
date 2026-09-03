@@ -11,8 +11,8 @@
 /*  The router normalizes the raw payload into a single canonical      */
 /*  shape, dedupes it (so the same message delivered over two paths is */
 /*  processed exactly once), then runs the unified pipeline:           */
-/*    persist (SQLite) → ack delivery → update global store (Zustand)  */
-/*    → inject into open room → decide local notification.             */
+/*    persist (SQLite) → update store + open room → notify and finish  */
+/*    media download / delivery acknowledgement before resolving.     */
 /*                                                                     */
 /*  This is the SINGLE WRITER into SQLite + the Zustand store for      */
 /*  incoming messages. Callers must not duplicate any of these steps.  */
@@ -22,6 +22,8 @@ import {
   saveMessage,
   messageExists,
   markDelivered,
+  markReadByRecipient,
+  getMessageReceiptStatus,
   isEventProcessed,
   markEventProcessed,
   filterMissingMessageIds,
@@ -38,12 +40,14 @@ import {
   ackMessageUpdates,
   flushOutboxForRecipient,
   resendMessagesByIds,
+  flushStoredReceiptConfirmations,
 } from './chatWsManager';
 import type { WsMessage } from './chatWsManager';
 import { useAppStore } from '../store/appStore';
 import { decideLocalMessageNotification } from './notificationPresentationPolicy';
 import type { NotificationPayload } from './axionTypes';
-import { enqueueMessageAck } from './messageAckRetryQueue';
+import { enqueueMessageAck, removeMessageAck } from './messageAckRetryQueue';
+import { sendMessageAck } from './messageAckTransport';
 import { toEnvelope, idempotencyId } from './rrp/envelope';
 import type { RrpType } from './rrp/envelope';
 import api, { resolveMediaUrl } from './api';
@@ -88,22 +92,22 @@ export interface CanonicalMessage {
 }
 
 /* ---- Dedupe bookkeeping (in-memory, bounded) ----
- * `_acked`     — message ids we've already sent a delivery ACK for (avoid spam).
- * `_persisting`— message ids whose persist pipeline is in flight, to close the
+ * `_acked`     — message ids whose delivery ACK the server accepted.
+ * `_ingesting` — message ids whose receive pipeline is in flight, to close the
  *                race where WS + push arrive within the same tick and both pass
  *                the `messageExists` check before either writes.
  * Persistent dedupe across app restarts is provided by SQLite `messageExists`. */
 const _acked = new Set<string>();
-const _persisting = new Set<string>();
+const _acking = new Map<string, Promise<void>>();
+const _ingesting = new Map<string, Promise<void>>();
 // Reconnect digests are deliberately redundant, but repeatedly asking every
 // group peer for the same historic gap turns a harmless cache mismatch into a
 // message/update storm. One recovery request per room/id per window is enough;
 // new live messages still arrive immediately through Axion or push.
 const _missingRequestRetryAfter = new Map<string, number>();
 const MISSING_REQUEST_COOLDOWN_MS = 15 * 60 * 1000;
-/** Pointer-media downloads in flight (separate from `_persisting` so a download
- *  kicked off right after persist isn't blocked by the persist guard). */
-const _downloading = new Set<string>();
+/** Join downloads started by other transports or the durable recovery scan. */
+const _downloading = new Map<string, Promise<boolean>>();
 const MAX_TRACKED = 300;
 
 function track(set: Set<string>, id: string): void {
@@ -205,19 +209,22 @@ function isBlockedSender(senderId: number): boolean {
  */
 async function ackDelivery(messageId: string, senderId: number, roomId: string): Promise<void> {
   if (senderId <= 0 || _acked.has(messageId)) return;
-  track(_acked, messageId);
-  const now = new Date().toISOString();
-  // Keep an offline retry record before issuing the request.  Receipt delivery
-  // never blocks SQLite persistence or the visible receive path.
-  await enqueueMessageAck({ message_id: messageId, sender_id: senderId, room_id: roomId, delivered_at: now }).catch(() => {});
-  api.post('/api/chat/messages/ack/', {
-    message_id: messageId,
-    sender_id: senderId,
-    room_id: roomId,
-    delivered_at: now,
-  }).then(() => {
-    debugLog('[Ingress] delivery ack submitted', messageId);
-  }).catch(() => {});
+  const existing = _acking.get(messageId);
+  if (existing) return existing;
+  const work = (async () => {
+    const ack = { message_id: messageId, sender_id: senderId, room_id: roomId, delivered_at: new Date().toISOString() };
+    await enqueueMessageAck(ack).catch(() => {});
+    try {
+      // The headless push task must stay alive until this request completes.
+      const response = await sendMessageAck(ack);
+      if (response.status !== 200 || response.data?.status === 'not_found') return;
+      track(_acked, messageId);
+      await removeMessageAck(messageId, senderId, roomId).catch(() => {});
+      debugLog('[Ingress] delivery ack submitted', messageId);
+    } catch { /* The durable retry remains; a duplicate may also retry. */ }
+  })();
+  _acking.set(messageId, work);
+  try { await work; } finally { _acking.delete(messageId); }
 }
 
 /** Decode inline media (voice / image) to a cached file, returning its URI. */
@@ -246,21 +253,79 @@ function mediaTypeOf(evt: CanonicalMessage): 'image' | 'voice' | 'video' | 'docu
   return null;
 }
 
+/** Moving to public storage is intentionally detached from delivery ACK. The
+ * verified temporary copy is enough for delivery; Gallery/Downloads failures
+ * stay retryable without changing message state. */
+function exportReceivedMedia(evt: CanonicalMessage, localUri: string): void {
+  const mediaType = mediaTypeOf(evt);
+  if (!mediaType) return;
+  const fallbackMime = mediaType === 'image' ? evt.imageMime ?? 'image/jpeg'
+    : mediaType === 'voice' ? evt.audioMime ?? 'audio/mp4'
+    : mediaType === 'video' ? 'video/mp4'
+    : 'application/octet-stream';
+  void import('./media-export-service')
+    .then(async ({ autoExportReceivedMedia }) => {
+      const result = await autoExportReceivedMedia({
+        messageId: evt.messageId,
+        mediaType,
+        localUri,
+        fileName: evt.content,
+        mime: evt.mediaMime ?? fallbackMime,
+      });
+      if (result.state === 'saved' || result.state === 'already-saved') {
+        // Refresh an open room after SQLite switches from the temporary URI to
+        // the permanent Gallery/Downloads URI.
+        injectReceivedMessage(evt.roomId, toWsMessage(evt, result.uri), { updateExisting: true });
+      }
+    })
+    .catch((error) => console.warn('[Ingress] device media export failed:', error));
+}
+
+async function recoveredMediaUri(messageId: string): Promise<string | null> {
+  try {
+    const { getAvailableRecoveredMediaUri } = await import('./media-export-service');
+    return await getAvailableRecoveredMediaUri(messageId);
+  } catch {
+    return null;
+  }
+}
+
+function confirmRecoveredPointer(mediaId: string | null): void {
+  if (!mediaId) return;
+  void import('./mediaLane')
+    .then(({ confirmDownloaded }) => confirmDownloaded(mediaId))
+    .catch(() => {});
+}
+
 /**
  * Download an out-of-band media blob (Phase 2 pointer), persist it to durable
  * storage, verify md5, wire the file into the row + open room, ACK delivery,
  * then confirm the download so the server can retire the blob. Returns true on
- * success. Guarded by `_persisting` to avoid concurrent downloads of one id.
+ * success. All callers await the same in-flight download and receipt.
  */
 async function hydratePointerMedia(evt: CanonicalMessage): Promise<boolean> {
   const mt = mediaTypeOf(evt);
   if (!evt.mediaId || !mt) return false;
-  if (_downloading.has(evt.messageId)) return false;
-  track(_downloading, evt.messageId);
+  const existing = _downloading.get(evt.messageId);
+  if (existing) return existing;
+  const work = downloadPointerMedia(evt, mt);
+  _downloading.set(evt.messageId, work);
+  try { return await work; } finally { _downloading.delete(evt.messageId); }
+}
+
+async function downloadPointerMedia(evt: CanonicalMessage, mt: NonNullable<ReturnType<typeof mediaTypeOf>>): Promise<boolean> {
   try {
+    const recoveredUri = await recoveredMediaUri(evt.messageId);
+    if (recoveredUri) {
+      await setMessageFileUri(evt.messageId, recoveredUri);
+      injectReceivedMessage(evt.roomId, toWsMessage(evt, recoveredUri), { updateExisting: true });
+      await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+      confirmRecoveredPointer(evt.mediaId);
+      return true;
+    }
     const { downloadAndPersistMedia, confirmDownloaded } = await import('./mediaLane');
     const uri = await downloadAndPersistMedia({
-      mediaId: evt.mediaId,
+      mediaId: evt.mediaId!,
       mediaType: mt,
       mime: evt.mediaMime ?? (
         mt === 'voice' ? 'audio/m4a'
@@ -275,17 +340,16 @@ async function hydratePointerMedia(evt: CanonicalMessage): Promise<boolean> {
     });
     await setMessageFileUri(evt.messageId, uri);
     injectReceivedMessage(evt.roomId, toWsMessage(evt, uri), { updateExisting: true });
+    exportReceivedMedia(evt, uri);
     // Bytes are now durably present → ACK delivery so the sender's ✓ reflects
     // the real file, and confirm so the server can delete the blob after grace.
     await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
-    confirmDownloaded(evt.mediaId).catch(() => {});
+    await confirmDownloaded(evt.mediaId!).catch(() => {});
     debugLog('[Ingress] downloaded pointer media for', evt.messageId);
     return true;
   } catch (err) {
     console.warn('[Ingress] pointer media download failed', evt.messageId, err);
     return false;
-  } finally {
-    _downloading.delete(evt.messageId);
   }
 }
 
@@ -415,9 +479,20 @@ export async function ingestMessage(
     return;
   }
 
+  // Acquire before the first SQLite await. A richer duplicate (e.g. inline
+  // bytes after a stripped push) is processed AFTER its predecessor, not lost.
+  const previous = _ingesting.get(evt.messageId) ?? Promise.resolve();
+  const work = previous.catch(() => {}).then(() => processReceivedMessage(evt, source));
+  _ingesting.set(evt.messageId, work);
+  try { await work; } finally {
+    if (_ingesting.get(evt.messageId) === work) _ingesting.delete(evt.messageId);
+  }
+}
+
+async function processReceivedMessage(evt: CanonicalMessage, source: IngressSource): Promise<void> {
   // 1. Delivery ACK. For NON-media messages, identity is enough so it fires even
   //    when a push truncated `content`. MEDIA is acked ONLY once the actual file
-  //    bytes have been received/decoded (see steps 3b + 4b), so the sender's
+  //    bytes have been received/decoded, so the sender's
   //    single check reflects the real file — not just the placeholder message.
   const hasMedia = !!(evt.audioB64 || evt.imageB64);
   const isMediaType = evt.messageType === 'image'
@@ -428,7 +503,7 @@ export async function ingestMessage(
   // of inline base64. The blob is fetched over HTTP (mediaLane) after persist.
   const hasPointer = !!evt.mediaId;
   // 2. Content/media gate. A truncated push (ack-critical ids but no content)
-  //    is acked above; we then wait for the full WS delivery to persist it.
+  //    is acked here; we then wait for the full WS delivery to persist it.
   // A media message whose base64 blob was stripped from the push still has a
   // media `messageType`. We persist a PLACEHOLDER row for it (file_uri null) so
   // it shows in the chat immediately and the media-hydration path
@@ -436,56 +511,42 @@ export async function ingestMessage(
   // peers are online. Without this the row never exists, so it can never
   // self-heal — and a killed receiver would silently lose the message.
   if (!evt.content && !hasMedia && !isMediaType) {
-    void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+    await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
     debugLog('[Ingress] acked but not persisted — content missing (truncated)', evt.messageId);
     return;
   }
 
   // 3. Persistent + in-flight dedupe (single write of side effects).
   const exists = await messageExists(evt.messageId);
-  if (exists || _persisting.has(evt.messageId)) {
-    // Already stored (or being stored). If this delivery carries media and the
-    // stored row is still missing its file (e.g. first saved from a push that
-    // stripped the base64 blob), decode + backfill the file_uri now so the
-    // bubble finally renders. Skip if another decode for this id is in flight.
-    if (hasMedia && !_persisting.has(evt.messageId)) {
-      try {
-        const existingUri = await getMessageFileUri(evt.messageId);
-        if (!existingUri) {
-          track(_persisting, evt.messageId);
-          try {
-            const hydratedUri = await decodeMedia(evt);
-            if (hydratedUri) {
-              await setMessageFileUri(evt.messageId, hydratedUri);
-              injectReceivedMessage(evt.roomId, toWsMessage(evt, hydratedUri), { updateExisting: true });
-              // 3b. Media bytes are now fully present → ack delivery NOW so the
-              //     sender's ✓ appears only once the real file has been received.
-              void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
-              debugLog('[Ingress] hydrated media for', evt.messageId);
-              return;
-            }
-          } finally {
-            _persisting.delete(evt.messageId);
-          }
-        }
-      } catch { /* fall through to plain hydrate */ }
+  if (exists) {
+    let fileUri = isMediaType ? await getMessageFileUri(evt.messageId) : null;
+    let hydrated = false;
+    if (isMediaType && !fileUri) {
+      fileUri = await recoveredMediaUri(evt.messageId);
+      if (fileUri) {
+        await setMessageFileUri(evt.messageId, fileUri);
+        hydrated = true;
+        confirmRecoveredPointer(evt.mediaId);
+      }
     }
-    // Out-of-band pointer whose blob hasn't been downloaded yet → start the
-    // download in the background (it acks + confirms on completion).
-    if (hasPointer && !_downloading.has(evt.messageId)) {
-      try {
-        const existingUri = await getMessageFileUri(evt.messageId);
-        if (!existingUri) { void hydratePointerMedia(evt); }
-      } catch { /* best-effort */ }
+    if (hasMedia && !fileUri) {
+      fileUri = await decodeMedia(evt);
+      if (fileUri) {
+        await setMessageFileUri(evt.messageId, fileUri);
+        hydrated = true;
+      }
     }
-    // Already stored — just make sure an open room shows it.
-    injectReceivedMessage(evt.roomId, toWsMessage(evt, null));
+    if (fileUri) exportReceivedMedia(evt, fileUri);
+    injectReceivedMessage(evt.roomId, toWsMessage(evt, fileUri), { updateExisting: hydrated });
+    if (!isMediaType || fileUri) await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+    else if (hasPointer) await hydratePointerMedia(evt);
     return;
   }
-  track(_persisting, evt.messageId);
 
   // 4. Decode any inline media, then persist to SQLite.
-  const fileUri = hasMedia ? await decodeMedia(evt) : null;
+  const recoveredUri = isMediaType ? await recoveredMediaUri(evt.messageId) : null;
+  const fileUri = recoveredUri ?? (hasMedia ? await decodeMedia(evt) : null);
+  if (recoveredUri) confirmRecoveredPointer(evt.mediaId);
   await saveMessage({
     id: evt.messageId,
     room_id: evt.roomId,
@@ -513,34 +574,15 @@ export async function ingestMessage(
         }
       : null,
   });
-
-  // 4b. Delivery ACK for media: only now that we persisted a row WITH its file
-  //     do we tell the sender it's delivered. A media placeholder (fileUri null)
-  //     stays un-acked until its bytes arrive, so the sender's ✓ is accurate.
-  if (isMediaType && fileUri) {
-    void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
-  }
+  if (fileUri) exportReceivedMedia(evt, fileUri);
 
   // 5. Hydrate an open chat room (no-op if the room screen isn't mounted).
   injectReceivedMessage(evt.roomId, toWsMessage(evt, fileUri));
 
-  // The message row is durable and the open-room UI has been hydrated. ACK on
-  // Axion now, without holding the visible receive path on network latency.
-  if (!isMediaType) {
-    void ackDelivery(evt.messageId, evt.senderId, evt.roomId);
-  }
-
-  // 5a. Out-of-band pointer → download the blob over HTTP in the background.
-  //     hydratePointerMedia persists the file, acks delivery, and confirms the
-  //     download (so the server can retire the blob after the grace window).
-  if (hasPointer && !fileUri) {
-    void hydratePointerMedia(evt);
-  }
-
-  // 5b. Legacy inline/chunk media placeholder (no pointer): the bytes didn't
+  // Legacy inline/chunk media placeholder (no pointer): the bytes didn't
   //     ride along (push stripped them, or a chunk stream is still in flight).
   //     Give it a few seconds, then signal the sender to (re)send. Pointer
-  //     media is handled by the HTTP download above, so skip it here.
+  //     media is handled by the HTTP download below, so skip it here.
   if (isMediaType && !fileUri && !hasPointer) {
     setTimeout(async () => {
       try {
@@ -568,11 +610,18 @@ export async function ingestMessage(
     }
   } catch { /* store not hydrated yet (cold launch) */ }
 
-  // 7. Local notification — ONLY for the WS path. The FCM handler owns the
-  //    actionable notification for push sources; rendering here would duplicate.
-  if (source === 'ws') {
-    await maybeNotify(evt);
-  }
+  // UI/store updates above are immediate; background callers must still await
+  // the verified file and receipt before telling Android their task is done.
+  // Failed downloads stay as durable pointers for the existing recovery scan.
+  const delivery = !isMediaType || fileUri
+    ? ackDelivery(evt.messageId, evt.senderId, evt.roomId)
+    : hasPointer ? hydratePointerMedia(evt) : Promise.resolve();
+  // FCM owns push notifications. For WS, a slow notification/avatar must not
+  // delay the file or receipt, nor should downloading delay the notification.
+  await Promise.all([
+    delivery,
+    source === 'ws' ? maybeNotify(evt).catch(() => {}) : Promise.resolve(),
+  ]);
 
   debugLog('[Ingress] processed message', evt.messageId, 'room', evt.roomId, 'via', source);
 }
@@ -639,15 +688,15 @@ export async function routeInbound(
       if (!messageId || byUserId == null) return { type: env.type, handled: false };
       const dedupeId = idempotencyId('message.delivered', p);
       if (await alreadyProcessed(dedupeId)) return { type: env.type, handled: true };
-      // Update in-memory state before the SQLite await. A receiver_ready frame
-      // can arrive immediately behind this ACK; marking the room synchronously
-      // prevents that concurrent recovery path from replaying a message that
-      // the recipient has already stored.
-      if (env.room_id) {
-        try { markIdsAsDeliveredInRoom(env.room_id, [messageId]); } catch {}
-        try { useAppStore.getState().setRoomLastMessageStatus(env.room_id, messageId, 'delivered'); } catch {}
+      await markDelivered(messageId, byUserId, asStr(p.delivered_at) ?? undefined);
+      const receiptStatus = await getMessageReceiptStatus(messageId);
+      // One group member's receipt must not promote the whole group message.
+      if (env.room_id && receiptStatus !== 'pending') {
+        if (receiptStatus === 'read') markIdsAsReadInRoom(env.room_id, [messageId]);
+        else markIdsAsDeliveredInRoom(env.room_id, [messageId]);
+        useAppStore.getState().setRoomLastMessageStatus(env.room_id, messageId, receiptStatus);
       }
-      await markDelivered(messageId, byUserId).catch(() => {});
+      void flushStoredReceiptConfirmations().catch(() => {});
       await rememberProcessed(dedupeId, env.type);
       return { type: env.type, handled: true };
     }
@@ -656,6 +705,11 @@ export async function routeInbound(
     case 'message.read': {
       const ids = (p.message_ids as unknown[] | undefined)?.map((x) => String(x)) ?? [];
       if (!env.room_id || ids.length === 0) return { type: env.type, handled: false };
+      const readerId = asNum(p.by_user_id ?? p.user_id ?? p.sender_id ?? p.from_user_id);
+      if (readerId && readerId > 0) {
+        for (const id of ids) await markReadByRecipient(id, readerId, asStr(p.read_at) ?? undefined);
+        void flushStoredReceiptConfirmations().catch(() => {});
+      }
       try { markIdsAsReadInRoom(env.room_id, ids); } catch {}
       try {
         const store = useAppStore.getState();
@@ -676,6 +730,15 @@ export async function routeInbound(
         fresh.push(u);
       }
       if (fresh.length > 0) {
+        const readerId = asNum(p.from_user_id ?? p.sender_id);
+        if (readerId && readerId > 0) {
+          for (const update of fresh) {
+            if (update.changes.is_read === true) {
+              await markReadByRecipient(update.message_id, readerId, asStr(update.changes.read_at ?? update.changes.updated_at) ?? undefined);
+            }
+          }
+          void flushStoredReceiptConfirmations().catch(() => {});
+        }
         applyRemoteMessageUpdates(
           env.room_id,
           fresh.map((u) => ({ message_id: u.message_id, changes: u.changes })),

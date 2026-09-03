@@ -4,7 +4,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { Font, Radius, Spacing } from '../../theme';
 import { useAuth } from '../../contexts/AuthContext';
@@ -16,12 +17,15 @@ import {
   getLocalChatStorageStats,
   type LocalChatStorageStats,
 } from '../../services/localMessageStore';
-import type { ChatRoom } from '../../types';
+import type { ChatRoom, RootStackParamList } from '../../types';
+
+type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function ChatStorageScreen() {
   const { colors: Colors } = useTheme();
   const { user } = useAuth();
   const { confirm, alert } = useConfirm();
+  const navigation = useNavigation<Nav>();
   const [stats, setStats] = useState<LocalChatStorageStats | null>(null);
   const [roomNames, setRoomNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -123,12 +127,28 @@ export default function ChatStorageScreen() {
             const isDeleting = deletingRoomId === room.roomId;
             return (
               <View key={room.roomId} style={[styles.room, { borderBottomColor: Colors.divider, borderBottomWidth: index === stats.rooms.length - 1 ? 0 : 1 }]}>
-                <View style={styles.roomInfo}>
-                  <Text style={[styles.roomName, { color: Colors.text }]} numberOfLines={1}>{roomName}</Text>
+                <TouchableOpacity
+                  style={styles.roomInfo}
+                  activeOpacity={0.7}
+                  onPress={() => navigation.navigate('ChatStorageMedia', { roomId: room.roomId, roomName })}
+                  accessibilityLabel={`View media stored for ${roomName}`}
+                >
+                  <View style={styles.roomTitleRow}>
+                    <Text style={[styles.roomName, { color: Colors.text }]} numberOfLines={1}>{roomName}</Text>
+                    <Ionicons name="chevron-forward" size={17} color={Colors.textTertiary} />
+                  </View>
                   <Text style={[styles.roomMeta, { color: Colors.textSecondary }]}>
-                    {room.messageCount} {room.messageCount === 1 ? 'message' : 'messages'} · {formatBytes(room.totalBytes)}
+                    {room.messageCount} {room.messageCount === 1 ? 'message' : 'messages'} · {room.mediaCount} media · {formatBytes(room.totalBytes)}
                   </Text>
-                </View>
+                  {room.mediaCount > 0 ? (
+                    <View style={styles.mediaSummary}>
+                      <MediaSummary icon="image-outline" count={room.media.image.count} bytes={room.media.image.bytes} color={Colors.textTertiary} />
+                      <MediaSummary icon="videocam-outline" count={room.media.video.count} bytes={room.media.video.bytes} color={Colors.textTertiary} />
+                      <MediaSummary icon="mic-outline" count={room.media.voice.count} bytes={room.media.voice.bytes} color={Colors.textTertiary} />
+                      <MediaSummary icon="document-text-outline" count={room.media.document.count} bytes={room.media.document.bytes} color={Colors.textTertiary} />
+                    </View>
+                  ) : null}
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.deleteButton, { backgroundColor: Colors.highlight, borderColor: Colors.neonBorder, opacity: isDeleting ? 0.55 : 1 }]}
                   onPress={() => handleDeleteRoom(room.roomId, roomName)}
@@ -146,6 +166,26 @@ export default function ChatStorageScreen() {
       ) : null}
       <Text style={[styles.footnote, { color: Colors.textTertiary }]}>Per-chat database amounts are estimates because SQLite shares storage pages and indexes across chats.</Text>
     </ScrollView>
+  );
+}
+
+function MediaSummary({
+  icon,
+  count,
+  bytes,
+  color,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  count: number;
+  bytes: number;
+  color: string;
+}) {
+  if (!count) return null;
+  return (
+    <View style={styles.mediaSummaryItem}>
+      <Ionicons name={icon} size={13} color={color} />
+      <Text style={[styles.mediaSummaryText, { color }]}>{count} · {formatBytes(bytes)}</Text>
+    </View>
   );
 }
 
@@ -175,8 +215,12 @@ const styles = StyleSheet.create({
   list: { borderWidth: 1, borderRadius: Radius.md, paddingHorizontal: Spacing.lg },
   room: { flexDirection: 'row', alignItems: 'center', paddingVertical: Spacing.md },
   roomInfo: { flex: 1, paddingRight: Spacing.md },
-  roomName: { fontSize: Font.size.md, fontWeight: '700' },
+  roomTitleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  roomName: { flex: 1, fontSize: Font.size.md, fontWeight: '700' },
   roomMeta: { fontSize: Font.size.xs, marginTop: 3 },
+  mediaSummary: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, paddingTop: Spacing.sm },
+  mediaSummaryItem: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  mediaSummaryText: { fontSize: Font.size.xs, fontVariant: ['tabular-nums'] },
   deleteButton: { width: 38, height: 38, borderWidth: 1, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   empty: { textAlign: 'center', paddingVertical: Spacing.xl, fontSize: Font.size.sm },
   footnote: { fontSize: Font.size.xs, lineHeight: 17, marginTop: Spacing.lg, textAlign: 'center', paddingHorizontal: Spacing.md },

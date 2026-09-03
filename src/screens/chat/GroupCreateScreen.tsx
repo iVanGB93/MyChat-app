@@ -21,7 +21,7 @@ import { useConfirm } from '../../contexts/ConfirmContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getContacts } from '../../services/contactService';
 import { createGroupRoom } from '../../services/chatService';
-import { cacheContacts, getCachedContacts } from '../../services/localMessageStore';
+import { getCachedContacts } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import { useAppStore } from '../../store/appStore';
@@ -54,7 +54,6 @@ export default function GroupCreateScreen() {
       getContacts()
         .then((items) => {
           if (active) setContacts(items);
-          if (user?.id != null) cacheContacts(user.id, items).catch(() => {});
         })
         .catch(() => { /* cached contacts remain usable offline */ });
     })();

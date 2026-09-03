@@ -185,7 +185,7 @@ TaskManager.defineTask(PUSH_RECEIVE_TASK, async ({ data, error }: { data: any; e
       const { savePushMessage } = await import('./pushMessageStore');
       await savePushMessage(pushData);
       // After saving, try to flush any pending ACK retries (over HTTP or WS)
-      flushHttpAckRetryQueue().catch(() => {});
+      await flushHttpAckRetryQueue().catch(() => {});
     }
   } catch (err) {
     console.warn('[PushReceiveTask] failed to save message:', err);

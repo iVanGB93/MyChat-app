@@ -2,8 +2,9 @@
 /*  Chat List Screen — futuristic cyberpunk theme                     */
 /* ------------------------------------------------------------------ */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import {
+  BackHandler,
   View,
   Text,
   StyleSheet,
@@ -21,7 +22,8 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius, type ThemeColors } from '../../theme';
 import { resolveMediaUrl } from '../../services/api';
 import { getRooms } from '../../services/chatService';
-import { cacheRooms, getCachedRooms, getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
+import { initiateCall } from '../../services/callService';
+import { getCachedRooms, getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
@@ -30,6 +32,8 @@ import { useAppStore } from '../../store/appStore';
 import { Ionicons } from '@expo/vector-icons';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
+import ChatAvatarActionModal from '../../components/chat/chat-avatar-action-modal';
+import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import type { ChatRoom, RootStackParamList } from '../../types';
 
 dayjs.extend(relativeTime);
@@ -64,9 +68,13 @@ interface ChatListRowProps {
   unread: number;
   typingLabel: string | null;
   isMuted: boolean;
+  selectionMode: boolean;
+  selected: boolean;
   Colors: ThemeColors;
   onOpen: (roomId: string, displayName: string, otherUserId?: number) => void;
-  onLongPress: (roomId: string, displayName: string) => void;
+  onLongPress: (roomId: string) => void;
+  onToggleSelection: (roomId: string) => void;
+  onAvatarPress: (roomId: string) => void;
   onMarkRead: (roomId: string) => void;
 }
 
@@ -84,9 +92,13 @@ function ChatListRowBase({
   unread,
   typingLabel,
   isMuted,
+  selectionMode,
+  selected,
   Colors,
   onOpen,
   onLongPress,
+  onToggleSelection,
+  onAvatarPress,
   onMarkRead,
 }: ChatListRowProps) {
   const renderRightActions = () => (
@@ -103,17 +115,52 @@ function ChatListRowBase({
   const row = (
     <TouchableOpacity
       testID={`chat-row-${roomId}`}
-      accessibilityLabel={`Open chat with ${displayName}`}
-      style={[styles.chatItem, { borderColor: Colors.neonBorder, backgroundColor: Colors.background }]}
+      accessibilityLabel={selectionMode ? `${selected ? 'Deselect' : 'Select'} ${displayName}` : `Open chat with ${displayName}`}
+      accessibilityState={{ selected }}
+      style={[
+        styles.chatItem,
+        {
+          borderColor: selected ? Colors.primary : Colors.neonBorder,
+          backgroundColor: selected ? Colors.highlight : Colors.background,
+        },
+      ]}
       activeOpacity={0.7}
-      onLongPress={() => onLongPress(roomId, displayName)}
+      onLongPress={() => onLongPress(roomId)}
       delayLongPress={350}
-      onPress={() => onOpen(roomId, displayName, otherUserId)}
+      onPress={() => {
+        if (selectionMode) onToggleSelection(roomId);
+        else onOpen(roomId, displayName, otherUserId);
+      }}
     >
       {/* Left accent bar */}
       <View style={[styles.accentBar, { backgroundColor: Colors.primary }]} />
 
-      <View style={styles.avatarWrapper}>
+      {selectionMode && (
+        <View
+          style={[
+            styles.selectionCircle,
+            {
+              borderColor: selected ? Colors.primary : Colors.textTertiary,
+              backgroundColor: selected ? Colors.primary : 'transparent',
+            },
+          ]}
+        >
+          {selected && <Ionicons name="checkmark" size={15} color={Colors.background} />}
+        </View>
+      )}
+
+      <TouchableOpacity
+        testID={`chat-avatar-${roomId}`}
+        accessibilityRole="imagebutton"
+        accessibilityLabel={`Preview ${displayName}`}
+        style={styles.avatarWrapper}
+        activeOpacity={0.72}
+        disabled={selectionMode}
+        onPress={(event) => {
+          event.stopPropagation();
+          onAvatarPress(roomId);
+        }}
+      >
         <Avatar
           name={displayName}
           uri={avatarUri}
@@ -121,7 +168,7 @@ function ChatListRowBase({
           showOnline={isDirect}
           isOnline={isOnline}
         />
-      </View>
+      </TouchableOpacity>
 
       <View style={styles.chatInfo}>
         <View style={styles.chatHeader}>
@@ -189,7 +236,7 @@ function ChatListRowBase({
     </TouchableOpacity>
   );
 
-  if (unread > 0) {
+  if (unread > 0 && !selectionMode) {
     return (
       <Swipeable
         renderRightActions={renderRightActions}
@@ -215,23 +262,24 @@ export default function ChatListScreen() {
   const navigation = useNavigation<Nav>();
   const { user } = useAuth();
   const { colors: Colors } = useTheme();
+  const { ensure: ensurePermission } = usePermissionPrompt();
   const unreadByRoom = useAppStore((s) => s.unreadByRoom);
   const clearAllUnread = useAppStore((s) => s.clearAllUnread);
   const clearRoomUnread = useAppStore((s) => s.clearRoomUnread);
-  const incrementRoomUnread = useAppStore((s) => s.incrementRoomUnread);
   const clearRoomState = useAppStore((s) => s.clearRoomState);
-  const toggleRoomMuted = useAppStore((s) => s.toggleRoomMuted);
   const markRoomCleared = useAppStore((s) => s.markRoomCleared);
   const clearedRooms = useAppStore((s) => s.clearedRooms);
   const lastMessageByRoom = useAppStore((s) => s.lastMessageByRoom);
   const typingByRoom = useAppStore((s) => s.typingByRoom);
   const mutedRooms = useAppStore((s) => s.mutedRooms);
   const presenceByUserId = useAppStore((s) => s.presenceByUserId);
-  const { confirm } = useConfirm();
+  const { alert, confirm } = useConfirm();
   const totalUnread = Object.values(unreadByRoom).reduce((a, b) => a + b, 0);
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [selectedRoomIds, setSelectedRoomIds] = useState<Set<string>>(() => new Set());
+  const [avatarRoomId, setAvatarRoomId] = useState<string | null>(null);
   const [localLastMessages, setLocalLastMessages] = useState<
     Record<
       string,
@@ -255,11 +303,10 @@ export default function ChatListScreen() {
 
   /** Server remains authoritative for room metadata; this runs after the local
    * cache is visible, and on focus/pull-to-refresh as a background repair. */
-  const syncRooms = useCallback(async () => {
+  const syncRooms = useCallback(async (force = false) => {
     try {
-      const data = await getRooms();
+      const data = await getRooms(force);
       setRooms(data);
-      if (user?.id != null) await cacheRooms(user.id, data);
       await loadLocalLastMessages();
     } catch { /* ignore */ } finally {
       setRefreshing(false);
@@ -285,7 +332,7 @@ export default function ChatListScreen() {
   }, [user?.id, loadLocalLastMessages, syncRooms]);
 
   useEffect(() => {
-    const unsub = navigation.addListener('focus', syncRooms);
+    const unsub = navigation.addListener('focus', () => { void syncRooms(); });
     return unsub;
   }, [navigation, syncRooms]);
 
@@ -297,7 +344,7 @@ export default function ChatListScreen() {
   useEffect(() => {
     const unsub = subscribe((payload) => {
       if (payload.event === 'room_update') {
-        syncRooms();
+        syncRooms(true);
         return;
       }
       if (payload.event !== 'new_message') return;
@@ -316,7 +363,7 @@ export default function ChatListScreen() {
         const idx = prev.findIndex((r) => r.id === roomId);
         if (idx === -1) {
           // New room not yet in our list — re-fetch to pick it up.
-          syncRooms();
+          syncRooms(true);
           return prev;
         }
         const updated: ChatRoom = {
@@ -407,78 +454,168 @@ export default function ChatListScreen() {
     [clearRoomUnread],
   );
 
-  const handleDeleteChat = useCallback(
-    (roomId: string, displayName: string) => {
-      // "Delete for me only": the server room + the other user's copy stay
-      // intact. We just wipe this device's messages and hide the room until
-      // newer activity revives it as a fresh chat. Confirm first.
-      confirm({
-        title: 'Delete chat?',
-        message: `This removes this chat and its messages from your device only. ${displayName} will still have their copy, and the chat will reappear here if there are new messages.`,
-        icon: 'trash-outline',
-        buttons: [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Delete',
-            style: 'destructive',
-            onPress: async () => {
-              try { await deleteRoomMessages(roomId); } catch { /* best-effort */ }
+  const clearSelection = useCallback(() => setSelectedRoomIds(new Set()), []);
+
+  const handleToggleSelection = useCallback((roomId: string) => {
+    setSelectedRoomIds((current) => {
+      const next = new Set(current);
+      if (next.has(roomId)) next.delete(roomId);
+      else next.add(roomId);
+      return next;
+    });
+  }, []);
+
+  const handleRowLongPress = useCallback((roomId: string) => {
+    setSelectedRoomIds((current) => {
+      if (current.has(roomId)) return current;
+      const next = new Set(current);
+      next.add(roomId);
+      return next;
+    });
+  }, []);
+
+  const deleteSelectedChats = useCallback(() => {
+    const roomIds = [...selectedRoomIds];
+    if (!roomIds.length) return;
+    const count = roomIds.length;
+    confirm({
+      title: count === 1 ? 'Delete chat?' : `Delete ${count} chats?`,
+      message: `This removes ${count === 1 ? 'this chat and its messages' : 'these chats and their messages'} from this device only. A chat will reappear if a new message arrives.`,
+      icon: 'trash-outline',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: count === 1 ? 'Delete' : `Delete ${count}`,
+          style: 'destructive',
+          onPress: async () => {
+            await Promise.allSettled(roomIds.map((roomId) => deleteRoomMessages(roomId)));
+            for (const roomId of roomIds) {
               markRoomCleared(roomId);
               clearRoomState(roomId);
-              setLocalLastMessages((prev) => {
-                if (!(roomId in prev)) return prev;
-                const next = { ...prev };
-                delete next[roomId];
-                return next;
-              });
-              setRooms((prev) => prev.filter((r) => r.id !== roomId));
-            },
+            }
+            setLocalLastMessages((previous) => {
+              const next = { ...previous };
+              roomIds.forEach((roomId) => delete next[roomId]);
+              return next;
+            });
+            setRooms((previous) => previous.filter((room) => !selectedRoomIds.has(room.id)));
+            clearSelection();
           },
-        ],
-      });
-    },
-    [confirm, markRoomCleared, clearRoomState],
-  );
+        },
+      ],
+    });
+  }, [clearRoomState, clearSelection, confirm, markRoomCleared, selectedRoomIds]);
 
-  const handleRowLongPress = useCallback(
-    (roomId: string, displayName: string) => {
-      // Read the freshest unread/mute at press time so the menu labels are correct.
-      const st = useAppStore.getState();
-      const unread = st.unreadByRoom[roomId] ?? 0;
-      const muted = !!st.mutedRooms[roomId];
-      confirm({
-        title: displayName.toUpperCase(),
-        message: 'Choose an action for this chat.',
-        icon: 'ellipsis-horizontal-circle-outline',
-        buttons: [
-          {
-            text: unread > 0 ? 'Mark as read' : 'Mark as unread',
-            onPress: () => {
-              if (unread > 0) clearRoomUnread(roomId);
-              else incrementRoomUnread(roomId, 1);
-            },
-          },
-          {
-            text: muted ? 'Unmute notifications' : 'Mute notifications',
-            onPress: () => toggleRoomMuted(roomId),
-          },
-          {
-            text: 'Delete chat',
-            style: 'destructive',
-            onPress: () => {
-              // Defer so the room-menu modal fully dismisses before the delete
-              // confirm opens. Opening a second native Modal while the first is
-              // still closing is swallowed on Android, so the confirm wouldn't
-              // appear. The provider spaces queued dialogs by ~220ms.
-              setTimeout(() => handleDeleteChat(roomId, displayName), 300);
-            },
-          },
-          { text: 'Cancel', style: 'cancel' },
-        ],
+  const handleAvatarPress = useCallback((roomId: string) => {
+    setAvatarRoomId(roomId);
+  }, []);
+
+  const avatarRoom = avatarRoomId ? rooms.find((room) => room.id === avatarRoomId) ?? null : null;
+  const avatarDisplayName = avatarRoom ? getRoomDisplayName(avatarRoom) : '';
+  const avatarOtherMember = avatarRoom ? getOtherMember(avatarRoom) : null;
+  const avatarUri = avatarRoom
+    ? resolveMediaUrl(avatarRoom.room_type === 'group' ? avatarRoom.avatar : avatarOtherMember?.avatar ?? null)
+    : null;
+
+  const closeAvatarPreview = useCallback(() => setAvatarRoomId(null), []);
+
+  const openAvatarChat = useCallback(() => {
+    if (!avatarRoom) return;
+    setAvatarRoomId(null);
+    navigation.navigate('ChatRoom', {
+      roomId: avatarRoom.id,
+      roomName: avatarDisplayName,
+      otherUserId: avatarOtherMember?.id,
+    });
+  }, [avatarDisplayName, avatarOtherMember?.id, avatarRoom, navigation]);
+
+  const openAvatarDetails = useCallback(() => {
+    if (!avatarRoom) return;
+    setAvatarRoomId(null);
+    if (avatarRoom.room_type === 'group') {
+      navigation.navigate('GroupInfo', { roomId: avatarRoom.id, roomName: avatarDisplayName });
+      return;
+    }
+    if (avatarOtherMember?.id != null) {
+      navigation.navigate('UserInfo', {
+        roomId: avatarRoom.id,
+        roomName: avatarDisplayName,
+        userId: avatarOtherMember.id,
       });
-    },
-    [confirm, clearRoomUnread, incrementRoomUnread, toggleRoomMuted, handleDeleteChat],
-  );
+    }
+  }, [avatarDisplayName, avatarOtherMember?.id, avatarRoom, navigation]);
+
+  const startAvatarCall = useCallback(async () => {
+    if (!avatarRoom || avatarRoom.room_type !== 'direct' || avatarOtherMember?.id == null) return;
+    const room = avatarRoom;
+    const peer = avatarOtherMember;
+    const peerName = avatarDisplayName;
+    setAvatarRoomId(null);
+    if (!(await ensurePermission('microphone'))) return;
+    try {
+      const result = await initiateCall(peer.id, 'voice');
+      navigation.navigate('ActiveCall', {
+        callId: result.call_id,
+        otherName: peerName,
+        callType: 'voice',
+        roomName: result.room_name,
+        isOutgoing: true,
+        peerUserId: peer.id,
+      });
+    } catch {
+      alert('Could not start call', `Axonic could not call ${peerName}. Please try again.`);
+    }
+  }, [alert, avatarDisplayName, avatarOtherMember, avatarRoom, ensurePermission, navigation]);
+
+  const selectionMode = selectedRoomIds.size > 0;
+  const allVisibleSelected = visibleRooms.length > 0
+    && visibleRooms.every((room) => selectedRoomIds.has(room.id));
+
+  const toggleSelectAll = useCallback(() => {
+    setSelectedRoomIds((current) => {
+      const allSelected = visibleRooms.length > 0
+        && visibleRooms.every((room) => current.has(room.id));
+      return allSelected
+        ? new Set()
+        : new Set(visibleRooms.map((room) => room.id));
+    });
+  }, [visibleRooms]);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTitle: selectionMode ? `${selectedRoomIds.size} SELECTED` : 'AXONIC',
+      headerLeft: selectionMode
+        ? () => (
+          <TouchableOpacity
+            testID="chat-selection-close"
+            accessibilityLabel="Cancel chat selection"
+            style={styles.headerAction}
+            onPress={clearSelection}
+          >
+            <Ionicons name="close" size={25} color={Colors.primary} />
+          </TouchableOpacity>
+        )
+        : undefined,
+      headerRight: undefined,
+    });
+  }, [
+    Colors.primary,
+    clearSelection,
+    navigation,
+    selectedRoomIds.size,
+    selectionMode,
+  ]);
+
+  useEffect(() => {
+    if (!selectionMode) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      clearSelection();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [clearSelection, selectionMode]);
+
+  useEffect(() => navigation.addListener('blur', clearSelection), [clearSelection, navigation]);
 
   const renderItem = useCallback(
     ({ item }: { item: ChatRoom }) => {
@@ -507,9 +644,13 @@ export default function ChatListScreen() {
           unread={unread}
           typingLabel={typingLabel}
           isMuted={!!mutedRooms[item.id]}
+          selectionMode={selectionMode}
+          selected={selectedRoomIds.has(item.id)}
           Colors={Colors}
           onOpen={handleOpenRoom}
           onLongPress={handleRowLongPress}
+          onToggleSelection={handleToggleSelection}
+          onAvatarPress={handleAvatarPress}
           onMarkRead={handleMarkRead}
         />
       );
@@ -521,10 +662,14 @@ export default function ChatListScreen() {
       presenceByUserId,
       lastMessageByRoom,
       localLastMessages,
+      selectedRoomIds,
+      selectionMode,
       user?.id,
       Colors,
       handleOpenRoom,
       handleRowLongPress,
+      handleToggleSelection,
+      handleAvatarPress,
       handleMarkRead,
     ],
   );
@@ -543,7 +688,37 @@ export default function ChatListScreen() {
       collapsable={false}
       style={[styles.container, { backgroundColor: Colors.background }]}
     >
-      {totalUnread > 50 && (
+      {selectionMode && (
+        <View style={[styles.selectionBar, { borderBottomColor: Colors.divider, backgroundColor: Colors.surface }]}>
+          <TouchableOpacity
+            testID="chat-selection-all"
+            accessibilityLabel={allVisibleSelected ? 'Deselect all chats' : 'Select all chats'}
+            style={styles.selectionBarAction}
+            activeOpacity={0.72}
+            onPress={toggleSelectAll}
+          >
+            <Ionicons
+              name={allVisibleSelected ? 'checkbox-outline' : 'square-outline'}
+              size={20}
+              color={Colors.primary}
+            />
+            <Text style={[styles.selectionBarText, { color: Colors.primary }]}>
+              {allVisibleSelected ? 'Deselect all' : 'Select all'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            testID="chat-selection-delete"
+            accessibilityLabel={`Delete ${selectedRoomIds.size} selected chats`}
+            style={styles.selectionBarAction}
+            activeOpacity={0.72}
+            onPress={deleteSelectedChats}
+          >
+            <Ionicons name="trash-outline" size={20} color={Colors.error} />
+            <Text style={[styles.selectionBarText, { color: Colors.error }]}>Delete</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+      {!selectionMode && totalUnread > 50 && (
         <TouchableOpacity
           style={[styles.markAllBar, { borderBottomColor: Colors.divider }]}
           activeOpacity={0.7}
@@ -575,7 +750,7 @@ export default function ChatListScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => { setRefreshing(true); syncRooms(); }}
+            onRefresh={() => { setRefreshing(true); syncRooms(true); }}
             colors={[Colors.primary]}
             tintColor={Colors.primary}
           />
@@ -583,25 +758,40 @@ export default function ChatListScreen() {
         ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: Colors.divider }]} />}
       />
 
-      {/* FAB */}
-      <TouchableOpacity
-        style={[styles.fab, { backgroundColor: Colors.surface, borderColor: Colors.primary, shadowColor: Colors.primary }]}
-        activeOpacity={0.8}
-        onPress={() => {
-          confirm({
-            title: 'Start a conversation',
-            message: 'Choose what you want to create.',
-            icon: 'add-circle-outline',
-            buttons: [
-              { text: 'New chat', onPress: () => navigation.navigate('Contacts') },
-              { text: 'New group', onPress: () => navigation.navigate('GroupCreate') },
-              { text: 'Cancel', style: 'cancel' },
-            ],
-          });
-        }}
-      >
-        <Ionicons name="add" size={32} color={Colors.primary} />
-      </TouchableOpacity>
+      {!selectionMode && (
+        <TouchableOpacity
+          style={[styles.fab, { backgroundColor: Colors.surface, borderColor: Colors.primary, shadowColor: Colors.primary }]}
+          activeOpacity={0.8}
+          onPress={() => {
+            confirm({
+              title: 'Start a conversation',
+              message: 'Choose what you want to create.',
+              icon: 'add-circle-outline',
+              buttons: [
+                { text: 'New chat', onPress: () => navigation.navigate('Contacts') },
+                { text: 'New group', onPress: () => navigation.navigate('GroupCreate') },
+                { text: 'Cancel', style: 'cancel' },
+              ],
+            });
+          }}
+        >
+          <Ionicons name="add" size={32} color={Colors.primary} />
+        </TouchableOpacity>
+      )}
+
+      <ChatAvatarActionModal
+        visible={!!avatarRoom}
+        name={avatarDisplayName}
+        subtitle={avatarRoom?.room_type === 'group'
+          ? `${avatarRoom.members_detail.length} members`
+          : avatarOtherMember?.username ? `@${avatarOtherMember.username}` : null}
+        avatarUri={avatarUri}
+        isGroup={avatarRoom?.room_type === 'group'}
+        onClose={closeAvatarPreview}
+        onMessage={openAvatarChat}
+        onCall={avatarRoom?.room_type === 'direct' ? startAvatarCall : undefined}
+        onDetails={openAvatarDetails}
+      />
     </View>
   );
 }
@@ -627,6 +817,15 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   avatarWrapper: {
+    marginRight: Spacing.md,
+  },
+  selectionCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginRight: Spacing.md,
   },
   chatInfo: { flex: 1 },
@@ -681,6 +880,33 @@ const styles = StyleSheet.create({
   separator: {
     height: 1,
     marginLeft: 71,
+  },
+
+  selectionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 48,
+    paddingHorizontal: Spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  selectionBarAction: {
+    minHeight: 42,
+    paddingHorizontal: Spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+  },
+  selectionBarText: {
+    fontSize: Font.size.sm,
+    ...Font.semiBold,
+  },
+  headerAction: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   fab: {

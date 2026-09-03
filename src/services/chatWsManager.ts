@@ -13,6 +13,7 @@ import { useAppStore } from '../store/appStore';
 import { ensureWsAlive, isNotifWsReady, reconnectWsNow, sendRawNotif, subscribeStatus } from './notificationWsManager';
 import { applyMessageLifecycleEvent, mergeMessageById, shouldSuppressOutboxReplay } from './messageLifecycle';
 import { debugLog } from './diagnostics';
+import { getMessageExpectedRecipients, setMessageExpectedRecipients, getStoredReceiptConfirmations, markStoredReceiptConfirmations } from './localMessageStore';
 // An Axion acknowledgement can arrive before the sender's asynchronous local
 // SQLite insert finishes. Keep the acceptance briefly so the insert cannot turn
 // an already-accepted message back into a permanently retrying pending row.
@@ -607,6 +608,8 @@ async function sendOutboxFrameOnce(
     ...(opts?.hydration ? { hydration: true } : {}),
     ...(opts?.targetRecipientId ? { target_recipient_id: opts.targetRecipientId } : {}),
   };
+  const recipients = await getMessageExpectedRecipients(msg.id).catch(() => null);
+  if (recipients) base.expected_recipient_ids = recipients;
 
   if (isMedia) {
     // Out-of-band media: upload the blob once (HTTP), persist the pointer, then
@@ -666,6 +669,7 @@ async function sendOutboxFrameOnce(
   }
 
   // Text — single frame.
+  if (!isAxionReady() || _myUserId !== sendingUserId) return { sent: false };
   try {
     if (!sendRawNotif({ type: 'send_message', room_id: roomId, ...base })) return { sent: false };
   } catch (err) {
@@ -1182,8 +1186,9 @@ export function sendTyping(roomId: string, isTyping: boolean): void {
 
 /** Axion accepted an outbound message. Persist its server-sync state without
  * waiting for a delivery receipt from each recipient. */
-export function markServerMessageAccepted(roomId: string, messageId: string): void {
+export function markServerMessageAccepted(roomId: string, messageId: string, recipientIds?: number[]): void {
   if (!messageId) return;
+  if (recipientIds) setMessageExpectedRecipients(messageId, recipientIds).catch(() => {});
   debugLog('[Axion] server ACK received', messageId, 'room', roomId);
   clearServerAckWatch(messageId);
   const acceptedAt = Date.now();
@@ -1202,6 +1207,34 @@ export function markServerMessageAccepted(roomId: string, messageId: string): vo
     // bubble and chat-list preview through their dedicated events.
     .then(() => {})
     .catch(() => {});
+}
+
+/** Two-phase receipt retention: only tell the server after SQLite owns it. */
+let receiptConfirmationInFlight = false;
+let receiptConfirmationTimer: ReturnType<typeof setTimeout> | null = null;
+export async function flushStoredReceiptConfirmations(force = false): Promise<void> {
+  if (force) {
+    receiptConfirmationInFlight = false;
+    if (receiptConfirmationTimer) clearTimeout(receiptConfirmationTimer);
+  }
+  if (receiptConfirmationInFlight) return;
+  if (!isAxionReady()) return;
+  receiptConfirmationInFlight = true;
+  const entries = await getStoredReceiptConfirmations().catch(() => []);
+  if (!entries.length || !sendRawNotif({ type: 'receipts_stored', entries })) {
+    receiptConfirmationInFlight = false;
+    return;
+  }
+  receiptConfirmationTimer = setTimeout(() => { receiptConfirmationInFlight = false; }, 30_000);
+}
+
+export async function acceptStoredReceiptConfirmations(entries: Array<{ message_id: string; recipient_ids: number[] }>): Promise<void> {
+  receiptConfirmationInFlight = false;
+  if (receiptConfirmationTimer) clearTimeout(receiptConfirmationTimer);
+  if (!entries.some((entry) => entry.recipient_ids?.length)) return;
+  await markStoredReceiptConfirmations(entries);
+  // Bounded batches; the server response advances the durable queue.
+  await flushStoredReceiptConfirmations();
 }
 
 /** Store Axion's authoritative peer snapshot for a mutation outbox entry. */

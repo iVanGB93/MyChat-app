@@ -12,6 +12,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { addMemberToRoom, getRoom, removeMemberFromRoom, renameGroupRoom, uploadGroupAvatar } from '../../services/chatService';
 import { getContacts } from '../../services/contactService';
 import { resolveMediaUrl } from '../../services/api';
+import { getCachedRooms } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import { useAppStore } from '../../store/appStore';
 import type { ChatRoom, Contact, RootStackParamList, RoomMember } from '../../types';
@@ -34,12 +35,25 @@ export default function GroupInfoScreen() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const presenceByUserId = useAppStore((s) => s.presenceByUserId);
+  const isMuted = useAppStore((s) => !!s.mutedRooms[route.params.roomId]);
+  const toggleRoomMuted = useAppStore((s) => s.toggleRoomMuted);
 
   const load = useCallback(async () => {
+    let hasCachedRoom = false;
+    if (user?.id != null) {
+      try {
+        const cached = (await getCachedRooms(user.id)).find((item) => item.id === route.params.roomId);
+        if (cached) {
+          hasCachedRoom = true;
+          setRoom(cached);
+          setLoading(false);
+        }
+      } catch { /* cache is best-effort */ }
+    }
     try { setRoom(await getRoom(route.params.roomId)); }
-    catch { alert('Could not load group', 'Please try again.'); }
+    catch { if (!hasCachedRoom) alert('Could not load group', 'Please try again.'); }
     finally { setLoading(false); }
-  }, [alert, route.params.roomId]);
+  }, [alert, route.params.roomId, user?.id]);
   useEffect(() => { load(); }, [load]);
 
   const members = room?.members_detail ?? [];
@@ -125,6 +139,7 @@ export default function GroupInfoScreen() {
       data={members}
       keyExtractor={(member) => String(member.id)}
       contentContainerStyle={styles.list}
+      contentInsetAdjustmentBehavior="automatic"
       ListHeaderComponent={<>
         <View style={[styles.hero, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
           <TouchableOpacity disabled={!isAdmin || busy} onPress={pickPhoto} style={styles.photoWrap}>
@@ -136,6 +151,32 @@ export default function GroupInfoScreen() {
             {isAdmin && <TouchableOpacity onPress={() => { setDraftName(room?.name || ''); setShowRename(true); }}><Ionicons name="pencil" size={19} color={Colors.primary} /></TouchableOpacity>}
           </View>
           <Text style={[styles.count, { color: Colors.textSecondary }]}>{members.length} members</Text>
+          {!!room?.created_at && (
+            <Text style={[styles.created, { color: Colors.textTertiary }]}>Created {new Date(room.created_at).toLocaleDateString()}</Text>
+          )}
+          <View style={[styles.divider, { backgroundColor: Colors.divider }]} />
+          <View style={styles.heroActions}>
+            <TouchableOpacity
+              style={styles.heroAction}
+              activeOpacity={0.72}
+              onPress={() => navigation.navigate('ChatRoom', { roomId: route.params.roomId, roomName: room?.name || route.params.roomName })}
+            >
+              <View style={[styles.heroActionIcon, { backgroundColor: Colors.highlight, borderColor: Colors.neonBorder }]}>
+                <Ionicons name="chatbubble-ellipses-outline" size={22} color={Colors.primary} />
+              </View>
+              <Text style={[styles.heroActionText, { color: Colors.text }]}>Message</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.heroAction}
+              activeOpacity={0.72}
+              onPress={() => toggleRoomMuted(route.params.roomId)}
+            >
+              <View style={[styles.heroActionIcon, { backgroundColor: Colors.highlight, borderColor: Colors.neonBorder }]}>
+                <Ionicons name={isMuted ? 'notifications-off-outline' : 'notifications-outline'} size={22} color={Colors.primary} />
+              </View>
+              <Text style={[styles.heroActionText, { color: Colors.text }]}>{isMuted ? 'Unmute' : 'Mute'}</Text>
+            </TouchableOpacity>
+          </View>
         </View>
         {isAdmin && <TouchableOpacity style={[styles.action, { borderColor: Colors.neonBorder, backgroundColor: Colors.surface }]} onPress={openAddMembers} disabled={busy}><Ionicons name="person-add-outline" size={20} color={Colors.primary} /><Text style={[styles.actionText, { color: Colors.text }]}>Add members</Text></TouchableOpacity>}
         <Text style={[styles.section, { color: Colors.textSecondary }]}>MEMBERS</Text>
@@ -164,7 +205,8 @@ export default function GroupInfoScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 }, center: { flex: 1, alignItems: 'center', justifyContent: 'center' }, list: { paddingBottom: Spacing.lg },
-  hero: { alignItems: 'center', padding: Spacing.lg, margin: Spacing.md, borderWidth: 1, borderRadius: Radius.lg }, photoWrap: { position: 'relative', marginBottom: Spacing.sm }, cameraBadge: { position: 'absolute', right: -2, bottom: -2, width: 27, height: 27, borderRadius: 14, alignItems: 'center', justifyContent: 'center' }, nameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, maxWidth: '100%' }, name: { fontSize: Font.size.lg, ...Font.semiBold, maxWidth: '85%' }, count: { fontSize: Font.size.sm, marginTop: 4 },
+  hero: { alignItems: 'center', padding: Spacing.lg, margin: Spacing.md, borderWidth: 1, borderRadius: Radius.lg }, photoWrap: { position: 'relative', marginBottom: Spacing.sm }, cameraBadge: { position: 'absolute', right: -2, bottom: -2, width: 27, height: 27, borderRadius: 14, alignItems: 'center', justifyContent: 'center' }, nameRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, maxWidth: '100%' }, name: { fontSize: Font.size.lg, ...Font.semiBold, maxWidth: '85%' }, count: { fontSize: Font.size.sm, marginTop: 4 }, created: { fontSize: Font.size.xs, marginTop: 3 },
+  divider: { width: '100%', height: StyleSheet.hairlineWidth, marginVertical: Spacing.lg }, heroActions: { flexDirection: 'row', justifyContent: 'center', gap: Spacing.xl }, heroAction: { alignItems: 'center', gap: Spacing.xs, minWidth: 74 }, heroActionIcon: { width: 50, height: 50, borderRadius: 25, borderWidth: 1, alignItems: 'center', justifyContent: 'center' }, heroActionText: { fontSize: Font.size.sm, ...Font.medium },
   action: { marginHorizontal: Spacing.md, minHeight: 48, paddingHorizontal: Spacing.md, borderWidth: 1, borderRadius: Radius.md, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm }, actionText: { fontSize: Font.size.md, ...Font.medium }, section: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1, marginHorizontal: Spacing.md, marginTop: Spacing.lg, marginBottom: Spacing.xs },
   member: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderBottomWidth: StyleSheet.hairlineWidth }, memberInfo: { flex: 1, marginLeft: Spacing.md }, memberName: { fontSize: Font.size.md, ...Font.medium }, memberSub: { fontSize: Font.size.sm, marginTop: 2 }, admin: { fontSize: 10, fontWeight: '700', letterSpacing: .6, borderWidth: 1, paddingHorizontal: 6, paddingVertical: 3, borderRadius: Radius.sm }, remove: { padding: Spacing.sm, marginLeft: Spacing.xs },
   footer: { padding: Spacing.md, marginTop: Spacing.lg }, leave: { minHeight: 45, borderWidth: 1, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: Spacing.sm }, leaveText: { fontSize: Font.size.md, ...Font.semiBold },

@@ -64,7 +64,12 @@ export function seedPresenceFromUsers(users: Array<Pick<User | RoomMember, 'id' 
     expires_in: PRESENCE_DEFAULT_LEASE_SECONDS,
   }));
   applyPresenceSnapshot(values);
-  const userIds = [...new Set(users.map((user) => user.id).filter((id) => id > 0))];
+  subscribePresenceUsers(users.map((user) => user.id));
+}
+
+/** Cached profile metadata may request a subscription, but never renew a lease. */
+export function subscribePresenceUsers(ids: number[]): void {
+  const userIds = [...new Set(ids.filter((id) => id > 0))];
   userIds.forEach((id) => desiredPresenceUserIds.add(id));
   if (userIds.length) void flushPresenceSubscriptions();
 }

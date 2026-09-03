@@ -11,7 +11,8 @@ export interface AxionRuntimeHooks {
   onAuthenticated: () => unknown;
   reconcileDelivery: () => unknown;
   routeInbound: (payload: NotificationPayload) => Promise<AxionInboundResult>;
-  markServerMessageAccepted: (roomId: string, messageId: string) => unknown;
+  markServerMessageAccepted: (roomId: string, messageId: string, recipientIds?: number[]) => unknown;
+  acceptStoredReceipts: (entries: Array<{ message_id: string; recipient_ids: number[] }>) => unknown;
   applyMessageUpdateServerAck: (
     roomId: string,
     updates: Array<{ id?: string; expected_peer_ids?: number[] }>,
@@ -50,8 +51,12 @@ export async function routeAxionInbound(
   return runtimeHooks.routeInbound(payload);
 }
 
-export function acceptAxionServerMessage(roomId: string, messageId: string): void {
-  try { runtimeHooks?.markServerMessageAccepted(roomId, messageId); } catch {}
+export function acceptAxionServerMessage(roomId: string, messageId: string, recipientIds?: number[]): void {
+  try { runtimeHooks?.markServerMessageAccepted(roomId, messageId, recipientIds); } catch {}
+}
+
+export function acceptAxionStoredReceipts(entries: Array<{ message_id: string; recipient_ids: number[] }>): void {
+  try { runtimeHooks?.acceptStoredReceipts(entries); } catch {}
 }
 
 export function acceptAxionMessageUpdates(

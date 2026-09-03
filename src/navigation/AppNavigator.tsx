@@ -476,11 +476,35 @@ export default function AppNavigator() {
                 }}
               />
               <Stack.Screen
+                name="UserInfo"
+                component={require('../screens/chat/user-info-screen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Contact info',
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
+              />
+              <Stack.Screen
                 name="ChatStorage"
                 component={require('../screens/profile/ChatStorageScreen').default}
                 options={{
                   headerShown: true,
                   headerTitle: 'Chat storage',
+                  headerStyle: { backgroundColor: Colors.headerBg },
+                  headerShadowVisible: false,
+                  headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },
+                  headerTintColor: Colors.headerText,
+                }}
+              />
+              <Stack.Screen
+                name="ChatStorageMedia"
+                component={require('../screens/profile/ChatStorageMediaScreen').default}
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Chat media',
                   headerStyle: { backgroundColor: Colors.headerBg },
                   headerShadowVisible: false,
                   headerTitleStyle: { ...Font.semiBold, color: Colors.headerText },

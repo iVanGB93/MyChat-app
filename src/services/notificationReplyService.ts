@@ -13,7 +13,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { EventType, type Event } from '@notifee/react-native';
 
 import api from './api';
-import { saveMessage } from './localMessageStore';
+import { saveMessage, setMessageExpectedRecipients } from './localMessageStore';
 import {
   ensureMessageChannel,
   displayMessageNotification,
@@ -99,13 +99,18 @@ export async function sendReplyFromNotification(
 
   // 2. Relay via HTTP (works without a live WS, even when the app is killed).
   try {
-    await api.post('/api/chat/messages/send/', {
+    const { data } = await api.post('/api/chat/messages/send/', {
       room_id: args.roomId,
       id: msgId,
       message: text,
       message_type: 'text',
       created_at: createdAt,
     });
+    if (Array.isArray(data?.recipient_ids)) {
+      await setMessageExpectedRecipients(msgId, data.recipient_ids).catch((error) => {
+        console.warn('[NotifReply] recipient snapshot persistence failed:', error);
+      });
+    }
   } catch (err) {
     console.warn('[NotifReply] HTTP send failed:', err);
     return false;

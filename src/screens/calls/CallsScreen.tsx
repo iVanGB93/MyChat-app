@@ -22,7 +22,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { getCallHistory, initiateCall } from '../../services/callService';
-import { cacheCallHistory, getCachedCallHistory } from '../../services/localMessageStore';
+import { getCachedCallHistory } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 import type { CallLog, RootStackParamList } from '../../types';
@@ -40,11 +40,10 @@ export default function CallsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const syncCalls = useCallback(async () => {
+  const syncCalls = useCallback(async (force = false) => {
     try {
-      const data = await getCallHistory();
+      const data = await getCallHistory(force);
       setCalls(data);
-      if (user?.id != null) await cacheCallHistory(user.id, data);
     } catch { /* ignore */ } finally {
       setRefreshing(false);
     }
@@ -65,7 +64,7 @@ export default function CallsScreen() {
   }, [user?.id, syncCalls]);
 
   useEffect(() => {
-    const unsub = navigation.addListener('focus', syncCalls);
+    const unsub = navigation.addListener('focus', () => { void syncCalls(); });
     return unsub;
   }, [navigation, syncCalls]);
 
@@ -169,7 +168,7 @@ export default function CallsScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => { setRefreshing(true); syncCalls(); }}
+            onRefresh={() => { setRefreshing(true); syncCalls(true); }}
             colors={[Colors.primary]}
             tintColor={Colors.primary}
           />

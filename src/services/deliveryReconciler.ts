@@ -9,8 +9,8 @@
  */
 
 import api from './api';
-import { getPendingSentMessageIds, markDelivered } from './localMessageStore';
-import { markIdsAsDeliveredInRoom } from './chatWsManager';
+import { getPendingSentMessageIds, markDelivered, getMessageReceiptStatus } from './localMessageStore';
+import { markIdsAsDeliveredInRoom, flushStoredReceiptConfirmations } from './chatWsManager';
 import { debugLog } from './diagnostics';
 
 interface DeliveredEntry {
@@ -51,10 +51,10 @@ export async function reconcileSentDeliveryStatus(): Promise<void> {
       if (!messageId || !recipientId) continue;
 
       // Persist to local DB (per-recipient tracking + status flip).
-      await markDelivered(messageId, recipientId).catch(() => {});
+      await markDelivered(messageId, recipientId, entry.delivered_at ?? undefined);
 
       const roomId = idToRoom.get(messageId);
-      if (roomId) {
+      if (roomId && await getMessageReceiptStatus(messageId) !== 'pending') {
         const list = idsByRoom.get(roomId) ?? [];
         list.push(messageId);
         idsByRoom.set(roomId, list);
@@ -69,6 +69,7 @@ export async function reconcileSentDeliveryStatus(): Promise<void> {
         /* room may not be open — DB update above is enough */
       }
     }
+    await flushStoredReceiptConfirmations();
 
     if (delivered.length > 0) {
       debugLog('[DeliveryReconciler] reconciled', delivered.length, 'delivered message(s)');

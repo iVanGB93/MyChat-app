@@ -3,18 +3,23 @@
 /* ------------------------------------------------------------------ */
 
 import api from './api';
-import type { ChatRoom, PaginatedResponse } from '../types';
-import { seedPresenceFromUsers } from './presenceService';
+import type { ChatRoom } from '../types';
+import { seedPresenceFromUsers, subscribePresenceUsers } from './presenceService';
+import { refreshCollection, invalidateCollection } from './localFirstCollections';
+import { getCachedRooms, cacheRooms } from './localMessageStore';
 
 function seedRoomPresence(room: ChatRoom): ChatRoom {
+  invalidateCollection('rooms');
   seedPresenceFromUsers(room.members_detail);
   return room;
 }
 
-export async function getRooms(): Promise<ChatRoom[]> {
-  const { data } = await api.get<PaginatedResponse<ChatRoom>>('/api/chat/rooms/');
-  const rooms = data.results;
-  seedPresenceFromUsers(rooms.flatMap((room) => room.members_detail));
+export async function getRooms(force = false): Promise<ChatRoom[]> {
+  const rooms = await refreshCollection<ChatRoom>({
+    resource: 'rooms', syncUrl: '/api/chat/rooms/sync/', legacyUrl: '/api/chat/rooms/',
+    id: (room) => room.id, read: getCachedRooms, save: cacheRooms, force,
+  });
+  subscribePresenceUsers(rooms.flatMap((room) => room.members_detail.map((member) => member.id)));
   return rooms;
 }
 
@@ -86,4 +91,5 @@ export async function uploadGroupAvatar(
  */
 export async function deleteRoom(roomId: string): Promise<void> {
   await api.delete(`/api/chat/rooms/${roomId}/`);
+  invalidateCollection('rooms');
 }

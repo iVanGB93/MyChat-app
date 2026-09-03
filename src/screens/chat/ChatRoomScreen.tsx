@@ -62,6 +62,8 @@ import { getTransferFeedback, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, valid
 import { resolveOutgoingMessageStatus } from '../../services/messageLifecycle';
 import { debugLog } from '../../services/diagnostics';
 import { getAndroidKeyboardOverlap } from '../../utils/keyboard-layout';
+import { resolveMediaUrl } from '../../services/api';
+import Avatar from '../../components/ui/Avatar';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
@@ -108,6 +110,45 @@ function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing:
         ))}
       </View>
     </View>
+  );
+}
+
+function ChatHeaderIdentity({
+  title,
+  syncing,
+  color,
+  avatarUri,
+  isGroup,
+  isOnline,
+  onPress,
+}: {
+  title: string;
+  syncing: boolean;
+  color: string;
+  avatarUri: string | null;
+  isGroup: boolean;
+  isOnline: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <TouchableOpacity
+      testID="axonic-chat-header-details"
+      accessibilityRole="button"
+      accessibilityLabel={`Open details for ${title}`}
+      activeOpacity={0.72}
+      style={styles.headerIdentity}
+      hitSlop={{ top: 8, bottom: 8, left: 4, right: 4 }}
+      onPress={onPress}
+    >
+      <Avatar
+        name={title}
+        uri={avatarUri}
+        size={34}
+        showOnline={!isGroup}
+        isOnline={isOnline}
+      />
+      <SyncingHeaderTitle title={title} syncing={syncing} color={color} />
+    </TouchableOpacity>
   );
 }
 
@@ -179,8 +220,17 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   // from a notification has the sender id populated too, so use the locally
   // cached room type as the authority for group-only message UI.
   const [isGroupChat, setIsGroupChat] = useState(!otherUserId);
+  const [roomDetails, setRoomDetails] = useState<ChatRoom | null>(null);
   const isDirectChat = !isGroupChat;
   const { user } = useAuth();
+  const headerPeer = useMemo(
+    () => roomDetails?.members_detail.find((member) => member.id !== user?.id) ?? null,
+    [roomDetails, user?.id],
+  );
+  const resolvedOtherUserId = otherUserId ?? headerPeer?.id;
+  const headerPresence = useAppStore((state) => (
+    resolvedOtherUserId != null ? state.presenceByUserId[resolvedOtherUserId] : undefined
+  ));
   const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, lastMutationIds, typers, notifyTyping } = useChat(roomId, user?.id);
   const isMuted = useAppStore((s) => !!s.mutedRooms[roomId]);
   /** True when the other user in a direct chat is not yet in our contacts.
@@ -209,7 +259,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         const remote = await getRooms().catch(() => [] as ChatRoom[]);
         room = remote.find((entry) => entry.id === roomId);
       }
-      if (!cancelled && room) setIsGroupChat(room.room_type === 'group');
+      if (!cancelled && room) {
+        setRoomDetails(room);
+        setIsGroupChat(room.room_type === 'group');
+      }
     };
     resolveRoomType().catch(() => {});
     return () => { cancelled = true; };
@@ -591,23 +644,53 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /* ── Call header buttons ── */
   const handleCall = async (callType: 'voice' | 'video') => {
     Keyboard.dismiss();
-    if (!isDirectChat || !otherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
+    if (!isDirectChat || !resolvedOtherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
     // A call needs the mic (always) and the camera (video). Ask up front so the
     // call doesn't silently fail when WebRTC can't get the media tracks.
     const ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
     if (!ok) return;
     try {
-      const res = await initiateCall(otherUserId, callType);
+      const res = await initiateCall(resolvedOtherUserId, callType);
       navigation.navigate('ActiveCall', {
         callId: res.call_id, otherName: route.params.roomName,
-        callType, roomName: res.room_name, isOutgoing: true, peerUserId: otherUserId,
+        callType, roomName: res.room_name, isOutgoing: true, peerUserId: resolvedOtherUserId,
       });
     } catch { alert('Error', 'Failed to start call'); }
   };
 
+  const headerTitle = isGroupChat
+    ? roomDetails?.name || route.params.roomName
+    : headerPeer?.display_name?.trim() || headerPeer?.username || route.params.roomName;
+  const headerAvatarUri = resolveMediaUrl(isGroupChat ? roomDetails?.avatar : headerPeer?.avatar);
+
+  const openRoomDetails = useCallback(() => {
+    Keyboard.dismiss();
+    if (isGroupChat) {
+      navigation.navigate('GroupInfo', { roomId, roomName: headerTitle });
+      return;
+    }
+    if (resolvedOtherUserId != null) {
+      navigation.navigate('UserInfo', {
+        roomId,
+        roomName: headerTitle,
+        userId: resolvedOtherUserId,
+      });
+    }
+  }, [headerTitle, isGroupChat, navigation, resolvedOtherUserId, roomId]);
+
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerTitle: () => <SyncingHeaderTitle title={route.params.roomName} syncing={!connected} color={Colors.headerText} />,
+      headerTitle: () => (
+        <ChatHeaderIdentity
+          title={headerTitle}
+          syncing={!connected}
+          color={Colors.headerText}
+          avatarUri={headerAvatarUri}
+          isGroup={isGroupChat}
+          isOnline={headerPresence?.isOnline ?? false}
+          onPress={openRoomDetails}
+        />
+      ),
       headerRight: () => (
         <View style={{ flexDirection: 'row', gap: 8, marginRight: 8 }}>
           <TouchableOpacity
@@ -626,21 +709,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               color={isMuted ? '#FF5050' : '#00E5FF'}
             />
           </TouchableOpacity>
-          {!isDirectChat && (
-            <TouchableOpacity
-              onPress={() => navigation.navigate('GroupInfo', { roomId, roomName: route.params.roomName })}
-              activeOpacity={0.7}
-              style={{
-                width: 36, height: 36, borderRadius: 18,
-                backgroundColor: 'rgba(0,229,255,0.10)',
-                borderWidth: 1, borderColor: 'rgba(0,229,255,0.30)',
-                alignItems: 'center', justifyContent: 'center',
-              }}
-            >
-              <Ionicons name="people-outline" size={18} color="#00E5FF" />
-            </TouchableOpacity>
-          )}
-          {isDirectChat && !!otherUserId && <>
+          {isDirectChat && !!resolvedOtherUserId && <>
           <TouchableOpacity
             testID="axonic-video-call"
             accessibilityLabel="Start video call"
@@ -673,7 +742,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         </View>
       ),
     });
-  }, [navigation, otherUserId, isDirectChat, roomId, isMuted, connected, Colors.headerText, route.params.roomName]);
+  }, [navigation, resolvedOtherUserId, isDirectChat, isGroupChat, roomId, isMuted, connected, Colors.headerText, headerTitle, headerAvatarUri, headerPresence?.isOnline, openRoomDetails]);
 
   const handleSend = () => {
     const trimmed = text.trim();
@@ -1015,6 +1084,60 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (!url) return;
     try { await Clipboard.setStringAsync(url); } catch { /* ignore */ }
   }, [contextMsg]);
+
+  const handleSaveAttachment = useCallback(async () => {
+    if (!contextMsg) return;
+    const message = contextMsg;
+    setContextMsg(null);
+    const localUri = message.file_uri ?? message.file;
+    const rawType = message.message_type === 'file' ? 'document' : message.message_type;
+    if (!localUri || !['image', 'video', 'voice', 'document'].includes(rawType)) {
+      alert('File unavailable', 'This attachment is not stored on this phone yet.');
+      return;
+    }
+
+    try {
+      const mediaExport = await import('../../services/media-export-service');
+      const request = {
+        messageId: message.id,
+        mediaType: rawType as 'image' | 'video' | 'voice' | 'document',
+        localUri,
+        fileName: message.content,
+      };
+      let result = await mediaExport.moveMediaToDeviceStorage(request);
+      if (result.state === 'needs-downloads-folder') {
+        const directory = await mediaExport.setupDownloadsDirectory();
+        if (!directory) {
+          alert('Folder not selected', 'Select Downloads so Axonic can create and use Downloads/Axonic.');
+          return;
+        }
+        result = await mediaExport.moveMediaToDeviceStorage(request);
+      }
+
+      if (result.state === 'saved' || result.state === 'already-saved') {
+        await loadFromDB();
+      }
+      if (result.state === 'saved') {
+        alert(
+          'Saved',
+          result.destination === 'gallery'
+            ? 'The attachment was saved to the Axonic album in Gallery.'
+            : 'The attachment was saved in Downloads/Axonic.',
+        );
+      } else if (result.state === 'already-saved') {
+        alert('Already saved', 'This attachment is already available outside Axonic.');
+      } else if (result.state === 'permission-denied') {
+        alert('Permission needed', 'Allow Axonic to add pictures and videos to your Gallery.');
+      } else if (result.state === 'unsupported') {
+        alert('Not available', 'Saving this file type outside Axonic is not supported on this device yet.');
+      } else if (result.state === 'failed') {
+        alert('Could not save attachment', result.message);
+      }
+    } catch (error) {
+      console.warn('[ChatRoomScreen] attachment export failed:', error);
+      alert('Could not save attachment', 'The attachment could not be copied to device storage.');
+    }
+  }, [contextMsg, alert, loadFromDB]);
 
   const handleDelete = useCallback(() => {
     if (!contextMsg) return;
@@ -1499,7 +1622,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             style={[styles.contextPanel, {
               backgroundColor: Colors.surface,
               borderColor: Colors.neonBorder,
-              top: Math.min(Math.max(contextY - 70, 60), winHeight - 290),
+              top: Math.min(Math.max(contextY - 70, 60), winHeight - 350),
             }]}
             onPress={() => {}}
           >
@@ -1537,6 +1660,20 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 </TouchableOpacity>
                 <TouchableOpacity onPress={handleCopyLink} style={styles.contextOption}>
                   <Text style={[styles.contextOptionText, { color: Colors.text }]}>🔗  Copy link</Text>
+                </TouchableOpacity>
+              </>
+            )}
+            {contextMsg && !contextMsg.is_deleted
+              && ['image', 'video', 'voice', 'document', 'file'].includes(contextMsg.message_type)
+              && !!(contextMsg.file_uri || contextMsg.file) && (
+              <>
+                <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
+                <TouchableOpacity onPress={handleSaveAttachment} style={styles.contextOption}>
+                  <Text style={[styles.contextOptionText, { color: Colors.text }]}>
+                    {contextMsg.message_type === 'image' || contextMsg.message_type === 'video'
+                      ? '↓  Save to Gallery'
+                      : '↓  Save to Downloads'}
+                  </Text>
                 </TouchableOpacity>
               </>
             )}
@@ -1633,7 +1770,8 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  syncHeaderTitle: { flexDirection: 'row', alignItems: 'center', maxWidth: 150 },
+  headerIdentity: { flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: 172 },
+  syncHeaderTitle: { flexDirection: 'row', alignItems: 'center', maxWidth: 130, flexShrink: 1 },
   syncLetters: { flexDirection: 'row', flexShrink: 1 },
   syncHeaderLetter: { fontSize: Font.size.md, fontWeight: '800', letterSpacing: 0.7 },
 

@@ -58,11 +58,10 @@ export function onFcmTokenRefresh(cb: (token: string) => void): () => void {
 
 /**
  * Shared handling for an FCM message carrying a chat message:
- *   1. persist it to SQLite + send the delivery ack (via the central ingress
- *      router) — runs whenever this handler fires;
- *   2. render the WhatsApp-style MessagingStyle notification for a data push.
- *      Legacy servers may still attach a `notification` block; in that case
- *      Google Play Services already drew a generic card, so skip the duplicate.
+ *   Persist/download + acknowledge through the central ingress router while
+ *   rendering the actionable notification. Await BOTH before ending the task.
+ *   Legacy servers may still attach a `notification` block; in that case
+ *   Google Play Services already drew a generic card, so skip the duplicate.
  */
 async function handleDataMessage(
   remoteMessage: FirebaseMessagingTypes.RemoteMessage,
@@ -99,16 +98,13 @@ async function handleDataMessage(
   }
 
   if (!data || (data.type && data.type !== 'new_message')) return;
-  // Persist + ack first so the delivered receipt fires regardless of whether
-  // the notification renders.
-  try {
-    await savePushMessage(data);
-  } catch (err) {
+  // Start receiving now, but don't delay the notification on a large download.
+  const receive = savePushMessage(data).catch((err) => {
     console.warn('[FCM] savePushMessage failed:', err);
-  }
-  // GPS already drew the banner for notification-block messages — don't double it.
-  if (remoteMessage?.notification) return;
+  });
   try {
+    // GPS already drew this legacy banner — still finish receive in finally.
+    if (remoteMessage?.notification) return;
     const parsed = parseMessageNotifData(data);
     if (parsed) {
       await ensureMessageChannel();
@@ -116,6 +112,9 @@ async function handleDataMessage(
     }
   } catch (err) {
     console.warn('[FCM] displayMessageNotification failed:', err);
+  } finally {
+    // An unawaited promise lets Android suspend the download or receipt early.
+    await receive;
   }
 }
 

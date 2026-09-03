@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.33",
+    "version": "1.0.34",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -91,6 +91,17 @@
       "expo-task-manager",
       "expo-sqlite",
       "expo-secure-store",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Axonic to access photos and videos you choose.",
+          "savePhotosPermission": "Allow Axonic to save received photos and videos to your Gallery.",
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
+        }
+      ],
       "./plugins/withForegroundService",
       "./plugins/withRingtoneRaw",
       "./plugins/withNotifeeRepo",

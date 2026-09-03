@@ -23,7 +23,7 @@ import { searchUsers } from '../../services/authService';
 import { getOrCreateDirect, getRooms } from '../../services/chatService';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppStore } from '../../store/appStore';
-import { cacheContacts, cacheRooms, getCachedContacts, getCachedRooms, setCachedRelationship } from '../../services/localMessageStore';
+import { getCachedContacts, getCachedRooms, setCachedRelationship } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import EmptyState from '../../components/ui/EmptyState';
@@ -48,14 +48,10 @@ export default function ContactsScreen() {
   const [searching, setSearching] = useState(false);
   const presenceByUserId = useAppStore((s) => s.presenceByUserId);
 
-  const fetchContacts = useCallback(async () => {
+  const fetchContacts = useCallback(async (force = false) => {
     try {
-      const [contactsData, rooms] = await Promise.all([getContacts(), getRooms()]);
+      const [contactsData, rooms] = await Promise.all([getContacts(force), getRooms(force)]);
       setContacts(contactsData);
-      if (user?.id != null) {
-        cacheContacts(user.id, contactsData).catch(() => {});
-        cacheRooms(user.id, rooms).catch(() => {});
-      }
       // Mirror full set into the global store so chat screens know who is
       // already accepted (vs. who is a pending message-request sender).
       useAppStore.getState().setContactIds(contactsData.map((c) => c.contact));
@@ -298,7 +294,7 @@ export default function ContactsScreen() {
             <EmptyState iconName="people-outline" title="No contacts" subtitle="Search for users above to add them" />
           }
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchContacts(); }} colors={[Colors.primary]} />
+            <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); fetchContacts(true); }} colors={[Colors.primary]} />
           }
           ItemSeparatorComponent={() => <View style={[styles.separator, { backgroundColor: Colors.border }]} />}
         />

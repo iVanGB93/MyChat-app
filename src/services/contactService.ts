@@ -4,15 +4,17 @@
 
 import api from './api';
 import type { Contact, PaginatedResponse, User } from '../types';
-import { seedPresenceFromUsers } from './presenceService';
-import { cacheAcceptedContact } from './localMessageStore';
+import { seedPresenceFromUsers, subscribePresenceUsers } from './presenceService';
+import { cacheAcceptedContact, cacheContacts, getCachedContacts } from './localMessageStore';
+import { refreshCollection, invalidateCollection } from './localFirstCollections';
 import { useAppStore } from '../store/appStore';
 
-export async function getContacts(): Promise<Contact[]> {
-  const { data } = await api.get<PaginatedResponse<Contact> | Contact[]>('/api/users/contacts/');
-  // Handle both paginated and non-paginated responses
-  const contacts = Array.isArray(data) ? data : data.results;
-  seedPresenceFromUsers(contacts.map((contact) => contact.contact_detail));
+export async function getContacts(force = false): Promise<Contact[]> {
+  const contacts = await refreshCollection<Contact>({
+    resource: 'contacts', syncUrl: '/api/users/contacts/sync/', legacyUrl: '/api/users/contacts/',
+    id: (contact) => String(contact.contact), read: getCachedContacts, save: cacheContacts, force,
+  });
+  subscribePresenceUsers(contacts.map((contact) => contact.contact));
   return contacts;
 }
 
@@ -27,7 +29,7 @@ export async function addContact(contactUserId: number): Promise<Contact> {
     // proof that acceptance failed. Confirm the exact contact with a read;
     // never treat validation/authentication errors as successful acceptance.
     if (status == null || status === 408 || status === 409 || status >= 500) {
-      const existing = await getContacts().then(
+      const existing = await getContacts(true).then(
         (contacts) => contacts.find((item) => item.contact === contactUserId),
         () => undefined,
       );
@@ -38,6 +40,7 @@ export async function addContact(contactUserId: number): Promise<Contact> {
     }
   }
   seedPresenceFromUsers([contact.contact_detail]);
+  invalidateCollection('contacts');
   return contact;
 }
 
@@ -72,6 +75,7 @@ export function contactErrorMessage(error: any): string {
 
 export async function removeContact(contactId: number): Promise<void> {
   await api.delete(`/api/users/contacts/${contactId}/`);
+  invalidateCollection('contacts');
 }
 
 /* ------------------------------------------------------------------ */
@@ -95,9 +99,11 @@ export async function getBlockedUsers(): Promise<BlockedUserRow[]> {
 
 export async function blockUser(userId: number): Promise<BlockedUserRow> {
   const { data } = await api.post<BlockedUserRow>('/api/users/blocked/', { blocked: userId });
+  invalidateCollection('contacts');
   return data;
 }
 
 export async function unblockUser(blockRowId: number): Promise<void> {
   await api.delete(`/api/users/blocked/${blockRowId}/`);
+  invalidateCollection('contacts');
 }

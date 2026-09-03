@@ -24,9 +24,11 @@ import { invalidateSession } from './sessionInvalidation';
 import { getInstallationId } from './installationIdentity';
 import type { ConnectionStatus, NotificationPayload } from './axionTypes';
 import { debugLog } from './diagnostics';
+import { invalidateCollection } from './localFirstCollections';
 import {
   acceptAxionMessageUpdates,
   acceptAxionServerMessage,
+  acceptAxionStoredReceipts,
   checkAxionPendingNotifications,
   connectAxionRoom,
   notifyAxionAuthenticated,
@@ -495,8 +497,17 @@ async function connectWs() {
           const messageId = String((payload as any).message_id ?? '');
           if (roomId && messageId) {
             debugLog('[Axion] routing server ACK', messageId, 'room', roomId);
-            acceptAxionServerMessage(roomId, messageId);
+            const recipients = Array.isArray((payload as any).recipient_ids)
+              ? (payload as any).recipient_ids.map(Number).filter((id: number) => Number.isInteger(id) && id > 0)
+              : undefined;
+            acceptAxionServerMessage(roomId, messageId, recipients);
           }
+          return;
+        }
+
+        if ((payload as any).type === 'receipts_stored_ack') {
+          const entries = Array.isArray((payload as any).entries) ? (payload as any).entries : [];
+          acceptAxionStoredReceipts(entries);
           return;
         }
 
@@ -551,6 +562,10 @@ async function connectWs() {
         // of transport. Transport-LOCAL follow-ups that need THIS socket (the
         // message_update_ack) are returned and sent here.
         const rrpType = classify(payload);
+        if (payload.event === 'room_update') invalidateCollection('rooms');
+        if (['incoming_call', 'call_accepted', 'call_rejected', 'call_ended'].includes(String(payload.event))) {
+          invalidateCollection('calls');
+        }
         routeInboundInBackground(payload);
 
         // Typing is ephemeral and fully owned by the router — no local

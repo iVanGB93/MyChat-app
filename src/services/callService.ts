@@ -3,7 +3,9 @@
 /* ------------------------------------------------------------------ */
 
 import api from './api';
-import type { CallLog, CallType, IceConfig, PaginatedResponse } from '../types';
+import type { CallLog, CallType, IceConfig } from '../types';
+import { refreshCollection, invalidateCollection } from './localFirstCollections';
+import { cacheCallHistory, getCachedCallHistory } from './localMessageStore';
 
 export interface InitiateCallResponse {
   call_id: string;
@@ -18,22 +20,28 @@ export async function initiateCall(calleeId: number, callType: CallType = 'video
     callee_id: calleeId,
     call_type: callType,
   });
+  invalidateCollection('calls');
   return data;
 }
 
 export async function joinCall(callId: string): Promise<InitiateCallResponse> {
   const { data } = await api.post<InitiateCallResponse>(`/api/calls/${callId}/join/`);
+  invalidateCollection('calls');
   return data;
 }
 
 export async function endCall(callId: string, action: 'end' | 'reject' = 'end'): Promise<{ status: string }> {
   const { data } = await api.post<{ status: string }>(`/api/calls/${callId}/end/`, { action });
+  invalidateCollection('calls');
   return data;
 }
 
-export async function getCallHistory(): Promise<CallLog[]> {
-  const { data } = await api.get<PaginatedResponse<CallLog>>('/api/calls/history/');
-  return data.results;
+export async function getCallHistory(force = false): Promise<CallLog[]> {
+  return refreshCollection<CallLog>({
+    resource: 'calls', syncUrl: '/api/calls/history/', legacyUrl: '/api/calls/history/',
+    id: (call) => call.id, read: getCachedCallHistory, save: cacheCallHistory,
+    force, preserveHistory: true,
+  });
 }
 
 /** Fetch the current status of a single call (for polling fallback). */

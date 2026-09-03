@@ -34,7 +34,7 @@ import { connectRoom, sendChatMessage, type SendChatResult } from '../../service
 import { persistOutgoingImage, persistSharedFile } from '../../services/voiceMessageUtils';
 import { mediaFileSize } from '../../services/mediaLane';
 import { formatBytes, getTransferFeedback, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, MEDIA_MAX_UPLOAD_BYTES, validateMediaSize } from '../../services/mediaTransferPolicy';
-import { cacheContacts, getCachedContacts, getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
+import { getCachedContacts, getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
 import { playSound } from '../../services/soundService';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
@@ -84,7 +84,6 @@ export default function ShareTargetScreen() {
           getLastMessagePerRoom().catch(() => ({} as Record<string, LocalMessage>)),
         ]);
         if (cancelled) return;
-        if (user?.id != null) cacheContacts(user.id, list).catch(() => {});
         const contactIds = new Set(list.map((contact) => contact.contact));
         const recentByContact: Record<number, number> = {};
         for (const room of rooms) {

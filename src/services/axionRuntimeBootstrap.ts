@@ -4,6 +4,8 @@ import {
   connectRoom,
   markServerMessageAccepted,
   recoverPendingOutgoingMessages,
+  flushStoredReceiptConfirmations,
+  acceptStoredReceiptConfirmations,
 } from './chatWsManager';
 import { reconcileSentDeliveryStatus } from './deliveryReconciler';
 import { routeInbound } from './ingressRouter';
@@ -20,6 +22,7 @@ configureAxionRuntime({
   routeInbound: (payload) => routeInbound(payload, 'ws'),
   reconcileDelivery: () => reconcileSentDeliveryStatus(),
   markServerMessageAccepted,
+  acceptStoredReceipts: (entries) => acceptStoredReceiptConfirmations(entries).catch(() => {}),
   applyMessageUpdateServerAck,
   onAuthenticated: () => {
     // Presence subscriptions belong to one physical Axion session. Replay the
@@ -28,7 +31,13 @@ configureAxionRuntime({
     resetPresenceSessionSubscriptions();
     void recoverPendingOutgoingMessages();
     void reconcileSentDeliveryStatus();
+    void flushStoredReceiptConfirmations(true);
     void emitRoomDigests();
     void requestIncompleteMedia();
+    // Resume any local Gallery/Downloads copy interrupted by process death.
+    // This is device-only work and does not add backend traffic.
+    void import('./media-export-service')
+      .then(({ retryPendingMediaExports }) => retryPendingMediaExports())
+      .catch(() => {});
   },
 });

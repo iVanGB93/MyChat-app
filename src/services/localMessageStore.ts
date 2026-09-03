@@ -2,8 +2,8 @@
  * localMessageStore.ts
  *
  * Thin wrapper around expo-sqlite for storing chat messages locally on the device.
- * No message content ever touches the server — only signaling metadata (PendingDelivery)
- * is stored server-side.
+ * The device owns chat history; the server relays content and keeps limited
+ * delivery/recovery metadata rather than a permanent message archive.
  */
 
 import * as SQLite from "expo-sqlite";
@@ -15,11 +15,10 @@ let _dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let _initPromise: Promise<void> | null = null;
 let _writeTail: Promise<void> = Promise.resolve();
 
-const LOCAL_DB_SCHEMA_VERSION = 4;
+const LOCAL_DB_SCHEMA_VERSION = 6;
 const PROCESSED_EVENT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DELETED_MESSAGE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 const MAX_PROCESSED_EVENTS = 50_000;
-const MAX_CACHED_CALLS_PER_ACCOUNT = 1_000;
 
 async function getDB(): Promise<SQLite.SQLiteDatabase> {
   if (_db) return _db;
@@ -131,6 +130,10 @@ async function initDBOnce(): Promise<void> {
       message_id   TEXT    NOT NULL,
       recipient_id INTEGER NOT NULL,
       delivered    INTEGER DEFAULT 0,
+      delivered_at TEXT,
+      read          INTEGER DEFAULT 0,
+      read_at       TEXT,
+      server_confirmed INTEGER DEFAULT 0,
       PRIMARY KEY (message_id, recipient_id)
     );
     CREATE INDEX IF NOT EXISTS idx_delivery_tracking_message ON delivery_tracking (message_id);
@@ -204,6 +207,22 @@ async function initDBOnce(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_call_cache_owner_started
       ON call_cache (owner_user_id, started_at DESC);
+
+    -- Tracks device exports separately from the app-owned media copy. Keeping
+    -- this ledger makes duplicate WS/FCM deliveries and recovery downloads
+    -- safe: one message is exported to Gallery/Downloads at most once.
+    CREATE TABLE IF NOT EXISTS media_exports (
+      message_id   TEXT    PRIMARY KEY,
+      media_type  TEXT    NOT NULL,
+      local_uri   TEXT    NOT NULL,
+      file_name   TEXT,
+      mime         TEXT,
+      status       TEXT    NOT NULL DEFAULT 'pending',
+      exported_uri TEXT,
+      updated_at   INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_media_exports_status_updated
+      ON media_exports (status, updated_at);
   `);
   const versionRow = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
   const currentVersion = Number(versionRow?.user_version ?? 0);
@@ -273,6 +292,33 @@ async function initDBOnce(): Promise<void> {
     }
   }
 
+  if (currentVersion < 5) {
+    await addColumnsIfMissing(db, 'messages', { expected_recipient_ids: 'TEXT' });
+    await addColumnsIfMissing(db, 'delivery_tracking', {
+      delivered_at: 'TEXT',
+      read: 'INTEGER DEFAULT 0',
+      read_at: 'TEXT',
+      server_confirmed: 'INTEGER DEFAULT 0',
+    });
+  }
+
+  if (currentVersion < 6) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS media_exports (
+        message_id   TEXT    PRIMARY KEY,
+        media_type  TEXT    NOT NULL,
+        local_uri   TEXT    NOT NULL,
+        file_name   TEXT,
+        mime         TEXT,
+        status       TEXT    NOT NULL DEFAULT 'pending',
+        exported_uri TEXT,
+        updated_at   INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_media_exports_status_updated
+        ON media_exports (status, updated_at);
+    `);
+  }
+
   if (currentVersion < LOCAL_DB_SCHEMA_VERSION) {
     await db.execAsync(`PRAGMA user_version = ${LOCAL_DB_SCHEMA_VERSION}`);
   }
@@ -290,7 +336,7 @@ async function initDBOnce(): Promise<void> {
 
 async function addColumnsIfMissing(
   db: SQLite.SQLiteDatabase,
-  table: 'messages' | 'update_outbox',
+  table: 'messages' | 'update_outbox' | 'delivery_tracking',
   columns: Record<string, string>,
 ): Promise<void> {
   const existing = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
@@ -314,7 +360,10 @@ export async function getCachedRooms(ownerUserId: number): Promise<import('../ty
   for (const row of rows) {
     try {
       const room = JSON.parse(row.payload);
-      if (room?.id && Array.isArray(room.members_detail)) rooms.push(room);
+      if (room?.id && Array.isArray(room.members_detail)) {
+        room.members_detail = room.members_detail.map((member: any) => ({ ...member, is_online: false }));
+        rooms.push(room);
+      }
     } catch {
       // A corrupt/stale row is ignored and repaired by the next server sync.
     }
@@ -386,7 +435,10 @@ export async function getCachedContacts(ownerUserId: number): Promise<import('..
   for (const row of rows) {
     try {
       const contact = JSON.parse(row.payload);
-      if (contact?.contact && contact?.contact_detail?.id) contacts.push(contact);
+      if (contact?.contact && contact?.contact_detail?.id) {
+        contact.contact_detail.is_online = false;
+        contacts.push(contact);
+      }
     } catch {
       // Corrupt cache rows are ignored and repaired by the next refresh.
     }
@@ -464,10 +516,11 @@ export async function getCachedCallHistory(ownerUserId: number): Promise<import(
 export async function cacheCallHistory(ownerUserId: number, calls: import('../types').CallLog[]): Promise<void> {
   const now = Date.now();
   await runExclusiveWrite(async (tx) => {
-    await tx.runAsync(`DELETE FROM call_cache WHERE owner_user_id = ?`, ownerUserId);
     for (const call of calls) {
       await tx.runAsync(
-        `INSERT INTO call_cache (owner_user_id, call_id, payload, started_at, cached_at) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO call_cache (owner_user_id, call_id, payload, started_at, cached_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(owner_user_id, call_id) DO UPDATE SET
+           payload = excluded.payload, started_at = excluded.started_at, cached_at = excluded.cached_at`,
         ownerUserId, call.id, JSON.stringify(call), call.started_at, now,
       );
     }
@@ -485,7 +538,31 @@ export interface LocalChatStorageRoom {
   databaseBytes: number;
   /** Downloaded/recorded media files referenced by this room. */
   mediaBytes: number;
+  mediaCount: number;
+  media: LocalChatMediaBreakdown;
   totalBytes: number;
+}
+
+export type LocalChatMediaType = 'image' | 'video' | 'voice' | 'document';
+
+export interface LocalChatMediaCategoryStats {
+  count: number;
+  bytes: number;
+}
+
+export type LocalChatMediaBreakdown = Record<LocalChatMediaType, LocalChatMediaCategoryStats>;
+
+export interface LocalChatStorageMediaItem {
+  messageId: string;
+  roomId: string;
+  type: LocalChatMediaType;
+  fileUri: string | null;
+  fileName: string;
+  sizeBytes: number;
+  createdAt: string;
+  senderName: string;
+  isMine: boolean;
+  isAvailable: boolean;
 }
 
 export interface LocalChatStorageStats {
@@ -493,8 +570,51 @@ export interface LocalChatStorageStats {
   databaseBytes: number;
   /** Physical media files referenced by locally stored messages. */
   mediaBytes: number;
+  mediaCount: number;
+  media: LocalChatMediaBreakdown;
   totalBytes: number;
   rooms: LocalChatStorageRoom[];
+}
+
+function emptyMediaBreakdown(): LocalChatMediaBreakdown {
+  return {
+    image: { count: 0, bytes: 0 },
+    video: { count: 0, bytes: 0 },
+    voice: { count: 0, bytes: 0 },
+    document: { count: 0, bytes: 0 },
+  };
+}
+
+function normalizeLocalMediaType(type: string): LocalChatMediaType {
+  if (type === 'image' || type === 'video' || type === 'voice') return type;
+  return 'document';
+}
+
+function inspectLocalMediaFile(uri: string | null): { bytes: number; available: boolean } {
+  if (!uri) return { bytes: 0, available: false };
+  try {
+    const file = new File(uri);
+    if (!file.exists) return { bytes: 0, available: false };
+    const bytes = Number(file.size) || 0;
+    return { bytes: Math.max(0, bytes), available: true };
+  } catch {
+    return { bytes: 0, available: false };
+  }
+}
+
+function mediaFileName(fileName: string | null, content: string | null, uri: string | null, type: LocalChatMediaType): string {
+  const explicit = fileName?.trim() || (type === 'document' || type === 'video' ? content?.trim() : '');
+  if (explicit) return explicit;
+  if (uri) {
+    try {
+      const clean = decodeURIComponent(uri).split(/[?#]/, 1)[0].replace(/\/+$/, '');
+      const tail = clean.slice(clean.lastIndexOf('/') + 1);
+      if (tail) return tail;
+    } catch {
+      // Fall through to a friendly type label.
+    }
+  }
+  return type === 'image' ? 'Photo' : type === 'video' ? 'Video' : type === 'voice' ? 'Voice message' : 'Document';
 }
 
 /**
@@ -504,6 +624,7 @@ export interface LocalChatStorageStats {
  * its stored row payload plus the exact size of its local media files.
  */
 export async function getLocalChatStorageStats(): Promise<LocalChatStorageStats> {
+  await initDB();
   const db = await getDB();
   const [pageCount, pageSize] = await Promise.all([
     db.getFirstAsync<{ page_count: number }>('PRAGMA page_count'),
@@ -514,7 +635,6 @@ export async function getLocalChatStorageStats(): Promise<LocalChatStorageStats>
     room_id: string;
     message_count: number;
     database_bytes: number;
-    file_uris: string | null;
   }>(`
     SELECT
       room_id,
@@ -527,47 +647,132 @@ export async function getLocalChatStorageStats(): Promise<LocalChatStorageStats>
         length(CAST(COALESCE(reactions, '') AS BLOB)) +
         length(CAST(COALESCE(reply_to, '') AS BLOB)) +
         length(CAST(COALESCE(media_ptr, '') AS BLOB))
-      ), 0) AS database_bytes,
-      GROUP_CONCAT(DISTINCT file_uri) AS file_uris
+      ), 0) AS database_bytes
     FROM messages
     GROUP BY room_id
     ORDER BY database_bytes DESC
   `);
 
-  const countedFiles = new Set<string>();
-  const rooms: LocalChatStorageRoom[] = [];
-  let mediaBytes = 0;
+  const mediaRows = await db.getAllAsync<{
+    room_id: string;
+    type: string;
+    file_uri: string | null;
+  }>(`
+    SELECT room_id, type, file_uri
+    FROM messages
+    WHERE is_deleted = 0 AND type IN ('image', 'video', 'voice', 'document', 'file')
+  `);
 
+  const roomsById = new Map<string, LocalChatStorageRoom>();
   for (const row of rows) {
-    let roomMediaBytes = 0;
-    for (const uri of (row.file_uris ?? '').split(',').filter(Boolean)) {
-      if (countedFiles.has(uri)) continue;
-      countedFiles.add(uri);
-      try {
-        const size = new File(uri).size;
-        if (Number.isFinite(size) && size > 0) roomMediaBytes += size;
-      } catch {
-        // A cache-cleaned or permission-protected URI simply contributes zero.
-      }
-    }
-    mediaBytes += roomMediaBytes;
     const databaseBytes = Number(row.database_bytes) || 0;
-    rooms.push({
+    roomsById.set(row.room_id, {
       roomId: row.room_id,
       messageCount: Number(row.message_count) || 0,
       databaseBytes,
-      mediaBytes: roomMediaBytes,
-      totalBytes: databaseBytes + roomMediaBytes,
+      mediaBytes: 0,
+      mediaCount: 0,
+      media: emptyMediaBreakdown(),
+      totalBytes: databaseBytes,
     });
   }
+
+  const overallMedia = emptyMediaBreakdown();
+  const fileInfo = new Map<string, { bytes: number; available: boolean }>();
+  const globallyCountedFiles = new Set<string>();
+  const filesCountedByRoom = new Map<string, Set<string>>();
+  let mediaBytes = 0;
+  for (const row of mediaRows) {
+    const room = roomsById.get(row.room_id);
+    if (!room) continue;
+    const type = normalizeLocalMediaType(row.type);
+    room.mediaCount += 1;
+    room.media[type].count += 1;
+    overallMedia[type].count += 1;
+
+    if (!row.file_uri) continue;
+    let info = fileInfo.get(row.file_uri);
+    if (!info) {
+      info = inspectLocalMediaFile(row.file_uri);
+      fileInfo.set(row.file_uri, info);
+    }
+    const roomFiles = filesCountedByRoom.get(row.room_id) ?? new Set<string>();
+    if (!roomFiles.has(row.file_uri)) {
+      roomFiles.add(row.file_uri);
+      filesCountedByRoom.set(row.room_id, roomFiles);
+      room.mediaBytes += info.bytes;
+      room.media[type].bytes += info.bytes;
+    }
+    if (!globallyCountedFiles.has(row.file_uri)) {
+      globallyCountedFiles.add(row.file_uri);
+      mediaBytes += info.bytes;
+      overallMedia[type].bytes += info.bytes;
+    }
+  }
+
+  const rooms = [...roomsById.values()].map((room) => ({
+    ...room,
+    totalBytes: room.databaseBytes + room.mediaBytes,
+  }));
 
   const databaseBytes = (Number(pageCount?.page_count) || 0) * (Number(pageSize?.page_size) || 0);
   return {
     databaseBytes,
     mediaBytes,
+    mediaCount: mediaRows.length,
+    media: overallMedia,
     totalBytes: databaseBytes + mediaBytes,
     rooms: rooms.sort((a, b) => b.totalBytes - a.totalBytes),
   };
+}
+
+/** Every media message for one chat, newest first, sourced entirely from SQLite. */
+export async function getLocalChatMediaItems(roomId: string): Promise<LocalChatStorageMediaItem[]> {
+  await initDB();
+  const db = await getDB();
+  const rows = await db.getAllAsync<{
+    id: string;
+    room_id: string;
+    type: string;
+    file_uri: string | null;
+    file_name: string | null;
+    content: string | null;
+    created_at: string;
+    sender_name: string;
+    is_mine: number;
+  }>(`
+    SELECT
+      m.id, m.room_id, m.type, m.file_uri, e.file_name,
+      m.content, m.created_at, m.sender_name, m.is_mine
+    FROM messages m
+    LEFT JOIN media_exports e ON e.message_id = m.id
+    WHERE m.room_id = ?
+      AND m.is_deleted = 0
+      AND m.type IN ('image', 'video', 'voice', 'document', 'file')
+    ORDER BY m.created_at DESC
+  `, roomId);
+
+  const inspected = new Map<string, { bytes: number; available: boolean }>();
+  return rows.map((row) => {
+    const type = normalizeLocalMediaType(row.type);
+    let info = { bytes: 0, available: false };
+    if (row.file_uri) {
+      info = inspected.get(row.file_uri) ?? inspectLocalMediaFile(row.file_uri);
+      inspected.set(row.file_uri, info);
+    }
+    return {
+      messageId: row.id,
+      roomId: row.room_id,
+      type,
+      fileUri: row.file_uri,
+      fileName: mediaFileName(row.file_name, row.content, row.file_uri, type),
+      sizeBytes: info.bytes,
+      createdAt: row.created_at,
+      senderName: row.sender_name,
+      isMine: row.is_mine === 1,
+      isAvailable: info.available,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -787,13 +992,17 @@ export async function getIncompletePointerMedia(roomId?: string, limit = 50): Pr
 
 export async function markDelivered(
   messageId: string,
-  recipientId: number
+  recipientId: number,
+  deliveredAt = new Date().toISOString(),
 ): Promise<void> {
-  await runSerializedWrite(async (db) => {
+  await runExclusiveWrite(async (db) => {
     await db.runAsync(
-      `INSERT OR REPLACE INTO delivery_tracking (message_id, recipient_id, delivered)
-       VALUES (?, ?, 1)`,
-      messageId, recipientId,
+      `INSERT INTO delivery_tracking (message_id, recipient_id, delivered, delivered_at, server_confirmed)
+       VALUES (?, ?, 1, ?, 0)
+       ON CONFLICT(message_id, recipient_id) DO UPDATE SET
+         delivered = 1,
+         delivered_at = COALESCE(delivery_tracking.delivered_at, excluded.delivered_at)`,
+      messageId, recipientId, deliveredAt,
     );
 
     const rows = await db.getAllAsync<{ total: number; delivered: number }>(
@@ -808,14 +1017,138 @@ export async function markDelivered(
     if (!first) return;
     const { total, delivered } = first;
     if (total > 0 && total === delivered) {
-      await db.runAsync(`UPDATE messages SET status = 'delivered' WHERE id = ?`, messageId);
+      await db.runAsync(`UPDATE messages SET status = 'delivered' WHERE id = ? AND status != 'read'`, messageId);
+    }
+  });
+}
+
+/** Freeze the server-validated recipient plan for this message on first accept. */
+export async function setMessageExpectedRecipients(messageId: string, recipientIds: number[]): Promise<void> {
+  const unique = [...new Set(recipientIds.filter((id) => Number.isInteger(id) && id > 0))];
+  if (!messageId) return;
+  await runExclusiveWrite(async (db) => {
+    const message = await db.getFirstAsync<{ expected_recipient_ids: string | null }>(
+      `SELECT expected_recipient_ids FROM messages WHERE id = ?`, messageId,
+    );
+    if (!message || message.expected_recipient_ids != null) return;
+    await db.runAsync(
+      `UPDATE messages SET expected_recipient_ids = ? WHERE id = ?`, JSON.stringify(unique), messageId,
+    );
+    for (const recipientId of unique) {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO delivery_tracking
+           (message_id, recipient_id, delivered, read, server_confirmed)
+         VALUES (?, ?, 0, 0, 0)`,
+        messageId, recipientId,
+      );
+    }
+    const state = await db.getFirstAsync<{ total: number; delivered: number }>(
+      `SELECT COUNT(*) total, COALESCE(SUM(delivered), 0) delivered
+       FROM delivery_tracking WHERE message_id = ?`, messageId,
+    );
+    if (state && state.total > state.delivered) {
+      await db.runAsync(
+        `UPDATE messages SET status = 'pending' WHERE id = ? AND status != 'read'`, messageId,
+      );
+    }
+  });
+}
+
+export async function getMessageExpectedRecipients(messageId: string): Promise<number[] | null> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ expected_recipient_ids: string | null }>(
+    `SELECT expected_recipient_ids FROM messages WHERE id = ?`, messageId,
+  );
+  try { return row?.expected_recipient_ids ? JSON.parse(row.expected_recipient_ids) : null; }
+  catch { return null; }
+}
+
+/** Persist which recipient read an outgoing message, independent of aggregate UI state. */
+export async function markReadByRecipient(
+  messageId: string,
+  recipientId: number,
+  readAt = new Date().toISOString(),
+): Promise<void> {
+  if (!messageId || recipientId <= 0) return;
+  await runExclusiveWrite(async (db) => {
+    await db.runAsync(
+      `INSERT INTO delivery_tracking
+         (message_id, recipient_id, delivered, delivered_at, read, read_at, server_confirmed)
+       VALUES (?, ?, 1, ?, 1, ?, 0)
+       ON CONFLICT(message_id, recipient_id) DO UPDATE SET
+         delivered = 1,
+         delivered_at = COALESCE(delivery_tracking.delivered_at, excluded.delivered_at),
+         read = 1,
+         read_at = COALESCE(delivery_tracking.read_at, excluded.read_at)`,
+      messageId, recipientId, readAt, readAt,
+    );
+    await db.runAsync(`UPDATE messages SET status = 'read' WHERE id = ?`, messageId);
+  });
+}
+
+export interface StoredReceiptConfirmation {
+  message_id: string;
+  room_id: string;
+  recipient_ids: number[];
+}
+
+export async function getMessageReceipts(messageId: string): Promise<Array<{
+  recipient_id: number; delivered: number; delivered_at: string | null; read: number; read_at: string | null;
+}>> {
+  const db = await getDB();
+  return db.getAllAsync(
+    `SELECT recipient_id, delivered, delivered_at, read, read_at
+     FROM delivery_tracking WHERE message_id = ? ORDER BY recipient_id`, messageId,
+  );
+}
+
+export async function getMessageReceiptStatus(messageId: string): Promise<'pending' | 'delivered' | 'read'> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ status: 'pending' | 'delivered' | 'read' }>(
+    `SELECT status FROM messages WHERE id = ?`, messageId,
+  );
+  return row?.status ?? 'pending';
+}
+
+/** Receipts saved locally but not yet acknowledged back to server retention. */
+export async function getStoredReceiptConfirmations(limit = 100): Promise<StoredReceiptConfirmation[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<{ message_id: string; room_id: string; recipient_id: number }>(
+    `SELECT d.message_id, m.room_id, d.recipient_id
+     FROM delivery_tracking d JOIN messages m ON m.id = d.message_id
+     WHERE m.is_mine = 1 AND d.delivered = 1 AND d.server_confirmed = 0
+     ORDER BY COALESCE(d.delivered_at, m.created_at) ASC LIMIT ?`, limit,
+  );
+  const grouped = new Map<string, StoredReceiptConfirmation>();
+  for (const row of rows) {
+    const key = `${row.room_id}:${row.message_id}`;
+    const item = grouped.get(key) ?? { message_id: row.message_id, room_id: row.room_id, recipient_ids: [] };
+    item.recipient_ids.push(row.recipient_id);
+    grouped.set(key, item);
+  }
+  return [...grouped.values()];
+}
+
+export async function markStoredReceiptConfirmations(
+  entries: Array<{ message_id: string; recipient_ids: number[] }>,
+): Promise<void> {
+  if (!entries.length) return;
+  await runSerializedWrite(async (db) => {
+    for (const entry of entries) {
+      for (const recipientId of entry.recipient_ids) {
+        await db.runAsync(
+          `UPDATE delivery_tracking SET server_confirmed = 1
+           WHERE message_id = ? AND recipient_id = ? AND delivered = 1`,
+          entry.message_id, recipientId,
+        );
+      }
     }
   });
 }
 
 /**
  * Return IDs (+ room) of messages sent by me that are still locally marked
- * 'pending' (i.e. not yet confirmed delivered or read). Used to reconcile
+ * 'pending' or still missing individual group receipts. Used to reconcile
  * delivery ticks after the sender was offline when the recipient acked.
  * Capped and limited to recent messages to keep the payload small.
  */
@@ -825,7 +1158,9 @@ export async function getPendingSentMessageIds(
   const db = await getDB();
   const rows = await db.getAllAsync<{ id: string; room_id: string }>(
     `SELECT id, room_id FROM messages
-       WHERE is_mine = 1 AND status = 'pending' AND is_deleted = 0
+       WHERE is_mine = 1 AND is_deleted = 0 AND (status = 'pending' OR EXISTS (
+         SELECT 1 FROM delivery_tracking d WHERE d.message_id = messages.id AND d.delivered = 0
+       ))
        ORDER BY created_at DESC
        LIMIT ?`,
     limit,
@@ -1002,20 +1337,8 @@ async function pruneLocalDataWithDb(db: SQLite.SQLiteDatabase): Promise<void> {
     await db.runAsync(`DELETE FROM delivery_tracking WHERE message_id NOT IN (SELECT id FROM messages)`);
     await db.runAsync(`DELETE FROM update_outbox WHERE message_id NOT IN (SELECT id FROM messages)`);
 
-    const owners = await db.getAllAsync<{ owner_user_id: number }>(
-      `SELECT DISTINCT owner_user_id FROM call_cache`,
-    );
-    for (const { owner_user_id: ownerId } of owners) {
-      await db.runAsync(`
-        DELETE FROM call_cache
-        WHERE owner_user_id = ? AND call_id NOT IN (
-          SELECT call_id FROM call_cache
-          WHERE owner_user_id = ?
-          ORDER BY started_at DESC
-          LIMIT ?
-        )
-      `, ownerId, ownerId, MAX_CACHED_CALLS_PER_ACCOUNT);
-    }
+    // Call history is now a durable local record, not a disposable cache.
+    // Do not silently remove older calls when the server stops returning them.
   });
 
   for (const { file_uri: uri } of removableFiles) {
@@ -1664,6 +1987,12 @@ export async function deleteRoomMessages(roomId: string): Promise<void> {
       `SELECT DISTINCT file_uri FROM messages WHERE room_id = $rid AND file_uri IS NOT NULL AND file_uri != ''`,
       { $rid: roomId },
     );
+    await db.runAsync(
+      `DELETE FROM media_exports
+       WHERE status = 'pending'
+         AND message_id IN (SELECT id FROM messages WHERE room_id = $rid)`,
+      { $rid: roomId },
+    );
     await db.runAsync(`DELETE FROM messages WHERE room_id = $rid`, { $rid: roomId });
     await db.runAsync(`DELETE FROM update_outbox WHERE room_id = $rid`, { $rid: roomId });
     return rows;
@@ -1771,4 +2100,136 @@ export async function getLastMessagePerRoom(): Promise<
     };
   }
   return result;
+}
+
+export type MediaExportType = 'image' | 'video' | 'voice' | 'document';
+
+export interface PendingMediaExport {
+  message_id: string;
+  media_type: MediaExportType;
+  local_uri: string;
+  file_name: string | null;
+  mime: string | null;
+}
+
+/**
+ * Find received media that predates the export ledger. These files are still
+ * stored inside Axonic and can be queued later when the user grants
+ * Gallery/Downloads access. The export service promotes legacy cache files to
+ * the app's persistent documents directory before waiting.
+ */
+export async function getUntrackedReceivedMediaExports(): Promise<PendingMediaExport[]> {
+  const db = await getDB();
+  const rows = await db.getAllAsync<PendingMediaExport & { stored_type: string }>(
+    `SELECT
+       m.id AS message_id,
+       CASE WHEN m.type = 'file' THEN 'document' ELSE m.type END AS media_type,
+       m.type AS stored_type,
+       m.file_uri AS local_uri,
+       m.content AS file_name,
+       NULL AS mime
+     FROM messages m
+     LEFT JOIN media_exports e ON e.message_id = m.id
+     WHERE m.is_mine = 0
+       AND m.is_deleted = 0
+       AND m.type IN ('image', 'video', 'voice', 'document', 'file')
+       AND m.file_uri IS NOT NULL
+       AND m.file_uri != ''
+       AND e.message_id IS NULL
+       AND (m.file_uri LIKE ? OR m.file_uri LIKE ?)
+     ORDER BY m.created_at ASC`,
+    `${Paths.cache.uri}%`,
+    `${Paths.document.uri}%`,
+  );
+  return rows.map(({ stored_type: _storedType, ...row }) => row);
+}
+
+/** Persist export intent before touching shared device storage. */
+export async function queueMediaExport(item: PendingMediaExport): Promise<'pending' | 'exported'> {
+  return runSerializedWrite(async (db) => {
+    const current = await db.getFirstAsync<{ status: string }>(
+      `SELECT status FROM media_exports WHERE message_id = ?`,
+      item.message_id,
+    );
+    if (current?.status === 'exported') return 'exported';
+    await db.runAsync(
+      `INSERT INTO media_exports
+         (message_id, media_type, local_uri, file_name, mime, status, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?)
+       ON CONFLICT(message_id) DO UPDATE SET
+         media_type = excluded.media_type,
+         local_uri = excluded.local_uri,
+         file_name = excluded.file_name,
+         mime = excluded.mime,
+         status = 'pending',
+         updated_at = excluded.updated_at`,
+      item.message_id,
+      item.media_type,
+      item.local_uri,
+      item.file_name,
+      item.mime,
+      Date.now(),
+    );
+    return 'pending';
+  });
+}
+
+/** Mark a successful Gallery/Downloads copy so retries cannot create duplicates. */
+export async function markMediaExported(messageId: string, exportedUri: string): Promise<void> {
+  await runSerializedWrite((db) => db.runAsync(
+    `UPDATE media_exports
+     SET status = 'exported', local_uri = ?, exported_uri = ?, updated_at = ?
+     WHERE message_id = ?`,
+    exportedUri,
+    exportedUri,
+    Date.now(),
+    messageId,
+  ));
+}
+
+/** Public media URI previously exported or reconstructed from its filename. */
+export async function getExportedMediaUri(messageId: string): Promise<string | null> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ exported_uri: string | null }>(
+    `SELECT exported_uri FROM media_exports
+     WHERE message_id = ? AND status = 'exported'`,
+    messageId,
+  );
+  return row?.exported_uri ?? null;
+}
+
+/** Rebuild one exported-media index row after an app reinstall. */
+export async function recordRecoveredMediaExport(item: PendingMediaExport & { exported_uri: string }): Promise<void> {
+  await runSerializedWrite((db) => db.runAsync(
+    `INSERT INTO media_exports
+       (message_id, media_type, local_uri, file_name, mime, status, exported_uri, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'exported', ?, ?)
+     ON CONFLICT(message_id) DO UPDATE SET
+       media_type = excluded.media_type,
+       local_uri = excluded.local_uri,
+       file_name = COALESCE(excluded.file_name, media_exports.file_name),
+       mime = COALESCE(excluded.mime, media_exports.mime),
+       status = 'exported',
+       exported_uri = excluded.exported_uri,
+       updated_at = excluded.updated_at`,
+    item.message_id,
+    item.media_type,
+    item.exported_uri,
+    item.file_name,
+    item.mime,
+    item.exported_uri,
+    Date.now(),
+  ));
+}
+
+/** Pending exports are retried after the user grants storage access. */
+export async function getPendingMediaExports(limit?: number): Promise<PendingMediaExport[]> {
+  const db = await getDB();
+  const query = `SELECT message_id, media_type, local_uri, file_name, mime
+    FROM media_exports
+    WHERE status = 'pending'
+    ORDER BY updated_at ASC${limit == null ? '' : '\n    LIMIT ?'}`;
+  return limit == null
+    ? db.getAllAsync<PendingMediaExport>(query)
+    : db.getAllAsync<PendingMediaExport>(query, limit);
 }

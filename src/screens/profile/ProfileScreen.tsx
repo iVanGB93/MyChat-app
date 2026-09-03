@@ -42,6 +42,14 @@ import {
   uploadAvatar,
 } from '../../services/authService';
 import { resolveMediaUrl } from '../../services/api';
+import {
+  getAutoSaveReceivedMedia,
+  getDownloadsDirectoryUri,
+  recoverMediaIndexFromDevice,
+  retryPendingMediaExports,
+  setAutoSaveReceivedMedia,
+  setupDownloadsDirectory,
+} from '../../services/media-export-service';
 import QRCode from 'react-native-qrcode-svg';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
@@ -78,6 +86,61 @@ export default function ProfileScreen() {
   const [notifCalls, setNotifCalls] = useState<boolean>(user?.notif_calls_enabled ?? true);
   const [notifSound, setNotifSound] = useState<boolean>(user?.notif_sound_enabled ?? true);
   const [notifOfflineEmail, setNotifOfflineEmail] = useState<boolean>(user?.notif_offline_email_enabled ?? true);
+  const [autoSaveMedia, setAutoSaveMedia] = useState(true);
+  const [downloadsReady, setDownloadsReady] = useState(false);
+  const [mediaSettingsLoaded, setMediaSettingsLoaded] = useState(false);
+  const [configuringDownloads, setConfiguringDownloads] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([getAutoSaveReceivedMedia(), getDownloadsDirectoryUri()])
+      .then(([enabled, directoryUri]) => {
+        if (!active) return;
+        setAutoSaveMedia(enabled);
+        setDownloadsReady(!!directoryUri);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setMediaSettingsLoaded(true);
+      });
+    return () => { active = false; };
+  }, []);
+
+  const handleAutoSaveMedia = async (enabled: boolean) => {
+    setAutoSaveMedia(enabled);
+    try {
+      await setAutoSaveReceivedMedia(enabled);
+    } catch {
+      setAutoSaveMedia(!enabled);
+      alert('Could not save preference', 'Please try again.');
+    }
+  };
+
+  const handleSetupDownloads = async () => {
+    if (configuringDownloads) return;
+    setConfiguringDownloads(true);
+    try {
+      const uri = await setupDownloadsDirectory();
+      if (!uri) {
+        alert('Folder not selected', 'Select the Downloads folder so Axonic can create and use Downloads/Axonic.');
+        return;
+      }
+      setDownloadsReady(true);
+      const recovered = await recoverMediaIndexFromDevice(true);
+      void retryPendingMediaExports();
+      alert(
+        'Device media ready',
+        recovered > 0
+          ? `Axonic found and indexed ${recovered} existing media file${recovered === 1 ? '' : 's'}.`
+          : 'Gallery and Downloads/Axonic are ready for received media.',
+      );
+    } catch (error) {
+      console.warn('[Profile] downloads folder setup failed:', error);
+      alert('Could not prepare Downloads', 'Please select the Downloads folder and try again.');
+    } finally {
+      setConfiguringDownloads(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -271,6 +334,38 @@ export default function ProfileScreen() {
       style={[styles.container, { backgroundColor: Colors.background }]}
       contentContainerStyle={styles.content}
     >
+      {mediaSettingsLoaded && !downloadsReady ? (
+        <View
+          style={[
+            styles.mediaSetupNotice,
+            {
+              backgroundColor: Colors.highlight,
+              borderColor: Colors.primary,
+              shadowColor: Colors.primary,
+            },
+          ]}
+        >
+          <View style={styles.mediaSetupHeading}>
+            <View style={[styles.mediaSetupIcon, { backgroundColor: Colors.surface, borderColor: Colors.primary }]}>
+              <Ionicons name="folder-open-outline" size={22} color={Colors.primary} />
+            </View>
+            <View style={styles.mediaSetupCopy}>
+              <Text style={[styles.mediaSetupTitle, { color: Colors.text }]}>KEEP ALL RECEIVED MEDIA</Text>
+              <Text style={[styles.mediaSetupDescription, { color: Colors.textSecondary }]}>
+                Photos and videos save to Gallery automatically. Choose a folder once to keep voice messages and documents in Downloads/Axonic.
+              </Text>
+            </View>
+          </View>
+          <Button
+            title={configuringDownloads ? 'SETTING UP…' : 'CHOOSE DOWNLOADS FOLDER'}
+            onPress={handleSetupDownloads}
+            loading={configuringDownloads}
+            icon={!configuringDownloads ? <Ionicons name="folder-outline" size={19} color={Colors.textInverse} /> : undefined}
+            style={styles.mediaSetupButton}
+          />
+        </View>
+      ) : null}
+
       {/* Avatar section */}
       <View style={[styles.avatarSection, { backgroundColor: Colors.surface, borderBottomColor: Colors.neonBorder }]}>
         <TouchableOpacity onPress={handleChangeAvatar} activeOpacity={0.85} disabled={uploadingAvatar}>
@@ -397,6 +492,25 @@ export default function ProfileScreen() {
           icon="server-outline"
           colors={Colors}
           onPress={() => navigation.navigate('ChatStorage')}
+          last
+        />
+      </View>
+
+      {/* Received-media export */}
+      <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ RECEIVED MEDIA</Text>
+        <ToggleRow
+          label="AUTO-SAVE RECEIVED MEDIA"
+          desc="Keep one permanent copy: pictures and videos in Gallery; voice notes and files in Downloads/Axonic"
+          value={autoSaveMedia}
+          colors={Colors}
+          onValueChange={handleAutoSaveMedia}
+        />
+        <ActionRow
+          label={downloadsReady ? 'DEVICE MEDIA ACCESS READY' : configuringDownloads ? 'CHECKING DEVICE MEDIA…' : 'SET UP / RECOVER DEVICE MEDIA'}
+          icon={downloadsReady ? 'checkmark-circle-outline' : 'folder-open-outline'}
+          colors={Colors}
+          onPress={handleSetupDownloads}
           last
         />
       </View>
@@ -788,6 +902,44 @@ function ToggleRow({
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { paddingBottom: Spacing.xxl },
+
+  mediaSetupNotice: {
+    marginHorizontal: Spacing.sm,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
+    padding: Spacing.lg,
+    borderRadius: Radius.lg,
+    borderWidth: 1.5,
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 0 },
+    elevation: 3,
+  },
+  mediaSetupHeading: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+  },
+  mediaSetupIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mediaSetupCopy: { flex: 1 },
+  mediaSetupTitle: {
+    fontSize: Font.size.sm,
+    fontWeight: '800',
+    letterSpacing: 1,
+  },
+  mediaSetupDescription: {
+    fontSize: Font.size.sm,
+    lineHeight: 19,
+    marginTop: Spacing.xs,
+  },
+  mediaSetupButton: { marginTop: Spacing.md },
 
   avatarSection: {
     alignItems: 'center',

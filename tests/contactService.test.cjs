@@ -27,8 +27,16 @@ function fixture(options = {}) {
     },
   };
   const adapters = {
+    './localFirstCollections': {
+      invalidateCollection() {},
+      async refreshCollection(options) {
+        assert.equal(options.force, true, 'acceptance reconciliation must bypass cache');
+        const { data } = await api.get(options.legacyUrl);
+        return Array.isArray(data) ? data : data.results;
+      },
+    },
     './api': api,
-    './presenceService': { seedPresenceFromUsers() {} },
+    './presenceService': { seedPresenceFromUsers() {}, subscribePresenceUsers() {} },
     '../store/appStore': { useAppStore: { getState: () => ({
       user: { id: options.owner ?? 14 }, addContactId: (id) => accepted.push(id),
     }) } },

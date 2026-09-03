@@ -18,6 +18,7 @@ function fixture() {
   const schedule = createTransferScheduler(2);
   const modules = {
     './localMessageStore': {
+      getMessageExpectedRecipients: async () => null,
       getMediaPointer: async (id) => pointers.get(id),
       setMediaPointer: async (id, value) => { pointers.set(id, value); },
       clearMessageTransferFailure: async () => {},
