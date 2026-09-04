@@ -12,6 +12,8 @@ import { routeInbound } from './ingressRouter';
 import { emitRoomDigests, requestIncompleteMedia } from './outboundRouter';
 import { checkPendingNotifications } from './backgroundNotificationService';
 import { resetPresenceSessionSubscriptions } from './presenceService';
+import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
+import { flushPendingAcks } from './messageAckRetryQueue';
 
 /** Application composition root for Axion. Dependencies point toward the
  * transport; the transport calls these injected hooks without importing the
@@ -32,6 +34,8 @@ configureAxionRuntime({
     void recoverPendingOutgoingMessages();
     void reconcileSentDeliveryStatus();
     void flushStoredReceiptConfirmations(true);
+    void flushPendingAcks({ force: true });
+    void flushPendingMediaConfirmations({ force: true });
     void emitRoomDigests();
     void requestIncompleteMedia();
     // Resume any local Gallery/Downloads copy interrupted by process death.

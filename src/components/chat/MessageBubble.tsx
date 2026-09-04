@@ -37,7 +37,7 @@ interface MessageBubbleProps {
   onReply: (item: Message) => void;
   onLongPress: (pageY: number, item: Message) => void;
   onRetry: (messageId: string) => void;
-  onImagePress: (uri: string | null) => void;
+  onImagePress: (item: Message) => void;
   onReaction: (item: Message, emoji: string) => void;
 }
 
@@ -220,7 +220,7 @@ function MessageBubbleBase({
               ) : item.message_type === 'image' && (item.file_uri || item.file) ? (
                 <TouchableOpacity
                   activeOpacity={0.85}
-                  onPress={() => onImagePress(item.file_uri ?? item.file ?? null)}
+                  onPress={() => onImagePress(item)}
                   onLongPress={(event) => {
                     if (!item.is_deleted) onLongPress(event.nativeEvent.pageY, item);
                   }}

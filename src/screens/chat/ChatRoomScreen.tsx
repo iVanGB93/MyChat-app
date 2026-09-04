@@ -25,7 +25,6 @@ import {
   AppState,
   Vibration,
 } from 'react-native';
-import { Image as ExpoImage } from 'expo-image';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useIsFocused } from '@react-navigation/native';
 import { useHeaderHeight } from '@react-navigation/elements';
@@ -64,6 +63,7 @@ import { debugLog } from '../../services/diagnostics';
 import { getAndroidKeyboardOverlap } from '../../utils/keyboard-layout';
 import { resolveMediaUrl } from '../../services/api';
 import Avatar from '../../components/ui/Avatar';
+import FullscreenImageViewer from '../../components/chat/fullscreen-image-viewer';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
@@ -1217,9 +1217,27 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     setContextMsg(m);
   }, []);
 
-  const handleImagePress = useCallback((uri: string | null) => {
-    setFullscreenImageUri(uri);
-  }, []);
+  const handleImagePress = useCallback(async (message: Message) => {
+    const uri = message.file_uri ?? message.file ?? null;
+    if (!uri) {
+      alert('Image unavailable', 'This image is not stored on this phone yet.');
+      return;
+    }
+
+    try {
+      const { isLocalMediaUriAvailable } = await import('../../services/media-export-service');
+      if (!await isLocalMediaUriAvailable(uri)) {
+        alert(
+          'Image unavailable',
+          'This image is no longer available on this phone. It may have been deleted from Gallery.',
+        );
+        return;
+      }
+      setFullscreenImageUri(uri);
+    } catch {
+      alert('Image unavailable', 'Axonic could not find this image on the phone.');
+    }
+  }, [alert]);
 
   const handleReactionToggle = useCallback(async (m: Message, emoji: string) => {
     const newReactions = await toggleReaction(m.id, emoji, String(user?.id ?? ''));
@@ -1590,25 +1608,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           </Pressable>
         </Pressable>
       </Modal>
-      {/* Fullscreen image viewer */}
-      <Modal
-        visible={fullscreenImageUri !== null}
-        transparent
-        animationType="fade"
-        statusBarTranslucent
-        onRequestClose={() => setFullscreenImageUri(null)}
-      >
-        <Pressable style={styles.fullscreenBackdrop} onPress={() => setFullscreenImageUri(null)}>
-          {fullscreenImageUri && (
-            <ExpoImage
-              source={{ uri: fullscreenImageUri }}
-              style={styles.fullscreenImage}
-              contentFit="contain"
-              cachePolicy="memory-disk"
-            />
-          )}
-        </Pressable>
-      </Modal>
+      <FullscreenImageViewer
+        uri={fullscreenImageUri}
+        accentColor={Colors.primary}
+        onClose={() => setFullscreenImageUri(null)}
+      />
       {/* Long-press context menu */}
       <Modal
         visible={contextMsg !== null}
@@ -1888,16 +1892,6 @@ const styles = StyleSheet.create({
   attachDivider: {
     height: StyleSheet.hairlineWidth,
     marginHorizontal: Spacing.lg,
-  },
-  fullscreenBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.95)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  fullscreenImage: {
-    width: '100%',
-    height: '100%',
   },
   sendBtn: {
     width: 44,

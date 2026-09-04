@@ -11,6 +11,7 @@ import api, { getTokens } from './api';
 import { displayIncomingCallNotification } from './callNotificationService';
 import { useAppStore } from '../store/appStore';
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
+import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
 import { debugLog } from './diagnostics';
 
 const TASK_NAME = 'BACKGROUND_NOTIFICATION_CHECK';
@@ -185,7 +186,10 @@ TaskManager.defineTask(PUSH_RECEIVE_TASK, async ({ data, error }: { data: any; e
       const { savePushMessage } = await import('./pushMessageStore');
       await savePushMessage(pushData);
       // After saving, try to flush any pending ACK retries (over HTTP or WS)
-      await flushHttpAckRetryQueue().catch(() => {});
+      await Promise.all([
+        flushHttpAckRetryQueue({ force: true }).catch(() => {}),
+        flushPendingMediaConfirmations({ force: true }).catch(() => {}),
+      ]);
     }
   } catch (err) {
     console.warn('[PushReceiveTask] failed to save message:', err);

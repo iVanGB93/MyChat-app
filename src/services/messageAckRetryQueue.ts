@@ -97,7 +97,9 @@ export async function removeMessageAck(messageId: string, senderId: number, room
  * Flush pending ACKs by attempting HTTP POST to the backend.
  * Retries with exponential backoff; removes successful acks; re-queues failures.
  */
-export async function flushPendingAcks(): Promise<{ flushed: number; failed: number }> {
+export async function flushPendingAcks(
+  options: { force?: boolean } = {},
+): Promise<{ flushed: number; failed: number }> {
   return serializeQueue(async () => {
     try {
       const raw = await AsyncStorage.getItem(RETRY_QUEUE_KEY);
@@ -107,7 +109,7 @@ export async function flushPendingAcks(): Promise<{ flushed: number; failed: num
     if (!queue.length) return { flushed: 0, failed: 0 };
     
     const now = Date.now();
-    const readyToRetry = queue.filter((q) => q.next_retry_at <= now);
+    const readyToRetry = queue.filter((q) => options.force || q.next_retry_at <= now);
     
     if (!readyToRetry.length) {
       debugLog('[AckRetryQueue] no acks ready to retry yet');

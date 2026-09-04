@@ -18,7 +18,6 @@ import { createUploadTask, getInfoAsync, FileSystemUploadType, type FileSystemUp
 import { fetch } from 'expo/fetch';
 import api, { BASE_URL } from './api';
 import { getValidAccessToken, refreshAccessToken } from './tokenRefresh';
-import { getInstallationId } from './installationIdentity';
 import {
   classifyMediaHttpFailure,
   MEDIA_UPLOAD_TIMEOUT_MS,
@@ -491,7 +490,6 @@ export async function downloadAndPersistMedia(params: {
  * window. Best-effort: failures are retried by the caller.
  */
 export async function confirmDownloaded(mediaId: string): Promise<boolean> {
-  const installation_id = await getInstallationId();
-  const res = await api.post(`/api/chat/media/${mediaId}/downloaded/`, { installation_id });
-  return !!res.data?.all_confirmed;
+  const { confirmMediaDownloaded } = await import('./mediaConfirmationQueue');
+  return confirmMediaDownloaded(mediaId);
 }

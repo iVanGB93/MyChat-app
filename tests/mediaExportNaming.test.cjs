@@ -13,14 +13,29 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const exportsObject = {};
+const existingFiles = new Set();
 vm.runInNewContext(compiled, {
   exports: exportsObject,
   module: { exports: exportsObject },
   require(name) {
     if (name === '@react-native-async-storage/async-storage') return { default: {} };
     if (name === 'react-native') return { Platform: { OS: 'android' } };
-    if (name === 'expo-file-system') return { File: class {}, Paths: { cache: { uri: '' }, document: { uri: '' } } };
-    if (name === 'expo-file-system/legacy') return {};
+    if (name === 'expo-file-system') return {
+      File: class {
+        constructor(uri) { this.uri = uri; }
+        get exists() { return existingFiles.has(this.uri); }
+      },
+      Paths: { cache: { uri: '' }, document: { uri: '' } },
+    };
+    if (name === 'expo-file-system/legacy') return {
+      getInfoAsync: async (uri) => ({ exists: existingFiles.has(uri), uri }),
+    };
+    if (name === 'expo-media-library') return {
+      getAssetInfoAsync: async (uri) => {
+        if (uri === 'ph://kept-photo') return { id: uri, uri };
+        throw new Error('Asset not found');
+      },
+    };
     if (name === './localMessageStore') return {};
     throw new Error(`Unexpected import: ${name}`);
   },
@@ -61,4 +76,15 @@ test('first Gallery save creates the Axonic album directly without an item-speci
     /createAlbumAsync\(\s*ALBUM_NAME,\s*undefined,\s*true,\s*staging\.uri,?\s*\)/,
   );
   assert.doesNotMatch(source, /createAlbumAsync\(\s*ALBUM_NAME,\s*asset,\s*false/);
+});
+
+test('tap-time availability rejects a Gallery photo deleted after its thumbnail was cached', async () => {
+  existingFiles.add('file:///Pictures/Axonic/kept.jpg');
+  assert.equal(await exportsObject.isLocalMediaUriAvailable('file:///Pictures/Axonic/kept.jpg'), true);
+  assert.equal(await exportsObject.isLocalMediaUriAvailable('file:///Pictures/Axonic/deleted.jpg'), false);
+});
+
+test('tap-time availability validates Photos asset identities instead of trusting ph URIs', async () => {
+  assert.equal(await exportsObject.isLocalMediaUriAvailable('ph://kept-photo'), true);
+  assert.equal(await exportsObject.isLocalMediaUriAvailable('ph://deleted-photo'), false);
 });

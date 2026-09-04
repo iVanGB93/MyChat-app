@@ -15,7 +15,7 @@ let _dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let _initPromise: Promise<void> | null = null;
 let _writeTail: Promise<void> = Promise.resolve();
 
-const LOCAL_DB_SCHEMA_VERSION = 6;
+const LOCAL_DB_SCHEMA_VERSION = 7;
 const PROCESSED_EVENT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DELETED_MESSAGE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 const MAX_PROCESSED_EVENTS = 50_000;
@@ -117,7 +117,8 @@ async function initDBOnce(): Promise<void> {
       is_read     INTEGER DEFAULT 0,
       reply_to    TEXT,
       duration_ms INTEGER,
-      media_ptr   TEXT
+      media_ptr   TEXT,
+      media_evicted INTEGER DEFAULT 0
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_room ON messages (room_id, created_at);
@@ -317,6 +318,12 @@ async function initDBOnce(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_media_exports_status_updated
         ON media_exports (status, updated_at);
     `);
+  }
+
+  if (currentVersion < 7) {
+    await addColumnsIfMissing(db, 'messages', {
+      media_evicted: 'INTEGER DEFAULT 0',
+    });
   }
 
   if (currentVersion < LOCAL_DB_SCHEMA_VERSION) {
@@ -984,6 +991,7 @@ export async function getIncompletePointerMedia(roomId?: string, limit = 50): Pr
   const base = `SELECT id, room_id, sender_id, sender_name, content, type, created_at, reply_to, duration_ms, media_ptr
      FROM messages
      WHERE is_mine = 0 AND media_ptr IS NOT NULL
+       AND COALESCE(media_evicted, 0) = 0
        AND (file_uri IS NULL OR file_uri = '')`;
   return roomId
     ? await db.getAllAsync<IncompletePointerRow>(`${base} AND room_id = ? ORDER BY created_at ASC LIMIT ?`, roomId, limit)
@@ -1500,8 +1508,78 @@ export async function getMessageFileUri(messageId: string): Promise<string | nul
 /** Backfill a message's media file_uri (e.g. after hydrating a push-only row). */
 export async function setMessageFileUri(messageId: string, fileUri: string): Promise<void> {
   await runSerializedWrite((db) =>
-    db.runAsync(`UPDATE messages SET file_uri = ? WHERE id = ?`, fileUri, messageId)
+    db.runAsync(
+      `UPDATE messages SET file_uri = ?
+       WHERE id = ? AND COALESCE(media_evicted, 0) = 0`,
+      fileUri,
+      messageId,
+    )
   );
+}
+
+/** True when the user deliberately removed this message's attachment locally. */
+export async function isMessageMediaEvicted(messageId: string): Promise<boolean> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ media_evicted: number }>(
+    `SELECT COALESCE(media_evicted, 0) AS media_evicted FROM messages WHERE id = ?`,
+    messageId,
+  );
+  return row?.media_evicted === 1;
+}
+
+export interface LocalMediaRemovalTarget {
+  fileUri: string;
+  otherReferences: number;
+}
+
+/** Resolve one media file and whether another local message still needs it. */
+export async function getLocalMediaRemovalTarget(
+  messageId: string,
+): Promise<LocalMediaRemovalTarget | null> {
+  await initDB();
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ file_uri: string | null }>(
+    `SELECT file_uri FROM messages WHERE id = ? AND is_deleted = 0`,
+    messageId,
+  );
+  const fileUri = row?.file_uri?.trim();
+  if (!fileUri) return null;
+  const references = await db.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM messages
+     WHERE file_uri = ? AND id != ? AND is_deleted = 0`,
+    fileUri,
+    messageId,
+  );
+  return {
+    fileUri,
+    otherReferences: Math.max(0, Number(references?.count) || 0),
+  };
+}
+
+/**
+ * Mark an attachment as intentionally removed from this phone. This prevents
+ * reconnect recovery from silently downloading it again.
+ */
+export async function markLocalMediaRemoved(
+  messageId: string,
+  expectedFileUri: string,
+): Promise<boolean> {
+  return runSerializedWrite(async (db) => {
+    const row = await db.getFirstAsync<{ file_uri: string | null }>(
+      `SELECT file_uri FROM messages WHERE id = ?`,
+      messageId,
+    );
+    if (row?.file_uri !== expectedFileUri) return false;
+    await db.runAsync(
+      `UPDATE messages
+       SET file_uri = NULL, media_evicted = 1
+       WHERE id = ? AND file_uri = ?`,
+      messageId,
+      expectedFileUri,
+    );
+    await db.runAsync(`DELETE FROM media_exports WHERE message_id = ?`, messageId);
+    return true;
+  });
 }
 
 /**
@@ -1519,6 +1597,7 @@ export async function getIncompleteMediaDigest(
     `SELECT id, room_id FROM messages
      WHERE is_mine = 0
        AND is_deleted = 0
+       AND COALESCE(media_evicted, 0) = 0
        AND type IN ('voice', 'image')
        AND (file_uri IS NULL OR file_uri = '')
        AND created_at >= ?

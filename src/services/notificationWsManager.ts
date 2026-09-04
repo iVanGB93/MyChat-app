@@ -19,6 +19,7 @@ import { useAppStore } from '../store/appStore';
 import { shouldShowLocalIncomingCallNotification } from './notificationPresentationPolicy';
 import { decideLocalIncomingCallNotification } from './notificationPresentationPolicy';
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
+import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
 import { classify } from './rrp/envelope';
 import { invalidateSession } from './sessionInvalidation';
 import { getInstallationId } from './installationIdentity';
@@ -743,7 +744,8 @@ function startNetworkListener() {
       _reconnectDelay = INITIAL_RECONNECT_MS;
       connectWs();
       // Flush HTTP retry queue now that network is back
-      flushHttpAckRetryQueue().catch(() => {});
+      flushHttpAckRetryQueue({ force: true }).catch(() => {});
+      flushPendingMediaConfirmations({ force: true }).catch(() => {});
       // Reconcile delivery ticks missed while offline
       reconcileDeliveryInBackground();
     }
@@ -773,6 +775,10 @@ function startAppStateListener() {
     _sendAppState(appState);
 
     if (state === 'active') {
+      // App foreground is a reliable opportunity to repair receipts that a
+      // killed/background FCM task could not submit before suspension.
+      flushHttpAckRetryQueue({ force: true }).catch(() => {});
+      flushPendingMediaConfirmations({ force: true }).catch(() => {});
       if (_status !== 'connected') {
         debugLog('[WsManager] app foregrounded — reconnecting');
         _reconnectDelay = INITIAL_RECONNECT_MS;
@@ -980,6 +986,7 @@ export async function ensureWsAlive(): Promise<void> {
 
   // Periodic flush of HTTP retry queue (background keepalive scenario)
   flushHttpAckRetryQueue().catch(() => {});
+  flushPendingMediaConfirmations().catch(() => {});
   // Periodic delivery-tick reconciliation (covers acks missed while WS was down)
   reconcileDeliveryInBackground();
 }

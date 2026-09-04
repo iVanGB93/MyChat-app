@@ -446,10 +446,46 @@ export async function getAvailableRecoveredMediaUri(messageId: string): Promise<
   await initDB();
   const uri = await getExportedMediaUri(messageId);
   if (!uri) return null;
-  if (uri.startsWith('ph://')) return uri;
+  return await isLocalMediaUriAvailable(uri) ? uri : null;
+}
+
+/**
+ * Verify a message attachment at interaction time. Gallery thumbnails may stay
+ * in Expo Image's disk cache after the user deletes the underlying asset, so a
+ * successful render alone is not proof that the original file is still there.
+ */
+export async function isLocalMediaUriAvailable(uri: string | null | undefined): Promise<boolean> {
+  if (!uri) return false;
+
+  // Fast path for Axonic-owned files and Android Gallery file URIs.
   try {
-    return new File(uri).exists ? uri : null;
+    if (new File(uri).exists) return true;
   } catch {
-    return null;
+    // Some MediaStore/Photos providers do not expose File metadata directly.
   }
+
+  // Handles Android content:// providers where the modern File wrapper cannot
+  // stat the item. getInfoAsync returns exists=false for a deleted asset.
+  try {
+    const info = await LegacyFileSystem.getInfoAsync(uri);
+    if (info.exists) return true;
+  } catch {
+    // Fall through to the media-library identity check below.
+  }
+
+  // iOS Gallery assets use ph:// identities; Android may also retain a
+  // content:// MediaStore id. Looking up a deleted id rejects or returns no
+  // usable identity. Do not request permission here—the tap should never
+  // surprise the user with a system permission prompt.
+  if (uri.startsWith('ph://') || uri.startsWith('content://')) {
+    try {
+      const MediaLibrary = await import('expo-media-library');
+      const info = await MediaLibrary.getAssetInfoAsync(uri, { shouldDownloadFromNetwork: false });
+      return Boolean(info?.id && info?.uri);
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
 }

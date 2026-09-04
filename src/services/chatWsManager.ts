@@ -6,7 +6,7 @@
 /*  and React subscriptions for each logical room.                     */
 /* ------------------------------------------------------------------ */
 
-import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers, setMessageTransferFailure, clearMessageTransferFailure, getMessageTransferFailure } from './localMessageStore';
+import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIds, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers, setMessageTransferFailure, clearMessageTransferFailure, getMessageTransferFailure } from './localMessageStore';
 import { uploadMedia, toMediaTransferFailure, type MediaType } from './mediaLane';
 import type { MediaTransferFailure } from './mediaTransferPolicy';
 import { useAppStore } from '../store/appStore';
@@ -370,11 +370,21 @@ function _ackPendingUpdates(roomId: string, s: RoomState, ids: string[], ackedBy
   debugLog('[ChatWsManager] acked', ids.length, 'message updates for room', roomId);
 }
 
-/** Recover durable sends after an app process restart, even if their chat
- * screen has not been opened yet. */
+/** Recover durable sends and message mutations after an app process restart,
+ * even if their chat screen has not been opened yet. */
 export async function recoverPendingOutgoingMessages(): Promise<void> {
   if (_myUserId === null || !isAxionReady()) return;
-  const roomIds = await getRoomsWithPendingOutgoingMessages(_myUserId);
+  const [messageRoomIds, pendingUpdates] = await Promise.all([
+    getRoomsWithPendingOutgoingMessages(_myUserId),
+    getPendingOutboxUpdates(),
+  ]);
+  // A notification action can create a read receipt without ever opening the
+  // room. Include mutation-only rooms so those durable receipts are replayed
+  // after Android restarts or suspends the headless task.
+  const roomIds = [...new Set([
+    ...messageRoomIds,
+    ...pendingUpdates.map((entry) => entry.room_id),
+  ])];
   for (const roomId of roomIds) {
     const state = getOrCreate(roomId);
     flushAxionRoom(roomId, state);
@@ -1082,27 +1092,45 @@ export function sendMessageUpdate(
  * All entries are pushed first, then a single WS send is made.
  * Also marks them read in local SQLite immediately to prevent re-sending on reload.
  */
-export function markRoomAsRead(roomId: string, messageIds?: string[]): void {
+export async function markRoomAsRead(roomId: string, messageIds?: string[]): Promise<void> {
   if (!messageIds?.length) return;
   const s = getOrCreate(roomId);
-  for (const msgId of messageIds) {
+  const uniqueIds = [...new Set(messageIds)];
+  // A notification action runs in a headless JS context where the in-memory
+  // room is normally empty. Read sender ids from SQLite so every receipt is
+  // routed only to the original author (especially important for groups).
+  const storedMessages = await getMessagesByIds(uniqueIds).catch(() => []);
+  const authorByMessageId = new Map(
+    storedMessages.map((message) => [message.id, message.sender_id]),
+  );
+  for (const message of s.messages) {
+    if (!authorByMessageId.has(message.id)) {
+      authorByMessageId.set(message.id, message.sender_id);
+    }
+  }
+
+  const queued: RoomState['pendingUpdates'] = [];
+  for (const msgId of uniqueIds) {
     const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9);
-    const authorId = s.messages.find((message) => message.id === msgId)?.sender_id;
+    const authorId = Number(authorByMessageId.get(msgId) ?? 0);
+    // Never broadcast a read receipt to an entire group when its author is
+    // unknown. Leaving the row unread lets the next foreground pass retry it.
+    if (!authorId || authorId === _myUserId) continue;
     const changes: MessageChanges = {
       is_read: true,
-      ...(authorId && authorId !== _myUserId ? { receipt_target_id: authorId } : {}),
+      receipt_target_id: authorId,
     };
-    // Persist first; read receipts use the server-provided room membership
-    // snapshot when their relay acknowledgement arrives.
-    queueMessageUpdate(roomId, msgId, changes, { id, expectedPeerIds: authorId ? [authorId] : [] })
-      .then(() => {
-        s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
-        s.pendingUpdates.push({ id, message_id: msgId, changes });
-        _flushPendingUpdates(roomId, s);
-      })
-      .catch(() => {});
-    // Mark read locally so loadFromDB filters this message out on the next reload
-    applyMessageChanges(msgId, { is_read: true }).catch(() => {});
+    // Persist the outbound receipt before changing the local unread flag. If
+    // SQLite fails, the message stays unread and can be retried rather than
+    // silently losing the only read receipt.
+    await queueMessageUpdate(roomId, msgId, changes, { id, expectedPeerIds: [authorId] });
+    await applyMessageChanges(msgId, { is_read: true });
+    queued.push({ id, message_id: msgId, changes });
+  }
+  if (queued.length > 0) {
+    s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
+    s.pendingUpdates.push(...queued);
+    _flushPendingUpdates(roomId, s);
   }
 }
 

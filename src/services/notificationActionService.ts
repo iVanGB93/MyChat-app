@@ -37,13 +37,16 @@ export async function markRoomReadFromNotification(
     if (ids.length > 0) {
       const chatWs = await import('./chatWsManager');
       // Marks the messages read locally, persists the read updates to the
-      // outbox and applies them; sends immediately if the room WS is open.
-      chatWs.markRoomAsRead(roomId, ids);
-      // Open the room WS so the queued read receipts flush to the sender now
+      // outbox and applies them; sends immediately if Axion is connected.
+      // Await durable persistence before this Android headless task is allowed
+      // to finish; otherwise the notification disappears but the sender never
+      // receives the read receipt.
+      await chatWs.markRoomAsRead(roomId, ids);
+      // Register the logical room so the queued read receipts flush now
       // (on auth_ok) instead of waiting for the user to open the chat. If the
       // app is fully killed this is best-effort; the outbox flushes on the next
       // connection regardless.
-      try { chatWs.connectRoom(roomId); } catch { /* ignore */ }
+      try { await chatWs.connectRoom(roomId); } catch { /* ignore */ }
     }
   } catch (err) {
     console.warn('[NotifMarkRead] mark read failed:', err);

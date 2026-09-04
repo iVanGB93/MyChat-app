@@ -12,6 +12,10 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { Font, Radius, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useConfirm } from '../../contexts/ConfirmContext';
+import FullscreenImageViewer from '../../components/chat/fullscreen-image-viewer';
+import { deleteLocalMediaItem, openLocalMediaFile } from '../../services/local-media-actions';
+import { isLocalMediaUriAvailable } from '../../services/media-export-service';
 import {
   getLocalChatMediaItems,
   type LocalChatMediaType,
@@ -32,11 +36,14 @@ const FILTERS: Array<{ key: MediaFilter; label: string; icon: keyof typeof Ionic
 
 export default function ChatStorageMediaScreen() {
   const { colors: Colors } = useTheme();
+  const { confirm, alert } = useConfirm();
   const route = useRoute<ScreenRoute>();
   const { roomId, roomName } = route.params;
   const [items, setItems] = useState<LocalChatStorageMediaItem[]>([]);
   const [filter, setFilter] = useState<MediaFilter>('all');
   const [loading, setLoading] = useState(true);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [fullscreenImageUri, setFullscreenImageUri] = useState<string | null>(null);
 
   const loadMedia = useCallback(async () => {
     setLoading(true);
@@ -76,48 +83,120 @@ export default function ChatStorageMediaScreen() {
 
   const unavailableCount = useMemo(() => items.filter((item) => !item.isAvailable).length, [items]);
 
+  const openItem = useCallback(async (item: LocalChatStorageMediaItem) => {
+    if (!item.fileUri || !await isLocalMediaUriAvailable(item.fileUri)) {
+      await loadMedia();
+      alert('File unavailable', 'This file is no longer stored on this phone.');
+      return;
+    }
+    if (item.type === 'image') {
+      setFullscreenImageUri(item.fileUri);
+      return;
+    }
+    try {
+      await openLocalMediaFile(item.fileUri, item.type, item.fileName);
+    } catch {
+      alert('Cannot open file', 'No app on this phone can open this type of file.');
+    }
+  }, [alert, loadMedia]);
+
+  const deleteItem = useCallback((item: LocalChatStorageMediaItem) => {
+    confirm({
+      title: 'Delete this file?',
+      message: `${item.fileName} will be removed from this phone. The message stays in the chat and will show that its file is unavailable.`,
+      icon: 'trash-outline',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete from phone',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingMessageId(item.messageId);
+            try {
+              const result = await deleteLocalMediaItem(item.messageId, item.type);
+              await loadMedia();
+              if (result === 'changed') {
+                alert('File changed', 'The file changed before it could be deleted. Please try again.');
+              }
+            } catch (error) {
+              console.warn('[ChatStorageMedia] failed to delete local media', error);
+              alert('Could not delete file', String((error as Error)?.message || 'Please try again.'));
+            } finally {
+              setDeletingMessageId(null);
+            }
+          },
+        },
+      ],
+    });
+  }, [alert, confirm, loadMedia]);
+
   const renderItem = ({ item }: { item: LocalChatStorageMediaItem }) => {
     const typeInfo = FILTERS.find((entry) => entry.key === item.type)!;
+    const isDeleting = deletingMessageId === item.messageId;
     return (
       <View style={[styles.mediaRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
-        <View style={[styles.preview, { backgroundColor: Colors.highlight, borderColor: Colors.neonBorder }]}>
-          {item.type === 'image' && item.isAvailable && item.fileUri ? (
-            <Image source={{ uri: item.fileUri }} style={styles.image} contentFit="cover" recyclingKey={item.messageId} />
-          ) : (
-            <Ionicons name={typeInfo.icon} size={28} color={item.isAvailable ? Colors.primary : Colors.textTertiary} />
-          )}
-        </View>
+        <TouchableOpacity
+          style={styles.mediaMain}
+          activeOpacity={0.72}
+          disabled={!item.isAvailable || isDeleting}
+          onPress={() => openItem(item)}
+          accessibilityRole="button"
+          accessibilityLabel={item.isAvailable ? `Open ${item.fileName}` : `${item.fileName} is not stored on this phone`}
+        >
+          <View style={[styles.preview, { backgroundColor: Colors.highlight, borderColor: Colors.neonBorder }]}>
+            {item.type === 'image' && item.isAvailable && item.fileUri ? (
+              <Image source={{ uri: item.fileUri }} style={styles.image} contentFit="cover" recyclingKey={item.messageId} />
+            ) : (
+              <Ionicons name={typeInfo.icon} size={28} color={item.isAvailable ? Colors.primary : Colors.textTertiary} />
+            )}
+          </View>
 
-        <View style={styles.mediaInfo}>
-          <Text style={[styles.fileName, { color: Colors.text }]} numberOfLines={1}>{item.fileName}</Text>
-          <Text style={[styles.mediaMeta, { color: Colors.textSecondary }]} numberOfLines={1}>
-            {typeInfo.label.replace(/s$/, '')} · {item.isAvailable ? formatBytes(item.sizeBytes) : 'Not stored'}
-          </Text>
-          <Text style={[styles.mediaMeta, { color: Colors.textTertiary }]} numberOfLines={1}>
-            {item.isMine ? 'You' : item.senderName} · {formatDate(item.createdAt)}
-          </Text>
-        </View>
+          <View style={styles.mediaInfo}>
+            <Text style={[styles.fileName, { color: Colors.text }]} numberOfLines={1}>{item.fileName}</Text>
+            <Text style={[styles.mediaMeta, { color: Colors.textSecondary }]} numberOfLines={1}>
+              {typeInfo.label.replace(/s$/, '')} · {item.isAvailable ? formatBytes(item.sizeBytes) : 'Not stored'}
+            </Text>
+            <Text style={[styles.mediaMeta, { color: Colors.textTertiary }]} numberOfLines={1}>
+              {item.isMine ? 'You' : item.senderName} · {formatDate(item.createdAt)}
+            </Text>
+          </View>
 
-        <Ionicons
-          name={item.isAvailable ? 'checkmark-circle-outline' : 'cloud-offline-outline'}
-          size={20}
-          color={item.isAvailable ? Colors.success : Colors.textTertiary}
-        />
+          <Ionicons
+            name={item.isAvailable ? 'open-outline' : 'cloud-offline-outline'}
+            size={20}
+            color={item.isAvailable ? Colors.primary : Colors.textTertiary}
+          />
+        </TouchableOpacity>
+        {item.isAvailable ? (
+          <TouchableOpacity
+            style={[styles.deleteButton, { backgroundColor: Colors.highlight, borderColor: Colors.neonBorder }]}
+            activeOpacity={0.72}
+            disabled={isDeleting}
+            onPress={() => deleteItem(item)}
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${item.fileName} from this phone`}
+          >
+            {isDeleting
+              ? <ActivityIndicator size="small" color={Colors.primary} />
+              : <Ionicons name="trash-outline" size={19} color={Colors.primary} />}
+          </TouchableOpacity>
+        ) : null}
       </View>
     );
   };
 
   return (
-    <FlatList
-      style={[styles.container, { backgroundColor: Colors.background }]}
-      contentContainerStyle={styles.content}
-      contentInsetAdjustmentBehavior="automatic"
-      data={visibleItems}
-      keyExtractor={(item) => item.messageId}
-      renderItem={renderItem}
-      refreshing={loading && items.length > 0}
-      onRefresh={loadMedia}
-      ListHeaderComponent={(
+    <>
+      <FlatList
+        style={[styles.container, { backgroundColor: Colors.background }]}
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
+        data={visibleItems}
+        keyExtractor={(item) => item.messageId}
+        renderItem={renderItem}
+        refreshing={loading && items.length > 0}
+        onRefresh={loadMedia}
+        ListHeaderComponent={(
         <>
           <View style={[styles.summary, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
             <Text style={[styles.eyebrow, { color: Colors.primary }]}>MEDIA IN CHAT</Text>
@@ -173,17 +252,23 @@ export default function ChatStorageMediaScreen() {
 
           <Text style={[styles.sectionTitle, { color: Colors.textSecondary }]}>ALL MEDIA</Text>
         </>
-      )}
-      ListEmptyComponent={loading ? (
-        <View style={styles.empty}><ActivityIndicator color={Colors.primary} /></View>
-      ) : (
-        <View style={styles.empty}>
-          <Ionicons name="images-outline" size={36} color={Colors.textTertiary} />
-          <Text style={[styles.emptyTitle, { color: Colors.text }]}>No media here</Text>
-          <Text style={[styles.emptyText, { color: Colors.textSecondary }]}>This chat does not contain media in the selected category.</Text>
-        </View>
-      )}
-    />
+        )}
+        ListEmptyComponent={loading ? (
+          <View style={styles.empty}><ActivityIndicator color={Colors.primary} /></View>
+        ) : (
+          <View style={styles.empty}>
+            <Ionicons name="images-outline" size={36} color={Colors.textTertiary} />
+            <Text style={[styles.emptyTitle, { color: Colors.text }]}>No media here</Text>
+            <Text style={[styles.emptyText, { color: Colors.textSecondary }]}>This chat does not contain media in the selected category.</Text>
+          </View>
+        )}
+      />
+      <FullscreenImageViewer
+        uri={fullscreenImageUri}
+        accentColor={Colors.primary}
+        onClose={() => setFullscreenImageUri(null)}
+      />
+    </>
   );
 }
 
@@ -217,10 +302,12 @@ const styles = StyleSheet.create({
   filter: { flexDirection: 'row', alignItems: 'center', gap: 6, borderWidth: 1, borderRadius: Radius.pill, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm },
   filterText: { fontSize: Font.size.xs, fontWeight: '700', fontVariant: ['tabular-nums'] },
   sectionTitle: { fontSize: Font.size.xs, fontWeight: '800', letterSpacing: 1.5, paddingTop: Spacing.xs },
-  mediaRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.md, borderWidth: 1, borderRadius: Radius.md, padding: Spacing.sm },
+  mediaRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, borderWidth: 1, borderRadius: Radius.md, padding: Spacing.sm },
+  mediaMain: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: Spacing.md },
   preview: { width: 64, height: 64, borderRadius: Radius.sm, borderWidth: 1, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   image: { width: '100%', height: '100%' },
   mediaInfo: { flex: 1, minWidth: 0 },
+  deleteButton: { width: 38, height: 38, borderWidth: 1, borderRadius: Radius.sm, alignItems: 'center', justifyContent: 'center' },
   fileName: { fontSize: Font.size.sm, fontWeight: '700' },
   mediaMeta: { fontSize: Font.size.xs, paddingTop: 3 },
   empty: { alignItems: 'center', paddingVertical: Spacing.xxxl, paddingHorizontal: Spacing.xl },

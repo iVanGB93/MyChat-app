@@ -29,6 +29,7 @@ import {
   filterMissingMessageIds,
   getMessageDeltaRequests,
   getMessageFileUri,
+  isMessageMediaEvicted,
   setMessageFileUri,
 } from './localMessageStore';
 import type { ReplyRef } from './localMessageStore';
@@ -519,6 +520,12 @@ async function processReceivedMessage(evt: CanonicalMessage, source: IngressSour
   // 3. Persistent + in-flight dedupe (single write of side effects).
   const exists = await messageExists(evt.messageId);
   if (exists) {
+    if (isMediaType && await isMessageMediaEvicted(evt.messageId)) {
+      // A duplicate push/Axion frame must not restore media that the user
+      // deliberately removed in device storage management.
+      injectReceivedMessage(evt.roomId, toWsMessage(evt, null), { updateExisting: true });
+      return;
+    }
     let fileUri = isMediaType ? await getMessageFileUri(evt.messageId) : null;
     let hydrated = false;
     if (isMediaType && !fileUri) {

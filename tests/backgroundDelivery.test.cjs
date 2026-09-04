@@ -64,6 +64,7 @@ function fixture(options = {}) {
         rows.set(row.id, { ...row }); events.push('saved');
       },
       getMessageFileUri: async (id) => rows.get(id)?.file_uri ?? null,
+      isMessageMediaEvicted: async (id) => rows.get(id)?.media_evicted === 1,
       setMessageFileUri: async (id, uri) => { rows.get(id).file_uri = uri; events.push('file-saved'); },
       getIncompletePointerMedia: async (roomId) => [...rows.values()]
         .filter((row) => !row.file_uri && row.media_ptr && (!roomId || row.room_id === roomId))
@@ -87,6 +88,9 @@ function fixture(options = {}) {
       displayMessageNotification: async (data) => {
         notifications.push(data); await controls.display(data);
       },
+    },
+    './mediaConfirmationQueue': {
+      flushPendingMediaConfirmations: async () => ({ flushed: 0, failed: 0 }),
     },
     '@react-native-firebase/messaging': {
       getMessaging: () => ({}),
@@ -188,7 +192,7 @@ test('failed receipt remains durable; duplicate retries without redownloading or
   assert.equal((await app.queue.getQueueStatus()).length, 1);
   app.controls.post = async () => accepted();
   await app.ingestMessage(message(), 'ws');
-  assert.equal(app.requests.length, 2);
+  assert.equal(app.requests.length, 3, 'headless recovery retries once before a later duplicate');
   assert.equal(app.downloads.length, 1);
   assert.equal(app.unread, 1);
   assert.equal((await app.queue.getQueueStatus()).length, 0);

@@ -124,7 +124,31 @@ test('legacy receipt rows migrate without fabricating timestamps or losing deliv
   const app = await fixture(database);
   assert.equal(app.receipts()[0].delivered, 1);
   assert.equal(app.receipts()[0].delivered_at, null);
-  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 6);
+  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 7);
+});
+
+test('locally removed media stays unavailable and is excluded from recovery', async () => {
+  const app = await fixture();
+  await app.saveMessage({
+    ...message,
+    id: 'media-1',
+    type: 'image',
+    content: 'Photo',
+    file_uri: 'file://documents/media-1.jpg',
+    is_mine: false,
+    sync: true,
+    status: 'delivered',
+    media_ptr: { media_id: 'blob-1' },
+  });
+  const target = await app.getLocalMediaRemovalTarget('media-1');
+  assert.equal(target.fileUri, 'file://documents/media-1.jpg');
+  assert.equal(target.otherReferences, 0);
+  assert.equal(await app.markLocalMediaRemoved('media-1', target.fileUri), true);
+  const row = app.database.prepare("SELECT file_uri, media_evicted FROM messages WHERE id='media-1'").get();
+  assert.equal(row.file_uri, null);
+  assert.equal(row.media_evicted, 1);
+  assert.equal((await app.getIncompletePointerMedia('room')).length, 0);
+  assert.equal((await app.getIncompleteMediaDigest()).length, 0);
 });
 
 test('call refresh merges history and metadata pruning does not discard old calls', async () => {

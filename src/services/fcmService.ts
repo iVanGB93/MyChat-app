@@ -19,6 +19,8 @@ import {
 import { Platform } from 'react-native';
 import { debugLog } from './diagnostics';
 import { savePushMessage } from './pushMessageStore';
+import { flushPendingAcks } from './messageAckRetryQueue';
+import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
 import {
   ensureMessageChannel,
   displayMessageNotification,
@@ -115,6 +117,12 @@ async function handleDataMessage(
   } finally {
     // An unawaited promise lets Android suspend the download or receipt early.
     await receive;
+    // If authentication/network recovery raced the first receipt attempt, give
+    // both durable queues one final bounded pass before HeadlessJS may stop.
+    await Promise.all([
+      flushPendingAcks({ force: true }).catch(() => ({ flushed: 0, failed: 0 })),
+      flushPendingMediaConfirmations({ force: true }).catch(() => ({ flushed: 0, failed: 0 })),
+    ]);
   }
 }
 
