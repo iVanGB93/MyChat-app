@@ -213,32 +213,36 @@ export default function App() {
     // tapping it is delivered HERE (not via the Expo/Notifee listeners), so we
     // ingest the message and navigate the same way. `data` carries both
     // camelCase and snake_case keys from the backend.
-    const handleFcmOpen = (remoteMessage: any) => {
+    const handleFcmOpen = async (remoteMessage: any) => {
       const data = (remoteMessage?.data ?? {}) as Record<string, string>;
       if (!data || !data.type) return;
       if (data.type === 'new_message') {
-        savePushMessage(data).catch(() => {});
+        // Finish the local write before ChatRoom mounts and reads SQLite.
+        // Navigation still proceeds if a malformed/legacy payload cannot be
+        // persisted; Axion can reconcile it after the room opens.
+        await savePushMessage(data).catch(() => false);
       }
       navigateFromNotification(data);
     };
     // Background → foreground tap.
-    const unsubFcmOpened = onNotificationOpenedApp(getMessaging(), handleFcmOpen);
+    const unsubFcmOpened = onNotificationOpenedApp(getMessaging(), (message) => {
+      void handleFcmOpen(message);
+    });
     // Cold start from a fully quit state.
-    getInitialNotification(getMessaging()).then((m) => { if (m) handleFcmOpen(m); }).catch(() => {});
+    getInitialNotification(getMessaging()).then((m) => { if (m) void handleFcmOpen(m); }).catch(() => {});
 
     // Handle notification taps — navigate to the relevant screen and save msg
     responseListener.current = addNotificationResponseListener((response) => {
       const data = response.notification.request.content.data as Record<string, string> | undefined;
       console.log('[App] Notification tapped:', data);
-
-      // Save message to SQLite whenever a new_message push is tapped
-      if (data?.type === 'new_message') {
-        savePushMessage(data).catch(() => {});
-      }
-
       if (!data) return;
-
-      navigateFromNotification(data);
+      void (async () => {
+        // Save the message before mounting the destination room on a cold tap.
+        if (data.type === 'new_message') {
+          await savePushMessage(data).catch(() => false);
+        }
+        navigateFromNotification(data);
+      })();
     });
 
     // Save message to SQLite when push arrives while app is in background

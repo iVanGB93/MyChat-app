@@ -48,7 +48,7 @@ export function registerNotificationBackgroundHandler() {
         data.roomId
       ) {
         debugLog('[BgEvent] message notification pressed → pending nav', data.roomId);
-        setPendingRoomNav({
+        await setPendingRoomNav({
           roomId: String(data.roomId),
           roomName: String(data.roomName ?? ''),
           senderId: data.senderId != null ? String(data.senderId) : undefined,

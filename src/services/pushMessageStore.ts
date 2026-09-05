@@ -22,9 +22,33 @@ import { ingestMessage } from './ingressRouter';
  */
 export async function savePushMessage(
   data: Record<string, string | undefined> | null | undefined,
+  options: {
+    notificationSurface?: 'expo_os' | 'suppressed' | 'none';
+    reason?: string;
+  } = {},
 ): Promise<boolean> {
   if (!data) return false;
   await ingestMessage(data, 'push_receive');
+  const surface = options.notificationSurface ?? 'expo_os';
+  if (surface !== 'none') {
+    try {
+      const { parseMessageNotifData } = await import('./messageNotificationService');
+      const parsed = parseMessageNotifData(data);
+      if (parsed) {
+        const { recordIncomingMessageNotificationDisposition } =
+          await import('./messageNotificationCoordinator');
+        await recordIncomingMessageNotificationDisposition(
+          parsed,
+          'expo_os',
+          surface === 'expo_os' ? 'covered_by_push' : 'suppressed',
+          options.reason ?? (surface === 'expo_os' ? 'expo_os' : 'policy'),
+        );
+      }
+    } catch {
+      // Message persistence and receipt delivery remain authoritative even if
+      // notification bookkeeping is temporarily unavailable.
+    }
+  }
   return true;
 }
 

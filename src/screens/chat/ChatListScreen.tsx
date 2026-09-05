@@ -35,6 +35,7 @@ import EmptyState from '../../components/ui/EmptyState';
 import ChatAvatarActionModal from '../../components/chat/chat-avatar-action-modal';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import type { ChatRoom, RootStackParamList } from '../../types';
+import { selectLatestMessagePreview, type MessagePreview } from '../../utils/messagePreview';
 
 dayjs.extend(relativeTime);
 
@@ -281,22 +282,21 @@ export default function ChatListScreen() {
   const [selectedRoomIds, setSelectedRoomIds] = useState<Set<string>>(() => new Set());
   const [avatarRoomId, setAvatarRoomId] = useState<string | null>(null);
   const [localLastMessages, setLocalLastMessages] = useState<
-    Record<
-      string,
-      {
-        content: string;
-        created_at: string;
-        sender_id?: number;
-        status?: 'pending' | 'delivered' | 'read';
-      } | null
-    >
+    Record<string, MessagePreview | null>
   >({});
 
   const loadLocalLastMessages = useCallback(async () => {
     const localMsgsMap = await getLastMessagePerRoom();
-    const map: Record<string, { content: string; created_at: string; sender_id?: number; status?: 'pending' | 'delivered' | 'read' } | null> = {};
+    const map: Record<string, MessagePreview | null> = {};
     for (const [roomId, msg] of Object.entries(localMsgsMap)) {
-      map[roomId] = { content: msg.content ?? '', created_at: msg.created_at, sender_id: msg.sender_id, status: msg.status };
+      map[roomId] = {
+        id: msg.id,
+        content: msg.content ?? '',
+        created_at: msg.created_at,
+        sender: msg.sender_name,
+        sender_id: msg.sender_id,
+        status: msg.status,
+      };
     }
     setLocalLastMessages(map);
   }, []);
@@ -307,8 +307,10 @@ export default function ChatListScreen() {
     try {
       const data = await getRooms(force);
       setRooms(data);
-      await loadLocalLastMessages();
     } catch { /* ignore */ } finally {
+      // Delivery/read status is local-first and must refresh even when the room
+      // metadata request fails while the phone is offline.
+      await loadLocalLastMessages().catch(() => {});
       setRefreshing(false);
     }
   }, [user?.id, loadLocalLastMessages]);
@@ -404,21 +406,11 @@ export default function ChatListScreen() {
   };
 
   const getLastMessage = (room: ChatRoom) => {
-    type LastMsg = {
-      content: string;
-      created_at: string;
-      sender_id?: number;
-      status?: 'pending' | 'delivered' | 'read';
-    };
-    const candidates: LastMsg[] = [
+    return selectLatestMessagePreview([
       lastMessageByRoom[room.id] ?? null,
       localLastMessages[room.id] ?? null,
       room.last_message ?? null,
-    ].filter((m): m is LastMsg => !!m);
-    if (candidates.length === 0) return null;
-    return candidates.reduce((latest, m) =>
-      new Date(m.created_at) > new Date(latest.created_at) ? m : latest,
-    );
+    ]);
   };
 
   // Hide chats the user "deleted" (cleared) locally until a message NEWER than

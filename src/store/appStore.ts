@@ -20,6 +20,7 @@ import { persist, createJSONStorage, PersistOptions } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { User } from '../types';
 import { expirePresenceLease, type PresenceLease, type PresenceStatus } from '../services/presencePolicy';
+import { mergeMessagePreview } from '../utils/messagePreview';
 
 /* Lazily dismiss the grouped OS notification for a room without coupling the
    store to the notifications module at load time (avoids heavy/circular deps).
@@ -397,17 +398,17 @@ export const useAppStore = create<AppState>()(
   setRoomLastMessage: (roomId, msg) =>
     set((s) => {
       const prev = s.lastMessageByRoom[roomId];
-      // Skip update if the incoming message is older than what we already have
-      if (prev && new Date(prev.created_at) >= new Date(msg.created_at)) return s;
+      const merged = mergeMessagePreview(prev, msg);
+      if (merged === prev) return s;
       return {
-        lastMessageByRoom: { ...s.lastMessageByRoom, [roomId]: msg },
+        lastMessageByRoom: { ...s.lastMessageByRoom, [roomId]: merged },
       };
     }),
   setRoomLastMessageStatus: (roomId, messageId, status) =>
     set((s) => {
       const prev = s.lastMessageByRoom[roomId];
       if (!prev || prev.id !== messageId) return s;
-      // Never downgrade: pending → sent → read
+      // Never downgrade: pending → delivered → read
       const order = { pending: 0, delivered: 1, read: 2 } as const;
       if (prev.status && order[prev.status] >= order[status]) return s;
       return {

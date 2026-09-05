@@ -15,9 +15,10 @@ let _dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let _initPromise: Promise<void> | null = null;
 let _writeTail: Promise<void> = Promise.resolve();
 
-const LOCAL_DB_SCHEMA_VERSION = 7;
+const LOCAL_DB_SCHEMA_VERSION = 8;
 const PROCESSED_EVENT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DELETED_MESSAGE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
+const ORPHAN_NOTIFICATION_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 const MAX_PROCESSED_EVENTS = 50_000;
 
 async function getDB(): Promise<SQLite.SQLiteDatabase> {
@@ -159,6 +160,25 @@ async function initDBOnce(): Promise<void> {
       ts   INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_processed_events_ts ON processed_events (ts);
+
+    -- Durable per-device notification decisions. A message can arrive through
+    -- Axion, raw FCM, Expo push, and recovery, but only the first eligible path
+    -- is allowed to present it. Unlike Notifee's displayed-notification data,
+    -- this survives dismissal, process death, and application restarts.
+    CREATE TABLE IF NOT EXISTS message_notification_state (
+      message_id      TEXT    PRIMARY KEY,
+      room_id         TEXT    NOT NULL,
+      state           TEXT    NOT NULL,
+      reason          TEXT,
+      source          TEXT    NOT NULL,
+      notification_id TEXT,
+      first_seen_at   INTEGER NOT NULL,
+      updated_at      INTEGER NOT NULL,
+      displayed_at    INTEGER,
+      attempt_count   INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_message_notification_state_updated
+      ON message_notification_state (updated_at);
 
     -- Room metadata is separate from messages so the chat list can render
     -- instantly on app start, even while the network refresh is still running.
@@ -324,6 +344,39 @@ async function initDBOnce(): Promise<void> {
     await addColumnsIfMissing(db, 'messages', {
       media_evicted: 'INTEGER DEFAULT 0',
     });
+  }
+
+  if (currentVersion < 8) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS message_notification_state (
+        message_id      TEXT    PRIMARY KEY,
+        room_id         TEXT    NOT NULL,
+        state           TEXT    NOT NULL,
+        reason          TEXT,
+        source          TEXT    NOT NULL,
+        notification_id TEXT,
+        first_seen_at   INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL,
+        displayed_at    INTEGER,
+        attempt_count   INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_notification_state_updated
+        ON message_notification_state (updated_at);
+    `);
+    const migratedAt = Date.now();
+    // Existing incoming rows were necessarily handled by an older app version.
+    // Seed them before any delayed FCM can reinterpret one as a new alert.
+    await db.runAsync(
+      `INSERT OR IGNORE INTO message_notification_state
+       (message_id, room_id, state, reason, source, notification_id,
+        first_seen_at, updated_at, displayed_at, attempt_count)
+       SELECT id, room_id, 'suppressed', 'preledger_existing_message', 'migration',
+              'message:' || room_id, ?, ?, NULL, 0
+       FROM messages
+       WHERE is_mine = 0`,
+      migratedAt,
+      migratedAt,
+    );
   }
 
   if (currentVersion < LOCAL_DB_SCHEMA_VERSION) {
@@ -1258,6 +1311,155 @@ export async function pruneProcessedEvents(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Durable message-notification ledger
+// ---------------------------------------------------------------------------
+
+export type MessageNotificationState =
+  | 'claimed'
+  | 'displayed'
+  | 'suppressed'
+  | 'covered_by_push'
+  | 'failed';
+
+export interface MessageNotificationRecord {
+  message_id: string;
+  room_id: string;
+  state: MessageNotificationState;
+  reason: string | null;
+  source: string;
+  notification_id: string | null;
+  first_seen_at: number;
+  updated_at: number;
+  displayed_at: number | null;
+  attempt_count: number;
+}
+
+interface NotificationDispositionInput {
+  messageId: string;
+  roomId: string;
+  state: Exclude<MessageNotificationState, 'claimed' | 'failed'>;
+  reason?: string | null;
+  source: string;
+  notificationId?: string | null;
+  now?: number;
+}
+
+/**
+ * Persist a terminal notification decision without replacing an earlier one.
+ * Recording suppressed decisions is important: a later replay must not turn a
+ * message that arrived in an open/muted room into a fresh notification.
+ */
+export async function recordMessageNotificationDisposition(
+  input: NotificationDispositionInput,
+): Promise<boolean> {
+  if (!input.messageId || !input.roomId) return false;
+  const now = input.now ?? Date.now();
+  return runSerializedWrite(async (db) => {
+    const result = await db.runAsync(
+      `INSERT OR IGNORE INTO message_notification_state
+       (message_id, room_id, state, reason, source, notification_id,
+        first_seen_at, updated_at, displayed_at, attempt_count)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      input.messageId,
+      input.roomId,
+      input.state,
+      input.reason ?? null,
+      input.source,
+      input.notificationId ?? null,
+      now,
+      now,
+      input.state === 'displayed' ? now : null,
+    );
+    return Number(result.changes ?? 0) > 0;
+  });
+}
+
+/**
+ * Atomically reserve notification presentation. Duplicate transports lose the
+ * INSERT and do nothing. A failed/stale claim gets only a few bounded retries;
+ * the renderer's stable room id + shownIds keep that recovery idempotent.
+ */
+export async function claimMessageNotificationPresentation(input: {
+  messageId: string;
+  roomId: string;
+  source: string;
+  notificationId: string;
+  now?: number;
+}): Promise<boolean> {
+  if (!input.messageId || !input.roomId) return false;
+  const now = input.now ?? Date.now();
+  return runSerializedWrite(async (db) => {
+    const inserted = await db.runAsync(
+      `INSERT OR IGNORE INTO message_notification_state
+       (message_id, room_id, state, reason, source, notification_id,
+        first_seen_at, updated_at, displayed_at, attempt_count)
+       VALUES (?, ?, 'claimed', NULL, ?, ?, ?, ?, NULL, 1)`,
+      input.messageId,
+      input.roomId,
+      input.source,
+      input.notificationId,
+      now,
+      now,
+    );
+    if (Number(inserted.changes ?? 0) > 0) return true;
+
+    const retry = await db.runAsync(
+      `UPDATE message_notification_state
+       SET state = 'claimed', reason = NULL, source = ?, notification_id = ?,
+           updated_at = ?, attempt_count = attempt_count + 1
+       WHERE message_id = ?
+         AND attempt_count < 3
+         AND first_seen_at >= ?
+         AND (
+           (state = 'failed' AND updated_at <= ?)
+           OR (state = 'claimed' AND updated_at <= ?)
+         )`,
+      input.source,
+      input.notificationId,
+      now,
+      input.messageId,
+      now - 5 * 60 * 1000,
+      now - 5 * 1000,
+      now - 60 * 1000,
+    );
+    return Number(retry.changes ?? 0) > 0;
+  });
+}
+
+/** Finish a presentation claim. Only the current claimed row can transition. */
+export async function finishMessageNotificationPresentation(input: {
+  messageId: string;
+  displayed: boolean;
+  reason?: string | null;
+  now?: number;
+}): Promise<void> {
+  if (!input.messageId) return;
+  const now = input.now ?? Date.now();
+  await runSerializedWrite((db) => db.runAsync(
+    `UPDATE message_notification_state
+     SET state = ?, reason = ?, updated_at = ?, displayed_at = ?
+     WHERE message_id = ? AND state = 'claimed'`,
+    input.displayed ? 'displayed' : 'failed',
+    input.reason ?? null,
+    now,
+    input.displayed ? now : null,
+    input.messageId,
+  ));
+}
+
+/** Diagnostic/test helper for one durable decision. */
+export async function getMessageNotificationRecord(
+  messageId: string,
+): Promise<MessageNotificationRecord | null> {
+  if (!messageId) return null;
+  const db = await getDB();
+  return db.getFirstAsync<MessageNotificationRecord>(
+    `SELECT * FROM message_notification_state WHERE message_id = ?`,
+    messageId,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // RRP sync.digest helpers
 // ---------------------------------------------------------------------------
 
@@ -1344,6 +1546,14 @@ async function pruneLocalDataWithDb(db: SQLite.SQLiteDatabase): Promise<void> {
     `, deletedBefore);
     await db.runAsync(`DELETE FROM delivery_tracking WHERE message_id NOT IN (SELECT id FROM messages)`);
     await db.runAsync(`DELETE FROM update_outbox WHERE message_id NOT IN (SELECT id FROM messages)`);
+    // Keep notification decisions for every retained chat message. Only orphan
+    // decisions (for malformed/legacy pushes that never became messages) age
+    // out, so old sync replays cannot notify again after routine pruning.
+    await db.runAsync(`
+      DELETE FROM message_notification_state
+      WHERE first_seen_at < ?
+        AND message_id NOT IN (SELECT id FROM messages)
+    `, now - ORPHAN_NOTIFICATION_RETENTION_MS);
 
     // Call history is now a durable local record, not a disposable cache.
     // Do not silently remove older calls when the server stops returning them.

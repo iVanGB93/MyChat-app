@@ -22,10 +22,12 @@ import { savePushMessage } from './pushMessageStore';
 import { flushPendingAcks } from './messageAckRetryQueue';
 import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
 import {
-  ensureMessageChannel,
-  displayMessageNotification,
   parseMessageNotifData,
 } from './messageNotificationService';
+import {
+  presentIncomingMessageNotification,
+  recordIncomingMessageNotificationDisposition,
+} from './messageNotificationCoordinator';
 
 /**
  * Ensure the device is registered for remote messages and return its raw FCM
@@ -99,18 +101,38 @@ async function handleDataMessage(
     return;
   }
 
+  if (data.type === 'message_recovery_hint') {
+    // The backend no longer has message content, so this push must remain
+    // silent. Wake Axion; its reconnect digest asks peers for any missing IDs.
+    try {
+      const { ensureWsAlive } = await import('./notificationWsManager');
+      await ensureWsAlive();
+    } catch (err) {
+      console.warn('[FCM] recovery hint could not wake Axion:', err);
+    }
+    return;
+  }
+
   if (!data || (data.type && data.type !== 'new_message')) return;
   // Start receiving now, but don't delay the notification on a large download.
-  const receive = savePushMessage(data).catch((err) => {
+  const receive = savePushMessage(data, { notificationSurface: 'none' }).catch((err) => {
     console.warn('[FCM] savePushMessage failed:', err);
   });
   try {
-    // GPS already drew this legacy banner — still finish receive in finally.
-    if (remoteMessage?.notification) return;
     const parsed = parseMessageNotifData(data);
     if (parsed) {
-      await ensureMessageChannel();
-      await displayMessageNotification(parsed);
+      if (remoteMessage?.notification) {
+        // Google Play Services already drew this legacy card. Persist that
+        // durable fact so a later Axion/FCM replay cannot draw it again.
+        await recordIncomingMessageNotificationDisposition(
+          parsed,
+          'fcm',
+          'covered_by_push',
+          'legacy_fcm_notification_block',
+        );
+      } else {
+        await presentIncomingMessageNotification(parsed, 'fcm');
+      }
     }
   } catch (err) {
     console.warn('[FCM] displayMessageNotification failed:', err);
@@ -145,7 +167,10 @@ export function registerFcmForegroundHandler(): () => void {
     const data = (remoteMessage?.data ?? {}) as Record<string, string>;
     if (!data || (data.type && data.type !== 'new_message')) return;
     try {
-      await savePushMessage(data);
+      await savePushMessage(data, {
+        notificationSurface: 'suppressed',
+        reason: 'app_active',
+      });
     } catch (err) {
       console.warn('[FCM] foreground savePushMessage failed:', err);
     }

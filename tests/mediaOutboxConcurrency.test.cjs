@@ -13,6 +13,7 @@ const compiled = ts.transpileModule(
 
 function fixture() {
   const frames = [], pointers = new Map();
+  const timers = [];
   let finishUpload, uploadCalls = 0;
   const waitingUpload = new Promise((resolve) => { finishUpload = resolve; });
   const schedule = createTransferScheduler(2);
@@ -36,15 +37,27 @@ function fixture() {
     module, exports: module.exports,
     require: (name) => { assert.ok(name in modules, `unexpected dependency ${name}`); return modules[name]; },
     // ACK clocks do not fire in these narrowly scoped concurrency tests.
-    setTimeout: () => 1, clearTimeout() {}, console,
+    setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; }, clearTimeout() {}, console,
   });
   module.exports.setCurrentUserId(18, 'test-user');
   return {
-    ...module.exports, frames, pointers, finishUpload, uploadCalls: () => uploadCalls,
+    ...module.exports, frames, pointers, timers, finishUpload, uploadCalls: () => uploadCalls,
     state: module.exports.stateForTest(),
     message: { id: 'message', type: 'document', content: 'test.pdf', file_uri: 'file:///test.pdf', created_at: '2026-09-02T12:00:00Z' },
   };
 }
+
+test('the room snapshot exposes only the active send attempt as sending', async () => {
+  const f = fixture();
+  const send = f.sendForTest(f.state, 'room', f.message);
+  assert.equal(f.state.sendingIds.has(f.message.id), true);
+  f.finishUpload();
+  await send;
+  const visualTimer = f.timers.find((timer) => timer.delay < 1_000);
+  assert.ok(visualTimer, 'expected a short minimum-visibility timer');
+  visualTimer.callback();
+  assert.equal(f.state.sendingIds.has(f.message.id), false);
+});
 
 test('manual and reconnect sends share the entire upload/pointer/frame operation', async () => {
   const f = fixture();

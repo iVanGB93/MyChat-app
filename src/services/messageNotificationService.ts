@@ -49,7 +49,11 @@ export function parseMessageNotifData(
   const senderName = String(raw.sender ?? raw.title ?? 'New message');
   const text = String(raw.body ?? raw.content ?? '');
   const roomName = String(raw.roomName ?? raw.room_name ?? senderName);
-  const ts = Number(raw.timestamp ?? 0);
+  const rawTimestamp = raw.timestamp ?? raw.createdAt ?? raw.created_at ?? 0;
+  const numericTimestamp = Number(rawTimestamp);
+  const ts = Number.isFinite(numericTimestamp) && numericTimestamp > 0
+    ? numericTimestamp
+    : Date.parse(String(rawTimestamp));
   const senderIdRaw = raw.senderId ?? raw.sender_id;
   const senderId = Number(senderIdRaw);
   const messageId = String(raw.messageId ?? raw.message_id ?? '');

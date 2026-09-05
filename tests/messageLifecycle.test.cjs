@@ -6,6 +6,10 @@ const {
   resolveOutgoingMessageStatus,
   shouldSuppressOutboxReplay,
 } = require('../src/services/messageLifecycle.ts');
+const {
+  mergeMessagePreview,
+  selectLatestMessagePreview,
+} = require('../src/utils/messagePreview.ts');
 
 function state() {
   return {
@@ -63,6 +67,21 @@ test('a live receipt wins over a stale persisted pending status', () => {
     ids: ['m1'],
   });
   assert.equal(resolveOutgoingMessageStatus('m1', 'pending', read), 'read');
+});
+
+test('SQLite delivery status wins over a persisted pending chat-list preview', () => {
+  const persisted = {
+    id: 'm1', content: 'hello', created_at: '2026-09-05T10:00:00Z', sender_id: 14, status: 'pending',
+  };
+  const sqlite = { ...persisted, status: 'delivered' };
+  assert.equal(selectLatestMessagePreview([persisted, sqlite]).status, 'delivered');
+  assert.equal(mergeMessagePreview(sqlite, persisted).status, 'delivered', 'late stale cache must not downgrade');
+});
+
+test('an actually newer message replaces the previous chat-list preview', () => {
+  const oldMessage = { id: 'm1', content: 'old', created_at: '2026-09-05T10:00:00Z', status: 'read' };
+  const newMessage = { id: 'm2', content: 'new', created_at: '2026-09-05T10:01:00Z', status: 'pending' };
+  assert.equal(selectLatestMessagePreview([oldMessage, newMessage]).id, 'm2');
 });
 
 test('duplicate incoming message ids are ignored', () => {

@@ -157,6 +157,7 @@ export function useChat(roomId: string, currentUserId?: number) {
     markAsRead,
     readIds: snapshot.readIds,
     pendingIds: snapshot.pendingIds,
+    sendingIds: snapshot.sendingIds,
     deliveredIds: snapshot.deliveredIds,
     markIdsAsRead,
     markIdsAsDelivered,

@@ -21,6 +21,7 @@ const _earlyServerAcceptedMessageIds = new Set<string>();
 const _serverAckTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _serverAcceptedAt = new Map<string, number>();
 const _inFlightFrames = new Map<string, Promise<SendAttemptResult>>();
+const _activeSendCounts = new Map<string, number>();
 let _lastLocalMutationMs = 0;
 
 function versionLocalMutation(changes: MessageChanges): MessageChanges {
@@ -103,6 +104,8 @@ export interface RoomSnapshot {
   messages: WsMessage[];
   readIds: Set<string>;
   pendingIds: Set<string>;
+  /** Message ids whose bytes/frame are actively being handed to Axion. */
+  sendingIds: Set<string>;
   deliveredIds: Set<string>;
   status: RoomStatus;
   reconnectCount: number;
@@ -120,6 +123,7 @@ interface RoomState {
   messages: WsMessage[];
   readIds: Set<string>;
   pendingIds: Set<string>;
+  sendingIds: Set<string>;
   deliveredIds: Set<string>;
   /** In-memory queue of updates not yet sent (also persisted to SQLite outbox). */
   pendingUpdates: Array<{ id: string; message_id: string; changes: MessageChanges }>;
@@ -252,6 +256,7 @@ function createRoomState(): RoomState {
     messages: [],
     readIds: new Set(),
     pendingIds: new Set(),
+    sendingIds: new Set(),
     deliveredIds: new Set(),
     pendingUpdates: [],
     inFlightUpdateIds: new Set(),
@@ -282,6 +287,7 @@ function notifyListeners(roomId: string, state: RoomState) {
     messages: state.messages,
     readIds: state.readIds,
     pendingIds: state.pendingIds,
+    sendingIds: state.sendingIds,
     deliveredIds: state.deliveredIds,
     status: state.status,
     reconnectCount: state.reconnectCount,
@@ -558,18 +564,48 @@ function fallbackMediaMime(messageType: string, fileUri: string | null | undefin
  * shared realtime gateway carries only the lightweight message/pointer frame.
  */
 function sendOutboxFrame(...args: Parameters<typeof sendOutboxFrameOnce>): Promise<SendAttemptResult> {
-  const [, roomId, msg, opts] = args;
+  const [state, roomId, msg, opts] = args;
   // Protect the entire upload -> persist pointer -> send path, not just the
   // period after a WebSocket ACK timer exists. Keep targeted hydration distinct
   // so one group member's recovery cannot consume another member's delivery.
   const key = JSON.stringify([_myUserId, roomId, msg.id, !!opts?.hydration, opts?.targetRecipientId ?? null]);
   const existing = _inFlightFrames.get(key);
   if (existing) return existing;
+  const startedAt = Date.now();
+  const activityKey = JSON.stringify([_myUserId, roomId, msg.id]);
+  const activeCount = _activeSendCounts.get(activityKey) ?? 0;
+  _activeSendCounts.set(activityKey, activeCount + 1);
+  if (activeCount === 0) markSending(state, roomId, msg.id, true);
   const task = Promise.resolve().then(() => sendOutboxFrameOnce(...args)).finally(() => {
     _inFlightFrames.delete(key);
+    const remainingCount = Math.max(0, (_activeSendCounts.get(activityKey) ?? 1) - 1);
+    if (remainingCount > 0) {
+      _activeSendCounts.set(activityKey, remainingCount);
+      return;
+    }
+    _activeSendCounts.delete(activityKey);
+    // Text frames can leave the JS process in a few milliseconds. Keep the
+    // visual signal around just long enough to be perceived without delaying
+    // delivery or changing the durable pending state.
+    const remainingMs = Math.max(0, 420 - (Date.now() - startedAt));
+    if (remainingMs > 0) {
+      setTimeout(() => markSending(state, roomId, msg.id, false), remainingMs);
+    } else {
+      markSending(state, roomId, msg.id, false);
+    }
   });
   _inFlightFrames.set(key, task);
   return task;
+}
+
+function markSending(s: RoomState, roomId: string, messageId: string, sending: boolean): void {
+  const alreadySending = s.sendingIds.has(messageId);
+  if (alreadySending === sending) return;
+  const next = new Set(s.sendingIds);
+  if (sending) next.add(messageId);
+  else next.delete(messageId);
+  s.sendingIds = next;
+  notifyListeners(roomId, s);
 }
 
 async function sendOutboxFrameOnce(
@@ -1140,20 +1176,31 @@ export async function markRoomAsRead(roomId: string, messageIds?: string[]): Pro
  */
 export function markIdsAsReadInRoom(roomId: string, ids: string[]): void {
   ids.forEach((id) => _serverAcceptedAt.delete(id));
+  if (ids.length === 0) return;
+  // The chat-list preview exists independently of an open room session.
+  // Update it even when the conversation has not been mounted in this process.
+  try {
+    const store = useAppStore.getState();
+    for (const id of ids) store.setRoomLastMessageStatus(roomId, id, 'read');
+  } catch {}
   const s = rooms.get(roomId);
-  if (!s || ids.length === 0) return;
+  if (!s) return;
   const next = applyMessageLifecycleEvent(s, { type: 'read', ids });
   s.pendingIds = next.pendingIds;
   s.deliveredIds = next.deliveredIds;
   s.readIds = next.readIds;
+  if (ids.some((id) => s.sendingIds.has(id))) {
+    const read = new Set(ids);
+    s.sendingIds = new Set([...s.sendingIds].filter((id) => !read.has(id)));
+  }
   notifyListeners(roomId, s);
 }
 
 /** Return a snapshot of the current room state (safe to call any time). */
 export function getSnapshot(roomId: string): RoomSnapshot {
   const s = rooms.get(roomId);
-  if (!s) return { messages: [], readIds: new Set(), pendingIds: new Set(), deliveredIds: new Set(), status: 'disconnected', reconnectCount: 0, lastMutationAt: 0, lastMutationIds: [] };
-  return { messages: s.messages, readIds: s.readIds, pendingIds: s.pendingIds, deliveredIds: s.deliveredIds, status: s.status, reconnectCount: s.reconnectCount, lastMutationAt: s.lastMutationAt, lastMutationIds: s.lastMutationIds };
+  if (!s) return { messages: [], readIds: new Set(), pendingIds: new Set(), sendingIds: new Set(), deliveredIds: new Set(), status: 'disconnected', reconnectCount: 0, lastMutationAt: 0, lastMutationIds: [] };
+  return { messages: s.messages, readIds: s.readIds, pendingIds: s.pendingIds, sendingIds: s.sendingIds, deliveredIds: s.deliveredIds, status: s.status, reconnectCount: s.reconnectCount, lastMutationAt: s.lastMutationAt, lastMutationIds: s.lastMutationIds };
 }
 
 /**
@@ -1162,18 +1209,23 @@ export function getSnapshot(roomId: string): RoomSnapshot {
  */
 export function markIdsAsDeliveredInRoom(roomId: string, ids: string[]): void {
   ids.forEach((id) => _serverAcceptedAt.delete(id));
+  if (ids.length === 0) return;
+  // Delivery reconciliation often runs while only the chat list is mounted.
+  // Keep its persisted preview current even when no RoomState exists.
+  try {
+    const store = useAppStore.getState();
+    for (const id of ids) store.setRoomLastMessageStatus(roomId, id, 'delivered');
+  } catch {}
   const s = rooms.get(roomId);
-  if (!s || ids.length === 0) return;
+  if (!s) return;
   const next = applyMessageLifecycleEvent(s, { type: 'delivered', ids });
   s.pendingIds = next.pendingIds;
   s.deliveredIds = next.deliveredIds;
   s.readIds = next.readIds;
-  try {
-    const store = useAppStore.getState();
-    for (const id of ids) {
-      store.setRoomLastMessageStatus(roomId, id, 'delivered');
-    }
-  } catch {}
+  if (ids.some((id) => s.sendingIds.has(id))) {
+    const delivered = new Set(ids);
+    s.sendingIds = new Set([...s.sendingIds].filter((id) => !delivered.has(id)));
+  }
   notifyListeners(roomId, s);
 }
 

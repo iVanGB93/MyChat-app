@@ -83,11 +83,13 @@ function fixture(options = {}) {
       saveIncomingImage: async (id) => `file://inline/${id}`,
     },
     './messageNotificationService': {
-      ensureMessageChannel: async () => {},
       parseMessageNotifData: (data) => data,
-      displayMessageNotification: async (data) => {
+    },
+    './messageNotificationCoordinator': {
+      presentIncomingMessageNotification: async (data) => {
         notifications.push(data); await controls.display(data);
       },
+      recordIncomingMessageNotificationDisposition: async () => true,
     },
     './mediaConfirmationQueue': {
       flushPendingMediaConfirmations: async () => ({ flushed: 0, failed: 0 }),

@@ -20,9 +20,9 @@ export interface PendingRoomNav {
 let _pending: PendingRoomNav | null = null;
 const PENDING_ROOM_NAV_KEY = '@axonic_pending_room_navigation';
 
-export function setPendingRoomNav(nav: PendingRoomNav): void {
+export async function setPendingRoomNav(nav: PendingRoomNav): Promise<void> {
   _pending = nav;
-  AsyncStorage.setItem(PENDING_ROOM_NAV_KEY, JSON.stringify(nav)).catch(() => {});
+  await AsyncStorage.setItem(PENDING_ROOM_NAV_KEY, JSON.stringify(nav));
 }
 
 export async function takePendingRoomNav(): Promise<PendingRoomNav | null> {

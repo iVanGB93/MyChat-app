@@ -90,6 +90,9 @@ export interface CanonicalMessage {
    *  notifying; when false/null the app's local notification is the only
    *  surface (e.g. the recipient has no push token). */
   pushFloor: boolean | null;
+  /** True for peer hydration/delta recovery. Recovery repairs local history and
+   *  must never turn an older message into a fresh user notification. */
+  isRecovery: boolean;
 }
 
 /* ---- Dedupe bookkeeping (in-memory, bounded) ----
@@ -165,6 +168,7 @@ export function normalizeMessage(
     }
   }
 
+  const routeReason = (asStr(raw.route_reason ?? raw.routeReason) ?? '').toLowerCase();
   return {
     messageId,
     roomId,
@@ -187,6 +191,10 @@ export function normalizeMessage(
     mediaSize: asNum(raw.media_size ?? raw.mediaSize),
     mediaMime: asStr(raw.audio_mime ?? raw.image_mime ?? raw.media_mime ?? raw.mediaMime),
     pushFloor: asBool(raw.push_floor ?? raw.pushFloor),
+    isRecovery:
+      asBool(raw.hydration ?? raw.is_recovery ?? raw.isRecovery) === true
+      || routeReason.includes('recovery')
+      || routeReason.includes('sync'),
   };
 }
 
@@ -391,6 +399,7 @@ export async function retryPointerDownloads(roomId?: string): Promise<void> {
         mediaSize: ptr.size ?? null,
         mediaMime: ptr.mime ?? null,
         pushFloor: null,
+        isRecovery: true,
       };
       await hydratePointerMedia(evt);
     }
@@ -428,7 +437,42 @@ async function maybeNotify(evt: CanonicalMessage): Promise<void> {
   };
   const decision = decideLocalMessageNotification(payload, store);
   debugLog('[Ingress] notify decision', { allow: decision.allow, reason: decision.reason, room_id: evt.roomId, message_id: evt.messageId });
-  if (!decision.allow || !evt.content) return;
+  const notificationData = {
+    roomId: evt.roomId,
+    roomName: evt.roomName || evt.senderName,
+    senderName: evt.senderName || evt.roomName || 'New message',
+    senderId: evt.senderId,
+    avatar: resolveMediaUrl(evt.senderAvatar),
+    messageId: evt.messageId,
+    text: evt.content ?? '',
+    timestamp: Date.parse(evt.createdAt) || Date.now(),
+  };
+
+  const { presentIncomingMessageNotification, recordIncomingMessageNotificationDisposition } =
+    await import('./messageNotificationCoordinator');
+  if (evt.isRecovery) {
+    await recordIncomingMessageNotificationDisposition(
+      notificationData,
+      'axion',
+      'suppressed',
+      'recovery',
+    ).catch(() => {});
+    return;
+  }
+  if (!decision.allow || !evt.content) {
+    // `push_floor` deliberately leaves the claim open for the FCM handler that
+    // owns the card. Every other suppression is terminal for this message, so
+    // a later replay cannot notify it after the context changes.
+    if (decision.reason !== 'push_floor') {
+      await recordIncomingMessageNotificationDisposition(
+        notificationData,
+        'axion',
+        'suppressed',
+        !evt.content ? 'content_missing' : decision.reason,
+      ).catch(() => {});
+    }
+    return;
+  }
 
   // Reframe messages from strangers (not in contacts) as a contact request.
   const isStranger = !store?.contactIds?.[evt.senderId];
@@ -437,18 +481,7 @@ async function maybeNotify(evt: CanonicalMessage): Promise<void> {
     // Notifee MessagingStyle: one box per conversation (accumulates recent
     // messages, expandable), with Reply + Mark-as-read actions. Same renderer
     // the FCM/killed-app path uses, so the look is consistent everywhere.
-    const { ensureMessageChannel, displayMessageNotification } = await import('./messageNotificationService');
-    await ensureMessageChannel();
-    await displayMessageNotification({
-      roomId: evt.roomId,
-      roomName: evt.roomName || evt.senderName,
-      senderName: evt.senderName || evt.roomName || 'New message',
-      senderId: evt.senderId,
-      avatar: resolveMediaUrl(evt.senderAvatar),
-      messageId: evt.messageId,
-      text: body,
-      timestamp: Date.now(),
-    });
+    await presentIncomingMessageNotification({ ...notificationData, text: body }, 'axion');
   } catch { /* notifier unavailable */ }
 }
 

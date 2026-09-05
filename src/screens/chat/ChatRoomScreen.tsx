@@ -224,14 +224,14 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const isDirectChat = !isGroupChat;
   const { user } = useAuth();
   const headerPeer = useMemo(
-    () => roomDetails?.members_detail.find((member) => member.id !== user?.id) ?? null,
+    () => (roomDetails?.members_detail ?? []).find((member) => member.id !== user?.id) ?? null,
     [roomDetails, user?.id],
   );
   const resolvedOtherUserId = otherUserId ?? headerPeer?.id;
   const headerPresence = useAppStore((state) => (
     resolvedOtherUserId != null ? state.presenceByUserId[resolvedOtherUserId] : undefined
   ));
-  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, lastMutationIds, typers, notifyTyping } = useChat(roomId, user?.id);
+  const { messages: wsMessages, sendMessage, connected, readIds, pendingIds, sendingIds, deliveredIds, markIdsAsRead, markIdsAsDelivered, reconnectCount, lastMutationAt, lastMutationIds, typers, notifyTyping } = useChat(roomId, user?.id);
   const isMuted = useAppStore((s) => !!s.mutedRooms[roomId]);
   /** True when the other user in a direct chat is not yet in our contacts.
    *  Shows the "wants to talk to you" accept/block banner above the message list. */
@@ -1276,6 +1276,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         item={item}
         isMine={isMine}
         isPending={isPending}
+        isSending={isPending && sendingIds.has(item.id)}
         retryStartedAt={retryStartedAtById[item.id] ?? 0}
         isDelivered={isDelivered}
         isRead={isRead}
@@ -1289,7 +1290,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         onReaction={handleReactionToggle}
       />
     );
-  }, [user?.id, pendingIds, deliveredIds, readIds, retryStartedAtById, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleRetryMessage, handleImagePress, handleReactionToggle]);
+  }, [user?.id, pendingIds, sendingIds, deliveredIds, readIds, retryStartedAtById, isDirectChat, Colors, handleReply, handleBubbleLongPress, handleRetryMessage, handleImagePress, handleReactionToggle]);
 
   const handleAcceptRequest = useCallback(async () => {
     if (!otherUserId || requestBusy || user?.id == null) return;

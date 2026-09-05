@@ -124,7 +124,7 @@ test('legacy receipt rows migrate without fabricating timestamps or losing deliv
   const app = await fixture(database);
   assert.equal(app.receipts()[0].delivered, 1);
   assert.equal(app.receipts()[0].delivered_at, null);
-  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 7);
+  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 8);
 });
 
 test('locally removed media stays unavailable and is excluded from recovery', async () => {
@@ -171,4 +171,53 @@ test('persisted profile caches never revive old online flags', async () => {
   await app.cacheContacts(14, [{ contact: 18, contact_detail: { id: 18, is_online: true } }]);
   assert.equal((await app.getCachedRooms(14))[0].members_detail[0].is_online, false);
   assert.equal((await app.getCachedContacts(14))[0].contact_detail.is_online, false);
+});
+
+test('notification decision survives dismissal/restart and blocks another transport', async () => {
+  const app = await fixture();
+  const now = Date.now();
+  assert.equal(await app.claimMessageNotificationPresentation({
+    messageId: 'notice-1', roomId: 'room', source: 'fcm', notificationId: 'message:room', now,
+  }), true);
+  await app.finishMessageNotificationPresentation({ messageId: 'notice-1', displayed: true, now: now + 100 });
+  const restarted = await fixture(app.database);
+  assert.equal(await restarted.claimMessageNotificationPresentation({
+    messageId: 'notice-1', roomId: 'room', source: 'axion', notificationId: 'message:room', now: now + 1000,
+  }), false);
+  const record = await restarted.getMessageNotificationRecord('notice-1');
+  assert.equal(record.state, 'displayed');
+  assert.equal(record.source, 'fcm');
+  assert.equal(record.displayed_at, now + 100);
+});
+
+test('notification ledger migration treats existing incoming messages as already handled', async () => {
+  const original = await fixture();
+  await original.saveMessage({ ...message, id: 'legacy-incoming', is_mine: false, status: 'delivered' });
+  original.database.exec('DROP TABLE message_notification_state; PRAGMA user_version=7;');
+  const migrated = await fixture(original.database);
+  const record = await migrated.getMessageNotificationRecord('legacy-incoming');
+  assert.equal(record.state, 'suppressed');
+  assert.equal(record.reason, 'preledger_existing_message');
+  assert.equal(record.source, 'migration');
+});
+
+test('suppressed notification stays terminal while failed presentation retries are bounded', async () => {
+  const app = await fixture();
+  assert.equal(await app.recordMessageNotificationDisposition({
+    messageId: 'muted-1', roomId: 'room', state: 'suppressed', reason: 'room_muted', source: 'axion', now: 1000,
+  }), true);
+  assert.equal(await app.claimMessageNotificationPresentation({
+    messageId: 'muted-1', roomId: 'room', source: 'fcm', notificationId: 'message:room', now: 2000,
+  }), false);
+
+  assert.equal(await app.claimMessageNotificationPresentation({
+    messageId: 'retry-1', roomId: 'room', source: 'fcm', notificationId: 'message:room', now: 10_000,
+  }), true);
+  await app.finishMessageNotificationPresentation({ messageId: 'retry-1', displayed: false, now: 10_100 });
+  assert.equal(await app.claimMessageNotificationPresentation({
+    messageId: 'retry-1', roomId: 'room', source: 'fcm', notificationId: 'message:room', now: 12_000,
+  }), false);
+  assert.equal(await app.claimMessageNotificationPresentation({
+    messageId: 'retry-1', roomId: 'room', source: 'fcm', notificationId: 'message:room', now: 16_000,
+  }), true);
 });

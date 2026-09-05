@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Alert,
   Linking,
   Platform,
@@ -28,6 +29,7 @@ interface MessageBubbleProps {
   item: Message;
   isMine: boolean;
   isPending: boolean;
+  isSending: boolean;
   retryStartedAt: number;
   isDelivered: boolean;
   isRead: boolean;
@@ -39,6 +41,44 @@ interface MessageBubbleProps {
   onRetry: (messageId: string) => void;
   onImagePress: (item: Message) => void;
   onReaction: (item: Message, emoji: string) => void;
+}
+
+/** A restrained pendulum motion: visible activity without a distracting spin. */
+function PendingClock({ active, color }: { active: boolean; color: string }) {
+  const motion = React.useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!active) {
+      motion.stopAnimation();
+      motion.setValue(0);
+      return;
+    }
+    const animation = Animated.loop(Animated.sequence([
+      Animated.timing(motion, { toValue: 1, duration: 180, useNativeDriver: true }),
+      Animated.timing(motion, { toValue: -1, duration: 180, useNativeDriver: true }),
+      Animated.timing(motion, { toValue: 0, duration: 140, useNativeDriver: true }),
+      Animated.delay(180),
+    ]));
+    animation.start();
+    return () => {
+      animation.stop();
+      motion.setValue(0);
+    };
+  }, [active, motion]);
+
+  return (
+    <Animated.View
+      accessibilityLabel={active ? 'Sending message' : 'Message pending'}
+      style={{
+        transform: [
+          { rotate: motion.interpolate({ inputRange: [-1, 1], outputRange: ['-8deg', '8deg'] }) },
+          { translateY: motion.interpolate({ inputRange: [-1, 0, 1], outputRange: [0, 0, -0.7] }) },
+        ],
+      }}
+    >
+      <Ionicons name="time-outline" size={13} color={color} />
+    </Animated.View>
+  );
 }
 
 function SharedFileBubble({
@@ -98,6 +138,7 @@ function MessageBubbleBase({
   item,
   isMine,
   isPending,
+  isSending,
   retryStartedAt,
   isDelivered,
   isRead,
@@ -276,7 +317,7 @@ function MessageBubbleBase({
                 </Text>
                 {isMine && !item.is_deleted && (
                   <>
-                    {isPending && canRetry && (
+                    {isPending && canRetry && !isSending && (
                       <TouchableOpacity
                         onPress={() => onRetry(item.id)}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -286,7 +327,9 @@ function MessageBubbleBase({
                         <Ionicons name="refresh" size={14} color={Colors.primary} />
                       </TouchableOpacity>
                     )}
-                    <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>
+                    {isPending
+                      ? <PendingClock active={isSending} color={statusColor} />
+                      : <Text style={[styles.statusIcon, { color: statusColor }]}>{statusIcon}</Text>}
                   </>
                 )}
               </View>
@@ -325,6 +368,7 @@ function areBubblePropsEqual(previous: MessageBubbleProps, next: MessageBubblePr
   if (
     previous.isMine !== next.isMine
     || previous.isPending !== next.isPending
+    || previous.isSending !== next.isSending
     || previous.retryStartedAt !== next.retryStartedAt
     || previous.isDelivered !== next.isDelivered
     || previous.isRead !== next.isRead
