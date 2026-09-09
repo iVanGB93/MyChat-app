@@ -6,7 +6,7 @@
 /*  and React subscriptions for each logical room.                     */
 /* ------------------------------------------------------------------ */
 
-import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIds, getMessagesByIdsForResend, MessageChanges, OutboxEntry, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers, setMessageTransferFailure, clearMessageTransferFailure, getMessageTransferFailure } from './localMessageStore';
+import { saveMessage, getPendingOutbox, getPendingUnsyncedOutgoingMessages, getRoomsWithPendingOutgoingMessages, getMessagesByIds, getMessagesByIdsForResend, MessageChanges, queueMessageUpdate, getPendingOutboxUpdates, ackOutboxUpdates, applyMessageChanges, setMessageSyncState, getMediaPointer, setMediaPointer, setOutboxExpectedPeers, setMessageTransferFailure, clearMessageTransferFailure, getMessageTransferFailure } from './localMessageStore';
 import { uploadMedia, toMediaTransferFailure, type MediaType } from './mediaLane';
 import type { MediaTransferFailure } from './mediaTransferPolicy';
 import { useAppStore } from '../store/appStore';
@@ -281,7 +281,7 @@ function getOrCreate(roomId: string): RoomState {
   return s;
 }
 
-function notifyListeners(roomId: string, state: RoomState) {
+function notifyListeners(_roomId: string, state: RoomState) {
   if (state.listeners.size === 0) return;
   const snapshot: RoomSnapshot = {
     messages: state.messages,
@@ -633,7 +633,11 @@ async function sendOutboxFrameOnce(
 ): Promise<SendAttemptResult> {
   if (!isAxionReady()) return { sent: false };
   const sendingUserId = _myUserId;
-  if (opts?.skipIfAwaitingAck && shouldSuppressOutboxReplay(
+  // Acceptance of the original broadcast says nothing about a reconnecting
+  // recipient's delivery. Targeted recovery has its own per-recipient in-flight
+  // key and receiver_ready debounce; do not suppress it with a global ACK.
+  const targetedRecovery = opts?.hydration && opts.targetRecipientId != null;
+  if (!targetedRecovery && opts?.skipIfAwaitingAck && shouldSuppressOutboxReplay(
     _serverAckTimers.has(msg.id),
     _serverAcceptedAt.get(msg.id),
     Date.now(),

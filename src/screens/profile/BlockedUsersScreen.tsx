@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  Blocked Users screen — list and unblock                            */
 /* ------------------------------------------------------------------ */
@@ -28,6 +29,7 @@ import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 
 export default function BlockedUsersScreen() {
+  const contactName = useContactName();
   const { user } = useAuth();
   const { colors: Colors } = useTheme();
   const { confirm, alert } = useConfirm();
@@ -58,7 +60,7 @@ export default function BlockedUsersScreen() {
   const handleUnblock = (row: BlockedUserRow) => {
     confirm({
       title: 'Unblock user',
-      message: `Unblock ${row.blocked_detail.username}? They will be able to message and call you again.`,
+      message: `Unblock ${contactName(row.blocked_detail.id, row.blocked_detail.username)}? They will be able to message and call you again.`,
       icon: 'person-add-outline',
       buttons: [
         { text: 'Cancel', style: 'cancel' },
@@ -128,13 +130,13 @@ export default function BlockedUsersScreen() {
           ]}
         >
           <Avatar
-            name={item.blocked_detail.username}
+            name={contactName(item.blocked_detail.id, item.blocked_detail.username)}
             uri={resolveMediaUrl(item.blocked_detail.avatar)}
             size={44}
           />
           <View style={styles.rowInfo}>
             <Text style={[styles.username, { color: Colors.text }]} numberOfLines={1}>
-              {item.blocked_detail.username}
+              {contactName(item.blocked_detail.id, item.blocked_detail.username)}
             </Text>
             {!!item.blocked_detail.email && (
               <Text style={[styles.email, { color: Colors.textSecondary }]} numberOfLines={1}>

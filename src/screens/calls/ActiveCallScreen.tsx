@@ -1,10 +1,11 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  Active Call Screen — voice / video call with WebRTC                */
 /*  Caller: ringing → call_accepted → create offer → connected        */
 /*  Callee: media acquired → receives offer → answer → connected      */
 /* ------------------------------------------------------------------ */
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { AppState, View, Text, StyleSheet, TouchableOpacity, Pressable, Platform } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useKeepAwake } from 'expo-keep-awake';
@@ -15,7 +16,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { endCall, getCallStatus } from '../../services/callService';
 import { markCallEnded } from '../../services/callDedupe';
 import { useNotificationContext } from '../../contexts/NotificationContext';
-import { playSound, playLooping, stopLooping } from '../../services/soundService';
+import { playSound, stopLooping } from '../../services/soundService';
 import {
   setCallPictureInPictureEnabled,
   startForegroundService,
@@ -30,7 +31,9 @@ import type { RootStackParamList } from '../../types';
 type Props = NativeStackScreenProps<RootStackParamList, 'ActiveCall'>;
 
 export default function ActiveCallScreen({ route, navigation }: Props) {
-  const { callId, otherName, callType, isOutgoing, peerUserId } = route.params;
+  const contactName = useContactName();
+  const { callId, otherName: originalName, callType, isOutgoing, peerUserId } = route.params;
+  const otherName = contactName(peerUserId, originalName);
   const isVideo = callType === 'video';
   const { colors: Colors } = useTheme();
   const CALLER_RINGBACK_CYCLE_MS = 10_200;
@@ -47,7 +50,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   const [showVideoControls, setShowVideoControls] = useState(true);
   const [appIsActive, setAppIsActive] = useState(AppState.currentState === 'active');
   const [status, setStatus] = useState<'connecting' | 'ringing' | 'connected' | 'ended'>(
-    isOutgoing ? 'connecting' : 'connected',
+    'connecting',
   );
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const ringPulseRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -64,6 +67,12 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   };
 
   const { subscribe } = useNotificationContext();
+  const onPeerConnected = useCallback(() => {
+    if (!hasEnded.current) setStatus('connected');
+  }, []);
+  const onPeerDisconnected = useCallback(() => {
+    if (!hasEnded.current) setStatus('connecting');
+  }, []);
 
   /* ---- WebRTC hook ---- */
   const {
@@ -82,12 +91,8 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     callType,
     isOutgoing,
     peerUserId,
-    onConnected: () => {
-      debugLog('[ActiveCall] WebRTC peer connected');
-    },
-    onDisconnected: () => {
-      debugLog('[ActiveCall] WebRTC peer disconnected');
-    },
+    onConnected: onPeerConnected,
+    onDisconnected: onPeerDisconnected,
   });
 
   /* ---- Start foreground service for the duration of this call ---- */
@@ -121,7 +126,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       callId,
       peerId: peerUserId ?? 0,
       peerName: otherName,
-      state: isOutgoing ? 'connecting' : 'connected',
+      state: 'connecting',
       callType,
     });
     return () => {
@@ -179,7 +184,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
       if (event === 'call_accepted') {
         debugLog('[ActiveCall] call_accepted → starting WebRTC offer');
-        setStatus('connected');
+        setStatus((previous) => previous === 'connected' ? previous : 'connecting');
         if (!offerStartedRef.current) {
           offerStartedRef.current = true;
           startAsOfferer();
@@ -204,10 +209,11 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       if (hasEnded.current) return;
       try {
         const s = await getCallStatus(callId);
+        if (hasEnded.current) return;
         if (s === 'ringing') {
           setStatus((prev) => (prev === 'connected' || prev === 'ended' ? prev : 'ringing'));
         } else if (s === 'ongoing') {
-          setStatus('connected');
+          setStatus((previous) => previous === 'connected' ? previous : 'connecting');
           if (!offerStartedRef.current) {
             offerStartedRef.current = true;
             startAsOfferer();
@@ -242,6 +248,20 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
   /* ---- call timer ---- */
   useEffect(() => {
+    if (status !== 'connecting') return;
+    const timeout = setTimeout(() => {
+      if (hasEnded.current) return;
+      hasEnded.current = true;
+      setStatus('ended');
+      cleanupWebRTC();
+      void endCall(callId).catch(() => {});
+      setTimeout(() => dismiss(), 1200);
+    }, 45000);
+    return () => clearTimeout(timeout);
+  }, [status, callId, cleanupWebRTC]);
+
+  /* ---- call timer ---- */
+  useEffect(() => {
     if (status === 'connected') {
       timerRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
     }
@@ -262,8 +282,9 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     stopLooping();
     if (ringPulseRef.current) { clearInterval(ringPulseRef.current); ringPulseRef.current = null; }
     setStatus('ended');
-    try { await endCall(callId); } catch {}
     cleanupWebRTC();
+    // Stop camera/microphone immediately, even if the server is unreachable.
+    void endCall(callId).catch(() => {});
     setTimeout(() => dismiss(), 800);
   };
 
@@ -465,7 +486,7 @@ function ActionButton({
           borderRadius: 32,
           borderWidth: 1,
           borderColor: active ? Colors.primary : Colors.neonBorder,
-          backgroundColor: active ? 'rgba(0,229,255,0.18)' : 'rgba(255,255,255,0.06)',
+          backgroundColor: active ? 'rgba(0,70,85,0.85)' : 'rgba(2,4,19,0.65)',
           alignItems: 'center',
           justifyContent: 'center',
           shadowColor: Colors.primary,
@@ -477,7 +498,7 @@ function ActionButton({
       >
         <Ionicons name={icon} size={22} color={active ? Colors.primary : '#fff'} />
       </View>
-      <Text style={{ color: '#fff', fontSize: Font.size.xs, marginTop: 6, opacity: 0.85, ...Font.medium }}>
+      <Text style={{ color: '#fff', backgroundColor: 'rgba(2,4,19,0.65)', paddingHorizontal: 6, borderRadius: 6, fontSize: Font.size.xs, marginTop: 6, ...Font.medium }}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -554,6 +575,9 @@ function makeStyles(Colors: any) {
       elevation: 6,
     },
     name: {
+      backgroundColor: 'rgba(2,4,19,0.65)',
+      paddingHorizontal: 8,
+      borderRadius: 8,
       color: '#fff',
       fontSize: Font.size.xxl,
       marginTop: Spacing.lg,
@@ -561,6 +585,9 @@ function makeStyles(Colors: any) {
       letterSpacing: 0.5,
     },
     status: {
+      backgroundColor: 'rgba(2,4,19,0.65)',
+      paddingHorizontal: 8,
+      borderRadius: 8,
       color: 'rgba(255,255,255,0.75)',
       fontSize: Font.size.md,
       marginTop: Spacing.xs,
@@ -568,6 +595,9 @@ function makeStyles(Colors: any) {
       letterSpacing: 1,
     },
     quality: {
+      backgroundColor: 'rgba(2,4,19,0.65)',
+      paddingHorizontal: 8,
+      borderRadius: 8,
       marginTop: 4,
       fontSize: Font.size.xs,
       fontWeight: '700',

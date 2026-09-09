@@ -59,6 +59,10 @@ function fixture(options = {}) {
     '../store/appStore': { useAppStore: { getState: () => state } },
     './localMessageStore': {
       messageExists: async (id) => rows.has(id),
+      getMessageTransferFailure: async (id) => rows.get(id)?.failure ?? null,
+      setMessageTransferFailure: async (id, code, message, blocked) => { rows.get(id).failure = { code, message, blocked }; },
+      clearMessageTransferFailure: async (id) => { delete rows.get(id).failure; },
+      setMediaPointer: async (id, pointer) => { rows.get(id).media_ptr = pointer; },
       saveMessage: async (row) => {
         await controls.save(row);
         rows.set(row.id, { ...row }); events.push('saved');
@@ -75,6 +79,7 @@ function fixture(options = {}) {
     './rrp/envelope': {},
     './presenceService': {},
     './mediaLane': {
+      toMediaTransferFailure: (error) => ({ status: error.status ?? 0 }),
       downloadAndPersistMedia: async (args) => { downloads.push(args); return controls.download(args); },
       confirmDownloaded: async () => { events.push('confirmed'); },
     },
@@ -274,6 +279,24 @@ test('own echoes and blocked senders never acknowledge delivery', async () => {
   await app.ingestMessage({ ...message(), sender_id: '99' }, 'ws');
   assert.equal(app.requests.length, 0);
   assert.equal(app.rows.size, 0);
+});
+
+test('permanent missing media stops repeated downloads across restart without false receipts', async () => {
+  const app = fixture({ controls: { download: async () => { throw Object.assign(Error('gone'), { status: 404 }); } } });
+  await app.receive(message());
+  assert.equal(app.downloads.length, 1);
+  assert.equal(app.requests.length, 0);
+  await app.receive(message());
+  assert.equal(app.downloads.length, 1);
+  const restarted = fixture({ rows: app.rows, storage: app.storage });
+  await restarted.receive(message());
+  assert.equal(restarted.downloads.length, 0);
+  assert.equal(restarted.requests.length, 0);
+  await restarted.receive({ ...message(), media_id: 'fresh-upload' });
+  assert.equal(restarted.downloads.length, 1);
+  assert.equal(restarted.rows.get('voice-1').media_ptr.media_id, 'fresh-upload');
+  assert.equal(restarted.requests.length, 1);
+  assert.equal(restarted.rows.get('voice-1').failure, undefined);
 });
 
 test('successful receipt removal preserves concurrent enqueues and other sender/room identities', async () => {

@@ -2,7 +2,7 @@
 /*  Chat Storage — local device cache details                          */
 /* ------------------------------------------------------------------ */
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -18,10 +18,12 @@ import {
   type LocalChatStorageStats,
 } from '../../services/localMessageStore';
 import type { ChatRoom, RootStackParamList } from '../../types';
+import { useContactName } from '../../hooks/useContactName';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function ChatStorageScreen() {
+  const contactName = useContactName();
   const { colors: Colors } = useTheme();
   const { user } = useAuth();
   const { confirm, alert } = useConfirm();
@@ -42,7 +44,7 @@ export default function ChatStorageScreen() {
       for (const room of rooms) {
         if (room.room_type === 'direct') {
           const other = room.members_detail.find((member) => member.id !== user?.id);
-          names[room.id] = other?.display_name || other?.username || 'Direct chat';
+          names[room.id] = contactName(other?.id, other?.display_name || other?.username || 'Direct chat');
         } else {
           names[room.id] = room.name || 'Group chat';
         }
@@ -55,7 +57,7 @@ export default function ChatStorageScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, contactName]);
 
   useFocusEffect(useCallback(() => {
     loadStats().catch(() => {});

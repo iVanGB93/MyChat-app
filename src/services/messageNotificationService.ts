@@ -140,6 +140,10 @@ async function getExisting(
  * notification expands. The compact notification keeps only the latest body.
  */
 export async function displayMessageNotification(data: IncomingMessageNotif) {
+  const isGroup = !!data.roomName && data.roomName !== data.senderName;
+  const { notificationContactName } = await import('./contact-nicknames');
+  const localName = await notificationContactName(data.senderId, data.senderName);
+  data = { ...data, senderName: localName, roomName: isGroup ? data.roomName : localName };
   const notifId = NOTIFICATION_ID_PREFIX + data.roomId;
 
   if (Platform.OS !== 'android') {
@@ -160,7 +164,6 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
   if (data.messageId && shownIds.includes(data.messageId)) return;
 
   // A real group chat has a room name distinct from the sender; a 1:1 doesn't.
-  const isGroup = !!data.roomName && data.roomName !== data.senderName;
   // Prefix the line with the speaker for group chats / reply echoes so the
   // expanded list shows who said what; a 1:1 line is just the message text.
   const speaker = data.fromMe ? 'You' : data.senderName;

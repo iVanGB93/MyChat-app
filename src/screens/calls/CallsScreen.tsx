@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  Call History Screen — futuristic cyberpunk theme                  */
 /* ------------------------------------------------------------------ */
@@ -32,6 +33,7 @@ dayjs.extend(relativeTime);
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function CallsScreen() {
+  const contactName = useContactName();
   const navigation = useNavigation<Nav>();
   const { user } = useAuth();
   const { colors: Colors } = useTheme();
@@ -70,7 +72,7 @@ export default function CallsScreen() {
 
   const handleCallback = async (call: CallLog) => {
     const otherId = call.caller === user?.id ? call.callee : call.caller;
-    const otherName = call.caller === user?.id ? call.callee_username : call.caller_username;
+    const otherName = contactName(otherId, call.caller === user?.id ? call.callee_username : call.caller_username);
     try {
       const res = await initiateCall(otherId, call.call_type);
       navigation.navigate('ActiveCall', {
@@ -96,7 +98,7 @@ export default function CallsScreen() {
 
   const renderItem = ({ item }: { item: CallLog }) => {
     const isOutgoing = item.caller === user?.id;
-    const otherName = isOutgoing ? item.callee_username : item.caller_username;
+    const otherName = contactName(isOutgoing ? item.callee : item.caller, isOutgoing ? item.callee_username : item.caller_username);
     const isMissed = item.status === 'missed' || item.status === 'rejected';
     const directionLabel = isOutgoing ? 'OUT' : 'IN';
     const statusColor = isMissed ? Colors.error : Colors.primary;

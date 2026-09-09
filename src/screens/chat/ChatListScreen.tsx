@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  Chat List Screen — futuristic cyberpunk theme                     */
 /* ------------------------------------------------------------------ */
@@ -387,14 +388,15 @@ export default function ChatListScreen() {
     return unsub;
   }, [subscribe, syncRooms]);
 
-  const getRoomDisplayName = (room: ChatRoom): string => {
-    if (room.name) return room.name;
+  const contactName = useContactName();
+  const getRoomDisplayName = (room: ChatRoom, listLabel = true): string => {
     if (room.room_type === 'direct') {
       const other = room.members_detail.find((m) => m.id !== user?.id);
-      return other?.display_name?.trim() || other?.username || 'Chat';
+      return contactName(other?.id, other?.display_name?.trim() || other?.username || room.name || 'Chat', listLabel ? other?.username : undefined);
     }
+    if (room.name) return room.name;
     return room.members_detail
-      .map((m) => m.display_name?.trim() || m.username)
+      .map((m) => contactName(m.id, m.display_name?.trim() || m.username))
       .join(', ');
   };
 
@@ -503,7 +505,7 @@ export default function ChatListScreen() {
   }, []);
 
   const avatarRoom = avatarRoomId ? rooms.find((room) => room.id === avatarRoomId) ?? null : null;
-  const avatarDisplayName = avatarRoom ? getRoomDisplayName(avatarRoom) : '';
+  const avatarDisplayName = avatarRoom ? getRoomDisplayName(avatarRoom, false) : '';
   const avatarOtherMember = avatarRoom ? getOtherMember(avatarRoom) : null;
   const avatarUri = avatarRoom
     ? resolveMediaUrl(avatarRoom.room_type === 'group' ? avatarRoom.avatar : avatarOtherMember?.avatar ?? null)
@@ -539,7 +541,6 @@ export default function ChatListScreen() {
 
   const startAvatarCall = useCallback(async () => {
     if (!avatarRoom || avatarRoom.room_type !== 'direct' || avatarOtherMember?.id == null) return;
-    const room = avatarRoom;
     const peer = avatarOtherMember;
     const peerName = avatarDisplayName;
     setAvatarRoomId(null);
@@ -619,7 +620,7 @@ export default function ChatListScreen() {
       const typers = (typingEntry ?? []).filter((t) => t.userId !== user?.id);
       const typingLabel =
         typers.length > 0
-          ? (typers.length === 1 ? `${typers[0].username} is typing…` : 'typing…')
+          ? (typers.length === 1 ? `${contactName(typers[0].userId, typers[0].username)} is typing…` : 'typing…')
           : null;
       return (
         <ChatListRow
@@ -649,6 +650,7 @@ export default function ChatListScreen() {
     },
     [
       unreadByRoom,
+      contactName,
       typingByRoom,
       mutedRooms,
       presenceByUserId,

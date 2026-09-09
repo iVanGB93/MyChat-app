@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  ShareTargetScreen                                                   */
 /*                                                                       */
@@ -34,17 +35,21 @@ import { connectRoom, sendChatMessage, type SendChatResult } from '../../service
 import { persistOutgoingImage, persistSharedFile } from '../../services/voiceMessageUtils';
 import { mediaFileSize } from '../../services/mediaLane';
 import { formatBytes, getTransferFeedback, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, MEDIA_MAX_UPLOAD_BYTES, validateMediaSize } from '../../services/mediaTransferPolicy';
-import { getCachedContacts, getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
+import { getCachedContacts, getCachedRooms, getLastMessagePerRoom, type LocalMessage } from '../../services/localMessageStore';
 import { playSound } from '../../services/soundService';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 import { useAppStore } from '../../store/appStore';
-import type { Contact, RootStackParamList, ShareAttachment } from '../../types';
+import type { ChatRoom, Contact, RootStackParamList, ShareAttachment } from '../../types';
+import SharePreview from '../../components/chat/share-preview';
+
+type ShareTarget = { key: string; name: string; avatar?: string | null; contact?: Contact; room?: ChatRoom; recent: number };
 
 type Nav = NativeStackNavigationProp<RootStackParamList, 'ShareTarget'>;
 type R = RouteProp<RootStackParamList, 'ShareTarget'>;
 
 export default function ShareTargetScreen() {
+  const contactName = useContactName();
   const { colors: Colors } = useTheme();
   const { alert } = useConfirm();
   const { user } = useAuth();
@@ -57,9 +62,11 @@ export default function ShareTargetScreen() {
   const [attachments, setAttachments] = useState<ShareAttachment[]>(initialAttachments);
   const [query, setQuery] = useState('');
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [groupRooms, setGroupRooms] = useState<ChatRoom[]>([]);
+  const [selectedTarget, setSelectedTarget] = useState<ShareTarget | null>(null);
   const [recentChatAt, setRecentChatAt] = useState<Record<number, number>>({});
   const [loading, setLoading] = useState(true);
-  const [sendingTo, setSendingTo] = useState<number | null>(null);
+  const [sendingTo, setSendingTo] = useState<string | null>(null);
   const [transferState, setTransferState] = useState<Record<string, 'queued' | 'uploading' | 'sent' | 'failed'>>({});
   const presenceByUserId = useAppStore((s) => s.presenceByUserId);
   const oversizedCount = useMemo(
@@ -75,15 +82,20 @@ export default function ShareTargetScreen() {
       if (user?.id != null) {
         const cached = await getCachedContacts(user.id).catch(() => [] as Contact[]);
         if (!cancelled && cached.length) setContacts(cached);
+        const cachedRooms = await getCachedRooms(user.id).catch(() => [] as ChatRoom[]);
+        if (!cancelled) setGroupRooms(cachedRooms.filter((room) => room.room_type === 'group'));
       }
       if (!cancelled) setLoading(false);
       try {
         const [list, rooms, localLastMessages] = await Promise.all([
           getContacts(),
-          getRooms().catch(() => []),
+          getRooms().catch(() => user?.id != null ? getCachedRooms(user.id) : []),
           getLastMessagePerRoom().catch(() => ({} as Record<string, LocalMessage>)),
         ]);
         if (cancelled) return;
+        setGroupRooms(rooms.filter((room) => room.room_type === 'group').map((room) => ({
+          ...room, updated_at: localLastMessages[room.id]?.created_at ?? room.updated_at,
+        })));
         const contactIds = new Set(list.map((contact) => contact.contact));
         const recentByContact: Record<number, number> = {};
         for (const room of rooms) {
@@ -91,7 +103,7 @@ export default function ShareTargetScreen() {
           const latest = localLastMessages[room.id]?.created_at ?? room.updated_at;
           const timestamp = new Date(latest).getTime();
           if (!Number.isFinite(timestamp)) continue;
-          for (const member of room.members_detail) {
+          for (const member of room.members_detail ?? []) {
             if (contactIds.has(member.id)) {
               recentByContact[member.id] = Math.max(recentByContact[member.id] ?? 0, timestamp);
             }
@@ -110,30 +122,23 @@ export default function ShareTargetScreen() {
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const matching = contacts.filter((c) => {
-      const u = c.contact_detail;
-      return (
-        !q ||
-        u.username.toLowerCase().includes(q) ||
-        (u.display_name ?? '').toLowerCase().includes(q)
-      );
-    });
-    return matching.sort((a, b) => {
-      const recentDifference = (recentChatAt[b.contact] ?? 0) - (recentChatAt[a.contact] ?? 0);
-      if (recentDifference !== 0) return recentDifference;
-      const aName = a.contact_detail.display_name?.trim() || a.contact_detail.username;
-      const bName = b.contact_detail.display_name?.trim() || b.contact_detail.username;
-      return aName.localeCompare(bName);
-    });
-  }, [contacts, query, recentChatAt]);
+    const targets: ShareTarget[] = [
+      ...contacts.map((contact) => ({ key: `user:${contact.contact}`, contact,
+        name: contactName(contact.contact, contact.contact_detail.display_name?.trim() || contact.contact_detail.username),
+        avatar: contact.contact_detail.avatar, recent: recentChatAt[contact.contact] ?? 0 })),
+      ...groupRooms.map((room) => ({ key: `room:${room.id}`, room, name: room.name || 'Group', avatar: room.avatar, recent: Date.parse(room.updated_at) || 0 })),
+    ];
+    return targets.filter((target) => !q || target.name.toLowerCase().includes(q) || target.contact?.contact_detail.username.toLowerCase().includes(q))
+      .sort((a, b) => b.recent - a.recent || a.name.localeCompare(b.name));
+  }, [contacts, groupRooms, query, recentChatAt, contactName]);
 
-  const handleSend = useCallback(async (contact: Contact) => {
+  const handleSend = useCallback(async (target: ShareTarget) => {
     if (sendingTo !== null) return;
-    const userId = contact.contact;
-    const displayName = contact.contact_detail.display_name?.trim() || contact.contact_detail.username;
-    setSendingTo(userId);
+    const userId = target.contact?.contact;
+    const displayName = target.name;
+    setSendingTo(target.key);
     try {
-      const room = await getOrCreateDirect(userId);
+      const room = target.room ?? await getOrCreateDirect(userId!);
 
       // Make sure the room websocket is alive before we hand the
       // message off \u2014 sendChatMessage queues to the outbox if not,
@@ -198,6 +203,13 @@ export default function ShareTargetScreen() {
         sentAnything = sentAnything || results.some((result) => result.state !== 'failed');
         const feedback = getTransferFeedback(results);
         if (feedback) alert(feedback.title, feedback.message);
+        const notQueued = attachments.filter((_, index) => !results[index]?.messageId);
+        if (notQueued.length) {
+          setAttachments(notQueued);
+          if (sentAnything) setCaption('');
+          setSendingTo(null);
+          return;
+        }
       } else {
         const body = caption.trim();
         if (!body) {
@@ -209,7 +221,9 @@ export default function ShareTargetScreen() {
         sentAnything = result.state !== 'failed';
       }
 
-      if (sentAnything) playSound('message_sent');
+      if (!sentAnything) { setSendingTo(null); return; }
+      playSound('message_sent');
+      setSelectedTarget(null);
 
       // Replace the share screen with the destination chat so the
       // back button doesn't take the user back to the share picker.
@@ -225,22 +239,22 @@ export default function ShareTargetScreen() {
     }
   }, [sendingTo, attachments, caption, navigation, alert]);
 
-  const renderItem = ({ item }: { item: Contact }) => {
-    const u = item.contact_detail;
-    const primary = u.display_name?.trim() || u.username;
-    const busy = sendingTo === item.contact;
+  const renderItem = ({ item }: { item: ShareTarget }) => {
+    const u = item.contact?.contact_detail;
+    const primary = item.name;
+    const busy = sendingTo === item.key;
     return (
       <TouchableOpacity
         style={[styles.item, { backgroundColor: Colors.surface }]}
-        onPress={() => handleSend(item)}
+        onPress={() => attachments.length ? setSelectedTarget(item) : handleSend(item)}
         disabled={sendingTo !== null}
         activeOpacity={0.7}
       >
-        <Avatar name={primary} uri={u.avatar} size={44} showOnline isOnline={presenceByUserId[u.id]?.isOnline ?? false} />
+        <Avatar name={primary} uri={item.avatar} size={44} showOnline={!!u} isOnline={u ? presenceByUserId[u.id]?.isOnline ?? false : false} />
         <View style={styles.info}>
           <Text style={[styles.name, { color: Colors.text }]} numberOfLines={1}>{primary}</Text>
           <Text style={[styles.sub, { color: Colors.textTertiary }]} numberOfLines={1}>
-            @{u.username}
+            {u ? `@${u.username}` : 'Group chat'}
           </Text>
         </View>
         {busy ? (
@@ -345,7 +359,7 @@ export default function ShareTargetScreen() {
         <TextInput
           value={query}
           onChangeText={setQuery}
-          placeholder="Search contacts"
+          placeholder="Search contacts and groups"
           placeholderTextColor={Colors.textTertiary}
           style={[styles.searchInput, { color: Colors.text }]}
           autoCorrect={false}
@@ -361,19 +375,28 @@ export default function ShareTargetScreen() {
       ) : filtered.length === 0 ? (
         <EmptyState
           iconName="people-outline"
-          title="No contacts"
-          subtitle={query ? 'No contacts match your search.' : 'Add contacts first to share with them.'}
+          title="No chats found"
+          subtitle={query ? 'No contacts or groups match your search.' : 'Add a contact or join a group to share.'}
         />
       ) : (
         <FlatList
           data={filtered}
-          keyExtractor={(c) => String(c.id)}
+          keyExtractor={(c) => c.key}
           renderItem={renderItem}
           contentContainerStyle={{ padding: Spacing.md, paddingBottom: Spacing.xl + insets.bottom }}
           ItemSeparatorComponent={() => <View style={{ height: Spacing.xs }} />}
           keyboardShouldPersistTaps="handled"
         />
       )}
+      <SharePreview
+        visible={selectedTarget !== null}
+        destination={selectedTarget?.name}
+        items={attachments.map((item, index) => ({ id: String(index), uri: item.uri, name: item.fileName, kind: item.kind }))}
+        busy={sendingTo !== null}
+        onClose={() => { if (sendingTo === null) setSelectedTarget(null); }}
+        onRemove={(id) => setAttachments((items) => items.filter((_, index) => index !== Number(id)))}
+        onSend={() => { if (selectedTarget) void handleSend(selectedTarget); }}
+      />
     </View>
   );
 }

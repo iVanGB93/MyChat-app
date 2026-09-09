@@ -621,6 +621,7 @@ export interface LocalChatStorageMediaItem {
   sizeBytes: number;
   createdAt: string;
   senderName: string;
+  senderId?: number;
   isMine: boolean;
   isAvailable: boolean;
 }
@@ -799,11 +800,12 @@ export async function getLocalChatMediaItems(roomId: string): Promise<LocalChatS
     content: string | null;
     created_at: string;
     sender_name: string;
+    sender_id: number;
     is_mine: number;
   }>(`
     SELECT
       m.id, m.room_id, m.type, m.file_uri, e.file_name,
-      m.content, m.created_at, m.sender_name, m.is_mine
+      m.content, m.created_at, m.sender_name, m.sender_id, m.is_mine
     FROM messages m
     LEFT JOIN media_exports e ON e.message_id = m.id
     WHERE m.room_id = ?
@@ -829,6 +831,7 @@ export async function getLocalChatMediaItems(roomId: string): Promise<LocalChatS
       sizeBytes: info.bytes,
       createdAt: row.created_at,
       senderName: row.sender_name,
+      senderId: row.sender_id,
       isMine: row.is_mine === 1,
       isAvailable: info.available,
     };
@@ -1044,6 +1047,7 @@ export async function getIncompletePointerMedia(roomId?: string, limit = 50): Pr
   const base = `SELECT id, room_id, sender_id, sender_name, content, type, created_at, reply_to, duration_ms, media_ptr
      FROM messages
      WHERE is_mine = 0 AND media_ptr IS NOT NULL
+       AND is_deleted = 0 AND COALESCE(auto_retry_blocked, 0) = 0
        AND COALESCE(media_evicted, 0) = 0
        AND (file_uri IS NULL OR file_uri = '')`;
   return roomId
@@ -1809,6 +1813,7 @@ export async function getIncompleteMediaDigest(
        AND is_deleted = 0
        AND COALESCE(media_evicted, 0) = 0
        AND type IN ('voice', 'image')
+       AND COALESCE(auto_retry_blocked, 0) = 0
        AND (file_uri IS NULL OR file_uri = '')
        AND created_at >= ?
      ORDER BY created_at DESC`,

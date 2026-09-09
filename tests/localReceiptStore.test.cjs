@@ -10,6 +10,18 @@ const compiled = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
+test('permanently unavailable media is excluded from automatic recovery, without deleting its message', async () => {
+  const app = await fixture();
+  await app.saveMessage({ ...message, id: 'gone-media', is_mine: false, type: 'image',
+    created_at: new Date().toISOString(), file_uri: null,
+    media_ptr: { media_id: 'gone-blob' } });
+  assert.equal((await app.getIncompletePointerMedia()).length, 1);
+  await app.setMessageTransferFailure('gone-media', 'download_unavailable:gone-blob', 'Unavailable', true);
+  assert.equal((await app.getIncompletePointerMedia()).length, 0);
+  assert.equal((await app.getIncompleteMediaDigest()).length, 0);
+  assert.equal(await app.messageExists('gone-media'), true);
+});
+
 async function fixture(database = new DatabaseSync(':memory:')) {
   function statement(sql, args, method) {
     const prepared = database.prepare(sql);

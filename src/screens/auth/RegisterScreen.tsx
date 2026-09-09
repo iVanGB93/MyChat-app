@@ -20,6 +20,7 @@ import { useConfirm } from '../../contexts/ConfirmContext';
 import { requestRegistration } from '../../services/authService';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
+import EasySignIn from '../../components/easy-sign-in';
 import { formatApiError } from '../../services/errorMessages';
 import type { RootStackParamList } from '../../types';
 
@@ -103,6 +104,7 @@ export default function RegisterScreen({ navigation }: Props) {
         </View>
 
         {/* Form */}
+        <EasySignIn disabled={loading} onBusy={setLoading} />
         <View style={[styles.form, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder, shadowColor: Colors.accent }]}>
           <Input
             label="Username"

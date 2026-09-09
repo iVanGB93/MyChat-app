@@ -4,6 +4,15 @@ const fs = require('fs');
 
 const config = getDefaultConfig(__dirname);
 
+// Native build trees can contain tens of thousands of generated files. They
+// are not JavaScript inputs; watching them exhausts Windows file handles.
+const nativeBuildArtifacts = /[\\/]android[\\/](?:app[\\/])?(?:build|\.gradle|\.cxx|\.axonic-gradle-cache)(?:[\\/]|$)/;
+const existingBlockList = config.resolver.blockList;
+config.resolver.blockList = [
+  ...(Array.isArray(existingBlockList) ? existingBlockList : existingBlockList ? [existingBlockList] : []),
+  nativeBuildArtifacts,
+];
+
 const originalResolveRequest = config.resolver.resolveRequest;
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {

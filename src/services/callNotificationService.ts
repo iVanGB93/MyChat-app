@@ -216,6 +216,8 @@ async function cancelFcmCallFloorNotifications(callId?: string): Promise<void> {
  * notification is updated in-place.
  */
 export async function displayIncomingCallNotification(data: IncomingCallData) {
+  const { notificationContactName } = await import('./contact-nicknames');
+  data = { ...data, callerName: await notificationContactName(data.callerId, data.callerName) };
   const notifId = NOTIFICATION_ID_PREFIX + data.callId;
   const title = data.callerName;
   const body = `Incoming ${data.callType} call`;

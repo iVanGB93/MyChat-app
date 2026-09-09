@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.36",
+    "version": "1.0.37",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -65,6 +65,7 @@
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
+      "@react-native-google-signin/google-signin",
       [
         "expo-audio",
         {

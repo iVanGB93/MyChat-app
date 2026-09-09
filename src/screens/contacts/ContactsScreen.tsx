@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  Contacts Screen — list contacts + search & add users               */
 /* ------------------------------------------------------------------ */
@@ -33,6 +34,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 type ContactsRoute = RouteProp<RootStackParamList, 'Contacts'>;
 
 export default function ContactsScreen() {
+  const contactName = useContactName();
   const { colors: Colors } = useTheme();
   const { confirm, alert } = useConfirm();
   const { user } = useAuth();
@@ -107,8 +109,15 @@ export default function ContactsScreen() {
 
   // Debounced search
   useEffect(() => {
+    let cancelled = false;
     if (!query.trim()) {
       setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    const localMatches = contacts.filter((contact) => contactName(contact.contact, '').toLowerCase().includes(query.trim().toLowerCase()));
+    if (localMatches.length) {
+      setSearchResults(localMatches.map((contact) => contact.contact_detail));
       setSearching(false);
       return;
     }
@@ -116,15 +125,15 @@ export default function ContactsScreen() {
     const timer = setTimeout(async () => {
       try {
         const results = await searchUsers(query.trim());
-        setSearchResults(results);
+        if (!cancelled) setSearchResults(results);
       } catch {
-        setSearchResults([]);
+        if (!cancelled) setSearchResults([]);
       } finally {
-        setSearching(false);
+        if (!cancelled) setSearching(false);
       }
     }, 400);
-    return () => clearTimeout(timer);
-  }, [query]);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [query, contacts, contactName]);
 
   const handleAddContact = async (userId: number) => {
     if (user?.id == null) return;
@@ -140,7 +149,7 @@ export default function ContactsScreen() {
   const handleRemoveContact = (contact: Contact) => {
     confirm({
       title: 'Remove contact',
-      message: `Remove ${contact.contact_detail.username}?`,
+      message: `Remove ${contactName(contact.contact, contact.contact_detail.username)}?`,
       icon: 'person-remove-outline',
       buttons: [
         { text: 'Cancel', style: 'cancel' },
@@ -180,7 +189,7 @@ export default function ContactsScreen() {
   const filteredSearchResults = searchResults;
 
   const renderSearchItem = ({ item }: { item: User }) => {
-    const primary = (item.display_name?.trim() || item.username);
+    const primary = contactName(item.id, item.display_name?.trim() || item.username);
     return (
       <View style={[styles.item, { backgroundColor: Colors.surface }]}>
         <Avatar name={primary} uri={item.avatar} size={44} showOnline isOnline={presenceByUserId[item.id]?.isOnline ?? false} />
@@ -213,7 +222,7 @@ export default function ContactsScreen() {
   };
 
   const renderContact = ({ item }: { item: Contact }) => {
-    const primary = (item.contact_detail.display_name?.trim() || item.contact_detail.username);
+    const primary = contactName(item.contact, item.contact_detail.display_name?.trim() || item.contact_detail.username);
     return (
       <TouchableOpacity
         style={[styles.item, { backgroundColor: Colors.surface }]}

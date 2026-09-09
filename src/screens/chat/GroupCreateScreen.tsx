@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  Create Group — choose accepted contacts, then name the group       */
 /* ------------------------------------------------------------------ */
@@ -30,6 +31,7 @@ import type { Contact, RootStackParamList } from '../../types';
 type Nav = NativeStackNavigationProp<RootStackParamList>;
 
 export default function GroupCreateScreen() {
+  const contactName = useContactName();
   const navigation = useNavigation<Nav>();
   const { colors: Colors } = useTheme();
   const { alert } = useConfirm();
@@ -118,7 +120,7 @@ export default function GroupCreateScreen() {
         contentContainerStyle={contacts.length === 0 ? styles.empty : styles.list}
         renderItem={({ item }) => {
           const person = item.contact_detail;
-          const primary = person.display_name?.trim() || person.username;
+          const primary = contactName(person.id, person.display_name?.trim() || person.username);
           const isSelected = selected.has(person.id);
           return (
             <TouchableOpacity

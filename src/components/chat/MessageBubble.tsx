@@ -3,16 +3,13 @@ import {
   ActivityIndicator,
   Animated,
   Alert,
-  Linking,
-  Platform,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
-import * as IntentLauncher from 'expo-intent-launcher';
-import { File } from 'expo-file-system';
+import { openSharedMedia } from '../../services/open-shared-media';
 import { Swipeable } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import dayjs from 'dayjs';
@@ -20,6 +17,23 @@ import { Font, Radius, Spacing, type ThemeColors } from '../../theme';
 import type { Message } from '../../types';
 import SmartMessageText from '../SmartMessageText';
 import VoiceMessageBubble from '../VoiceMessageBubble';
+import { useContactName } from '../../hooks/useContactName';
+import { getMessagesByIds } from '../../services/localMessageStore';
+import { parseSticker } from '../../services/stickers';
+import StickerArt from './sticker-art';
+import { IMPORTED_STICKER_CONTENT } from '../../services/sticker-file-format';
+
+function ReplySenderName({ messageId, fallback }: { messageId: string; fallback: string }) {
+  const contactName = useContactName();
+  const [senderId, setSenderId] = useState<number | undefined>();
+  useEffect(() => {
+    let active = true;
+    setSenderId(undefined);
+    void getMessagesByIds([messageId]).then((rows) => { if (active) setSenderId(rows[0]?.sender_id); }).catch(() => {});
+    return () => { active = false; };
+  }, [messageId]);
+  return <>{contactName(senderId, fallback)}</>;
+}
 
 // Give the automatic Axion delivery/reconnect path time to finish before a
 // manual resend is offered. Pending remains visible via the clock meanwhile.
@@ -84,11 +98,13 @@ function PendingClock({ active, color }: { active: boolean; color: string }) {
 function SharedFileBubble({
   type,
   fileUri,
+  messageId,
   label,
   colors,
 }: {
   type: 'video' | 'document';
   fileUri: string;
+  messageId: string;
   label: string;
   colors: ThemeColors;
 }) {
@@ -96,7 +112,10 @@ function SharedFileBubble({
   return (
     <TouchableOpacity
       style={[styles.sharedFile, { backgroundColor: colors.surfaceVariant, borderColor: colors.neonBorder }]}
-      onPress={() => openSharedFile(fileUri)}
+      onPress={() => openSharedMedia(fileUri, type, messageId).catch((error) => {
+        Alert.alert('Cannot open file', error?.message?.includes('no longer available')
+          ? error.message : 'Axonic could not open this file. Make sure a compatible viewer is installed.');
+      })}
       activeOpacity={0.75}
       accessibilityRole="button"
       accessibilityLabel={isVideo ? 'Open shared video' : 'Open shared document'}
@@ -113,25 +132,6 @@ function SharedFileBubble({
       <Ionicons name="open-outline" size={17} color={colors.textTertiary} />
     </TouchableOpacity>
   );
-}
-
-async function openSharedFile(fileUri: string): Promise<void> {
-  try {
-    if (Platform.OS === 'android') {
-      const file = new File(fileUri);
-      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-        data: file.contentUri,
-        type: file.type || '*/*',
-        // FLAG_GRANT_READ_URI_PERMISSION
-        flags: 1,
-      });
-      return;
-    }
-    await Linking.openURL(fileUri);
-  } catch {
-    // No app on the device is registered to view this file's type.
-    Alert.alert('Cannot open file', 'No app on this device can open this type of file.');
-  }
 }
 
 function MessageBubbleBase({
@@ -151,7 +151,10 @@ function MessageBubbleBase({
   onImagePress,
   onReaction,
 }: MessageBubbleProps) {
+  const contactName = useContactName();
   const isDeliveredPersisted = isMine && item.status === 'delivered';
+  const sticker = !item.is_deleted && item.message_type === 'text' ? parseSticker(item.content || '') : undefined;
+  const importedSticker = !item.is_deleted && item.message_type === 'image' && item.content === IMPORTED_STICKER_CONTENT;
   const [canRetry, setCanRetry] = useState(false);
 
   useEffect(() => {
@@ -227,9 +230,10 @@ function MessageBubbleBase({
               isMine
                 ? [styles.bubbleSent, { backgroundColor: Colors.bubbleSent, borderColor: Colors.neonBorder }]
                 : [styles.bubbleReceived, { backgroundColor: Colors.bubbleReceived, borderColor: Colors.divider }],
+              (sticker || importedSticker) && styles.stickerBubble,
             ]}>
               {!isMine && !isDirectChat && (
-                <Text style={[styles.senderName, { color: Colors.primary }]}>{item.sender_username}</Text>
+                <Text style={[styles.senderName, { color: Colors.primary }]}>{contactName(item.sender, item.sender_username)}</Text>
               )}
               {item.reply_to && !item.is_deleted && (
                 <View style={[styles.quoteBlock, {
@@ -237,7 +241,7 @@ function MessageBubbleBase({
                   backgroundColor: Colors.surfaceVariant,
                 }]}>
                   <Text style={[styles.quoteName, { color: Colors.primary }]} numberOfLines={1}>
-                    {item.reply_to.sender_name || 'Unknown'}
+                    <ReplySenderName messageId={item.reply_to.id} fallback={item.reply_to.sender_name || 'Unknown'} />
                   </Text>
                   <Text style={[styles.quoteText, { color: Colors.textSecondary }]} numberOfLines={2}>
                     {item.reply_to.content
@@ -249,6 +253,8 @@ function MessageBubbleBase({
               )}
               {item.is_deleted ? (
                 <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>🚫 This message was deleted.</Text>
+              ) : sticker ? (
+                <StickerArt sticker={sticker} />
               ) : item.message_type === 'voice' ? (
                 <VoiceMessageBubble
                   fileUri={item.file_uri ?? item.file ?? null}
@@ -269,8 +275,8 @@ function MessageBubbleBase({
                 >
                   <ExpoImage
                     source={{ uri: item.file_uri ?? item.file ?? '' }}
-                    style={styles.imageBubble}
-                    contentFit="cover"
+                    style={importedSticker ? { width: 160, height: 160 } : styles.imageBubble}
+                    contentFit={importedSticker ? 'contain' : 'cover'}
                     cachePolicy="memory-disk"
                     transition={100}
                     recyclingKey={item.id}
@@ -289,6 +295,7 @@ function MessageBubbleBase({
                 </View>
               ) : (item.message_type === 'video' || item.message_type === 'document') && (item.file_uri || item.file) ? (
                 <SharedFileBubble
+                  messageId={item.id}
                   type={item.message_type}
                   fileUri={item.file_uri ?? item.file ?? ''}
                   label={item.content || (item.message_type === 'video' ? 'Video' : 'Document')}
@@ -413,6 +420,12 @@ const MessageBubble = React.memo(MessageBubbleBase, areBubblePropsEqual);
 export default MessageBubble;
 
 const styles = StyleSheet.create({
+  stickerBubble: {
+    backgroundColor: 'transparent',
+    borderWidth: 0,
+    elevation: 0,
+    paddingTop: 0,
+  },
   bubbleRow: { marginBottom: Spacing.md },
   bubbleRowRight: { alignItems: 'flex-end' },
   bubbleRowLeft: { alignItems: 'flex-start' },

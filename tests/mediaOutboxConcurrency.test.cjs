@@ -29,11 +29,12 @@ function fixture() {
     },
     '../store/appStore': { useAppStore: { getState: () => ({}) } },
     './notificationWsManager': { isNotifWsReady: () => true, sendRawNotif: (frame) => { frames.push(frame); return true; } },
-    './messageLifecycle': { shouldSuppressOutboxReplay: (awaitingAck) => awaitingAck },
+    './messageLifecycle': { shouldSuppressOutboxReplay: (awaitingAck, acceptedAt) => awaitingAck || acceptedAt != null },
     './diagnostics': { debugLog() {} },
   };
   const module = { exports: {} };
-  vm.runInNewContext(`${compiled}\nexports.sendForTest = sendOutboxFrame; exports.stateForTest = createRoomState;`, {
+  vm.runInNewContext(`${compiled}\nexports.sendForTest = sendOutboxFrame; exports.stateForTest = createRoomState;
+    exports.acceptForTest = (id) => { _serverAckTimers.delete(id); _serverAcceptedAt.set(id, Date.now()); };`, {
     module, exports: module.exports,
     require: (name) => { assert.ok(name in modules, `unexpected dependency ${name}`); return modules[name]; },
     // ACK clocks do not fire in these narrowly scoped concurrency tests.
@@ -90,4 +91,34 @@ test('a completed upload cannot send a pointer from a different signed-in user',
   assert.equal((await send).sent, false);
   assert.equal(f.frames.length, 0);
   assert.equal(f.pointers.size, 0);
+});
+
+test('receiver recovery is not suppressed by the original frame awaiting acceptance', async () => {
+  const f = fixture();
+  f.finishUpload();
+  await f.sendForTest(f.state, 'room', f.message);
+  await f.sendForTest(f.state, 'room', f.message, { skipIfAwaitingAck: true });
+  assert.equal(f.frames.length, 1, 'ordinary replay must remain suppressed');
+  for (const recipient of [14, 3]) {
+    await f.sendForTest(f.state, 'room', f.message, {
+      hydration: true, targetRecipientId: recipient, skipIfAwaitingAck: true,
+    });
+  }
+  assert.equal(f.frames.length, 3);
+  assert.deepEqual(f.frames.slice(1).map((frame) => frame.target_recipient_id), [14, 3]);
+  assert.equal(f.uploadCalls(), 1);
+});
+
+test('recent server acceptance does not stand in for recipient delivery', async () => {
+  const f = fixture();
+  f.finishUpload();
+  await f.sendForTest(f.state, 'room', f.message);
+  f.acceptForTest(f.message.id);
+  await f.sendForTest(f.state, 'room', f.message, { skipIfAwaitingAck: true });
+  assert.equal(f.frames.length, 1);
+  await f.sendForTest(f.state, 'room', f.message, {
+    hydration: true, targetRecipientId: 14, skipIfAwaitingAck: true,
+  });
+  assert.equal(f.frames.length, 2);
+  assert.equal(f.frames[1].target_recipient_id, 14);
 });

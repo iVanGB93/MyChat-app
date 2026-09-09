@@ -23,6 +23,7 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from './appStore';
+import { useContactName } from '../hooks/useContactName';
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { useConfirm } from '../contexts/ConfirmContext';
 import { useTheme } from '../contexts/ThemeContext';
@@ -34,6 +35,7 @@ import { navigationRef } from '../navigation/AppNavigator';
 const AUTO_TIMEOUT_MS = 40_000;
 
 export function IncomingCallBanner() {
+  const contactName = useContactName();
   const insets = useSafeAreaInsets();
   const { colors: Colors } = useTheme();
   const incoming = useAppStore((s) => s.incomingCall);
@@ -172,7 +174,7 @@ export function IncomingCallBanner() {
 
         <View style={styles.textWrap}>
           <Text style={[styles.title, { color: Colors.text }]} numberOfLines={1}>
-            {incoming.callerName}
+            {contactName(incoming.callerId, incoming.callerName)}
           </Text>
           <Text style={[styles.subtitle, { color: Colors.textSecondary }]} numberOfLines={1}>
             Incoming {isVideo ? 'video' : 'voice'} call

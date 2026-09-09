@@ -4,6 +4,7 @@
 /* ------------------------------------------------------------------ */
 
 import React, { useEffect, useRef, useState } from 'react';
+import { useContactName } from '../hooks/useContactName';
 import {
   NavigationContainer,
   createNavigationContainerRef,
@@ -20,12 +21,12 @@ import {
   Animated,
   Platform,
 } from 'react-native';
-import { Font, Spacing, Radius } from '../theme';
+import { Font, Radius } from '../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { useNotificationContext, NotificationPayload } from '../contexts/NotificationContext';
+import { useNotificationContext } from '../contexts/NotificationContext';
 import { playSound } from '../services/soundService';
 import { useAppStore } from '../store/appStore';
 import { isCallEnded } from '../services/callDedupe';
@@ -205,6 +206,7 @@ interface ToastData {
 }
 
 function MessageNotificationListener() {
+  const contactName = useContactName();
   const { colors: Colors } = useTheme();
   const { subscribe } = useNotificationContext();
   const [toast, setToast] = useState<ToastData | null>(null);
@@ -333,12 +335,12 @@ function MessageNotificationListener() {
       >
         <View style={[toastStyles.avatar, { backgroundColor: Colors.highlight, borderColor: Colors.primary }]}>
           <Text style={[toastStyles.avatarText, { color: Colors.primary }]}>
-            {toast.sender.charAt(0).toUpperCase()}
+            {contactName(toast.senderId, toast.sender).charAt(0).toUpperCase()}
           </Text>
         </View>
         <View style={toastStyles.textCol}>
           <Text style={[toastStyles.sender, { color: Colors.primary }]} numberOfLines={1}>
-            {toast.sender}
+            {contactName(toast.senderId, toast.sender)}
             {toast.count > 1 && (
               <Text style={{ color: Colors.textTertiary, fontWeight: '400' }}>
                 {' '}· {toast.count} notifications

@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
@@ -35,6 +36,7 @@ const FILTERS: Array<{ key: MediaFilter; label: string; icon: keyof typeof Ionic
 ];
 
 export default function ChatStorageMediaScreen() {
+  const contactName = useContactName();
   const { colors: Colors } = useTheme();
   const { confirm, alert } = useConfirm();
   const route = useRoute<ScreenRoute>();
@@ -157,7 +159,7 @@ export default function ChatStorageMediaScreen() {
               {typeInfo.label.replace(/s$/, '')} · {item.isAvailable ? formatBytes(item.sizeBytes) : 'Not stored'}
             </Text>
             <Text style={[styles.mediaMeta, { color: Colors.textTertiary }]} numberOfLines={1}>
-              {item.isMine ? 'You' : item.senderName} · {formatDate(item.createdAt)}
+              {item.isMine ? 'You' : contactName(item.senderId, item.senderName)} · {formatDate(item.createdAt)}
             </Text>
           </View>
 

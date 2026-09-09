@@ -13,7 +13,7 @@
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import api, { clearTokens, BASE_URL } from './api';
+import { clearTokens, BASE_URL } from './api';
 import { getValidAccessToken } from './tokenRefresh';
 import { useAppStore } from '../store/appStore';
 import { shouldShowLocalIncomingCallNotification } from './notificationPresentationPolicy';

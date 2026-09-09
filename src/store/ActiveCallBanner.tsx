@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { navigationRef } from '../navigation/AppNavigator';
 import { useAppStore } from './appStore';
+import { useContactName } from '../hooks/useContactName';
 
 function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60);
@@ -26,6 +27,7 @@ function formatDuration(seconds: number): string {
 }
 
 export function ActiveCallBanner() {
+  const contactName = useContactName();
   const insets = useSafeAreaInsets();
   const activeCall = useAppStore((s) => s.activeCall);
 
@@ -151,7 +153,7 @@ export function ActiveCallBanner() {
           style={{ marginRight: 6 }}
         />
         <Text style={styles.text} numberOfLines={1}>
-          {activeCall.peerName} · {stateLabel}
+          {contactName(activeCall.peerId, activeCall.peerName)} · {stateLabel}
         </Text>
         <Text style={styles.tap}>Tap to return</Text>
       </TouchableOpacity>

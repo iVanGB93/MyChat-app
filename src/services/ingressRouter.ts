@@ -31,6 +31,10 @@ import {
   getMessageFileUri,
   isMessageMediaEvicted,
   setMessageFileUri,
+  getMessageTransferFailure,
+  setMessageTransferFailure,
+  clearMessageTransferFailure,
+  setMediaPointer,
 } from './localMessageStore';
 import type { ReplyRef } from './localMessageStore';
 import {
@@ -51,7 +55,7 @@ import { enqueueMessageAck, removeMessageAck } from './messageAckRetryQueue';
 import { sendMessageAck } from './messageAckTransport';
 import { toEnvelope, idempotencyId } from './rrp/envelope';
 import type { RrpType } from './rrp/envelope';
-import api, { resolveMediaUrl } from './api';
+import { resolveMediaUrl } from './api';
 import { applyPresenceSnapshot, applyPresenceUpdate } from './presenceService';
 import type { MessageDigestEntry } from './syncDelta';
 import { debugLog } from './diagnostics';
@@ -332,6 +336,14 @@ async function downloadPointerMedia(evt: CanonicalMessage, mt: NonNullable<Retur
       confirmRecoveredPointer(evt.mediaId);
       return true;
     }
+    const failure = await getMessageTransferFailure(evt.messageId);
+    if (failure?.blocked && failure.code === `download_unavailable:${evt.mediaId}`) return false;
+    // A re-upload with a fresh pointer must be persisted for recovery after restart.
+    await setMediaPointer(evt.messageId, {
+      media_id: evt.mediaId!, md5: evt.mediaMd5, sha256: evt.mediaSha256,
+      size: evt.mediaSize, mime: evt.mediaMime,
+    });
+    if (failure?.code.startsWith('download_unavailable:')) await clearMessageTransferFailure(evt.messageId);
     const { downloadAndPersistMedia, confirmDownloaded } = await import('./mediaLane');
     const uri = await downloadAndPersistMedia({
       mediaId: evt.mediaId!,
@@ -348,6 +360,7 @@ async function downloadPointerMedia(evt: CanonicalMessage, mt: NonNullable<Retur
       fileName: evt.content,
     });
     await setMessageFileUri(evt.messageId, uri);
+    await clearMessageTransferFailure(evt.messageId);
     injectReceivedMessage(evt.roomId, toWsMessage(evt, uri), { updateExisting: true });
     exportReceivedMedia(evt, uri);
     // Bytes are now durably present → ACK delivery so the sender's ✓ reflects
@@ -357,6 +370,12 @@ async function downloadPointerMedia(evt: CanonicalMessage, mt: NonNullable<Retur
     debugLog('[Ingress] downloaded pointer media for', evt.messageId);
     return true;
   } catch (err) {
+    const { toMediaTransferFailure } = await import('./mediaLane');
+    const failure = toMediaTransferFailure(err);
+    if (failure.status === 404 || failure.status === 410) {
+      await setMessageTransferFailure(evt.messageId, `download_unavailable:${evt.mediaId}`,
+        'This file is no longer available. Ask the sender to share it again.', true);
+    }
     console.warn('[Ingress] pointer media download failed', evt.messageId, err);
     return false;
   }

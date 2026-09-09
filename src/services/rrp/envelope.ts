@@ -191,7 +191,7 @@ export function idempotencyId(type: RrpType, raw: Record<string, any>): string |
 }
 
 /** Compute the correlation id for grouping related events. */
-export function correlationId(type: RrpType, raw: Record<string, any>): string {
+export function correlationId(_type: RrpType, raw: Record<string, any>): string {
   const explicit = str(raw.correlation_id ?? raw.correlationId);
   if (explicit) return explicit;
   const mid = str(raw.message_id ?? raw.messageId);

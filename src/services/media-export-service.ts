@@ -12,7 +12,6 @@ import {
   recordRecoveredMediaExport,
   setMessageFileUri,
   type MediaExportType,
-  type PendingMediaExport,
 } from './localMessageStore';
 
 const AUTO_SAVE_KEY = '@axonic/auto-save-received-media';

@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { RouteProp, useNavigation, useRoute } from '@react-navigation/native';
@@ -21,6 +22,7 @@ type Nav = NativeStackNavigationProp<RootStackParamList>;
 type Route = RouteProp<RootStackParamList, 'GroupInfo'>;
 
 export default function GroupInfoScreen() {
+  const contactName = useContactName();
   const { colors: Colors } = useTheme();
   const { alert, confirm } = useConfirm();
   const { user } = useAuth();
@@ -108,7 +110,7 @@ export default function GroupInfoScreen() {
 
   const removeMember = useCallback((member: RoomMember) => {
     if (!isAdmin || member.id === user?.id || busy) return;
-    const name = member.display_name?.trim() || member.username;
+    const name = contactName(member.id, member.display_name?.trim() || member.username);
     confirm({ title: `Remove ${name}?`, message: 'They will stop receiving new messages from this group.', icon: 'person-remove-outline', buttons: [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Remove', style: 'destructive', onPress: async () => {
@@ -118,7 +120,7 @@ export default function GroupInfoScreen() {
         finally { setBusy(false); }
       } },
     ] });
-  }, [alert, busy, confirm, isAdmin, route.params.roomId, updateRoom, user?.id]);
+  }, [alert, busy, confirm, isAdmin, route.params.roomId, updateRoom, user?.id, contactName]);
 
   const leaveGroup = useCallback(() => {
     if (!user || busy) return;
@@ -182,7 +184,7 @@ export default function GroupInfoScreen() {
         <Text style={[styles.section, { color: Colors.textSecondary }]}>MEMBERS</Text>
       </>}
       renderItem={({ item }) => {
-        const primary = item.display_name?.trim() || item.username;
+        const primary = contactName(item.id, item.display_name?.trim() || item.username);
         return <View style={[styles.member, { borderBottomColor: Colors.divider }]}>
           <Avatar name={primary} uri={resolveMediaUrl(item.avatar)} size={44} showOnline isOnline={item.id === user?.id || (presenceByUserId[item.id]?.isOnline ?? false)} />
           <View style={styles.memberInfo}><Text style={[styles.memberName, { color: Colors.text }]}>{item.id === user?.id ? `${primary} (You)` : primary}</Text><Text style={[styles.memberSub, { color: Colors.textSecondary }]}>@{item.username}</Text></View>
@@ -197,7 +199,7 @@ export default function GroupInfoScreen() {
     </Modal>
     <Modal visible={showAdd} animationType="slide" onRequestClose={() => setShowAdd(false)}>
       <View style={[styles.picker, { backgroundColor: Colors.background }]}><View style={[styles.pickerHeader, { borderBottomColor: Colors.divider }]}><Text style={[styles.modalTitle, { color: Colors.text }]}>Add members</Text><TouchableOpacity onPress={() => setShowAdd(false)}><Ionicons name="close" size={26} color={Colors.text} /></TouchableOpacity></View>
-        {loadingContacts ? <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View> : <FlatList data={availableContacts} keyExtractor={(contact) => String(contact.id)} ListEmptyComponent={<Text style={[styles.empty, { color: Colors.textSecondary }]}>All of your contacts are already members.</Text>} renderItem={({ item }) => { const person = item.contact_detail; const name = person.display_name?.trim() || person.username; return <TouchableOpacity style={[styles.contact, { borderBottomColor: Colors.divider }]} onPress={() => addMember(item)} disabled={busy}><Avatar name={name} uri={resolveMediaUrl(person.avatar)} size={44} /><View style={styles.memberInfo}><Text style={[styles.memberName, { color: Colors.text }]}>{name}</Text><Text style={[styles.memberSub, { color: Colors.textSecondary }]}>@{person.username}</Text></View><Ionicons name="add-circle-outline" size={26} color={Colors.primary} /></TouchableOpacity>; }} />}
+        {loadingContacts ? <View style={styles.center}><ActivityIndicator color={Colors.primary} /></View> : <FlatList data={availableContacts} keyExtractor={(contact) => String(contact.id)} ListEmptyComponent={<Text style={[styles.empty, { color: Colors.textSecondary }]}>All of your contacts are already members.</Text>} renderItem={({ item }) => { const person = item.contact_detail; const name = contactName(person.id, person.display_name?.trim() || person.username); return <TouchableOpacity style={[styles.contact, { borderBottomColor: Colors.divider }]} onPress={() => addMember(item)} disabled={busy}><Avatar name={name} uri={resolveMediaUrl(person.avatar)} size={44} /><View style={styles.memberInfo}><Text style={[styles.memberName, { color: Colors.text }]}>{name}</Text><Text style={[styles.memberSub, { color: Colors.textSecondary }]}>@{person.username}</Text></View><Ionicons name="add-circle-outline" size={26} color={Colors.primary} /></TouchableOpacity>; }} />}
       </View>
     </Modal>
   </View>;

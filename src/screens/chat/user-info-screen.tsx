@@ -4,6 +4,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -25,6 +26,8 @@ import { getCachedContacts, getCachedRooms } from '../../services/localMessageSt
 import { useAppStore } from '../../store/appStore';
 import { Font, Radius, Spacing } from '../../theme';
 import type { RootStackParamList, RoomMember, User } from '../../types';
+import { useContactName } from '../../hooks/useContactName';
+import { namesForOwner, saveContactNickname } from '../../services/contact-nicknames';
 
 dayjs.extend(relativeTime);
 
@@ -51,6 +54,9 @@ export default function UserInfoScreen() {
   const [profile, setProfile] = useState<UserSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [calling, setCalling] = useState(false);
+  const contactName = useContactName();
+  const [nicknameDraft, setNicknameDraft] = useState<string | null>(null);
+  const [savingNickname, setSavingNickname] = useState(false);
 
   const applyBestProfile = useCallback((contactProfile?: User, member?: RoomMember) => {
     if (contactProfile) {
@@ -95,7 +101,7 @@ export default function UserInfoScreen() {
     return () => { active = false; };
   }, [applyBestProfile, route.params.roomId, route.params.userId, user?.id]);
 
-  const displayName = profile?.display_name?.trim() || profile?.username || route.params.roomName;
+  const displayName = contactName(route.params.userId, profile?.display_name?.trim() || profile?.username || route.params.roomName);
   const username = profile?.username || route.params.roomName;
   const isOnline = presence?.isOnline ?? profile?.is_online ?? false;
   const lastSeen = presence?.lastSeen ?? profile?.last_seen ?? null;
@@ -202,6 +208,26 @@ export default function UserInfoScreen() {
         )}
       </View>
 
+      <View style={[styles.section, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+        <Text style={[styles.sectionLabel, { color: Colors.textSecondary }]}>PRIVATE NICKNAME</Text>
+        <Text style={{ color: Colors.textSecondary }}>Only you see this name on this phone. Clear it to use their profile name again.</Text>
+        <TextInput
+          accessibilityLabel="Private nickname"
+          value={nicknameDraft ?? namesForOwner(user?.id)[route.params.userId] ?? ''}
+          onChangeText={setNicknameDraft}
+          maxLength={50}
+          placeholder="For example, Dad"
+          placeholderTextColor={Colors.textTertiary}
+          style={{ color: Colors.text, padding: 12, borderWidth: 1, borderColor: Colors.neonBorder, borderRadius: 10 }}
+        />
+        <TouchableOpacity disabled={savingNickname || nicknameDraft === null} onPress={async () => {
+          if (!user || nicknameDraft === null) return;
+          setSavingNickname(true);
+          try { await saveContactNickname(user.id, route.params.userId, nicknameDraft); setNicknameDraft(null); }
+          catch { alert('Could not save nickname', 'Please try again.'); }
+          finally { setSavingNickname(false); }
+        }}><Text style={{ color: Colors.primary, fontWeight: '700' }}>{savingNickname ? 'Saving…' : 'Save nickname'}</Text></TouchableOpacity>
+      </View>
       <TouchableOpacity
         style={[styles.setting, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}
         activeOpacity={0.72}

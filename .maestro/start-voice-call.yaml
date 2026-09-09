@@ -7,6 +7,12 @@ appId: com.axonic
       visible: http://10.0.2.2:8081
     commands:
       - tapOn: http://10.0.2.2:8081
+- runFlow:
+    when:
+      notVisible:
+        id: axonic-message-composer
+    commands:
+      - tapOn: ${CHAT_NAME}
 - extendedWaitUntil:
     visible:
       id: axonic-message-composer

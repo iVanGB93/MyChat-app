@@ -25,17 +25,16 @@ import {
 import { useNotificationContext } from '../contexts/NotificationContext';
 import { getIceConfig } from '../services/callService';
 import { debugLog } from '../services/diagnostics';
+import { scopeCallSignal, readCallSignal } from '../services/call-signal';
+import { createMediaPrewarmer } from '../services/media-prewarmer';
 import type { CallType, IceConfig } from '../types';
 
 /** The ICE gather timeout — same as web app */
 const ICE_GATHER_TIMEOUT = 5000;
 
-let prewarmedVideoStream: MediaStream | null = null;
-
-export async function prewarmVideoCallMedia(): Promise<MediaStream> {
-  if (prewarmedVideoStream) return prewarmedVideoStream;
+const videoPrewarmer = createMediaPrewarmer<MediaStream>(async () => {
   try {
-    prewarmedVideoStream = await mediaDevices.getUserMedia({
+    return await mediaDevices.getUserMedia({
       audio: true,
       video: {
         facingMode: 'user',
@@ -45,25 +44,15 @@ export async function prewarmVideoCallMedia(): Promise<MediaStream> {
       },
     }) as MediaStream;
   } catch {
-    prewarmedVideoStream = await mediaDevices.getUserMedia({
+    return await mediaDevices.getUserMedia({
       audio: true,
       video: { facingMode: 'user', width: 640, height: 480, frameRate: 24 },
     }) as MediaStream;
   }
-  return prewarmedVideoStream;
-}
+}, (stream) => stream.getTracks().forEach((track) => track.stop()));
 
-export function takePrewarmedVideoCallMedia(): MediaStream | null {
-  const stream = prewarmedVideoStream;
-  prewarmedVideoStream = null;
-  return stream;
-}
-
-export function discardPrewarmedVideoCallMedia(): void {
-  if (!prewarmedVideoStream) return;
-  prewarmedVideoStream.getTracks().forEach((track) => track.stop());
-  prewarmedVideoStream = null;
-}
+export const prewarmVideoCallMedia = videoPrewarmer.warm;
+export const discardPrewarmedVideoCallMedia = videoPrewarmer.discard;
 
 /** Fallback config if the server is unreachable */
 const FALLBACK_ICE_CONFIG: IceConfig = {
@@ -105,7 +94,10 @@ export default function useWebRTC({
   onConnected,
   onDisconnected,
 }: UseWebRTCOptions) {
-  const { sendSignal, subscribe } = useNotificationContext();
+  const { sendSignal: sendRawSignal, subscribe } = useNotificationContext();
+  const sendSignal = useCallback((userId: number, type: string, data: any) => {
+    sendRawSignal(userId, type, scopeCallSignal(data, callId));
+  }, [sendRawSignal, callId]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -114,6 +106,7 @@ export default function useWebRTC({
   const hasRemoteDesc = useRef(false);
   const cleanedUp = useRef(false);
   const iceConfigRef = useRef<IceConfig>(FALLBACK_ICE_CONFIG);
+  const iceConfigReadyRef = useRef<Promise<void> | null>(null);
   /** Serial queue to prevent signal race conditions (mirrors web app). */
   const signalQueue = useRef<Promise<void>>(Promise.resolve());
 
@@ -134,7 +127,7 @@ export default function useWebRTC({
 
   /* ---- Fetch ICE config from server on mount ---- */
   useEffect(() => {
-    getIceConfig().then((cfg) => {
+    iceConfigReadyRef.current = getIceConfig().then((cfg) => {
       iceConfigRef.current = cfg;
       debugLog(
         `[WebRTC] ICE config loaded — policy: ${cfg.ice_transport_policy}, servers: ${cfg.ice_servers.length}`
@@ -174,7 +167,7 @@ export default function useWebRTC({
     if (mediaAcquirePromiseRef.current) return mediaAcquirePromiseRef.current;
 
     mediaAcquirePromiseRef.current = (async () => {
-      const prewarmed = callType === 'video' ? takePrewarmedVideoCallMedia() : null;
+      const prewarmed = callType === 'video' ? await videoPrewarmer.take() : null;
       if (prewarmed) return prewarmed;
       const constraints: any = {
         audio: true,
@@ -406,20 +399,19 @@ export default function useWebRTC({
           // Detect whether we ended up P2P or relayed
           detectConnectionType(pc);
         } else if (state === 'disconnected' || state === 'failed') {
+          setConnectionType('connecting');
+          onDisconnected?.();
           if (state === 'failed' && isOutgoing) {
             debugLog('[WebRTC] ICE failed, attempting restart');
             pc.createOffer({ iceRestart: true } as any)
               .then((offer: any) => pc.setLocalDescription(offer))
               .then(() => waitForIceGathering(pc))
               .then(() => {
-                if (pc.localDescription) {
+                if (pc.localDescription && !cleanedUp.current) {
                   sendSignal(peerUserId, 'offer', pc.localDescription.toJSON());
                 }
               })
               .catch(() => {});
-          } else if (state === 'disconnected') {
-            setConnectionType('connecting');
-            onDisconnected?.();
           }
         }
       };
@@ -435,6 +427,8 @@ export default function useWebRTC({
     debugLog('[WebRTC] startAsOfferer');
     try {
       const stream = await acquireMedia();
+      await iceConfigReadyRef.current;
+      if (cleanedUp.current) return;
       const pc = createPeerConnection(stream);
 
       const offer = await pc.createOffer({} as any);
@@ -470,7 +464,9 @@ export default function useWebRTC({
       if (payload.event !== 'webrtc_signal') return;
       if (cleanedUp.current) return;
 
-      const { signal_type, data, from_user_id } = payload;
+      const { signal_type, from_user_id } = payload;
+      const data = readCallSignal(payload.data, callId);
+      if (!data) return;
       // Only handle signals from our peer
       if (from_user_id !== peerUserId) return;
 
@@ -479,6 +475,7 @@ export default function useWebRTC({
         if (cleanedUp.current) return;
 
         if (signal_type === 'offer') {
+          if (data.type !== 'offer' || typeof data.sdp !== 'string') return;
           debugLog('[WebRTC] received offer from', from_user_id);
           try {
             // The offer can beat microphone/camera acquisition on a fast
@@ -486,11 +483,12 @@ export default function useWebRTC({
             // instead of dropping the offer and leaving a fake call timer
             // with no peer connection.
             const stream = localStreamRef.current ?? await acquireMedia();
+            await iceConfigReadyRef.current;
             if (cleanedUp.current) return;
             // Create PC if not yet created
             const pc = pcRef.current ?? createPeerConnection(stream);
 
-            await pc.setRemoteDescription(new RTCSessionDescription(data));
+            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
             hasRemoteDesc.current = true;
             flushCandidates();
 
@@ -508,11 +506,12 @@ export default function useWebRTC({
           }
 
         } else if (signal_type === 'answer') {
+          if (data.type !== 'answer' || typeof data.sdp !== 'string') return;
           debugLog('[WebRTC] received answer');
           try {
             const pc = pcRef.current;
             if (!pc) return;
-            await pc.setRemoteDescription(new RTCSessionDescription(data));
+            await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
             hasRemoteDesc.current = true;
             flushCandidates();
           } catch (err) {
@@ -535,7 +534,7 @@ export default function useWebRTC({
     });
 
     return unsub;
-  }, [subscribe, peerUserId, acquireMedia, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
+  }, [subscribe, peerUserId, callId, acquireMedia, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
 
   /* ---- Kick off the right flow on mount ---- */
   useEffect(() => {

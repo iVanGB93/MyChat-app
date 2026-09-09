@@ -19,6 +19,7 @@ import React, {
   useContext,
   useMemo,
   useState,
+  useRef,
 } from 'react';
 import ConfirmModal, { ConfirmOptions } from '../components/ui/ConfirmModal';
 
@@ -36,48 +37,28 @@ interface QueuedDialog extends ConfirmOptions {
 }
 
 export function ConfirmProvider({ children }: { children: React.ReactNode }) {
-  const [active, setActive] = useState<QueuedDialog | null>(null);
   const [queue, setQueue] = useState<QueuedDialog[]>([]);
-  const [seq, setSeq] = useState(0);
-
-  const showNext = useCallback((rest: QueuedDialog[]) => {
-    if (rest.length === 0) {
-      setActive(null);
-      setQueue([]);
-      return;
-    }
-    const [next, ...remaining] = rest;
-    setActive(next);
-    setQueue(remaining);
-  }, []);
+  const active = queue[0] ?? null;
+  const seq = useRef(0);
 
   const enqueue = useCallback(
     (dlg: QueuedDialog) => {
-      setActive((cur) => {
-        if (cur) {
-          // Queue behind any currently-visible dialog.
-          setQueue((q) => [...q, dlg]);
-          return cur;
-        }
-        return dlg;
-      });
+      setQueue((q) => [...q, dlg]);
     },
     [],
   );
 
   const confirm = useCallback(
     (options: ConfirmOptions) => {
-      const id = seq + 1;
-      setSeq(id);
+      const id = ++seq.current;
       enqueue({ ...options, _id: id });
     },
-    [enqueue, seq],
+    [enqueue],
   );
 
   const alert = useCallback(
     (title: string, message?: string, onPress?: () => void) => {
-      const id = seq + 1;
-      setSeq(id);
+      const id = ++seq.current;
       enqueue({
         _id: id,
         title,
@@ -85,22 +66,14 @@ export function ConfirmProvider({ children }: { children: React.ReactNode }) {
         buttons: [{ text: 'OK', style: 'default', onPress }],
       });
     },
-    [enqueue, seq],
+    [enqueue],
   );
 
   const handleClose = useCallback(() => {
-    setActive(null);
-    // Slight delay so the closing animation finishes before the next
-    // dialog slides up — prevents the visual stutter of an instant swap.
-    setTimeout(() => {
-      setQueue((q) => {
-        if (q.length === 0) return q;
-        const [next, ...rest] = q;
-        setActive(next);
-        return rest;
-      });
-    }, 220);
-  }, []);
+    // ConfirmModal calls this after its closing animation. Remove only that
+    // dialog: a repeated close or newly enqueued alert must not skip another.
+    setQueue((q) => q[0]?._id === active?._id ? q.slice(1) : q);
+  }, [active?._id]);
 
   const value = useMemo<ConfirmContextValue>(() => ({ confirm, alert }), [confirm, alert]);
 

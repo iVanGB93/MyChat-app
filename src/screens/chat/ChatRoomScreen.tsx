@@ -43,7 +43,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useChat, WsMessage } from '../../hooks/useChat';
-import { initDB, saveMessage, getCachedRooms, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
+import { initDB, getCachedRooms, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
 import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, retryOutgoingMessage, sendChatMessage, type SendChatResult } from '../../services/chatWsManager';
 import { getRooms } from '../../services/chatService';
 import { initiateCall } from '../../services/callService';
@@ -64,6 +64,13 @@ import { getAndroidKeyboardOverlap } from '../../utils/keyboard-layout';
 import { resolveMediaUrl } from '../../services/api';
 import Avatar from '../../components/ui/Avatar';
 import FullscreenImageViewer from '../../components/chat/fullscreen-image-viewer';
+import SharePreview, { type PreviewItem } from '../../components/chat/share-preview';
+import { reconcileAxionDelivery } from '../../services/axionRuntimeBridge';
+import { useContactName } from '../../hooks/useContactName';
+import StickerPicker from '../../components/chat/sticker-picker';
+import { stickerMessage } from '../../services/stickers';
+import { importedStickerUri } from '../../services/imported-stickers';
+import { IMPORTED_STICKER_CONTENT } from '../../services/sticker-file-format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
@@ -212,10 +219,13 @@ function wsToMsg(m: WsMessage, roomId: string): Message {
 }
 
 export default function ChatRoomScreen({ route, navigation }: Props) {
+  const contactName = useContactName();
   const { roomId, otherUserId } = route.params;
   const isScreenFocused = useIsFocused();
   const [appState, setAppState] = useState(AppState.currentState);
   const [retryStartedAtById, setRetryStartedAtById] = useState<Record<string, number>>({});
+  const [mediaDraft, setMediaDraft] = useState<Array<PreviewItem & { send: () => Promise<SendChatResult> }>>([]);
+  const [sendingDraft, setSendingDraft] = useState(false);
   // `otherUserId` is navigation context, not room metadata.  A group opened
   // from a notification has the sender id populated too, so use the locally
   // cached room type as the authority for group-only message UI.
@@ -300,6 +310,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const { height: winHeight } = useWindowDimensions();
   const [androidKeyboardOverlap, setAndroidKeyboardOverlap] = useState(0);
   const [text, setText] = useState('');
+  const [stickersOpen, setStickersOpen] = useState(false);
+  const [stickerSourceUri, setStickerSourceUri] = useState<string>();
   const [loading, setLoading] = useState(true);
 
   /* ---- Voice message recording state ---- */
@@ -449,6 +461,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     const subscription = AppState.addEventListener('change', setAppState);
     return () => subscription.remove();
   }, []);
+
+  useEffect(() => {
+    if (isScreenFocused && appState === 'active' && connected) reconcileAxionDelivery();
+  }, [roomId, isScreenFocused, appState, connected]);
 
   /* Load (or reload) messages from the local SQLite DB */
   const loadFromDB = useCallback(async (cancelled?: { current: boolean }) => {
@@ -660,7 +676,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   const headerTitle = isGroupChat
     ? roomDetails?.name || route.params.roomName
-    : headerPeer?.display_name?.trim() || headerPeer?.username || route.params.roomName;
+    : contactName(resolvedOtherUserId, headerPeer?.display_name?.trim() || headerPeer?.username || route.params.roomName);
   const headerAvatarUri = resolveMediaUrl(isGroupChat ? roomDetails?.avatar : headerPeer?.avatar);
 
   const openRoomDetails = useCallback(() => {
@@ -903,7 +919,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         quality: 0.7,
       });
       if (!result.canceled && result.assets?.[0]) {
-        showTransferResults([await sendPickedImage(result.assets[0])]);
+        const asset = result.assets[0];
+        setMediaDraft([{ id: asset.uri, uri: asset.uri, kind: 'image', name: asset.fileName || 'Photo', send: () => sendPickedImage(asset) }]);
       }
     } catch (err) {
       console.warn('[ChatRoomScreen] camera error:', err);
@@ -962,13 +979,13 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         quality: 0.7,
       });
       if (!result.canceled && result.assets?.length) {
-        const results = await mapWithConcurrency(result.assets, MEDIA_BATCH_CONCURRENCY, async (asset) => {
-          if (asset.type === 'video') {
-            return sendPickedFile({ uri: asset.uri, name: asset.fileName, mimeType: asset.mimeType, size: asset.fileSize }, 'video');
-          }
-          return sendPickedImage(asset);
-        });
-        showTransferResults(results);
+        setMediaDraft(result.assets.map((asset, index) => ({
+          id: `${index}:${asset.uri}`, uri: asset.uri, kind: asset.type === 'video' ? 'video' : 'image',
+          name: asset.fileName || (asset.type === 'video' ? 'Video' : 'Photo'),
+          send: () => asset.type === 'video'
+            ? sendPickedFile({ uri: asset.uri, name: asset.fileName, mimeType: asset.mimeType, size: asset.fileSize }, 'video')
+            : sendPickedImage(asset),
+        })));
       }
     } catch (err) {
       console.warn('[ChatRoomScreen] multimedia picker error:', err);
@@ -985,9 +1002,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         copyToCacheDirectory: true,
       });
       if (result.canceled || !result.assets?.length) return;
-      const results = await mapWithConcurrency(result.assets, MEDIA_BATCH_CONCURRENCY, (asset) =>
-        sendPickedFile({ uri: asset.uri, name: asset.name, mimeType: asset.mimeType, size: asset.size }, 'document'));
-      showTransferResults(results);
+      setMediaDraft(result.assets.map((asset, index) => ({
+        id: `${index}:${asset.uri}`, uri: asset.uri, name: asset.name, kind: asset.mimeType?.startsWith('video/') ? 'video' : 'file',
+        send: () => sendPickedFile(asset, asset.mimeType?.startsWith('video/') ? 'video' : 'document'),
+      })));
     } catch (err) {
       console.warn('[ChatRoomScreen] document picker error:', err);
       alert('Could not select documents', 'Axonic could not open or process the selected documents. Please try again.');
@@ -1084,6 +1102,51 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (!url) return;
     try { await Clipboard.setStringAsync(url); } catch { /* ignore */ }
   }, [contextMsg]);
+
+  const handleCreateSticker = useCallback(async () => {
+    const message = contextMsg;
+    setContextMsg(null);
+    if (!message || message.message_type !== 'image') return;
+    const uri = message.file_uri || message.file;
+    try {
+      const { isLocalMediaUriAvailable } = await import('../../services/media-export-service');
+      if (!uri || !await isLocalMediaUriAvailable(uri)) {
+        alert('Photo unavailable', 'This photo is not available on this phone.');
+        return;
+      }
+      Keyboard.dismiss();
+      setStickerSourceUri(uri);
+      setStickersOpen(true);
+    } catch {
+      alert('Cannot create sticker', 'The photo could not be opened. Please try again.');
+    }
+  }, [contextMsg, alert]);
+
+  const handleDeleteReceivedMedia = useCallback(() => {
+    const message = contextMsg;
+    setContextMsg(null);
+    if (!message || message.sender === user?.id) return;
+    const type = message.message_type === 'file' ? 'document' : message.message_type;
+    if (!['image', 'video', 'voice', 'document'].includes(type)) return;
+    confirm({
+      title: 'Delete this file?',
+      message: 'Remove this file from your phone, including its Axonic gallery or Downloads copy when accessible. The message stays in this chat. Other people’s copies are not affected.',
+      icon: 'trash-outline',
+      buttons: [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete from phone', style: 'destructive', onPress: async () => {
+          try {
+            const { deleteLocalMediaItem } = await import('../../services/local-media-actions');
+            const result = await deleteLocalMediaItem(message.id, type as 'image' | 'video' | 'voice' | 'document');
+            await loadFromDB();
+            if (result === 'changed') alert('File changed', 'Please try deleting it again.');
+          } catch (error) {
+            alert('Could not delete file', error instanceof Error ? error.message : 'Please try again.');
+          }
+        } },
+      ],
+    });
+  }, [contextMsg, user?.id, confirm, alert, loadFromDB]);
 
   const handleSaveAttachment = useCallback(async () => {
     if (!contextMsg) return;
@@ -1369,7 +1432,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         }]}>
           <View style={{ flex: 1 }}>
             <Text style={[styles.requestTitle, { color: Colors.text }]} numberOfLines={1}>
-              {route.params.roomName || 'This user'} wants to talk to you
+              {headerTitle || 'This user'} wants to talk to you
             </Text>
             <Text style={[styles.requestSubtitle, { color: Colors.textSecondary }]} numberOfLines={2}>
               They are not in your contacts. Accept to chat, or block to stop messages.
@@ -1427,8 +1490,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         {typers.length > 0 && (
           <Text style={[styles.typingHint, { color: Colors.textSecondary }]}>
             {typers.length === 1
-              ? `${typers[0].username} is typing…`
-              : `${typers.map(t => t.username).join(', ')} are typing…`}
+              ? `${contactName(typers[0].userId, typers[0].username)} is typing…`
+              : `${typers.map(t => contactName(t.userId, t.username)).join(', ')} are typing…`}
           </Text>
         )}
         {replyingTo && (
@@ -1439,7 +1502,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           }]}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.replyPreviewName, { color: Colors.primary }]} numberOfLines={1}>
-                ↩ Replying to {replyingTo.sender_username || 'Unknown'}
+                ↩ Replying to {contactName(replyingTo.sender, replyingTo.sender_username || 'Unknown')}
               </Text>
               <Text style={[styles.replyPreviewText, { color: Colors.textSecondary }]} numberOfLines={1}>
                 {replyingTo.content || (replyingTo.message_type !== 'text' ? `[${replyingTo.message_type}]` : '')}
@@ -1503,6 +1566,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             </Animated.View>
           ) : (
             <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
+              <TouchableOpacity accessibilityLabel="Open stickers" testID="axonic-open-stickers" onPress={() => { Keyboard.dismiss(); setStickerSourceUri(undefined); setStickersOpen(true); }} style={{ padding: 10, alignSelf: 'center' }}>
+                <Ionicons name="happy-outline" size={24} color={Colors.primary} />
+              </TouchableOpacity>
               <TextInput
                 testID="axonic-message-composer"
                 ref={composerInputRef}
@@ -1669,18 +1735,28 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               </>
             )}
             {contextMsg && !contextMsg.is_deleted
-              && ['image', 'video', 'voice', 'document', 'file'].includes(contextMsg.message_type)
+              && ['voice', 'document', 'file'].includes(contextMsg.message_type)
               && !!(contextMsg.file_uri || contextMsg.file) && (
               <>
                 <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
                 <TouchableOpacity onPress={handleSaveAttachment} style={styles.contextOption}>
                   <Text style={[styles.contextOptionText, { color: Colors.text }]}>
-                    {contextMsg.message_type === 'image' || contextMsg.message_type === 'video'
-                      ? '↓  Save to Gallery'
-                      : '↓  Save to Downloads'}
+                    ↓  Save to Downloads
                   </Text>
                 </TouchableOpacity>
               </>
+            )}
+            {contextMsg && !contextMsg.is_deleted && contextMsg.message_type === 'image' && !!(contextMsg.file_uri || contextMsg.file) && (
+              <TouchableOpacity onPress={handleCreateSticker} style={styles.contextOption} accessibilityRole="button">
+                <Text style={[styles.contextOptionText, { color: Colors.text }]}>＋  Create sticker</Text>
+              </TouchableOpacity>
+            )}
+            {contextMsg && !contextMsg.is_deleted && contextMsg.sender !== user?.id
+              && ['image', 'video', 'voice', 'document', 'file'].includes(contextMsg.message_type)
+              && !!(contextMsg.file_uri || contextMsg.file) && (
+              <TouchableOpacity onPress={handleDeleteReceivedMedia} style={styles.contextOption} accessibilityRole="button">
+                <Text style={[styles.contextOptionText, { color: Colors.error }]}>🗑  Delete from phone</Text>
+              </TouchableOpacity>
             )}
             {contextMsg && !contextMsg.is_deleted && (
               contextMsg.message_type === 'text' || !contextMsg.message_type
@@ -1706,6 +1782,41 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         </Pressable>
       </Modal>
 
+      {stickersOpen && user?.id && <StickerPicker ownerId={user.id} initialUri={stickerSourceUri} onClose={() => { setStickersOpen(false); setStickerSourceUri(undefined); }} onSendImported={async (sticker) => {
+        // Each message owns its copy so deleting a collection entry cannot break retries or history.
+        const uri = await persistOutgoingImage(`sticker-${Date.now()}-${Math.random().toString(36).slice(2)}`, importedStickerUri(user.id, sticker), 'image/png');
+        const reply = replyingTo ? { id: replyingTo.id, sender_name: replyingTo.sender_username || '', content: (replyingTo.content ?? '').slice(0, 140), type: replyingTo.message_type } : null;
+        const result = await sendMessage(IMPORTED_STICKER_CONTENT, 'image', reply, { file_uri: uri, image_mime: 'image/png' });
+        if (result.state === 'failed' || !result.messageId) throw new Error(result.error?.message || 'Sticker could not be queued.');
+        setReplyingTo(null);
+        playSound('message_sent');
+      }} onSend={async (sticker) => {
+        const reply = replyingTo ? { id: replyingTo.id, sender_name: replyingTo.sender_username || '', content: (replyingTo.content ?? '').slice(0, 140), type: replyingTo.message_type } : null;
+        const result = await sendMessage(stickerMessage(sticker), 'text', reply);
+        if (result.state === 'failed' || !result.messageId) throw new Error('Sticker was not queued');
+        setReplyingTo(null);
+        playSound('message_sent');
+      }} />}
+      <SharePreview
+        visible={mediaDraft.length > 0}
+        items={mediaDraft}
+        busy={sendingDraft}
+        onRemove={(id) => setMediaDraft((items) => items.filter((item) => item.id !== id))}
+        onClose={() => { if (!sendingDraft) setMediaDraft([]); }}
+        onSend={async () => {
+          if (sendingDraft) return;
+          setSendingDraft(true);
+          try {
+            const results = await mapWithConcurrency(mediaDraft, MEDIA_BATCH_CONCURRENCY, async (item) => {
+              try { return await item.send(); }
+              catch { return { messageId: null, state: 'failed' as const, error: { code: 'invalid_file' as const, message: `${item.name} could not be prepared.`, retryable: false, status: 0 } }; }
+            });
+            showTransferResults(results);
+            // Queued items already own durable outbox rows; never send them again.
+            setMediaDraft((items) => items.filter((_, index) => !results[index]?.messageId));
+          } finally { setSendingDraft(false); }
+        }}
+      />
       {/* Forward picker */}
       <Modal
         visible={forwardMsg !== null}
@@ -1742,12 +1853,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                   // Direct rooms have name === '' (empty string, not null), so
                   // `??` wouldn't fall back — check for a non-blank name first,
                   // otherwise build a label from the other members' usernames.
-                  const named = item.name && item.name.trim();
+                  const named = item.room_type === 'group' && item.name && item.name.trim();
                   const label = named
                     ? item.name
                     : (item.members_detail ?? [])
                         .filter((m) => m.id !== user?.id)
-                        .map((m) => m.username)
+                        .map((m) => contactName(m.id, m.username))
                         .join(', ') || 'Chat';
                   return (
                     <TouchableOpacity

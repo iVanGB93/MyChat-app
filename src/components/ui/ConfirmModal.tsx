@@ -62,9 +62,11 @@ export default function ConfirmModal({
   const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(400)).current;
   const backdrop = useRef(new Animated.Value(0)).current;
+  const closing = useRef(false);
 
   useEffect(() => {
     if (visible) {
+      closing.current = false;
       Animated.parallel([
         Animated.spring(translateY, {
           toValue: 0,
@@ -81,6 +83,9 @@ export default function ConfirmModal({
   }, [visible, translateY, backdrop]);
 
   const animatedClose = (after?: () => void) => {
+    // A rapid double tap must not run a destructive action twice.
+    if (closing.current) return;
+    closing.current = true;
     Animated.parallel([
       Animated.timing(translateY, { toValue: 400, duration: 180, useNativeDriver: true }),
       Animated.timing(backdrop, { toValue: 0, duration: 160, useNativeDriver: true }),

@@ -19,6 +19,7 @@ import {
   Modal,
   Linking,
   Platform,
+  Alert,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -30,6 +31,7 @@ import {
   serializeUpdateDismissal,
   shouldShowOptionalUpdate,
 } from '../services/versionPolicy';
+import { completePlayUpdateAsync, getPlayUpdateInfoAsync, startPlayUpdateAsync, supportsPlayUpdateFlow } from '../../modules/axonic-app-update';
 
 const DISMISS_KEY = 'axonic_update_dismissed_version';
 const FOREGROUND_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -42,6 +44,27 @@ export default function AppUpdateGate() {
   const mountedRef = useRef(false);
   const checkingRef = useRef(false);
   const lastCheckedAtRef = useRef(0);
+  const [installStatus, setInstallStatus] = useState(0);
+  const [nativeBusy, setNativeBusy] = useState(false);
+  const [foreground, setForeground] = useState(AppState.currentState === 'active');
+  const flowRef = useRef(false);
+  const promptedRef = useRef('');
+  const downloading = installStatus === 1 || installStatus === 2 || installStatus === 3;
+
+  const refreshInstallStatus = useCallback(async () => {
+    if (Platform.OS !== 'android' || !supportsPlayUpdateFlow()) return;
+    try {
+      const info = await getPlayUpdateInfoAsync();
+      if (!mountedRef.current || !info) return;
+      setInstallStatus(info.installStatus ?? 0);
+      if (info.installStatus === 5 || info.installStatus === 6) setDismissed(false);
+      // Resume a Play-owned immediate update after the app returns to foreground.
+      if (info.availability === 'in_progress' && !flowRef.current && AppState.currentState === 'active') {
+        flowRef.current = true;
+        try { await startPlayUpdateAsync(true); } finally { flowRef.current = false; }
+      }
+    } catch { /* Offline/unsupported store must not interrupt the app. */ }
+  }, []);
 
   const runCheck = useCallback(async (force = false) => {
     const now = Date.now();
@@ -73,19 +96,56 @@ export default function AppUpdateGate() {
   useEffect(() => {
     mountedRef.current = true;
     void runCheck(true);
+    void refreshInstallStatus();
     const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') void runCheck();
+      setForeground(nextState === 'active');
+      if (nextState === 'active') { void runCheck(); void refreshInstallStatus(); }
     });
     return () => {
       mountedRef.current = false;
       subscription.remove();
     };
-  }, [runCheck]);
+  }, [runCheck, refreshInstallStatus]);
+
+  useEffect(() => {
+    if (!downloading || !foreground) return;
+    const timer = setInterval(() => { void refreshInstallStatus(); }, 10_000);
+    return () => clearInterval(timer);
+  }, [downloading, foreground, refreshInstallStatus]);
 
   const openStore = () => {
     const url = result?.storeUrl;
-    if (url) Linking.openURL(url).catch(() => {});
+    if (url) Linking.openURL(url).catch(() => Alert.alert('Could not open store', 'Please open the app store and search for Axonic.'));
   };
+
+  const startUpdate = async (automatic = false) => {
+    if (flowRef.current || !result || AppState.currentState !== 'active') return;
+    flowRef.current = true;
+    setNativeBusy(true);
+    try {
+      const outcome = Platform.OS === 'android' ? await startPlayUpdateAsync(result.status === 'forced') : 'unavailable';
+      if (!mountedRef.current) return;
+      if (outcome === 'downloaded') setInstallStatus(11);
+      else if (outcome === 'accepted') { setInstallStatus(1); void refreshInstallStatus(); }
+      else if (outcome === 'cancelled') { if (result.status === 'optional') dismiss(); }
+      else if (outcome !== 'busy' && !automatic) openStore();
+    } catch {
+      if (!automatic) openStore();
+    } finally {
+      flowRef.current = false;
+      if (mountedRef.current) setNativeBusy(false);
+    }
+  };
+
+  // Use the actual Google Play sheet once per eligible reminder. Keep the old
+  // prompt as fallback on older development clients and unsupported stores.
+  useEffect(() => {
+    if (!foreground || !result || result.status === 'ok' || nativeBusy || downloading || installStatus === 11) return;
+    if (result.status === 'optional' && dismissed) return;
+    if (Platform.OS !== 'android' || !supportsPlayUpdateFlow() || promptedRef.current === result.updateId) return;
+    promptedRef.current = result.updateId;
+    void startUpdate(true);
+  }, [result, dismissed, foreground, nativeBusy, downloading, installStatus]);
 
   const dismiss = () => {
     setDismissed(true);
@@ -94,7 +154,22 @@ export default function AppUpdateGate() {
     }
   };
 
-  if (!result || result.status === 'ok') return null;
+  if (installStatus === 11) return (
+    <View style={[styles.banner, { top: insets.top + 4, backgroundColor: Colors.surface }]}>
+      <Text style={[styles.bannerText, { color: Colors.text }]}>Update ready to install</Text>
+      <TouchableOpacity disabled={nativeBusy} style={styles.bannerAction} onPress={() => {
+        Alert.alert('Restart Axonic?', 'The update will close and restart Axonic. Finish any active call first.', [
+          { text: 'Later', style: 'cancel' },
+          { text: 'Restart', onPress: () => {
+            setNativeBusy(true);
+            void completePlayUpdateAsync().catch(() => Alert.alert('Could not install update', 'Please try again or update from Google Play.')).finally(() => { if (mountedRef.current) setNativeBusy(false); });
+          } },
+        ]);
+      }}><Text style={{ color: Colors.primary, fontWeight: '700' }}>Restart to update</Text></TouchableOpacity>
+    </View>
+  );
+  if (!result || result.status === 'ok' || nativeBusy) return null;
+  if (downloading && result.status !== 'forced') return null;
 
   // ---- Forced update: blocking full-screen overlay ----
   if (result.status === 'forced') {
@@ -110,7 +185,7 @@ export default function AppUpdateGate() {
             </Text>
             <TouchableOpacity
               style={[styles.primaryBtn, { backgroundColor: Colors.primary }]}
-              onPress={openStore}
+              onPress={() => { void startUpdate(); }}
               activeOpacity={0.85}
             >
               <Text style={styles.primaryBtnText}>
@@ -131,7 +206,7 @@ export default function AppUpdateGate() {
       <Text style={styles.bannerText} numberOfLines={1}>
         A new version is available
       </Text>
-      <TouchableOpacity onPress={openStore} style={styles.bannerAction} activeOpacity={0.8}>
+      <TouchableOpacity onPress={() => { void startUpdate(); }} style={styles.bannerAction} activeOpacity={0.8}>
         <Text style={styles.bannerActionText}>Update</Text>
       </TouchableOpacity>
       <TouchableOpacity onPress={dismiss} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>

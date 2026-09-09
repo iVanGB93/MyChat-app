@@ -1,3 +1,4 @@
+import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 /*  Incoming Call Screen — full screen alert for incoming calls        */
 /*  Plays ringtone, vibrates, uses shared NotificationContext          */
@@ -17,7 +18,7 @@ import {
 } from 'react-native';
 import { RTCView } from 'react-native-webrtc';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { Font, Radius, Spacing } from '../../theme';
+import { Font, Spacing } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
 import { joinCall, endCall } from '../../services/callService';
@@ -38,12 +39,15 @@ import type { RootStackParamList } from '../../types';
 type Props = NativeStackScreenProps<RootStackParamList, 'IncomingCall'>;
 
 export default function IncomingCallScreen({ route, navigation }: Props) {
-  const { callId, callerName, callType, roomName } = route.params;
+  const contactName = useContactName();
+  const { callId, callerName: originalName, callType, roomName } = route.params;
+  const callerName = contactName(route.params.callerId, originalName);
   const { colors: Colors } = useTheme();
   const { ensure: ensurePermission } = usePermissionPrompt();
   const { subscribe } = useNotificationContext();
   const dismissed = useRef(false);
   const accepted = useRef(false);
+  const accepting = useRef(false);
   const [localPreviewUrl, setLocalPreviewUrl] = React.useState<string | null>(null);
 
   // When the app is launched directly into this screen from a background/killed
@@ -150,12 +154,19 @@ export default function IncomingCallScreen({ route, navigation }: Props) {
   }, [callId]);
 
   const handleAccept = async () => {
-    if (dismissed.current) return;
+    if (dismissed.current || accepting.current) return;
+    accepting.current = true;
     // Camera (video) / mic are required for the call to work — ask before we
     // join so we don't accept into a broken call. If denied, keep ringing so
     // the user can grant access and retry (or reject).
-    const ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
-    if (!ok) return;
+    let ok = false;
+    try {
+      ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
+    } finally {
+      accepting.current = false;
+    }
+    // The caller can cancel while Android's permission dialog is open.
+    if (!ok || dismissed.current) return;
     dismissed.current = true;
     accepted.current = true;
     stopLooping();
@@ -390,6 +401,9 @@ function makeStyles(Colors: any) {
     },
 
     callerName: {
+      backgroundColor: 'rgba(2,4,19,0.65)',
+      paddingHorizontal: 8,
+      borderRadius: 8,
       fontSize: Font.size.xxl,
       color: '#fff',
       marginTop: Spacing.xl,
@@ -434,6 +448,9 @@ function makeStyles(Colors: any) {
       elevation: 9,
     },
     btnLabel: {
+      backgroundColor: 'rgba(2,4,19,0.65)',
+      paddingHorizontal: 6,
+      borderRadius: 6,
       color: '#fff',
       fontSize: Font.size.xs,
       marginTop: 8,
