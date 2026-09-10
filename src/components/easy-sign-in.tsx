@@ -8,7 +8,7 @@ import Button from './ui/Button';
 import { formatApiError } from '../services/errorMessages';
 import { adoptEasyAuthResult, easyAuthRequest, EasyAuthError, googleSignInAvailable, signInWithGoogle, type EasyAuthResult, type SignInChallenge } from '../services/easy-auth';
 
-export default function EasySignIn({ disabled, onBusy }: { disabled: boolean; onBusy: (value: boolean) => void }) {
+export default function EasySignIn({ disabled, onBusy, googleOnly = false }: { disabled: boolean; onBusy: (value: boolean) => void; googleOnly?: boolean }) {
   const { colors: c } = useTheme();
   const { loginWithTokens } = useAuth();
   const { alert } = useConfirm();
@@ -17,6 +17,7 @@ export default function EasySignIn({ disabled, onBusy }: { disabled: boolean; on
   const GoogleButton: typeof import('@react-native-google-signin/google-signin').GoogleSigninButton | null =
     googleSignInAvailable() ? require('@react-native-google-signin/google-signin').GoogleSigninButton : null;
   const [expanded, setExpanded] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [username, setUsername] = useState('');
@@ -39,19 +40,20 @@ export default function EasySignIn({ disabled, onBusy }: { disabled: boolean; on
   };
   const run = async (work: () => Promise<EasyAuthResult | null>) => {
     if (locked.current || disabled) return;
-    locked.current = true; onBusy(true);
+    locked.current = true; setBusy(true); onBusy(true);
     try { const result = await work(); if (mounted.current) await handle(result); }
     catch (error) { if (mounted.current) alert('Could not sign in', error instanceof EasyAuthError ? error.message : formatApiError(error, { fallback: 'Please check your connection and try again.' })); }
-    finally { locked.current = false; if (mounted.current) onBusy(false); }
+    finally { locked.current = false; if (mounted.current) { setBusy(false); onBusy(false); } }
   };
   const requestEmail = () => easyAuthRequest('email', { email: email.trim().toLowerCase() });
   const remaining = Math.max(0, Math.ceil((resendAt - now) / 1000));
   return <View style={{ gap: 12, marginBottom: 20 }}>
-    <Text style={{ color: c.text, fontSize: 22, fontWeight: '700' }}>Welcome to Axonic</Text>
-    <Text style={{ color: c.textSecondary }}>Sign in or create an account. Your conversations stay with the same account.</Text>
-    {GoogleButton && !challenge && <GoogleButton size={GoogleButton.Size.Wide} style={{ width: '100%', height: 48 }} disabled={disabled} onPress={() => { void run(signInWithGoogle); }} />}
-    {!expanded && <Button title="Continue with email" disabled={disabled} onPress={() => setExpanded(true)} />}
-    {expanded && !challenge && <>
+    {!googleOnly && <Text style={{ color: c.text, fontSize: 22, fontWeight: '700' }}>Welcome to Axonic</Text>}
+    {!googleOnly && <Text style={{ color: c.textSecondary }}>Sign in or create an account. Your conversations stay with the same account.</Text>}
+    {googleOnly && !challenge && <Button title="Sign in with Google" variant="outline" style={{ backgroundColor: c.surface }} loading={busy} disabled={disabled || !GoogleButton} onPress={() => { void run(signInWithGoogle); }} />}
+    {!googleOnly && GoogleButton && !challenge && <GoogleButton size={GoogleButton.Size.Wide} style={{ width: '100%', height: 48 }} disabled={disabled} onPress={() => { void run(signInWithGoogle); }} />}
+    {!googleOnly && !expanded && <Button title="Continue with email" disabled={disabled} onPress={() => setExpanded(true)} />}
+    {!googleOnly && expanded && !challenge && <>
       <Input label="Email" value={email} onChangeText={setEmail} keyboardType="email-address" autoComplete="email" autoCapitalize="none" editable={!disabled} />
       <Button title="Send sign-in code" disabled={disabled || !email.trim()} onPress={() => { void run(requestEmail); }} />
     </>}
@@ -64,6 +66,6 @@ export default function EasySignIn({ disabled, onBusy }: { disabled: boolean; on
       <Button title={remaining ? `Resend code in ${remaining}s` : 'Resend code'} variant="ghost" disabled={disabled || remaining > 0} onPress={() => { void run(challenge.google_link ? signInWithGoogle : requestEmail); }} />
       <Button title="Use another sign-in method" variant="ghost" disabled={disabled} onPress={() => { setChallenge(undefined); setCode(''); setUsername(''); setNeedsUsername(false); setExpanded(false); }} />
     </>}
-    <Text style={{ color: c.textSecondary, textAlign: 'center' }}>Or use your password below</Text>
+    {!googleOnly && <Text style={{ color: c.textSecondary, textAlign: 'center' }}>Or use your password below</Text>}
   </View>;
 }

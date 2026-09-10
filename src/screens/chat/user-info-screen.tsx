@@ -18,9 +18,7 @@ import Avatar from '../../components/ui/Avatar';
 import { useAuth } from '../../contexts/AuthContext';
 import { useConfirm } from '../../contexts/ConfirmContext';
 import { useTheme } from '../../contexts/ThemeContext';
-import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import { resolveMediaUrl } from '../../services/api';
-import { initiateCall } from '../../services/callService';
 import { getContacts } from '../../services/contactService';
 import { getCachedContacts, getCachedRooms } from '../../services/localMessageStore';
 import { useAppStore } from '../../store/appStore';
@@ -47,13 +45,11 @@ export default function UserInfoScreen() {
   const { user } = useAuth();
   const { alert } = useConfirm();
   const { colors: Colors } = useTheme();
-  const { ensure: ensurePermission } = usePermissionPrompt();
   const presence = useAppStore((state) => state.presenceByUserId[route.params.userId]);
   const isMuted = useAppStore((state) => !!state.mutedRooms[route.params.roomId]);
   const toggleRoomMuted = useAppStore((state) => state.toggleRoomMuted);
   const [profile, setProfile] = useState<UserSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [calling, setCalling] = useState(false);
   const contactName = useContactName();
   const [nicknameDraft, setNicknameDraft] = useState<string | null>(null);
   const [savingNickname, setSavingNickname] = useState(false);
@@ -118,26 +114,8 @@ export default function UserInfoScreen() {
   }, [displayName, navigation, route.params.roomId, route.params.userId]);
 
   const startCall = useCallback(async (callType: 'voice' | 'video') => {
-    if (calling) return;
-    const permission = callType === 'video' ? 'camera+microphone' : 'microphone';
-    if (!(await ensurePermission(permission))) return;
-    setCalling(true);
-    try {
-      const result = await initiateCall(route.params.userId, callType);
-      navigation.navigate('ActiveCall', {
-        callId: result.call_id,
-        otherName: displayName,
-        callType,
-        roomName: result.room_name,
-        isOutgoing: true,
-        peerUserId: route.params.userId,
-      });
-    } catch {
-      alert('Could not start call', `Axonic could not call ${displayName}. Please try again.`);
-    } finally {
-      setCalling(false);
-    }
-  }, [alert, calling, displayName, ensurePermission, navigation, route.params.userId]);
+    navigation.navigate('OutgoingCall', { otherName: displayName, callType, peerUserId: route.params.userId });
+  }, [displayName, navigation, route.params.userId]);
 
   const Action = useMemo(() => ({ icon, label, onPress }: ActionProps) => (
     <TouchableOpacity style={styles.action} activeOpacity={0.72} onPress={onPress}>
@@ -215,15 +193,25 @@ export default function UserInfoScreen() {
           accessibilityLabel="Private nickname"
           value={nicknameDraft ?? namesForOwner(user?.id)[route.params.userId] ?? ''}
           onChangeText={setNicknameDraft}
+          editable={!savingNickname}
           maxLength={50}
           placeholder="For example, Dad"
           placeholderTextColor={Colors.textTertiary}
           style={{ color: Colors.text, padding: 12, borderWidth: 1, borderColor: Colors.neonBorder, borderRadius: 10 }}
         />
         <TouchableOpacity disabled={savingNickname || nicknameDraft === null} onPress={async () => {
-          if (!user || nicknameDraft === null) return;
+          if (!user || nicknameDraft === null || savingNickname) return;
           setSavingNickname(true);
-          try { await saveContactNickname(user.id, route.params.userId, nicknameDraft); setNicknameDraft(null); }
+          try {
+            await saveContactNickname(user.id, route.params.userId, nicknameDraft);
+            setNicknameDraft(null);
+            alert(
+              nicknameDraft.trim() ? 'Nickname saved' : 'Nickname removed',
+              nicknameDraft.trim()
+                ? 'Your private nickname was saved on this phone. Only you can see it.'
+                : 'This contact will now use their profile name again.',
+            );
+          }
           catch { alert('Could not save nickname', 'Please try again.'); }
           finally { setSavingNickname(false); }
         }}><Text style={{ color: Colors.primary, fontWeight: '700' }}>{savingNickname ? 'Saving…' : 'Save nickname'}</Text></TouchableOpacity>

@@ -46,7 +46,6 @@ import { useChat, WsMessage } from '../../hooks/useChat';
 import { initDB, getCachedRooms, getRecentMessages, getMessagesBefore, getMessagesByIds, deleteMessage, toggleReaction, LocalMessage, setCachedRelationship } from '../../services/localMessageStore';
 import { markRoomAsRead, sendMessageUpdate, markIdsAsReadInRoom, retryOutgoingMessage, sendChatMessage, type SendChatResult } from '../../services/chatWsManager';
 import { getRooms } from '../../services/chatService';
-import { initiateCall } from '../../services/callService';
 import { playSound } from '../../services/soundService';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { useAppStore } from '../../store/appStore';
@@ -68,14 +67,18 @@ import SharePreview, { type PreviewItem } from '../../components/chat/share-prev
 import { reconcileAxionDelivery } from '../../services/axionRuntimeBridge';
 import { useContactName } from '../../hooks/useContactName';
 import StickerPicker from '../../components/chat/sticker-picker';
-import { stickerMessage } from '../../services/stickers';
-import { importedStickerUri } from '../../services/imported-stickers';
+import { stickerMessage, parseSticker, loadStickerPreferences, updateStickerPreferences, type Sticker } from '../../services/stickers';
+import { importedStickerUri, importedStickerMime, stickerFileMime, importSticker, isImportedStickerFavorite } from '../../services/imported-stickers';
+import StickerPreview from '../../components/chat/sticker-preview';
 import { IMPORTED_STICKER_CONTENT } from '../../services/sticker-file-format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
 
 const REACTION_EMOJIS = ['❤️', '👍', '😂', '😮', '😢', '👏'];
 const LOCAL_HISTORY_PAGE_SIZE = 60;
+const isStickerMessage = (message: Message | null) => !!message && !message.is_deleted &&
+  ((message.message_type === 'text' && !!parseSticker(message.content || '')) ||
+    (message.message_type === 'image' && message.content === IMPORTED_STICKER_CONTENT));
 
 /** Compact header signal shown while the room socket is reconnecting. */
 function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing: boolean; color: string }) {
@@ -300,6 +303,21 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const [hasOlderMessages, setHasOlderMessages] = useState(true);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
   const [contextMsg, setContextMsg] = useState<Message | null>(null);
+  const [stickerPreview, setStickerPreview] = useState<{ sticker?: Sticker; uri?: string } | null>(null);
+  const [stickerFavorite, setStickerFavorite] = useState<boolean | null>(null);
+  const favoritingSticker = useRef(false);
+  const contextIsSticker = isStickerMessage(contextMsg);
+  useEffect(() => {
+    let active = true;
+    setStickerFavorite(null);
+    if (contextIsSticker && contextMsg && user?.id) {
+      const sticker = parseSticker(contextMsg.content || '');
+      const check = sticker ? loadStickerPreferences(user.id).then((p) => p.favorites.includes(sticker.id)) :
+        isImportedStickerFavorite(user.id, contextMsg.file_uri || contextMsg.file || '');
+      check.then((value) => { if (active) setStickerFavorite(value); }).catch(() => { if (active) setStickerFavorite(false); });
+    }
+    return () => { active = false; };
+  }, [contextMsg, contextIsSticker, user?.id]);
   const [contextY,   setContextY]   = useState(0);
   /** Message currently being forwarded — when set, the room-picker modal is shown. */
   const [forwardMsg, setForwardMsg] = useState<Message | null>(null);
@@ -663,15 +681,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     if (!isDirectChat || !resolvedOtherUserId) { alert('Info', 'Calls are only available in direct chats'); return; }
     // A call needs the mic (always) and the camera (video). Ask up front so the
     // call doesn't silently fail when WebRTC can't get the media tracks.
-    const ok = await ensurePermission(callType === 'video' ? 'camera+microphone' : 'microphone');
-    if (!ok) return;
-    try {
-      const res = await initiateCall(resolvedOtherUserId, callType);
-      navigation.navigate('ActiveCall', {
-        callId: res.call_id, otherName: route.params.roomName,
-        callType, roomName: res.room_name, isOutgoing: true, peerUserId: resolvedOtherUserId,
-      });
-    } catch { alert('Error', 'Failed to start call'); }
+    navigation.navigate('OutgoingCall', { otherName: route.params.roomName, callType, peerUserId: resolvedOtherUserId });
   };
 
   const headerTitle = isGroupChat
@@ -1122,6 +1132,21 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     }
   }, [contextMsg, alert]);
 
+  const handleFavoriteSticker = async () => {
+    if (!contextMsg || !user?.id || favoritingSticker.current) return;
+    favoritingSticker.current = true;
+    const message = contextMsg;
+    setContextMsg(null);
+    try {
+      const sticker = parseSticker(message.content || '');
+      if (sticker) {
+        const prefs = await loadStickerPreferences(user.id);
+        if (!prefs.favorites.includes(sticker.id)) await updateStickerPreferences(user.id, sticker.id, 'favorite');
+      } else await importSticker(user.id, message.file_uri || message.file || '', 'Sticker', true);
+    } catch (error) { alert('Could not save favorite', error instanceof Error ? error.message : 'Please try again.'); }
+    finally { favoritingSticker.current = false; }
+  };
+
   const handleDeleteReceivedMedia = useCallback(() => {
     const message = contextMsg;
     setContextMsg(null);
@@ -1205,6 +1230,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const handleDelete = useCallback(() => {
     if (!contextMsg) return;
     const msgId = contextMsg.id;
+    const localOnly = contextMsg.sender !== user?.id;
     setContextMsg(null);
     confirm({
       title: 'Delete message',
@@ -1215,11 +1241,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         { text: 'Delete', style: 'destructive', onPress: async () => {
           await deleteMessage(msgId);
           // Update in-memory WS state + relay to other members
-          sendMessageUpdate(roomId, msgId, { is_deleted: true }, otherUserId ? [otherUserId] : []);
+          if (!localOnly) sendMessageUpdate(roomId, msgId, { is_deleted: true }, otherUserId ? [otherUserId] : []);
+          await loadFromDB();
         }},
       ],
     });
-  }, [contextMsg, roomId, loadFromDB]);
+  }, [contextMsg, roomId, loadFromDB, user?.id, otherUserId, confirm]);
 
   /** Open the forward picker from local room metadata, then repair in background. */
   const handleForward = useCallback(async () => {
@@ -1248,7 +1275,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       // blob and sends a new pointer to the destination room.
       const extras =
         type === 'image'
-          ? { file_uri: msg.file_uri ?? msg.file ?? null, image_mime: 'image/jpeg' }
+          ? { file_uri: msg.file_uri ?? msg.file ?? null, image_mime: isStickerMessage(msg) ? await stickerFileMime(msg.file_uri || msg.file || '') : 'image/jpeg' }
           : type === 'voice'
             ? { file_uri: msg.file_uri ?? msg.file ?? null, duration_ms: msg.duration_ms ?? null, audio_mime: 'audio/m4a' }
             : (type === 'video' || type === 'document')
@@ -1281,6 +1308,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   }, []);
 
   const handleImagePress = useCallback(async (message: Message) => {
+    const sticker = parseSticker(message.content || '');
+    if (isStickerMessage(message) && sticker) { setStickerPreview({ sticker }); return; }
     const uri = message.file_uri ?? message.file ?? null;
     if (!uri) {
       alert('Image unavailable', 'This image is not stored on this phone yet.');
@@ -1296,7 +1325,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         );
         return;
       }
-      setFullscreenImageUri(uri);
+      if (isStickerMessage(message)) setStickerPreview({ uri });
+      else setFullscreenImageUri(uri);
     } catch {
       alert('Image unavailable', 'Axonic could not find this image on the phone.');
     }
@@ -1680,6 +1710,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         accentColor={Colors.primary}
         onClose={() => setFullscreenImageUri(null)}
       />
+      {stickerPreview && <StickerPreview {...stickerPreview} onClose={() => setStickerPreview(null)} />}
       {/* Long-press context menu */}
       <Modal
         visible={contextMsg !== null}
@@ -1715,7 +1746,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 );
               })}
             </View>
-            {contextMsg && !contextMsg.is_deleted && (contextMsg.message_type === 'text' || !contextMsg.message_type) && (
+            {contextIsSticker && stickerFavorite === false && <TouchableOpacity onPress={handleFavoriteSticker} style={styles.contextOption} accessibilityRole="button"><Text style={[styles.contextOptionText, { color: Colors.text }]}>☆  Add to favorites</Text></TouchableOpacity>}
+            {contextMsg && !contextIsSticker && !contextMsg.is_deleted && (contextMsg.message_type === 'text' || !contextMsg.message_type) && (
               <>
                 <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
                 <TouchableOpacity onPress={handleCopy} style={styles.contextOption}>
@@ -1746,12 +1778,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 </TouchableOpacity>
               </>
             )}
-            {contextMsg && !contextMsg.is_deleted && contextMsg.message_type === 'image' && !!(contextMsg.file_uri || contextMsg.file) && (
+            {contextMsg && !contextIsSticker && !contextMsg.is_deleted && contextMsg.message_type === 'image' && !!(contextMsg.file_uri || contextMsg.file) && (
               <TouchableOpacity onPress={handleCreateSticker} style={styles.contextOption} accessibilityRole="button">
                 <Text style={[styles.contextOptionText, { color: Colors.text }]}>＋  Create sticker</Text>
               </TouchableOpacity>
             )}
-            {contextMsg && !contextMsg.is_deleted && contextMsg.sender !== user?.id
+            {contextMsg && !contextIsSticker && !contextMsg.is_deleted && contextMsg.sender !== user?.id
               && ['image', 'video', 'voice', 'document', 'file'].includes(contextMsg.message_type)
               && !!(contextMsg.file_uri || contextMsg.file) && (
               <TouchableOpacity onPress={handleDeleteReceivedMedia} style={styles.contextOption} accessibilityRole="button">
@@ -1770,7 +1802,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 </TouchableOpacity>
               </>
             )}
-            {contextMsg?.sender === user?.id && (
+            {(contextMsg?.sender === user?.id || contextIsSticker) && (
               <>
                 <View style={[styles.contextDivider, { backgroundColor: Colors.divider }]} />
                 <TouchableOpacity onPress={handleDelete} style={styles.contextOption}>
@@ -1784,9 +1816,10 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
       {stickersOpen && user?.id && <StickerPicker ownerId={user.id} initialUri={stickerSourceUri} onClose={() => { setStickersOpen(false); setStickerSourceUri(undefined); }} onSendImported={async (sticker) => {
         // Each message owns its copy so deleting a collection entry cannot break retries or history.
-        const uri = await persistOutgoingImage(`sticker-${Date.now()}-${Math.random().toString(36).slice(2)}`, importedStickerUri(user.id, sticker), 'image/png');
+        const mime = importedStickerMime(sticker);
+        const uri = await persistOutgoingImage(`sticker-${Date.now()}-${Math.random().toString(36).slice(2)}`, importedStickerUri(user.id, sticker), mime);
         const reply = replyingTo ? { id: replyingTo.id, sender_name: replyingTo.sender_username || '', content: (replyingTo.content ?? '').slice(0, 140), type: replyingTo.message_type } : null;
-        const result = await sendMessage(IMPORTED_STICKER_CONTENT, 'image', reply, { file_uri: uri, image_mime: 'image/png' });
+        const result = await sendMessage(IMPORTED_STICKER_CONTENT, 'image', reply, { file_uri: uri, image_mime: mime });
         if (result.state === 'failed' || !result.messageId) throw new Error(result.error?.message || 'Sticker could not be queued.');
         setReplyingTo(null);
         playSound('message_sent');

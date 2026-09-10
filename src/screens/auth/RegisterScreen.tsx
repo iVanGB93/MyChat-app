@@ -35,6 +35,7 @@ export default function RegisterScreen({ navigation }: Props) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const validate = () => {
@@ -48,6 +49,7 @@ export default function RegisterScreen({ navigation }: Props) {
   };
 
   const handleRegister = async () => {
+    if (loading || googleBusy) return;
     if (!validate()) return;
     setLoading(true);
     try {
@@ -104,7 +106,6 @@ export default function RegisterScreen({ navigation }: Props) {
         </View>
 
         {/* Form */}
-        <EasySignIn disabled={loading} onBusy={setLoading} />
         <View style={[styles.form, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder, shadowColor: Colors.accent }]}>
           <Input
             label="Username"
@@ -113,6 +114,7 @@ export default function RegisterScreen({ navigation }: Props) {
             onChangeText={setUsername}
             error={errors.username}
             autoComplete="username"
+            editable={!loading && !googleBusy}
           />
           <Input
             label="Display name"
@@ -121,6 +123,7 @@ export default function RegisterScreen({ navigation }: Props) {
             onChangeText={setDisplayName}
             autoCapitalize="words"
             maxLength={50}
+            editable={!loading && !googleBusy}
           />
           <Input
             label="Email"
@@ -130,6 +133,7 @@ export default function RegisterScreen({ navigation }: Props) {
             error={errors.email}
             keyboardType="email-address"
             autoComplete="email"
+            editable={!loading && !googleBusy}
           />
           <Input
             label="Password"
@@ -138,6 +142,7 @@ export default function RegisterScreen({ navigation }: Props) {
             onChangeText={setPassword}
             error={errors.password}
             isPassword
+            editable={!loading && !googleBusy}
           />
           <Input
             label="Confirm Password"
@@ -146,10 +151,13 @@ export default function RegisterScreen({ navigation }: Props) {
             onChangeText={setConfirmPassword}
             error={errors.confirmPassword}
             isPassword
+            editable={!loading && !googleBusy}
           />
 
-          <Button title="INITIALIZE" onPress={handleRegister} loading={loading} style={styles.btn} />
+          <Button title="INITIALIZE" onPress={handleRegister} loading={loading} disabled={googleBusy} style={styles.btn} />
         </View>
+
+        <EasySignIn googleOnly disabled={loading || googleBusy} onBusy={setGoogleBusy} />
 
         {/* Footer */}
         <View style={styles.footer}>

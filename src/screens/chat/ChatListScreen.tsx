@@ -23,7 +23,6 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius, type ThemeColors } from '../../theme';
 import { resolveMediaUrl } from '../../services/api';
 import { getRooms } from '../../services/chatService';
-import { initiateCall } from '../../services/callService';
 import { getCachedRooms, getLastMessagePerRoom, deleteRoomMessages } from '../../services/localMessageStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -34,9 +33,9 @@ import { Ionicons } from '@expo/vector-icons';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
 import ChatAvatarActionModal from '../../components/chat/chat-avatar-action-modal';
-import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import type { ChatRoom, RootStackParamList } from '../../types';
 import { selectLatestMessagePreview, type MessagePreview } from '../../utils/messagePreview';
+import { chatPreviewText } from '../../utils/chat-preview-text';
 
 dayjs.extend(relativeTime);
 
@@ -223,7 +222,7 @@ function ChatListRowBase({
                             : '✓ '}
                       </Text>
                     )}
-                    {lastMsgContent}
+                    {chatPreviewText(lastMsgContent)}
                   </>
                 )
                 : '— no messages yet —'}
@@ -264,7 +263,6 @@ export default function ChatListScreen() {
   const navigation = useNavigation<Nav>();
   const { user } = useAuth();
   const { colors: Colors } = useTheme();
-  const { ensure: ensurePermission } = usePermissionPrompt();
   const unreadByRoom = useAppStore((s) => s.unreadByRoom);
   const clearAllUnread = useAppStore((s) => s.clearAllUnread);
   const clearRoomUnread = useAppStore((s) => s.clearRoomUnread);
@@ -275,7 +273,7 @@ export default function ChatListScreen() {
   const typingByRoom = useAppStore((s) => s.typingByRoom);
   const mutedRooms = useAppStore((s) => s.mutedRooms);
   const presenceByUserId = useAppStore((s) => s.presenceByUserId);
-  const { alert, confirm } = useConfirm();
+  const { confirm } = useConfirm();
   const totalUnread = Object.values(unreadByRoom).reduce((a, b) => a + b, 0);
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [loading, setLoading] = useState(true);
@@ -544,21 +542,8 @@ export default function ChatListScreen() {
     const peer = avatarOtherMember;
     const peerName = avatarDisplayName;
     setAvatarRoomId(null);
-    if (!(await ensurePermission('microphone'))) return;
-    try {
-      const result = await initiateCall(peer.id, 'voice');
-      navigation.navigate('ActiveCall', {
-        callId: result.call_id,
-        otherName: peerName,
-        callType: 'voice',
-        roomName: result.room_name,
-        isOutgoing: true,
-        peerUserId: peer.id,
-      });
-    } catch {
-      alert('Could not start call', `Axonic could not call ${peerName}. Please try again.`);
-    }
-  }, [alert, avatarDisplayName, avatarOtherMember, avatarRoom, ensurePermission, navigation]);
+    navigation.navigate('OutgoingCall', { otherName: peerName, callType: 'voice', peerUserId: peer.id });
+  }, [avatarDisplayName, avatarOtherMember, avatarRoom, navigation]);
 
   const selectionMode = selectedRoomIds.size > 0;
   const allVisibleSelected = visibleRooms.length > 0

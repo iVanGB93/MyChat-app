@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.0.37",
+    "version": "1.0.38",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -109,6 +109,7 @@
       "./plugins/withFirebaseManifestFix",
       "./plugins/withCallActivityFlags",
       "./plugins/withGradleWindowsLockFix",
+      "./plugins/withAnimatedWebp",
       [
         "expo-share-intent",
         {

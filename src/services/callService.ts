@@ -15,13 +15,20 @@ export interface InitiateCallResponse {
   livekit_url: string;
 }
 
+let startingCall = false;
 export async function initiateCall(calleeId: number, callType: CallType = 'video'): Promise<InitiateCallResponse> {
+  if (startingCall) throw new Error('A call is already starting.');
+  startingCall = true;
+  try {
   const { data } = await api.post<InitiateCallResponse>('/api/calls/initiate/', {
     callee_id: calleeId,
     call_type: callType,
   });
   invalidateCollection('calls');
   return data;
+  } finally {
+    startingCall = false;
+  }
 }
 
 export async function joinCall(callId: string): Promise<InitiateCallResponse> {

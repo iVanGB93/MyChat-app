@@ -25,3 +25,13 @@ test('sticker picker animates the grid and preview without selection gating', ()
   assert.match(artwork, /if \(!animate \|\| reduceMotion \|\| !active \|\| !focused\) return/);
   assert.match(artwork, /animation\.stop\(\)/);
 });
+
+test('chat stickers loop and saved collections are separate from creation', () => {
+  const bubble = fs.readFileSync(path.join(__dirname, '../src/components/chat/MessageBubble.tsx'), 'utf8');
+  const picker = fs.readFileSync(path.join(__dirname, '../src/components/chat/sticker-picker.tsx'), 'utf8');
+  const studio = fs.readFileSync(path.join(__dirname, '../src/components/chat/sticker-studio.tsx'), 'utf8');
+  assert.match(bubble, /<StickerArt sticker=\{sticker\} animate loop/);
+  assert.match(picker, /\['All', 'Axonic', 'Recent', 'Favorites', 'Create'\]/);
+  assert.doesNotMatch(studio, /items\.map|My stickers/);
+  assert.match(picker, /await onSendImported\(selectedCustom\);[\s\S]*await markImportedStickerSent/);
+});

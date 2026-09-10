@@ -254,7 +254,9 @@ function MessageBubbleBase({
               {item.is_deleted ? (
                 <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>🚫 This message was deleted.</Text>
               ) : sticker ? (
-                <StickerArt sticker={sticker} />
+                <TouchableOpacity accessibilityLabel={`Preview ${sticker.label} sticker`} onPress={() => onImagePress(item)} onLongPress={(event) => onLongPress(event.nativeEvent.pageY, item)} delayLongPress={350}>
+                  <StickerArt sticker={sticker} animate loop size={120} />
+                </TouchableOpacity>
               ) : item.message_type === 'voice' ? (
                 <VoiceMessageBubble
                   fileUri={item.file_uri ?? item.file ?? null}
@@ -275,7 +277,7 @@ function MessageBubbleBase({
                 >
                   <ExpoImage
                     source={{ uri: item.file_uri ?? item.file ?? '' }}
-                    style={importedSticker ? { width: 160, height: 160 } : styles.imageBubble}
+                    style={importedSticker ? { width: 128, height: 128 } : styles.imageBubble}
                     contentFit={importedSticker ? 'contain' : 'cover'}
                     cachePolicy="memory-disk"
                     transition={100}

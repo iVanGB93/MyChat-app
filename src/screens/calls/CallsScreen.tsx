@@ -20,9 +20,8 @@ import relativeTime from 'dayjs/plugin/relativeTime';
 import { Font, Spacing, Radius } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
-import { useConfirm } from '../../contexts/ConfirmContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { getCallHistory, initiateCall } from '../../services/callService';
+import { getCallHistory } from '../../services/callService';
 import { getCachedCallHistory } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import EmptyState from '../../components/ui/EmptyState';
@@ -37,7 +36,6 @@ export default function CallsScreen() {
   const navigation = useNavigation<Nav>();
   const { user } = useAuth();
   const { colors: Colors } = useTheme();
-  const { alert } = useConfirm();
   const [calls, setCalls] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -73,19 +71,7 @@ export default function CallsScreen() {
   const handleCallback = async (call: CallLog) => {
     const otherId = call.caller === user?.id ? call.callee : call.caller;
     const otherName = contactName(otherId, call.caller === user?.id ? call.callee_username : call.caller_username);
-    try {
-      const res = await initiateCall(otherId, call.call_type);
-      navigation.navigate('ActiveCall', {
-        callId: res.call_id,
-        otherName,
-        callType: call.call_type,
-        roomName: res.room_name,
-        isOutgoing: true,
-        peerUserId: otherId,
-      });
-    } catch {
-      alert('Error', 'Failed to start call');
-    }
+    navigation.navigate('OutgoingCall', { otherName, callType: call.call_type, peerUserId: otherId });
   };
 
   const formatCallTime = (dateStr: string) => {

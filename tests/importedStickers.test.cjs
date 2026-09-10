@@ -26,14 +26,33 @@ function webp(kind) {
 test('file validation checks actual PNG/WebP containers, not extensions', () => {
   assert.equal(format.validateStickerFile(png()), 'png');
   assert.equal(format.validateStickerFile(webp('VP8L')), 'webp');
-  assert.throws(() => format.validateStickerFile(Buffer.from('fake.png')), /PNG or WebP/);
+  assert.throws(() => format.validateStickerFile(Buffer.from('fake.png')), /PNG, GIF or WebP/);
   assert.throws(() => format.validateStickerFile(png().subarray(0, 40)), /Incomplete/);
 });
-test('animated, oversized and excessive-dimension stickers are rejected', () => {
+test('unsupported APNG, incomplete animations and oversized stickers are rejected', () => {
   assert.throws(() => format.validateStickerFile(png(512, true)), /Animated/);
-  assert.throws(() => format.validateStickerFile(webp('ANIM')), /Animated/);
+  assert.throws(() => format.validateStickerFile(webp('ANIM')), /Choose/);
   assert.throws(() => format.validateStickerFile(png(4096)), /dimensions/);
   assert.throws(() => format.validateStickerFile(new Uint8Array(format.MAX_STICKER_BYTES + 1)), /2 MB/);
+});
+
+test('GIF and animated WebP are saved byte-for-byte and keep their MIME and extension', async () => {
+  const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+  const animatedWebp = Buffer.alloc(44);
+  animatedWebp.write('RIFF'); animatedWebp.writeUInt32LE(36, 4); animatedWebp.write('WEBP', 8);
+  animatedWebp.write('ANMF', 12); animatedWebp.writeUInt32LE(24, 16);
+  for (const [bytes, extension] of [[gif, 'gif'], [animatedWebp, 'webp']]) {
+    const { api, files } = fixture();
+    files.set('file:///input', bytes);
+    const [sticker] = await api.importSticker(1, 'file:///input', 'Animated');
+    const uri = api.importedStickerUri(1, sticker);
+    assert.ok(uri.endsWith(`.${extension}`));
+    assert.equal(api.importedStickerMime(sticker), `image/${extension}`);
+    assert.equal(await api.stickerFileMime(uri), `image/${extension}`);
+    assert.deepEqual(files.get(uri), bytes);
+    assert.ok(files.has('file:///input'));
+    assert.ok(!files.has('file:///normalized'));
+  }
 });
 function fixture() {
   const disk = new Map(), files = new Map([['file:///input', png()]]);
@@ -83,4 +102,31 @@ test('failed removal index write leaves existing sticker intact', async () => {
   const f = fixture(); const rows = await f.api.importSticker(1, 'file:///input', 'hello'); f.fail();
   await assert.rejects(f.api.removeImportedSticker(1, rows[0]), /disk full/);
   assert.ok(f.files.has(f.api.importedStickerUri(1, rows[0])));
+});
+
+test('favoriting a received sticker is durable, idempotent, and account scoped', async () => {
+  const { api, files } = fixture();
+  await api.importSticker(1, 'file:///input', 'Sticker');
+  assert.equal(await api.isImportedStickerFavorite(1, 'file:///input'), false);
+  await api.importSticker(1, 'file:///input', 'Sticker', true);
+  await api.importSticker(1, 'file:///input', 'Sticker', true);
+  const rows = await api.loadImportedStickers(1);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].favorite, true);
+  assert.equal(await api.isImportedStickerFavorite(1, 'file:///input'), true);
+  assert.equal(await api.isImportedStickerFavorite(2, 'file:///input'), false);
+  files.delete('file:///input');
+  assert.ok(files.has(api.importedStickerUri(1, rows[0])));
+});
+
+test('sent custom stickers persist recent activity without losing favorites', async () => {
+  const { api } = fixture();
+  const [sticker] = await api.importSticker(1, 'file:///input', 'Sticker', true);
+  await api.markImportedStickerSent(1, sticker.id);
+  await api.markImportedStickerSent(1, sticker.id);
+  const rows = await api.loadImportedStickers(1);
+  assert.equal(rows.length, 1);
+  assert.ok(rows[0].lastSentAt > 0);
+  assert.equal(rows[0].favorite, true);
+  assert.equal((await api.loadImportedStickers(2)).length, 0);
 });

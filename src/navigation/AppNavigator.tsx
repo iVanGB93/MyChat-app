@@ -35,6 +35,7 @@ import { decideIncomingCallInApp, decideInAppMessageToast } from '../services/no
 import { markAppInteractive } from '../services/observability';
 import { debugLog } from '../services/diagnostics';
 import StartupScreen from '../components/startup-screen';
+import { chatPreviewText } from '../utils/chat-preview-text';
 
 // Screens
 import LoginScreen from '../screens/auth/LoginScreen';
@@ -48,6 +49,7 @@ import ChatRoomScreen from '../screens/chat/ChatRoomScreen';
 import CallsScreen from '../screens/calls/CallsScreen';
 import IncomingCallScreen from '../screens/calls/IncomingCallScreen';
 import ActiveCallScreen from '../screens/calls/ActiveCallScreen';
+import OutgoingCallScreen from '../screens/calls/outgoing-call-screen';
 import ProfileScreen from '../screens/profile/ProfileScreen';
 
 import type { RootStackParamList } from '../types';
@@ -348,7 +350,7 @@ function MessageNotificationListener() {
             )}
           </Text>
           <Text style={[toastStyles.content, { color: Colors.textSecondary }]} numberOfLines={1}>
-            {toast.content}
+            {chatPreviewText(toast.content)}
           </Text>
         </View>
         <TouchableOpacity onPress={dismiss} hitSlop={{ top: 10, right: 10, bottom: 10, left: 10 }}>
@@ -547,6 +549,7 @@ export default function AppNavigator() {
                 component={ActiveCallScreen}
                 options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'fade' }}
               />
+              <Stack.Screen name="OutgoingCall" component={OutgoingCallScreen} options={{ headerShown: false, presentation: 'transparentModal', animation: 'slide_from_bottom', contentStyle: { backgroundColor: 'transparent' }, gestureEnabled: false }} />
               <Stack.Screen
                 name="ShareTarget"
                 component={require('../screens/chat/ShareTargetScreen').default}

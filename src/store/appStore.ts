@@ -526,7 +526,9 @@ export const useAppStore = create<AppState>()(
   setIncomingCall: (incomingCall) => set({ incomingCall }),
 
   /* --- Reset --- */
-  reset: () => set({ ...initialState }),
+  // Account changes must not erase device state. The lifecycle bridge stays
+  // mounted across logout/login, so no new OS event may arrive to reseed it.
+  reset: () => set((s) => ({ ...initialState, appLifecycle: s.appLifecycle, net: s.net })),
     }),
     {
       name: 'axonic-app-store',

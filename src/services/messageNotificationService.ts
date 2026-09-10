@@ -15,6 +15,7 @@ import notifee, {
 } from '@notifee/react-native';
 import { Platform } from 'react-native';
 import { resolveMediaUrl } from './api';
+import { chatPreviewText } from '../utils/chat-preview-text';
 
 const CHANNEL_ID = 'messages';
 const NOTIFICATION_ID_PREFIX = 'message:';
@@ -47,7 +48,7 @@ export function parseMessageNotifData(
   const roomId = String(raw.roomId ?? raw.room_id ?? '');
   if (!roomId) return null;
   const senderName = String(raw.sender ?? raw.title ?? 'New message');
-  const text = String(raw.body ?? raw.content ?? '');
+  const text = chatPreviewText(String(raw.body ?? raw.content ?? ''));
   const roomName = String(raw.roomName ?? raw.room_name ?? senderName);
   const rawTimestamp = raw.timestamp ?? raw.createdAt ?? raw.created_at ?? 0;
   const numericTimestamp = Number(rawTimestamp);
@@ -143,7 +144,7 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
   const isGroup = !!data.roomName && data.roomName !== data.senderName;
   const { notificationContactName } = await import('./contact-nicknames');
   const localName = await notificationContactName(data.senderId, data.senderName);
-  data = { ...data, senderName: localName, roomName: isGroup ? data.roomName : localName };
+  data = { ...data, text: chatPreviewText(data.text), senderName: localName, roomName: isGroup ? data.roomName : localName };
   const notifId = NOTIFICATION_ID_PREFIX + data.roomId;
 
   if (Platform.OS !== 'android') {

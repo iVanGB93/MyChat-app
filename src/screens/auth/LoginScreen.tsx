@@ -33,17 +33,19 @@ export default function LoginScreen({ navigation }: Props) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [errors, setErrors] = useState<{ username?: string; password?: string }>({});
 
   const validate = () => {
     const e: typeof errors = {};
-    if (!username.trim()) e.username = 'Username is required';
+    if (!username.trim()) e.username = 'Username or email is required';
     if (!password) e.password = 'Password is required';
     setErrors(e);
     return Object.keys(e).length === 0;
   };
 
   const handleLogin = async () => {
+    if (loading || googleBusy) return;
     if (!validate()) return;
     setLoading(true);
     try {
@@ -91,7 +93,6 @@ export default function LoginScreen({ navigation }: Props) {
         </View>
 
         {/* Form */}
-        <EasySignIn disabled={loading} onBusy={setLoading} />
         <View style={[styles.form, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder, shadowColor: Colors.primary }]}>
           <Input
             label="Username or email"
@@ -100,6 +101,7 @@ export default function LoginScreen({ navigation }: Props) {
             onChangeText={setUsername}
             error={errors.username}
             autoComplete="username"
+            editable={!loading && !googleBusy}
           />
           <Input
             label="Password"
@@ -108,15 +110,19 @@ export default function LoginScreen({ navigation }: Props) {
             onChangeText={setPassword}
             error={errors.password}
             isPassword
+            editable={!loading && !googleBusy}
           />
 
           <Button
             title="CONNECT"
             onPress={handleLogin}
             loading={loading}
+            disabled={googleBusy}
             style={styles.btn}
           />
         </View>
+
+        <EasySignIn googleOnly disabled={loading || googleBusy} onBusy={setGoogleBusy} />
 
         {/* Footer */}
         <View style={styles.footer}>

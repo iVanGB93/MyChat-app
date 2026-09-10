@@ -187,4 +187,5 @@ export type RootStackParamList = {
     isOutgoing: boolean;
     peerUserId: number;
   };
+  OutgoingCall: { peerUserId: number; otherName: string; callType: CallType };
 };
