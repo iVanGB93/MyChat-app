@@ -28,7 +28,6 @@ export function configureCrashReporting(): void {
       enableUserInteractionTracing: false,
       enableCaptureFailedRequests: false,
       enableLogs: false,
-      enableAutoConsoleLogs: false,
       attachScreenshot: false,
       attachViewHierarchy: false,
       replaysSessionSampleRate: 0,

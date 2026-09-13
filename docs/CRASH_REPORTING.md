@@ -9,6 +9,12 @@ an empty value disables reporting. Debug clients do not report unless
 
 ## Builds
 
+- Sentry is aligned with Expo SDK 55's recommended `~7.11.0` range.
+  Keep Expo dependency validation enabled. `enableLogs: false` and the
+  disabled Breadcrumbs integration prevent automatic console collection;
+  the version-8-only `enableAutoConsoleLogs` option is not used.
+  Existing development clients containing Sentry 8 must be rebuilt before
+  testing this version; do not mix the new JavaScript with the old native SDK.
 - Local upload authentication is stored in the Git-ignored `.sentryclirc`.
   Never commit it, copy it into the app, or share it in logs.
 - `SENTRY_AUTH_TOKEN` is configured as a project-scoped secret in the EAS
