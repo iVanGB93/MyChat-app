@@ -14,6 +14,7 @@ function fixture() {
   const timers = [];
   const navigations = [];
   const auth = { authLoading: true, user: null, activeCall: null };
+  const appState = { currentState: 'active' };
   let routeNames = ['Login'];
   let currentRoute = { name: 'Login' };
   let throwNextNavigation = false;
@@ -32,6 +33,8 @@ function fixture() {
     },
   };
   const modules = {
+    './crashReporting': { reportNotificationFailure: () => {} },
+    'react-native': { AppState: appState },
     '../navigation/AppNavigator': { navigationRef },
     '../store/appStore': { useAppStore: { getState: () => auth } },
     './callDedupe': { isCallEnded: () => false },
@@ -57,6 +60,7 @@ function fixture() {
   return {
     navigateFromNotification: sandbox.exports.navigateFromNotification,
     auth,
+    appState,
     navigations,
     setRoutes: (names) => { routeNames = names; },
     throwNextNavigation: () => { throwNextNavigation = true; },
@@ -78,6 +82,22 @@ test('notification waits for the authenticated stack before opening a chat', () 
   assert.equal(app.navigations.length, 1);
   assert.equal(app.navigations[0].name, 'ChatRoom');
   assert.equal(app.navigations[0].params.roomId, 'room-1');
+});
+
+test('notification waits for an active app even when the authenticated navigator is ready', () => {
+  const app = fixture();
+  app.auth.authLoading = false;
+  app.auth.user = { id: 3 };
+  app.setRoutes(['Main', 'ChatRoom', 'IncomingCall']);
+  app.appState.currentState = 'background';
+  app.navigateFromNotification({ roomId: 'group-background', roomName: 'Family' });
+  assert.equal(app.navigations.length, 0);
+  app.runNextTimer();
+  assert.equal(app.navigations.length, 0);
+  app.appState.currentState = 'active';
+  app.runNextTimer();
+  assert.equal(app.navigations.length, 1);
+  assert.equal(app.navigations[0].params.roomId, 'group-background');
 });
 
 test('a navigator detach during a notification tap is caught and retried', () => {

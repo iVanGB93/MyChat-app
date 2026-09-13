@@ -8,8 +8,8 @@ test('Metro excludes generated native build trees but keeps native module JS sou
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../metro.config.js'), 'utf8'), {
     module, __dirname: path.join(__dirname, '..'),
-    require: (name) => name === 'expo/metro-config'
-      ? { getDefaultConfig: () => ({ resolver: { blockList: original } }) }
+    require: (name) => name === '@sentry/react-native/metro'
+      ? { getSentryExpoConfig: () => ({ resolver: { blockList: original } }) }
       : require(name),
   });
   const excluded = (file) => module.exports.resolver.blockList.some((rule) => rule.test(file));

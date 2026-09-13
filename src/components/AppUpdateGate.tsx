@@ -4,8 +4,8 @@
 /*  Checks Google Play on launch/foreground (with a backend fallback):  */
 /*   - forces an update (blocking overlay) when the installed version is */
 /*     below the backend's min_supported (e.g. breaking protocol change) */
-/*   - suggests an update (dismissible banner) when a newer version is    */
-/*     available.                                                        */
+/*   - suggests optional updates through the native Google Play sheet   */
+/*   - offers restart after Play finishes downloading an update          */
 /*  Fails open: any error → renders nothing.                            */
 /* ------------------------------------------------------------------ */
 
@@ -137,8 +137,8 @@ export default function AppUpdateGate() {
     }
   };
 
-  // Use the actual Google Play sheet once per eligible reminder. Keep the old
-  // prompt as fallback on older development clients and unsupported stores.
+  // Google Play owns optional update prompts. Do not render a second app banner
+  // before/after the native sheet or when the native flow is unavailable.
   useEffect(() => {
     if (!foreground || !result || result.status === 'ok' || nativeBusy || downloading || installStatus === 11) return;
     if (result.status === 'optional' && dismissed) return;
@@ -198,22 +198,7 @@ export default function AppUpdateGate() {
     );
   }
 
-  // ---- Optional update: dismissible top banner ----
-  if (dismissed) return null;
-  return (
-    <View style={[styles.banner, { top: insets.top + 4, backgroundColor: Colors.primary }]}>
-      <Ionicons name="arrow-up-circle-outline" size={20} color="#fff" />
-      <Text style={styles.bannerText} numberOfLines={1}>
-        A new version is available
-      </Text>
-      <TouchableOpacity onPress={() => { void startUpdate(); }} style={styles.bannerAction} activeOpacity={0.8}>
-        <Text style={styles.bannerActionText}>Update</Text>
-      </TouchableOpacity>
-      <TouchableOpacity onPress={dismiss} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-        <Ionicons name="close" size={18} color="#fff" />
-      </TouchableOpacity>
-    </View>
-  );
+  return null;
 }
 
 const styles = StyleSheet.create({
@@ -268,5 +253,4 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
     backgroundColor: 'rgba(255,255,255,0.22)',
   },
-  bannerActionText: { color: '#fff', fontWeight: '800', fontSize: Font.size.xs, letterSpacing: 0.5 },
 });

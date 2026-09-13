@@ -1,7 +1,9 @@
+import { AppState } from 'react-native';
 import { navigationRef } from '../navigation/AppNavigator';
 import { useAppStore } from '../store/appStore';
 import { isCallEnded } from './callDedupe';
 import { parseNotificationDestination } from './notificationDestination';
+import { reportNotificationFailure } from './crashReporting';
 
 const pendingKeys = new Set<string>();
 const RETRY_DELAY_MS = 200;
@@ -29,12 +31,14 @@ export function navigateFromNotification(raw: Record<string, any> | null | undef
   const attemptNavigation = (attempt = 0) => {
     if (attempt > MAX_NAVIGATION_ATTEMPTS) {
       pendingKeys.delete(key);
+      reportNotificationFailure('notification-open-timeout');
       return;
     }
     const requiredRoute = destination.type === 'message' ? 'ChatRoom' : 'IncomingCall';
     const auth = useAppStore.getState();
     if (
-      !navigationRef.isReady()
+      AppState.currentState !== 'active'
+      || !navigationRef.isReady()
       || auth.authLoading
       || !auth.user
       || !routeIsRegistered(requiredRoute)

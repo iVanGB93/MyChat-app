@@ -10,6 +10,38 @@ const compiled = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
+test('remote media tombstone retains its cleanup target and blocks relinking', async () => {
+  const app = await fixture();
+  await app.saveMessage({ ...message, type: 'image', file_uri: 'file://documents/test.jpg' });
+  await app.applyMessageChanges(message.id, { is_deleted: true });
+  await app.applyMessageChanges(message.id, { is_deleted: true });
+  assert.equal((await app.getMediaDeletionJobs()).length, 1);
+  assert.equal(app.row().media_evicted, 1);
+  await app.setMessageFileUri(message.id, 'file://documents/resurrected.jpg');
+  assert.equal(app.row().file_uri, 'file://documents/test.jpg');
+});
+
+test('delete for me never advertises a deletion to peers', async () => {
+  const app = await fixture();
+  await app.saveMessage({ ...message, created_at: new Date().toISOString() });
+  await app.deleteMessage(message.id);
+  assert.equal((await app.getRecentMessageDigest()).length, 0);
+  assert.equal((await app.getMessageStateDeltas(message.room_id, [message.id])).length, 0);
+});
+
+test('late download and Gallery export are queued without resurrecting a deleted message', async () => {
+  const app = await fixture();
+  await app.saveMessage({ ...message, type: 'image' });
+  await app.applyMessageChanges(message.id, { is_deleted: true });
+  await app.setMessageFileUri(message.id, 'file://documents/late.jpg');
+  await app.markMediaExported(message.id, 'content://gallery/late');
+  const jobs = await app.getMediaDeletionJobs();
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs.find(job => job.uri === 'content://gallery/late').exported, 1);
+  assert.equal(app.row().file_uri, null);
+  assert.equal(app.row().is_deleted, 1);
+});
+
 test('permanently unavailable media is excluded from automatic recovery, without deleting its message', async () => {
   const app = await fixture();
   await app.saveMessage({ ...message, id: 'gone-media', is_mine: false, type: 'image',
@@ -73,6 +105,28 @@ test('original recipient snapshot survives duplicate acceptance and a process re
   assert.deepEqual(app.receipts().map((r) => r.recipient_id), [18, 19]);
 });
 
+test('early group receipt waits for the full recipient plan and every recipient', async () => {
+  const app = await fixture();
+  await app.saveMessage(message);
+  await app.markDelivered('m1', 18);
+  assert.equal(app.row().status, 'pending');
+  await app.setMessageExpectedRecipients('m1', [18, 19]);
+  assert.equal(app.row().status, 'pending');
+  await app.markDelivered('m1', 19);
+  assert.equal(app.row().status, 'delivered');
+});
+
+test('a late recipient plan promotes already-complete receipts without a duplicate ACK', async () => {
+  for (const recipients of [[18], [18, 19]]) {
+    const app = await fixture();
+    await app.saveMessage(message);
+    for (const id of recipients) await app.markDelivered('m1', id);
+    assert.equal(app.row().status, 'pending');
+    await app.setMessageExpectedRecipients('m1', recipients);
+    assert.equal(app.row().status, 'delivered');
+  }
+});
+
 test('interrupted recipient snapshot rolls back completely and can be retried', async () => {
   const app = await fixture();
   await app.saveMessage(message);
@@ -96,6 +150,8 @@ test('partial group receipts keep pending; all delivered advances, late receipt 
   assert.equal(app.row().status, 'delivered');
   await app.markReadByRecipient('m1', 18, '2026-09-03T10:03:00Z');
   await app.markDelivered('m1', 18, '2026-09-03T10:04:00Z');
+  assert.equal(app.row().status, 'delivered');
+  await app.markReadByRecipient('m1', 19, '2026-09-03T10:05:00Z');
   assert.equal(app.row().status, 'read');
   assert.equal(app.receipts()[0].delivered_at, '2026-09-03T10:01:00Z');
   assert.equal(app.receipts()[0].read_at, '2026-09-03T10:03:00Z');
@@ -106,10 +162,51 @@ test('one reader does not stop reconciliation for undelivered group members', as
   await app.saveMessage(message);
   await app.setMessageExpectedRecipients('m1', [18, 19]);
   await app.markReadByRecipient('m1', 18);
-  assert.equal(app.row().status, 'read');
+  assert.equal(app.row().status, 'pending');
   assert.equal((await app.getPendingSentMessageIds()).length, 1);
   await app.markDelivered('m1', 19);
   assert.equal((await app.getPendingSentMessageIds()).length, 0);
+});
+
+test('group read aggregate waits for the frozen recipient plan and survives restart', async () => {
+  const app = await fixture();
+  await app.saveMessage(message);
+  await app.markReadByRecipient('m1', 18, '2026-09-03T10:03:00Z');
+  assert.equal(app.row().status, 'pending');
+  await app.setMessageExpectedRecipients('m1', [18, 19]);
+  assert.equal(app.row().status, 'pending');
+  await app.markDelivered('m1', 19);
+  assert.equal(app.row().status, 'delivered');
+  const restarted = await fixture(app.database);
+  assert.equal(restarted.receipts()[0].read_at, '2026-09-03T10:03:00Z');
+  await restarted.markReadByRecipient('m1', 19);
+  assert.equal(restarted.row().status, 'read');
+  await restarted.markDelivered('m1', 18);
+  assert.equal(restarted.row().status, 'read');
+});
+
+test('migration repairs old read-by-one status without changing per-person receipts', async () => {
+  const app = await fixture();
+  await app.saveMessage(message);
+  await app.setMessageExpectedRecipients('m1', [18, 19]);
+  await app.markReadByRecipient('m1', 18);
+  const before = JSON.stringify(app.receipts());
+  app.database.exec("UPDATE messages SET status='read', is_read=1 WHERE id='m1'; PRAGMA user_version=9;");
+  const restarted = await fixture(app.database);
+  assert.equal(restarted.row().status, 'pending');
+  assert.equal(restarted.row().is_read, 0);
+  assert.equal(JSON.stringify(restarted.receipts()), before);
+});
+
+test('private read requires its only recipient and stores who and when', async () => {
+  const app = await fixture();
+  await app.saveMessage(message);
+  await app.setMessageExpectedRecipients('m1', [18]);
+  await app.markReadByRecipient('m1', 18, '2026-09-03T10:03:00Z');
+  assert.equal(app.row().status, 'read');
+  assert.equal(app.receipts()[0].recipient_id, 18);
+  assert.equal(app.receipts()[0].delivered, 1);
+  assert.equal(app.receipts()[0].read_at, '2026-09-03T10:03:00Z');
 });
 
 test('receipt confirmation work survives restart and only clears acknowledged recipients', async () => {
@@ -136,7 +233,7 @@ test('legacy receipt rows migrate without fabricating timestamps or losing deliv
   const app = await fixture(database);
   assert.equal(app.receipts()[0].delivered, 1);
   assert.equal(app.receipts()[0].delivered_at, null);
-  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 8);
+  assert.equal(database.prepare('PRAGMA user_version').get().user_version, 10);
 });
 
 test('locally removed media stays unavailable and is excluded from recovery', async () => {

@@ -230,7 +230,7 @@ async function ackDelivery(messageId: string, senderId: number, roomId: string):
     try {
       // The headless push task must stay alive until this request completes.
       const response = await sendMessageAck(ack);
-      if (response.status !== 200 || response.data?.status === 'not_found') return;
+      if (response.status !== 200 || !['delivered', 'already_delivered'].includes(response.data?.status ?? '')) return;
       track(_acked, messageId);
       await removeMessageAck(messageId, senderId, roomId).catch(() => {});
       debugLog('[Ingress] delivery ack submitted', messageId);
@@ -769,11 +769,11 @@ export async function routeInbound(
         for (const id of ids) await markReadByRecipient(id, readerId, asStr(p.read_at) ?? undefined);
         void flushStoredReceiptConfirmations().catch(() => {});
       }
-      try { markIdsAsReadInRoom(env.room_id, ids); } catch {}
-      try {
-        const store = useAppStore.getState();
-        for (const id of ids) store.setRoomLastMessageStatus(env.room_id, id, 'read');
-      } catch {}
+      for (const id of ids) {
+        const status = await getMessageReceiptStatus(id);
+        if (status === 'read') markIdsAsReadInRoom(env.room_id, [id]);
+        else if (status === 'delivered') markIdsAsDeliveredInRoom(env.room_id, [id]);
+      }
       return { type: env.type, handled: true };
     }
 
@@ -798,9 +798,10 @@ export async function routeInbound(
           }
           void flushStoredReceiptConfirmations().catch(() => {});
         }
-        applyRemoteMessageUpdates(
+        await applyRemoteMessageUpdates(
           env.room_id,
           fresh.map((u) => ({ message_id: u.message_id, changes: u.changes })),
+          readerId ?? undefined,
         );
         for (const u of fresh) {
           const uid = asStr(u.id);
@@ -952,7 +953,7 @@ export async function routeInbound(
         if (!messageId || !changes || typeof changes !== 'object') return [];
         return [{ message_id: messageId, changes }];
       });
-      if (updates.length) applyRemoteMessageUpdates(env.room_id, updates);
+      if (updates.length) await applyRemoteMessageUpdates(env.room_id, updates, env.sender_id ?? undefined);
       return { type: env.type, handled: true };
     }
 

@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect, useRef } from 'react';
 import { AppState } from 'react-native';
+import { flushDeletedMedia } from './src/services/deleted-media-cleanup';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider } from './src/contexts/AuthContext';
@@ -169,6 +170,9 @@ export default function App() {
           type: 'new_message',
           roomId: pending.roomId,
           roomName: pending.roomName ?? '',
+          senderName: pending.senderName,
+          isGroup: pending.isGroup,
+          roomType: pending.roomType,
           ...(pending.senderId ? { senderId: pending.senderId } : {}),
         });
       }
@@ -201,8 +205,11 @@ export default function App() {
     };
     consumePendingNav();
     consumePendingCall();
+    void flushDeletedMedia().catch(() => {});
+    const deletedMediaTimer = setInterval(() => { void flushDeletedMedia().catch(() => {}); }, 60_000);
     const appStateSub = AppState.addEventListener('change', (s) => {
       if (s === 'active') {
+        void flushDeletedMedia().catch(() => {});
         consumePendingNav();
         consumePendingCall();
       }
@@ -266,6 +273,7 @@ export default function App() {
       unsubNotifeeMsg();
       unsubFcmOpened();
       appStateSub.remove();
+      clearInterval(deletedMediaTimer);
     };
   }, []);
 

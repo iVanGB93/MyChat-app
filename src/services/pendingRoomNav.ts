@@ -15,6 +15,9 @@ export interface PendingRoomNav {
   roomId: string;
   roomName: string;
   senderId?: string;
+  senderName?: string;
+  isGroup?: boolean | string;
+  roomType?: string;
 }
 
 let _pending: PendingRoomNav | null = null;

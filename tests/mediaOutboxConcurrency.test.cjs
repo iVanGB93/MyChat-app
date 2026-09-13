@@ -12,13 +12,14 @@ const compiled = ts.transpileModule(
 ).outputText;
 
 function fixture() {
-  const frames = [], pointers = new Map();
+  const frames = [], pointers = new Map(), pendingByRecipient = new Map();
   const timers = [];
   let finishUpload, uploadCalls = 0;
   const waitingUpload = new Promise((resolve) => { finishUpload = resolve; });
   const schedule = createTransferScheduler(2);
   const modules = {
     './localMessageStore': {
+      getPendingOutbox: async (_room, _sender, recipient) => pendingByRecipient.get(recipient) ?? [],
       getMessageExpectedRecipients: async () => null,
       getMediaPointer: async (id) => pointers.get(id),
       setMediaPointer: async (id, value) => { pointers.set(id, value); },
@@ -34,7 +35,8 @@ function fixture() {
   };
   const module = { exports: {} };
   vm.runInNewContext(`${compiled}\nexports.sendForTest = sendOutboxFrame; exports.stateForTest = createRoomState;
-    exports.acceptForTest = (id) => { _serverAckTimers.delete(id); _serverAcceptedAt.set(id, Date.now()); };`, {
+    exports.acceptForTest = (id) => { _serverAckTimers.delete(id); _serverAcceptedAt.set(id, Date.now()); };
+    exports.flushForTest = _doFlush;`, {
     module, exports: module.exports,
     require: (name) => { assert.ok(name in modules, `unexpected dependency ${name}`); return modules[name]; },
     // ACK clocks do not fire in these narrowly scoped concurrency tests.
@@ -42,11 +44,26 @@ function fixture() {
   });
   module.exports.setCurrentUserId(18, 'test-user');
   return {
-    ...module.exports, frames, pointers, timers, finishUpload, uploadCalls: () => uploadCalls,
+    ...module.exports, frames, pointers, pendingByRecipient, timers, finishUpload, uploadCalls: () => uploadCalls,
     state: module.exports.stateForTest(),
     message: { id: 'message', type: 'document', content: 'test.pdf', file_uri: 'file:///test.pdf', created_at: '2026-09-02T12:00:00Z' },
   };
 }
+
+test('receiver-ready recovery ignores another group member delivery/read flags', async () => {
+  for (const flag of ['deliveredIds', 'readIds']) {
+    const f = fixture();
+    f.state[flag].add(f.message.id);
+    f.pendingByRecipient.set(3, [f.message]);
+    f.finishUpload();
+    await f.flushForTest('room', f.state, 14);
+    assert.equal(f.frames.length, 0, 'recipient with no pending receipts gets no replay');
+    await f.flushForTest('room', f.state, 3);
+    assert.equal(f.frames.length, 1, 'missing recipient must still receive the message');
+    assert.equal(f.frames[0].target_recipient_id, 3);
+    assert.equal(f.frames[0].hydration, true);
+  }
+});
 
 test('the room snapshot exposes only the active send attempt as sending', async () => {
   const f = fixture();

@@ -11,6 +11,7 @@
 /* ------------------------------------------------------------------ */
 
 import { AppState } from 'react-native';
+import { setCrashConnectionState } from './crashReporting';
 import NetInfo from '@react-native-community/netinfo';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearTokens, BASE_URL } from './api';
@@ -127,6 +128,7 @@ const statusListeners = new Set<StatusListener>();
 
 function setStatus(s: ConnectionStatus) {
   _status = s;
+  setCrashConnectionState(s);
   // Mirror into global store so any component/service can observe.
   try { useAppStore.getState().setNotifWsStatus(s); } catch {}
   statusListeners.forEach((fn) => {

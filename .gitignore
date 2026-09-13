@@ -32,6 +32,12 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env
+.env.production
+.env.development
+.sentryclirc
+sentry.properties
+sentry.options.json
 
 # typescript
 *.tsbuildinfo

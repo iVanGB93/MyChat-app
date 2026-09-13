@@ -15,7 +15,7 @@ let _dbOpenPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 let _initPromise: Promise<void> | null = null;
 let _writeTail: Promise<void> = Promise.resolve();
 
-const LOCAL_DB_SCHEMA_VERSION = 8;
+const LOCAL_DB_SCHEMA_VERSION = 10;
 const PROCESSED_EVENT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const DELETED_MESSAGE_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
 const ORPHAN_NOTIFICATION_RETENTION_MS = 180 * 24 * 60 * 60 * 1000;
@@ -95,6 +95,14 @@ async function initDBOnce(): Promise<void> {
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
 
+    CREATE TABLE IF NOT EXISTS media_delete_jobs (
+      message_id TEXT NOT NULL,
+      uri TEXT NOT NULL,
+      type TEXT NOT NULL,
+      exported INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(message_id, uri)
+    );
+    CREATE TABLE IF NOT EXISTS local_message_deletions (message_id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS messages (
       id          TEXT    PRIMARY KEY,
       room_id     TEXT    NOT NULL,
@@ -379,6 +387,13 @@ async function initDBOnce(): Promise<void> {
     );
   }
 
+  if (currentVersion < 10) {
+    // Repair legacy "read by anyone" aggregates without inventing receipts.
+    const outgoing = await db.getAllAsync<{ id: string }>(
+      `SELECT id FROM messages WHERE is_mine = 1 AND expected_recipient_ids IS NOT NULL`,
+    );
+    for (const message of outgoing) await refreshAggregateReceiptStatus(db, message.id);
+  }
   if (currentVersion < LOCAL_DB_SCHEMA_VERSION) {
     await db.execAsync(`PRAGMA user_version = ${LOCAL_DB_SCHEMA_VERSION}`);
   }
@@ -1055,6 +1070,23 @@ export async function getIncompletePointerMedia(roomId?: string, limit = 50): Pr
     : await db.getAllAsync<IncompletePointerRow>(`${base} ORDER BY created_at ASC LIMIT ?`, limit);
 }
 
+async function refreshAggregateReceiptStatus(db: SQLite.SQLiteDatabase, messageId: string): Promise<void> {
+  const message = await db.getFirstAsync<{ expected_recipient_ids: string | null }>(
+    `SELECT expected_recipient_ids FROM messages WHERE id = ?`, messageId,
+  );
+  // An early receipt is durable, but cannot stand in for the full recipient plan.
+  if (!message?.expected_recipient_ids) return;
+  const expected: number[] = JSON.parse(message.expected_recipient_ids);
+  if (!expected.length) return;
+  const receipts = await db.getAllAsync<{ recipient_id: number; delivered: number; read: number }>(
+    `SELECT recipient_id, delivered, read FROM delivery_tracking WHERE message_id = ?`, messageId,
+  );
+  const byId = new Map(receipts.map((receipt) => [receipt.recipient_id, receipt]));
+  const status = expected.every((id) => byId.get(id)?.read === 1) ? 'read'
+    : expected.every((id) => byId.get(id)?.delivered === 1) ? 'delivered' : 'pending';
+  await db.runAsync(`UPDATE messages SET status = ?, is_read = ? WHERE id = ?`, status, status === 'read' ? 1 : 0, messageId);
+}
+
 export async function markDelivered(
   messageId: string,
   recipientId: number,
@@ -1070,20 +1102,7 @@ export async function markDelivered(
       messageId, recipientId, deliveredAt,
     );
 
-    const rows = await db.getAllAsync<{ total: number; delivered: number }>(
-      `SELECT
-         COUNT(*) AS total,
-         COALESCE(SUM(CASE WHEN delivered = 1 THEN 1 ELSE 0 END), 0) AS delivered
-       FROM delivery_tracking
-       WHERE message_id = ?`,
-      messageId,
-    );
-    const first = rows.length > 0 ? rows[0] : null;
-    if (!first) return;
-    const { total, delivered } = first;
-    if (total > 0 && total === delivered) {
-      await db.runAsync(`UPDATE messages SET status = 'delivered' WHERE id = ? AND status != 'read'`, messageId);
-    }
+    await refreshAggregateReceiptStatus(db, messageId);
   });
 }
 
@@ -1116,6 +1135,7 @@ export async function setMessageExpectedRecipients(messageId: string, recipientI
         `UPDATE messages SET status = 'pending' WHERE id = ? AND status != 'read'`, messageId,
       );
     }
+    await refreshAggregateReceiptStatus(db, messageId);
   });
 }
 
@@ -1147,7 +1167,7 @@ export async function markReadByRecipient(
          read_at = COALESCE(delivery_tracking.read_at, excluded.read_at)`,
       messageId, recipientId, readAt, readAt,
     );
-    await db.runAsync(`UPDATE messages SET status = 'read' WHERE id = ?`, messageId);
+    await refreshAggregateReceiptStatus(db, messageId);
   });
 }
 
@@ -1488,7 +1508,7 @@ export async function getRecentMessageDigest(
        SELECT id, room_id, updated_at, revision, is_deleted,
               ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) AS room_rank
        FROM messages
-       WHERE created_at >= ?
+       WHERE created_at >= ? AND id NOT IN (SELECT message_id FROM local_message_deletions)
      ) WHERE room_rank <= ?`,
     since,
     perRoom,
@@ -1594,7 +1614,8 @@ export async function getMessageDeltaRequests(
     is_deleted: number;
   }>(
     `SELECT id, updated_at, revision, is_deleted
-       FROM messages WHERE room_id = ? AND id IN (${placeholders})`,
+       FROM messages WHERE room_id = ? AND id IN (${placeholders})
+         AND id NOT IN (SELECT message_id FROM local_message_deletions)`,
     roomId,
     ...ids,
   );
@@ -1629,7 +1650,8 @@ export async function getMessageStateDeltas(
     revision: number | null;
   }>(
     `SELECT id, content, reactions, is_deleted, updated_at, revision
-       FROM messages WHERE room_id = ? AND id IN (${placeholders})`,
+       FROM messages WHERE room_id = ? AND id IN (${placeholders})
+         AND id NOT IN (SELECT message_id FROM local_message_deletions)`,
     roomId,
     ...uniqueIds,
   );
@@ -1721,10 +1743,15 @@ export async function getMessageFileUri(messageId: string): Promise<string | nul
 
 /** Backfill a message's media file_uri (e.g. after hydrating a push-only row). */
 export async function setMessageFileUri(messageId: string, fileUri: string): Promise<void> {
+  // A transfer may finish after a delete. Record its exact late file for cleanup.
+  await runSerializedWrite((db) => db.runAsync(
+    `INSERT OR IGNORE INTO media_delete_jobs(message_id, uri, type, exported)
+     SELECT id, ?, type, 0 FROM messages WHERE id = ? AND is_deleted = 1`, fileUri, messageId,
+  ));
   await runSerializedWrite((db) =>
     db.runAsync(
       `UPDATE messages SET file_uri = ?
-       WHERE id = ? AND COALESCE(media_evicted, 0) = 0`,
+       WHERE id = ? AND is_deleted = 0 AND COALESCE(media_evicted, 0) = 0`,
       fileUri,
       messageId,
     )
@@ -2228,8 +2255,9 @@ export async function applyMessageChanges(
       );
     }
     if (changes.is_deleted) {
+      await queueDeletedMediaWithDb(db, messageId);
       await db.runAsync(
-        `UPDATE messages SET is_deleted = 1, content = NULL WHERE id = $id`,
+        `UPDATE messages SET is_deleted = 1, content = NULL, media_evicted = 1, media_ptr = NULL WHERE id = $id`,
         { $id: messageId },
       );
     }
@@ -2267,10 +2295,47 @@ export async function getRoomsWithPendingOutgoingMessages(
 
 /** Soft-delete a message locally (content cleared, is_deleted=1). */
 export async function deleteMessage(messageId: string): Promise<void> {
-  await runSerializedWrite((db) => db.runAsync(
-    `UPDATE messages SET is_deleted = 1, content = NULL WHERE id = $id`,
-    { $id: messageId },
-  ));
+  await runSerializedWrite(async (db) => {
+    await db.runAsync('INSERT OR IGNORE INTO local_message_deletions(message_id) VALUES (?)', messageId);
+    await queueDeletedMediaWithDb(db, messageId);
+    await db.runAsync(
+      `UPDATE messages SET is_deleted = 1, content = NULL, media_evicted = 1, media_ptr = NULL WHERE id = ?`, messageId,
+    );
+  });
+}
+
+async function queueDeletedMediaWithDb(db: SQLite.SQLiteDatabase, messageId: string): Promise<void> {
+  await db.runAsync(`INSERT OR IGNORE INTO media_delete_jobs(message_id, uri, type, exported)
+    SELECT m.id, m.file_uri, m.type, CASE WHEN e.exported_uri = m.file_uri THEN 1 ELSE 0 END
+    FROM messages m LEFT JOIN media_exports e ON e.message_id = m.id
+    WHERE m.id = ? AND m.file_uri IS NOT NULL AND m.file_uri != ''`, messageId);
+  await db.runAsync(`INSERT OR IGNORE INTO media_delete_jobs(message_id, uri, type, exported)
+    SELECT m.id, e.exported_uri, m.type, 1 FROM messages m
+    JOIN media_exports e ON e.message_id = m.id
+    WHERE m.id = ? AND e.exported_uri IS NOT NULL AND e.exported_uri != ''`, messageId);
+  await db.runAsync(`DELETE FROM media_exports WHERE message_id = ? AND status = 'pending'`, messageId);
+}
+
+export async function getMediaDeletionJobs(): Promise<Array<{message_id: string; uri: string; type: LocalChatMediaType; exported: number}>> {
+  await initDB();
+  return (await getDB()).getAllAsync(`SELECT j.* FROM media_delete_jobs j
+    JOIN messages m ON m.id = j.message_id WHERE m.is_deleted = 1 LIMIT 100`);
+}
+
+export async function finishMediaDeletionJob(messageId: string, uri: string): Promise<void> {
+  await runSerializedWrite(async (db) => {
+    await db.runAsync(`UPDATE messages SET file_uri = NULL WHERE id = ? AND file_uri = ? AND is_deleted = 1`, messageId, uri);
+    await db.runAsync(`DELETE FROM media_exports WHERE message_id = ? AND exported_uri = ?`, messageId, uri);
+    await db.runAsync(`DELETE FROM media_delete_jobs WHERE message_id = ? AND uri = ?`, messageId, uri);
+  });
+}
+
+export async function hasLiveMediaReference(uri: string): Promise<boolean> {
+  const row = await (await getDB()).getFirstAsync<{count: number}>(
+    `SELECT COUNT(*) AS count FROM messages m LEFT JOIN media_exports e ON e.message_id = m.id
+     WHERE m.is_deleted = 0 AND (m.file_uri = ? OR e.exported_uri = ?)`, uri, uri,
+  );
+  return Number(row?.count ?? 0) > 0;
 }
 
 /** Delete every locally-cached message + outbox entry for a room.
@@ -2470,6 +2535,10 @@ export async function queueMediaExport(item: PendingMediaExport): Promise<'pendi
 
 /** Mark a successful Gallery/Downloads copy so retries cannot create duplicates. */
 export async function markMediaExported(messageId: string, exportedUri: string): Promise<void> {
+  await runSerializedWrite((db) => db.runAsync(
+    `INSERT OR REPLACE INTO media_delete_jobs(message_id, uri, type, exported)
+     SELECT id, ?, type, 1 FROM messages WHERE id = ? AND is_deleted = 1`, exportedUri, messageId,
+  ));
   await runSerializedWrite((db) => db.runAsync(
     `UPDATE media_exports
      SET status = 'exported', local_uri = ?, exported_uri = ?, updated_at = ?

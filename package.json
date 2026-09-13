@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.0.38",
+  "version": "1.0.39",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -27,6 +27,7 @@
     "@react-navigation/bottom-tabs": "^7.14.0",
     "@react-navigation/native": "^7.1.28",
     "@react-navigation/native-stack": "^7.13.0",
+    "@sentry/react-native": "^8.26.0",
     "@supersami/rn-foreground-service": "^2.2.5",
     "axios": "^1.13.5",
     "dayjs": "^1.11.19",

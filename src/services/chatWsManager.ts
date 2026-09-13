@@ -13,7 +13,7 @@ import { useAppStore } from '../store/appStore';
 import { ensureWsAlive, isNotifWsReady, reconnectWsNow, sendRawNotif, subscribeStatus } from './notificationWsManager';
 import { applyMessageLifecycleEvent, mergeMessageById, shouldSuppressOutboxReplay } from './messageLifecycle';
 import { debugLog } from './diagnostics';
-import { getMessageExpectedRecipients, setMessageExpectedRecipients, getStoredReceiptConfirmations, markStoredReceiptConfirmations } from './localMessageStore';
+import { getMessageExpectedRecipients, setMessageExpectedRecipients, getMessageReceiptStatus, getStoredReceiptConfirmations, markStoredReceiptConfirmations, markReadByRecipient } from './localMessageStore';
 // An Axion acknowledgement can arrive before the sender's asynchronous local
 // SQLite insert finishes. Keep the acceptance briefly so the insert cannot turn
 // an already-accepted message back into a permanently retrying pending row.
@@ -870,10 +870,9 @@ async function _doFlush(roomId: string, s: RoomState, recipientId: number): Prom
     for (const msg of msgs) {
       // Stop if the socket dropped mid-flush; the rest is retried on next auth_ok.
       if (!isAxionReady()) break;
-      if (s.deliveredIds.has(msg.id) || s.readIds.has(msg.id)) {
-        debugLog('[Axion] delivered outbox replay suppressed', msg.id, 'room', roomId);
-        continue;
-      }
+      // getPendingOutbox filters durable receipts for this recipient. The
+      // room's delivered/read sets can reflect another group member and must
+      // not prevent recovery for a peer who still lacks the message.
       try {
         // Recovery is a targeted, notification-silent hydration. The server
         // must not rebroadcast it to every group member or send another FCM.
@@ -943,7 +942,7 @@ function _applyUpdatesToState(
         return {
           ...m,
           ...(u.changes.reactions  !== undefined && { reactions:  u.changes.reactions }),
-          ...(u.changes.is_deleted !== undefined && { is_deleted: u.changes.is_deleted }),
+          ...(u.changes.is_deleted !== undefined && { is_deleted: m.is_deleted || u.changes.is_deleted }),
           ...(u.changes.content    !== undefined && { content:    u.changes.content }),
           ...(u.changes.updated_at !== undefined && { updated_at: u.changes.updated_at }),
           ...(u.changes.revision   !== undefined && { revision:   u.changes.revision }),
@@ -964,10 +963,38 @@ function _applyUpdatesToState(
 /**
  * Called by notificationWsManager when a message_update event arrives.
  */
-export function applyRemoteMessageUpdates(
+export async function applyRemoteMessageUpdates(
   roomId: string,
   updates: Array<{ message_id: string; changes: MessageChanges }>,
-): void {
+  actorId?: number,
+): Promise<void> {
+  const stored = await getMessagesByIds(updates.map((update) => update.message_id));
+  const byId = new Map(stored.map((message) => [message.id, message]));
+  updates = updates.filter((update) => {
+    const message = byId.get(update.message_id);
+    if (message && message.room_id !== roomId) return false;
+    if (!update.changes.is_deleted) return true;
+    // Server-authenticated author identity is required before erasing local files.
+    if (!message) throw new Error('Deletion awaits original message metadata');
+    return Number(actorId) > 0 && Number(message.sender_id) === Number(actorId);
+  });
+  for (const update of updates) {
+    if (update.changes.is_read !== undefined) {
+      // A remote reader is one recipient, never the aggregate group status.
+      const { is_read, ...otherChanges } = update.changes;
+      if (is_read && actorId && byId.get(update.message_id)?.is_mine) {
+        await markReadByRecipient(update.message_id, actorId);
+        const status = await getMessageReceiptStatus(update.message_id);
+        if (status === 'read') markIdsAsReadInRoom(roomId, [update.message_id]);
+        else if (status === 'delivered') markIdsAsDeliveredInRoom(roomId, [update.message_id]);
+      }
+      update.changes = otherChanges;
+    }
+    await applyMessageChanges(update.message_id, update.changes);
+  }
+  if (updates.some((update) => update.changes.is_deleted)) {
+    void import('./deleted-media-cleanup').then((module) => module.flushDeletedMedia()).catch(() => {});
+  }
   const s = rooms.get(roomId);
   // Promote chat-list status for any read-acks, regardless of whether the room
   // WS is currently open (chat list needs this).
@@ -1102,29 +1129,28 @@ export async function retryOutgoingMessage(
  * Adds to the in-memory queue + persists to SQLite outbox, then attempts immediate send.
  * Also applies the change locally right away so loadFromDB won't re-queue it.
  */
-export function sendMessageUpdate(
+export async function sendMessageUpdate(
   roomId: string,
   messageId: string,
   changes: MessageChanges,
   expectedPeerIds: number[] = [],
-): void {
+): Promise<void> {
   const s = getOrCreate(roomId);
   const versionedChanges = versionLocalMutation(changes);
-  // Apply to in-memory WS state immediately → triggers notifyListeners → UI re-renders
-  // (also writes to SQLite internally via applyMessageChanges)
-  _applyUpdatesToState(roomId, s, [{ message_id: messageId, changes: versionedChanges }]);
   const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
   // Persist before sending. The same id is used in memory, on the wire and in
   // SQLite, so an acknowledgement can never strand a second phantom outbox row.
-  queueMessageUpdate(roomId, messageId, versionedChanges, { id, expectedPeerIds })
-    .then(() => {
+  await queueMessageUpdate(roomId, messageId, versionedChanges, { id, expectedPeerIds });
+  await applyMessageChanges(messageId, versionedChanges);
+  if (changes.is_deleted) {
+    void import('./deleted-media-cleanup').then((module) => module.flushDeletedMedia()).catch(() => {});
+  }
+  _applyUpdatesToState(roomId, s, [{ message_id: messageId, changes: versionedChanges }]);
       // A fresh local action deserves the prompt first retry; only a stale
       // offline-peer wait is exponentially slowed down.
       s.updateRetryDelay = INITIAL_UPDATE_RETRY_MS;
       s.pendingUpdates.push({ id, message_id: messageId, changes: versionedChanges });
       _flushPendingUpdates(roomId, s);
-    })
-    .catch(() => {});
 }
 
 /**
@@ -1272,7 +1298,14 @@ export function sendTyping(roomId: string, isTyping: boolean): void {
  * waiting for a delivery receipt from each recipient. */
 export function markServerMessageAccepted(roomId: string, messageId: string, recipientIds?: number[]): void {
   if (!messageId) return;
-  if (recipientIds) setMessageExpectedRecipients(messageId, recipientIds).catch(() => {});
+  if (recipientIds) {
+    void setMessageExpectedRecipients(messageId, recipientIds).then(async () => {
+      // An early delivery receipt may already be stored when this plan arrives.
+      const status = await getMessageReceiptStatus(messageId);
+      if (status === 'delivered') markIdsAsDeliveredInRoom(roomId, [messageId]);
+      else if (status === 'read') markIdsAsReadInRoom(roomId, [messageId]);
+    }).catch(() => {});
+  }
   debugLog('[Axion] server ACK received', messageId, 'room', roomId);
   clearServerAckWatch(messageId);
   const acceptedAt = Date.now();

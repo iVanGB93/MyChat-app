@@ -1,8 +1,8 @@
-const { getDefaultConfig } = require('expo/metro-config');
+const { getSentryExpoConfig } = require('@sentry/react-native/metro');
 const path = require('path');
 const fs = require('fs');
 
-const config = getDefaultConfig(__dirname);
+const config = getSentryExpoConfig(__dirname);
 
 // Native build trees can contain tens of thousands of generated files. They
 // are not JavaScript inputs; watching them exhausts Windows file handles.

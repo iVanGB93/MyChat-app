@@ -5,6 +5,14 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 const source = fs.readFileSync(path.join(__dirname, '../modules/axonic-app-update/src/index.ts'), 'utf8');
+test('optional updates use only the Play prompt, preserving downloaded-update completion', () => {
+  const gate = fs.readFileSync(path.join(__dirname, '../src/components/AppUpdateGate.tsx'), 'utf8');
+  assert.doesNotMatch(gate, /A new version is available|bannerActionText|arrow-up-circle-outline/);
+  assert.match(gate, /void startUpdate\(true\)/);
+  assert.match(gate, /if \(installStatus === 11\)/);
+  assert.match(gate, /completePlayUpdateAsync\(\)/);
+  assert.match(gate, /result.status === 'forced'/);
+});
 function load(native) {
   const context = { exports: {}, require: () => ({ requireOptionalNativeModule: () => native }) };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);

@@ -50,10 +50,10 @@ function isAppOwnedUri(uri: string): boolean {
   return uri.startsWith(Paths.cache.uri) || uri.startsWith(Paths.document.uri);
 }
 
-async function deleteGalleryAsset(messageId: string, uri: string): Promise<boolean> {
+export async function deleteGalleryAsset(messageId: string, uri: string, interactive = true): Promise<boolean> {
   const MediaLibrary = await import('expo-media-library');
   let permission = await MediaLibrary.getPermissionsAsync(false, ['photo', 'video']);
-  if (!permission.granted) {
+  if (!permission.granted && interactive) {
     permission = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
   }
   if (!permission.granted) {

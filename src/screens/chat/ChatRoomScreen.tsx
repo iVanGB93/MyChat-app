@@ -80,13 +80,15 @@ const isStickerMessage = (message: Message | null) => !!message && !message.is_d
   ((message.message_type === 'text' && !!parseSticker(message.content || '')) ||
     (message.message_type === 'image' && message.content === IMPORTED_STICKER_CONTENT));
 
-/** Compact header signal shown while the room socket is reconnecting. */
+/** Compact header signal shown while the room is syncing. */
 function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing: boolean; color: string }) {
-  const letters = useMemo(() => Array.from(title.slice(0, 24)), [title]);
-  const pulses = useRef(letters.map(() => new Animated.Value(0))).current;
+  const letters = useMemo(() => Array.from(title).slice(0, 24), [title]);
+  // Notification placeholders can be replaced by a longer cached group name.
+  // Resize before rendering, not in an effect: every letter needs a value now.
+  const pulses = useMemo(() => Array.from({ length: letters.length }, () => new Animated.Value(0)), [letters.length]);
 
   useEffect(() => {
-    if (!syncing) {
+    if (!syncing || pulses.length === 0) {
       pulses.forEach((pulse) => pulse.setValue(0));
       return;
     }
@@ -100,7 +102,10 @@ function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing:
       ]),
     );
     wave.start();
-    return () => wave.stop();
+    return () => {
+      wave.stop();
+      pulses.forEach((pulse) => pulse.setValue(0));
+    };
   }, [syncing, pulses]);
 
   return (
@@ -1087,7 +1092,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     setContextMsg(null);
     const newReactions = await toggleReaction(msgId, emoji, String(user.id));
     // Update in-memory WS state + relay to other members (reacted_emoji is a display hint)
-    sendMessageUpdate(roomId, msgId, { reactions: newReactions, reacted_emoji: emoji }, otherUserId ? [otherUserId] : []);
+    void sendMessageUpdate(roomId, msgId, { reactions: newReactions, reacted_emoji: emoji }, otherUserId ? [otherUserId] : []).catch(() => {});
   }, [contextMsg, user, roomId, otherUserId, loadFromDB]);
 
   const handleCopy = useCallback(async () => {
@@ -1234,19 +1239,26 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     setContextMsg(null);
     confirm({
       title: 'Delete message',
-      message: 'This message will be removed for you only.',
+      message: localOnly ? 'Remove this message from your chat only?' : 'Delete for everyone removes the message from this chat on all devices when they reconnect. Saved or forwarded copies may remain.',
       icon: 'trash-outline',
       buttons: [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: async () => {
-          await deleteMessage(msgId);
-          // Update in-memory WS state + relay to other members
-          if (!localOnly) sendMessageUpdate(roomId, msgId, { is_deleted: true }, otherUserId ? [otherUserId] : []);
-          await loadFromDB();
+        { text: 'Delete for me', style: 'destructive', onPress: async () => {
+          try {
+            await deleteMessage(msgId);
+            void import('../../services/deleted-media-cleanup').then((module) => module.flushDeletedMedia()).catch(() => {});
+            await loadFromDB();
+          } catch { alert('Could not delete message', 'Please try again.'); }
         }},
+        ...(!localOnly ? [{ text: 'Delete for everyone', style: 'destructive' as const, onPress: async () => {
+          try {
+            await sendMessageUpdate(roomId, msgId, { is_deleted: true }, otherUserId ? [otherUserId] : []);
+            await loadFromDB();
+          } catch { alert('Could not delete message', 'The deletion could not be saved. Please try again.'); }
+        }}] : []),
       ],
     });
-  }, [contextMsg, roomId, loadFromDB, user?.id, otherUserId, confirm]);
+  }, [contextMsg, roomId, loadFromDB, user?.id, otherUserId, confirm, alert]);
 
   /** Open the forward picker from local room metadata, then repair in background. */
   const handleForward = useCallback(async () => {
@@ -1334,7 +1346,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   const handleReactionToggle = useCallback(async (m: Message, emoji: string) => {
     const newReactions = await toggleReaction(m.id, emoji, String(user?.id ?? ''));
-    sendMessageUpdate(roomId, m.id, { reactions: newReactions, reacted_emoji: emoji }, otherUserId ? [otherUserId] : []);
+    void sendMessageUpdate(roomId, m.id, { reactions: newReactions, reacted_emoji: emoji }, otherUserId ? [otherUserId] : []).catch(() => {});
   }, [roomId, user?.id, otherUserId]);
 
   const handleRetryMessage = useCallback(async (messageId: string) => {
@@ -1710,7 +1722,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         accentColor={Colors.primary}
         onClose={() => setFullscreenImageUri(null)}
       />
-      {stickerPreview && <StickerPreview {...stickerPreview} onClose={() => setStickerPreview(null)} />}
+      {stickerPreview && <StickerPreview {...stickerPreview} userId={user?.id} onClose={() => setStickerPreview(null)} />}
       {/* Long-press context menu */}
       <Modal
         visible={contextMsg !== null}

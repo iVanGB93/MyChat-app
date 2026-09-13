@@ -45,13 +45,17 @@ export function registerNotificationBackgroundHandler() {
         type === EventType.PRESS &&
         !detail.pressAction?.id?.match(/^(reply|mark_read)$/) &&
         data.type === 'new_message' &&
-        data.roomId
+        (data.roomId || data.room_id)
       ) {
         debugLog('[BgEvent] message notification pressed → pending nav', data.roomId);
         await setPendingRoomNav({
-          roomId: String(data.roomId),
-          roomName: String(data.roomName ?? ''),
-          senderId: data.senderId != null ? String(data.senderId) : undefined,
+          roomId: String(data.roomId ?? data.room_id),
+          roomName: String(data.roomName ?? data.room_name ?? ''),
+          senderId: data.senderId != null || data.sender_id != null
+            ? String(data.senderId ?? data.sender_id) : undefined,
+          senderName: String(data.senderName ?? data.sender_name ?? data.sender ?? ''),
+          isGroup: data.isGroup ?? data.is_group,
+          roomType: String(data.roomType ?? data.room_type ?? ''),
         });
       }
     } catch (err) {

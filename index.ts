@@ -1,6 +1,8 @@
 // Silence React Native Firebase's namespaced-API deprecation warnings. MUST be
 // the FIRST import so the flag is set before any Firebase module is used.
 import './src/config/silenceFirebaseWarnings';
+import { configureCrashReporting } from './src/services/crashReporting';
+configureCrashReporting();
 
 // EAS Observe must be configured before the React tree mounts. Development
 // measurements are tagged separately from release data; see the service for
