@@ -159,6 +159,7 @@ export type RootStackParamList = {
   Contacts: { prefillTag?: string } | undefined;
   GroupCreate: undefined;
   GroupInfo: { roomId: string; roomName: string };
+  MessageInfo: { roomId: string; messageId: string };
   UserInfo: { roomId: string; roomName: string; userId: number };
   ScanTag: undefined;
   ChatRoom: { roomId: string; roomName: string; otherUserId?: number };

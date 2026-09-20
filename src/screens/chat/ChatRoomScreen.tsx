@@ -1858,6 +1858,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             }]}
             onPress={() => {}}
           >
+            {contextMsg && <TouchableOpacity accessibilityRole="button" accessibilityLabel="Message info" style={styles.contextOption} onPress={() => {
+              const messageId = contextMsg.id;
+              setContextMsg(null);
+              navigation.navigate('MessageInfo', { roomId, messageId });
+            }}><Text style={[styles.contextOptionText, { color: Colors.text }]}>ⓘ  Info</Text></TouchableOpacity>}
             <View style={styles.reactionsRow}>
               {REACTION_EMOJIS.map((emoji) => {
                 const mine = contextMsg?.reactions?.[emoji]?.includes(String(user?.id));

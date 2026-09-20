@@ -480,6 +480,11 @@ export default function AppNavigator() {
                 }}
               />
               <Stack.Screen
+                name="MessageInfo"
+                component={require('../screens/chat/message-info-screen').default}
+                options={{ headerShown: true, headerTitle: 'Message info', headerStyle: { backgroundColor: Colors.headerBg }, headerTintColor: Colors.headerText }}
+              />
+              <Stack.Screen
                 name="UserInfo"
                 component={require('../screens/chat/user-info-screen').default}
                 options={{
