@@ -3,6 +3,7 @@ import type { NotificationPayload } from './axionTypes';
 export interface AxionInboundResult {
   ackUpdateIds?: string[];
   ackSenderId?: number;
+  freshUpdates?: Array<{ id?: string; message_id: string; changes: Record<string, unknown> }>;
 }
 
 export interface AxionRuntimeHooks {

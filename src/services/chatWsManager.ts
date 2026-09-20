@@ -39,6 +39,7 @@ function watchForServerAck(messageId: string): void {
   debugLog('[Axion] awaiting server ACK', messageId);
   _serverAckTimers.set(messageId, setTimeout(() => {
     _serverAckTimers.delete(messageId);
+    finishAckSending(messageId);
     console.warn('[Axion] server ACK timed out — reconnecting to retry', messageId);
     // The message is already durable in SQLite. Re-authentication runs the
     // normal pending-outbox flush, so no in-memory-only data is lost here.
@@ -50,6 +51,14 @@ function clearServerAckWatch(messageId: string): void {
   const timer = _serverAckTimers.get(messageId);
   if (timer) clearTimeout(timer);
   _serverAckTimers.delete(messageId);
+  finishAckSending(messageId);
+}
+
+function finishAckSending(messageId: string): void {
+  for (const [roomId, state] of rooms) {
+    const key = JSON.stringify([_myUserId, roomId, messageId]);
+    if (!_activeSendCounts.has(key)) markSending(state, roomId, messageId, false);
+  }
 }
 /* ---- Timing constants ---- */
 // A content update may legitimately wait for an offline group member.  Keep
@@ -588,10 +597,17 @@ function sendOutboxFrame(...args: Parameters<typeof sendOutboxFrameOnce>): Promi
     // visual signal around just long enough to be perceived without delaying
     // delivery or changing the durable pending state.
     const remainingMs = Math.max(0, 420 - (Date.now() - startedAt));
+    const finishSending = () => {
+      // Upload completion/socket write is not server acceptance. Keep activity
+      // visible until ACK or its bounded timeout; don't clear a newer retry.
+      if (!_serverAckTimers.has(msg.id) && !_activeSendCounts.has(activityKey)) {
+        markSending(state, roomId, msg.id, false);
+      }
+    };
     if (remainingMs > 0) {
-      setTimeout(() => markSending(state, roomId, msg.id, false), remainingMs);
+      setTimeout(finishSending, remainingMs);
     } else {
-      markSending(state, roomId, msg.id, false);
+      finishSending();
     }
   });
   _inFlightFrames.set(key, task);

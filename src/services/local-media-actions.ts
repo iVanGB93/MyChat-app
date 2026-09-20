@@ -8,6 +8,7 @@ import {
   type LocalChatMediaType,
 } from './localMessageStore';
 import { parseDeviceMediaFileName } from './media-export-service';
+import { androidMediaStore, hasAutomaticDeviceStorage, isMediaStoreUri } from './android-media-store';
 
 function extensionOf(fileName: string, uri: string): string {
   const source = fileName || uri.split(/[?#]/, 1)[0];
@@ -66,7 +67,7 @@ export async function deleteGalleryAsset(messageId: string, uri: string, interac
   do {
     const page = await MediaLibrary.getAssetsAsync({ album, first: 250, after });
     const asset = page.assets.find((candidate) => (
-      candidate.uri === uri || parseDeviceMediaFileName(candidate.filename) === messageId
+      candidate.uri === uri && parseDeviceMediaFileName(candidate.filename) === messageId
     ));
     if (asset) return MediaLibrary.deleteAssetsAsync(asset.id);
     after = page.hasNextPage ? page.endCursor : undefined;
@@ -82,6 +83,14 @@ async function deletePhysicalFile(
   if (isAppOwnedUri(uri)) {
     const file = new File(uri);
     if (file.exists) file.delete();
+    return;
+  }
+
+  if (hasAutomaticDeviceStorage() && isMediaStoreUri(uri)) {
+    const result = await androidMediaStore!.deleteOwned(uri, messageId);
+    if (result === 'needs-confirmation') {
+      if (!await androidMediaStore!.requestDelete(uri, messageId)) throw new Error('Deletion cancelled. The file was kept.');
+    }
     return;
   }
 

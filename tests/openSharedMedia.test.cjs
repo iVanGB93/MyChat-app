@@ -8,7 +8,7 @@ const compiled = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 
-function fixture({ storedUri, external = false, missing = false } = {}) {
+function fixture({ storedUri, filename, external = false, missing = false } = {}) {
   const intents = [], copies = [];
   class File {
     constructor(root, name) { this.uri = name ? `${root}/${name}` : root; this.name = 'clip.mp4'; this.type = 'application/octet-stream'; this.exists = !missing; }
@@ -23,7 +23,11 @@ function fixture({ storedUri, external = false, missing = false } = {}) {
     'react-native': { Platform: { OS: 'android' }, Linking: {} },
     'expo-file-system': { File, Paths: { cache: 'cache' } },
     'expo-intent-launcher': { startActivityAsync: async (action, options) => intents.push({ action, ...options }) },
-    './localMessageStore': { getMessagesByIds: async () => storedUri ? [{ file_uri: storedUri }] : [] },
+    './localMessageStore': { getMessagesByIds: async () => storedUri ? [{ id: 'message', file_uri: storedUri, content: filename }] : [] },
+    './media-export-service': { inferredMime: request => {
+      assert.equal(request.fileName, filename);
+      return 'text/plain';
+    } },
   };
   const sandbox = { exports: {}, require: (name) => modules[name] };
   vm.runInNewContext(compiled, sandbox);
@@ -35,6 +39,14 @@ test('opens the latest Gallery URI with a video MIME and read grant', async () =
   await f.open('file://deleted-original.mp4', 'video', 'message');
   assert.equal(f.intents[0].data, 'content://media/video/123');
   assert.equal(f.intents[0].type, 'video/*');
+  assert.equal(f.intents[0].flags, 1);
+  assert.equal(f.copies.length, 0);
+});
+
+test('a numeric MediaStore URI uses the recorded document filename for viewer selection', async () => {
+  const f = fixture({ storedUri: 'content://media/external_primary/downloads/123', filename: 'storage-test.txt' });
+  await f.open('file://old.txt', 'document', 'message');
+  assert.equal(f.intents[0].type, 'text/plain');
   assert.equal(f.intents[0].flags, 1);
   assert.equal(f.copies.length, 0);
 });

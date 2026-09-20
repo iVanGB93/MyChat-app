@@ -52,10 +52,10 @@ export function setCrashConnectionState(state: string): void {
 }
 
 /** Once per operation per process; do not report normal retries repeatedly. */
-export function reportNotificationFailure(operation: 'notification-open' | 'notification-open-timeout'): void {
+export function reportNotificationFailure(operation: 'notification-open' | 'notification-open-timeout', reason?: string): void {
   if (!enabled || reported.has(operation)) return;
   reported.add(operation);
   try {
-    Sentry.captureException(new Error(operation), { tags: { operation } });
+    Sentry.captureException(new Error(operation), { tags: { operation, notification_blocker: reason } });
   } catch {}
 }

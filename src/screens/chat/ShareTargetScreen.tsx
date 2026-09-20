@@ -59,7 +59,7 @@ export default function ShareTargetScreen() {
 
   const { text: initialText, attachments: initialAttachments = [] } = route.params ?? {};
   const [caption, setCaption] = useState(initialText ?? '');
-  const [attachments, setAttachments] = useState<ShareAttachment[]>(initialAttachments);
+  const [attachments, setAttachments] = useState<Array<ShareAttachment & { caption?: string }>>(initialAttachments);
   const [query, setQuery] = useState('');
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [groupRooms, setGroupRooms] = useState<ChatRoom[]>([]);
@@ -186,7 +186,7 @@ export default function ShareTargetScreen() {
             : `\uD83D\uDCC4 ${attachment.fileName}`;
           const result = await sendChatMessage(
             room.id,
-            index === 0 && attachment.kind === 'image' ? (caption.trim() || fallback) : fallback,
+            attachment.kind === 'image' ? ((attachment.caption ?? (index === 0 ? caption : '')).trim() || fallback) : fallback,
             messageType,
             null,
             attachment.kind === 'image'
@@ -391,7 +391,10 @@ export default function ShareTargetScreen() {
       <SharePreview
         visible={selectedTarget !== null}
         destination={selectedTarget?.name}
-        items={attachments.map((item, index) => ({ id: String(index), uri: item.uri, name: item.fileName, kind: item.kind }))}
+        items={attachments.map((item, index) => ({ id: String(index), uri: item.uri, name: item.fileName, kind: item.kind, caption: item.caption ?? (index === 0 ? caption : '') }))}
+        onUpdate={(id, changes) => setAttachments((items) => items.map((item, index) => index === Number(id) ? {
+          ...item, ...changes, ...(changes.uri ? { size: undefined } : {}),
+        } : item))}
         busy={sendingTo !== null}
         onClose={() => { if (sendingTo === null) setSelectedTarget(null); }}
         onRemove={(id) => setAttachments((items) => items.filter((_, index) => index !== Number(id)))}

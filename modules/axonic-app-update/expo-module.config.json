@@ -1,6 +1,6 @@
 {
   "platforms": ["android"],
   "android": {
-    "modules": ["expo.modules.axonicappupdate.AxonicAppUpdateModule"]
+    "modules": ["expo.modules.axonicappupdate.AxonicAppUpdateModule", "expo.modules.axonicappupdate.AxonicMediaStoreModule"]
   }
 }

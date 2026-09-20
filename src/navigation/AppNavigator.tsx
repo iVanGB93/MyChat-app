@@ -547,7 +547,7 @@ export default function AppNavigator() {
               <Stack.Screen
                 name="ActiveCall"
                 component={ActiveCallScreen}
-                options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'fade' }}
+                options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'fade', gestureEnabled: false }}
               />
               <Stack.Screen name="OutgoingCall" component={OutgoingCallScreen} options={{ headerShown: false, presentation: 'transparentModal', animation: 'slide_from_bottom', contentStyle: { backgroundColor: 'transparent' }, gestureEnabled: false }} />
               <Stack.Screen

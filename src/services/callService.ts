@@ -3,6 +3,7 @@
 /* ------------------------------------------------------------------ */
 
 import api from './api';
+import { requestCallEnd } from './call-end-queue';
 import type { CallLog, CallType, IceConfig } from '../types';
 import { refreshCollection, invalidateCollection } from './localFirstCollections';
 import { cacheCallHistory, getCachedCallHistory } from './localMessageStore';
@@ -38,7 +39,7 @@ export async function joinCall(callId: string): Promise<InitiateCallResponse> {
 }
 
 export async function endCall(callId: string, action: 'end' | 'reject' = 'end'): Promise<{ status: string }> {
-  const { data } = await api.post<{ status: string }>(`/api/calls/${callId}/end/`, { action });
+  const data = await requestCallEnd(callId, action);
   invalidateCollection('calls');
   return data;
 }

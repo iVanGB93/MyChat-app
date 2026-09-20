@@ -19,7 +19,7 @@ import { chatPreviewText } from '../utils/chat-preview-text';
 
 const CHANNEL_ID = 'messages';
 const NOTIFICATION_ID_PREFIX = 'message:';
-const NOTIFICATION_ORDER_VERSION = 'chronological-v2';
+const NOTIFICATION_ORDER_VERSION = 'plain-message-v3';
 
 export interface IncomingMessageNotif {
   roomId: string;
@@ -164,15 +164,13 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
   // Dedupe: same message delivered via WS + FCM, or a duplicate FCM.
   if (data.messageId && shownIds.includes(data.messageId)) return;
 
-  // A real group chat has a room name distinct from the sender; a 1:1 doesn't.
-  // Prefix the line with the speaker for group chats / reply echoes so the
-  // expanded list shows who said what; a 1:1 line is just the message text.
+  // Android MessagingStyle renders the speaker from person.name itself.
+  // Prefixing the text repeats the name in compact and expanded notifications.
   const speaker = data.fromMe ? 'You' : data.senderName;
-  const line = isGroup || data.fromMe ? `${speaker}: ${data.text}` : data.text;
   const messages = [
     ...prevMessages,
     {
-      text: line,
+      text: data.text,
       timestamp: data.timestamp ?? Date.now(),
       senderName: speaker,
       fromMe: data.fromMe === true,
@@ -228,7 +226,8 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
       style: {
         type: AndroidStyle.MESSAGING,
         person: { name: 'You' },
-        title: name,
+        // A private conversation already has the sender's Person label.
+        ...(isGroup ? { title: name } : {}),
         group: isGroup,
         messages: messages.map((message) => ({
           text: message.text,
@@ -252,12 +251,26 @@ export async function displayMessageNotification(data: IncomingMessageNotif) {
 
 /** Cancel the message notification for a room (e.g. after the chat is read). */
 export async function cancelMessageNotification(roomId: string) {
+  if (!roomId) return;
   await notifee.cancelNotification(NOTIFICATION_ID_PREFIX + roomId).catch(() => {});
+  // Older/server-created cards may have generated IDs instead of our stable ID.
+  // Match only message cards for this room; never dismiss calls or other rooms.
+  const belongsToRoom = (data: Record<string, unknown> | undefined) =>
+    !!data && String(data.roomId ?? data.room_id ?? '') === roomId
+    && ['new_message', 'message', 'chat_message'].includes(String(data.type ?? ''));
+  try {
+    const displayed = await notifee.getDisplayedNotifications();
+    await Promise.all(displayed.filter((item) => belongsToRoom(item.notification.data))
+      .map((item) => item.id ? notifee.cancelNotification(item.id).catch(() => {}) : Promise.resolve()));
+  } catch { /* Notification enumeration is best-effort. */ }
   // New messages use Notifee only. Clear the old Expo room identifier too so
   // upgraded installations cannot leave a stale duplicate behind.
   try {
     const Notifications = await import('expo-notifications');
     await Notifications.dismissNotificationAsync(`msg-room-${roomId || 'unknown'}`);
+    const displayed = await Notifications.getPresentedNotificationsAsync();
+    await Promise.all(displayed.filter((item) => belongsToRoom(item.request.content.data))
+      .map((item) => Notifications.dismissNotificationAsync(item.request.identifier).catch(() => {})));
   } catch {
     // Already dismissed or unavailable in the current runtime.
   }

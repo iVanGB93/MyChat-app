@@ -45,12 +45,15 @@ import { resolveMediaUrl } from '../../services/api';
 import {
   getAutoSaveReceivedMedia,
   getDownloadsDirectoryUri,
+  hasAutomaticDeviceStorage,
   recoverMediaIndexFromDevice,
   retryPendingMediaExports,
   setAutoSaveReceivedMedia,
   setupDownloadsDirectory,
 } from '../../services/media-export-service';
 import QRCode from 'react-native-qrcode-svg';
+import { flushDeletedMedia } from '../../services/deleted-media-cleanup';
+import { getMediaDeletionJobs } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
@@ -97,7 +100,7 @@ export default function ProfileScreen() {
       .then(([enabled, directoryUri]) => {
         if (!active) return;
         setAutoSaveMedia(enabled);
-        setDownloadsReady(!!directoryUri);
+        setDownloadsReady(hasAutomaticDeviceStorage() || !!directoryUri);
       })
       .catch(() => {})
       .finally(() => {
@@ -120,10 +123,12 @@ export default function ProfileScreen() {
     if (configuringDownloads) return;
     setConfiguringDownloads(true);
     try {
-      const uri = await setupDownloadsDirectory();
-      if (!uri) {
-        alert('Folder not selected', 'Select the Downloads folder so Axonic can create and use Downloads/Axonic.');
-        return;
+      if (!hasAutomaticDeviceStorage()) {
+        const uri = await setupDownloadsDirectory();
+        if (!uri) {
+          alert('Folder not selected', 'Select the Downloads folder so Axonic can create and use Downloads/Axonic.');
+          return;
+        }
       }
       setDownloadsReady(true);
       const recovered = await recoverMediaIndexFromDevice(true);
@@ -132,7 +137,7 @@ export default function ProfileScreen() {
         'Device media ready',
         recovered > 0
           ? `Axonic found and indexed ${recovered} existing media file${recovered === 1 ? '' : 's'}.`
-          : 'Gallery and Downloads/Axonic are ready for received media.',
+          : 'New received media saves automatically to Axonic folders. If saving fails, it stays safely inside the app.',
       );
     } catch (error) {
       console.warn('[Profile] downloads folder setup failed:', error);
@@ -507,7 +512,21 @@ export default function ProfileScreen() {
           onValueChange={handleAutoSaveMedia}
         />
         <ActionRow
-          label={downloadsReady ? 'DEVICE MEDIA ACCESS READY' : configuringDownloads ? 'CHECKING DEVICE MEDIA…' : 'SET UP / RECOVER DEVICE MEDIA'}
+          label="FINISH MEDIA CLEANUP"
+          icon="trash-outline"
+          colors={Colors}
+          onPress={async () => {
+            try {
+              await flushDeletedMedia(true);
+              const remaining = await getMediaDeletionJobs();
+              alert('Media cleanup', remaining.length
+                ? 'Some files could not be removed. You can delete them in Gallery or Files; your chat deletions remain in effect.'
+                : 'No pending media cleanup remains.');
+            } catch { alert('Media cleanup', 'Could not complete cleanup. Your files have been kept.'); }
+          }}
+        />
+        <ActionRow
+          label={configuringDownloads ? 'CHECKING DEVICE MEDIA…' : hasAutomaticDeviceStorage() ? 'RECOVER OLDER GALLERY MEDIA' : downloadsReady ? 'DEVICE MEDIA ACCESS READY' : 'SET UP / RECOVER DEVICE MEDIA'}
           icon={downloadsReady ? 'checkmark-circle-outline' : 'folder-open-outline'}
           colors={Colors}
           onPress={handleSetupDownloads}

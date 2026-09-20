@@ -53,6 +53,9 @@ import { acceptContact, blockUser, contactErrorMessage } from '../../services/co
 import type { Message, RootStackParamList, ChatRoom } from '../../types';
 import { getFirstMessageUrl } from '../../components/SmartMessageText';
 import ExtractedMessageBubble from '../../components/chat/MessageBubble';
+import ReplyContent from '../../components/chat/reply-content';
+import { useChatDraft } from '../../hooks/use-chat-draft';
+import { getUnreadOpeningLimit } from '../../services/localMessageStore';
 import { persistOutgoingImage, persistSharedFile, compressImageForSend } from '../../services/voiceMessageUtils';
 import { usePermissionPrompt } from '../../hooks/usePermissionPrompt';
 import { mediaFileSize } from '../../services/mediaLane';
@@ -232,7 +235,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const isScreenFocused = useIsFocused();
   const [appState, setAppState] = useState(AppState.currentState);
   const [retryStartedAtById, setRetryStartedAtById] = useState<Record<string, number>>({});
-  const [mediaDraft, setMediaDraft] = useState<Array<PreviewItem & { send: () => Promise<SendChatResult> }>>([]);
+  const [mediaDraft, setMediaDraft] = useState<Array<PreviewItem & { send: (item: PreviewItem) => Promise<SendChatResult> }>>([]);
   const [sendingDraft, setSendingDraft] = useState(false);
   // `otherUserId` is navigation context, not room metadata.  A group opened
   // from a notification has the sender id populated too, so use the locally
@@ -286,10 +289,12 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     return () => { cancelled = true; };
   }, [roomId, user?.id]);
 
-  // Mark this room as the active one in the global store while the screen is mounted.
+  // A mounted screen can be hidden behind another route or backgrounded.
+  // Clear this room's notifications each time it actually becomes visible.
   // Other systems (notification routing, foreground service, etc.) read this to
   // decide whether to show in-app vs. push notifications.
   useEffect(() => {
+    if (!isScreenFocused || appState !== 'active') return;
     useAppStore.getState().setActiveRoom(roomId);
     // Clear any grouped notification for this conversation now that it's open.
     // Consolidated Notifee path plus cleanup of any legacy Expo room card.
@@ -301,7 +306,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         useAppStore.getState().setActiveRoom(null);
       }
     };
-  }, [roomId]);
+  }, [roomId, isScreenFocused, appState]);
 
   /* SQLite-sourced messages — only updated by load/reload calls */
   const [sqliteMessages, setSqliteMessages] = useState<Message[]>([]);
@@ -332,7 +337,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const { height: winHeight } = useWindowDimensions();
   const [androidKeyboardOverlap, setAndroidKeyboardOverlap] = useState(0);
-  const [text, setText] = useState('');
+  const [text, setText] = useChatDraft(user?.id, roomId);
   const [stickersOpen, setStickersOpen] = useState(false);
   const [stickerSourceUri, setStickerSourceUri] = useState<string>();
   const [loading, setLoading] = useState(true);
@@ -355,9 +360,18 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   /** Distance the user has to drag left before the recording is cancelled. */
   const CANCEL_THRESHOLD_PX = 90;
   const flatListRef = useRef<FlatList>(null);
+  const [openingScrollRetry, setOpeningScrollRetry] = useState(0);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  useEffect(() => { setShowJumpToLatest(false); }, [roomId]);
+  const openingPosition = useRef<{ roomId: string; captured: boolean; target: string | null; done: boolean }>({ roomId, captured: false, target: null, done: false });
+  if (openingPosition.current.roomId !== roomId) {
+    openingPosition.current = { roomId, captured: false, target: null, done: false };
+  }
   const composerInputRef = useRef<TextInput>(null);
   const chatViewportRef = useRef<View>(null);
   const composerFocusedRef = useRef(false);
+  const keyboardScreenActiveRef = useRef(false);
+  keyboardScreenActiveRef.current = isScreenFocused && appState === 'active';
   const keyboardResyncTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
   const keyboardMeasurementGenerationRef = useRef(0);
   const loadedHistoryLimitRef = useRef(LOCAL_HISTORY_PAGE_SIZE);
@@ -372,9 +386,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     coordinates: { screenY: number; height: number },
     generation: number,
   ) => {
-    if (Platform.OS !== 'android') return;
+    if (Platform.OS !== 'android' || !keyboardScreenActiveRef.current) return;
     chatViewportRef.current?.measureInWindow((_x, viewportY, _width, viewportHeight) => {
-      if (generation !== keyboardMeasurementGenerationRef.current || !Keyboard.isVisible()) return;
+      if (generation !== keyboardMeasurementGenerationRef.current || !keyboardScreenActiveRef.current || !Keyboard.isVisible()) return;
       const overlap = getAndroidKeyboardOverlap({
         keyboard: coordinates,
         viewportY,
@@ -388,22 +402,22 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   }, [insets.top, insets.bottom]);
 
   const syncKeyboardMetrics = useCallback((allowFocusedFallback = false) => {
-    if (Platform.OS !== 'android') return;
+    if (Platform.OS !== 'android' || !keyboardScreenActiveRef.current) return;
     const metrics = Keyboard.metrics();
     const expectsKeyboard = Keyboard.isVisible()
       || (allowFocusedFallback && composerFocusedRef.current);
     if (!metrics || !expectsKeyboard) {
-      if (!composerFocusedRef.current) setAndroidKeyboardOverlap(0);
+      if (!Keyboard.isVisible()) setAndroidKeyboardOverlap(0);
       return;
     }
-    const generation = keyboardMeasurementGenerationRef.current;
+    const generation = ++keyboardMeasurementGenerationRef.current;
     requestAnimationFrame(() => measureAndroidKeyboardOverlap(metrics, generation));
   }, [measureAndroidKeyboardOverlap]);
 
   const scheduleKeyboardMetricSync = useCallback((
     coordinates?: { screenY: number; height: number },
   ) => {
-    if (Platform.OS !== 'android') return;
+    if (Platform.OS !== 'android' || !keyboardScreenActiveRef.current) return;
     keyboardResyncTimersRef.current.forEach(clearTimeout);
     keyboardResyncTimersRef.current = [];
     const generation = ++keyboardMeasurementGenerationRef.current;
@@ -418,12 +432,36 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     // didShow event. Re-measure briefly instead of assuming the first frame is
     // final. This also covers Android versions that omit keyboardDidShow while
     // adjustResize is active.
-    for (const delay of [80, 250, 500]) {
+    for (const delay of [80, 250, 500, 900, 1500]) {
       keyboardResyncTimersRef.current.push(setTimeout(() => {
         syncKeyboardMetrics(true);
       }, delay));
     }
   }, [measureAndroidKeyboardOverlap, syncKeyboardMetrics]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    keyboardMeasurementGenerationRef.current += 1;
+    keyboardResyncTimersRef.current.forEach(clearTimeout);
+    keyboardResyncTimersRef.current = [];
+    if (!isScreenFocused || appState !== 'active') {
+      setAndroidKeyboardOverlap(0);
+      return;
+    }
+    composerFocusedRef.current = composerInputRef.current?.isFocused() ?? false;
+    scheduleKeyboardMetricSync();
+    // OEM keyboard/toolbar transitions can finish without another RN keyboard
+    // event. Revalidate only while this visible chat owns keyboard focus.
+    const watchdog = setInterval(() => {
+      if (composerInputRef.current?.isFocused() || Keyboard.isVisible()) syncKeyboardMetrics(true);
+    }, 750);
+    return () => {
+      clearInterval(watchdog);
+      keyboardMeasurementGenerationRef.current += 1;
+      keyboardResyncTimersRef.current.forEach(clearTimeout);
+      keyboardResyncTimersRef.current = [];
+    };
+  }, [isScreenFocused, appState, scheduleKeyboardMetricSync, syncKeyboardMetrics]);
 
   useEffect(() => {
     if (Platform.OS !== 'android') return;
@@ -491,9 +529,18 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   /* Load (or reload) messages from the local SQLite DB */
   const loadFromDB = useCallback(async (cancelled?: { current: boolean }) => {
+    if (!openingPosition.current.captured) {
+      loadedHistoryLimitRef.current = await getUnreadOpeningLimit(roomId, LOCAL_HISTORY_PAGE_SIZE);
+    }
     const dbMsgs = await getRecentMessages(roomId, loadedHistoryLimitRef.current);
     debugLog('[ChatRoom] SQLite →', dbMsgs.length, 'msgs for room', roomId);
     if (cancelled?.current) return;
+    if (openingPosition.current.roomId !== roomId) return;
+    if (!openingPosition.current.captured) {
+      // Capture before read receipts mutate these flags.
+      openingPosition.current.captured = true;
+      openingPosition.current.target = dbMsgs.find((m) => !m.is_mine && !m.is_read && !m.is_deleted)?.id ?? null;
+    }
     setSqliteMessages(dbMsgs.map(toMsg));
     setHasOlderMessages(dbMsgs.length >= loadedHistoryLimitRef.current);
     // Pre-populate readIds from is_read=1 rows persisted in SQLite (survives app restarts).
@@ -553,7 +600,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     const cancel = { current: false };
     (async () => {
       try {
-        loadedHistoryLimitRef.current = LOCAL_HISTORY_PAGE_SIZE;
+        if (!openingPosition.current.captured) loadedHistoryLimitRef.current = LOCAL_HISTORY_PAGE_SIZE;
         setHasOlderMessages(true);
         await initDB();
         await loadFromDB(cancel);
@@ -654,6 +701,24 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
      array (and force a full re-render) on every unrelated render. */
   const reversedMsgs = useMemo(() => [...displayedMsgs].reverse(), [displayedMsgs]);
 
+  const positionAtFirstUnread = useCallback(() => {
+    const position = openingPosition.current;
+    if (!position.captured || position.done || !flatListRef.current) return;
+    const index = position.target ? reversedMsgs.findIndex((m) => m.id === position.target) : 0;
+    if (index < 0) return;
+    position.done = true;
+    if (!position.target) {
+      flatListRef.current.scrollToOffset({ offset: 0, animated: false });
+      return;
+    }
+    // In an inverted list, viewPosition 1 is the visual top.
+    flatListRef.current.scrollToIndex({ index, animated: false, viewPosition: 1 });
+  }, [reversedMsgs]);
+  useEffect(() => {
+    const timer = setTimeout(positionAtFirstUnread, 100);
+    return () => clearTimeout(timer);
+  }, [positionAtFirstUnread, openingScrollRetry]);
+
   /* ── Auto-scroll and keyboard scroll removed — FlatList is inverted, newest messages
      always appear at the bottom automatically ── */
 
@@ -711,6 +776,8 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   useLayoutEffect(() => {
     navigation.setOptions({
+      headerTitleAlign: 'left',
+      headerBackButtonDisplayMode: 'minimal',
       headerTitle: () => (
         <ChatHeaderIdentity
           title={headerTitle}
@@ -802,7 +869,6 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
-      Vibration.vibrate(40);
       cancelRecordingRef.current = false;
       recordingStartedAtRef.current = Date.now();
       setRecordingMs(0);
@@ -888,7 +954,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
 
   /* ---- Image attachment handlers ---- */
   /** Pick an asset from the camera or library, persist it, and send. */
-  const sendPickedImage = useCallback(async (asset: ImagePicker.ImagePickerAsset): Promise<SendChatResult> => {
+  const sendPickedImage = useCallback(async (asset: ImagePicker.ImagePickerAsset, caption = ''): Promise<SendChatResult> => {
     if (!asset?.uri) return { messageId: null, state: 'failed', error: { code: 'invalid_file', message: 'The selected image is unavailable.', retryable: false, status: 0 } };
     const msgId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     // Compress/resize first so the photo rides in a single WS frame reliably,
@@ -915,7 +981,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           type: replyingTo.message_type,
         }
       : null;
-    const result = await sendMessage('\uD83D\uDCF7 Photo', 'image', reply, {
+    const result = await sendMessage(caption.trim() || '\uD83D\uDCF7 Photo', 'image', reply, {
       file_uri: localUri,
       image_mime: compressed.mime,
     });
@@ -935,7 +1001,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
       });
       if (!result.canceled && result.assets?.[0]) {
         const asset = result.assets[0];
-        setMediaDraft([{ id: asset.uri, uri: asset.uri, kind: 'image', name: asset.fileName || 'Photo', send: () => sendPickedImage(asset) }]);
+        setMediaDraft([{ id: asset.uri, uri: asset.uri, kind: 'image', name: asset.fileName || 'Photo', send: (item) => sendPickedImage({ ...asset, uri: item.uri, width: item.width ?? asset.width, height: item.height ?? asset.height }, item.caption) }]);
       }
     } catch (err) {
       console.warn('[ChatRoomScreen] camera error:', err);
@@ -997,9 +1063,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         setMediaDraft(result.assets.map((asset, index) => ({
           id: `${index}:${asset.uri}`, uri: asset.uri, kind: asset.type === 'video' ? 'video' : 'image',
           name: asset.fileName || (asset.type === 'video' ? 'Video' : 'Photo'),
-          send: () => asset.type === 'video'
+          send: (item) => asset.type === 'video'
             ? sendPickedFile({ uri: asset.uri, name: asset.fileName, mimeType: asset.mimeType, size: asset.fileSize }, 'video')
-            : sendPickedImage(asset),
+            : sendPickedImage({ ...asset, uri: item.uri, width: item.width ?? asset.width, height: item.height ?? asset.height }, item.caption),
         })));
       }
     } catch (err) {
@@ -1036,6 +1102,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: () => true,
     onPanResponderGrant: () => {
+      Vibration.vibrate(15);
       // Start recording after a short long-press delay (300ms)
       cancelRecordingRef.current = false;
       if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
@@ -1501,6 +1568,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         </View>
       )}
 
+      <View style={{ flex: 1 }}>
       <FlatList
         ref={flatListRef}
         data={reversedMsgs}
@@ -1509,6 +1577,18 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         style={styles.messageList}
         contentContainerStyle={styles.messagesList}
         inverted
+        scrollEventThrottle={100}
+        onScroll={({ nativeEvent }) => {
+          // This list is inverted: offset zero is the newest message.
+          setShowJumpToLatest(nativeEvent.contentOffset.y > 120);
+        }}
+        onContentSizeChange={positionAtFirstUnread}
+        onScrollBeginDrag={() => { openingPosition.current.done = true; }}
+        onScrollToIndexFailed={({ index, averageItemLength }) => {
+          openingPosition.current.done = false;
+          flatListRef.current?.scrollToOffset({ offset: averageItemLength * index, animated: false });
+          if (openingScrollRetry < 12) setOpeningScrollRetry((value) => value + 1);
+        }}
         keyboardShouldPersistTaps="handled"
         initialNumToRender={15}
         maxToRenderPerBatch={10}
@@ -1523,6 +1603,26 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           </View>
         ) : null}
       />
+      {showJumpToLatest && (
+        <TouchableOpacity
+          testID="chat-jump-to-latest"
+          accessibilityRole="button"
+          accessibilityLabel="Go to latest messages"
+          onPress={() => {
+            openingPosition.current.done = true;
+            flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+          }}
+          style={{
+            position: 'absolute', right: Spacing.md, bottom: Spacing.sm,
+            width: 44, height: 44, borderRadius: 22,
+            alignItems: 'center', justifyContent: 'center',
+            backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.neonBorder,
+          }}
+        >
+          <Ionicons name="chevron-down" size={24} color={Colors.primary} />
+        </TouchableOpacity>
+      )}
+      </View>
 
       <View testID="axonic-composer-bar" style={[styles.inputBar, {
         backgroundColor: Colors.chatBg,
@@ -1546,9 +1646,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
               <Text style={[styles.replyPreviewName, { color: Colors.primary }]} numberOfLines={1}>
                 ↩ Replying to {contactName(replyingTo.sender, replyingTo.sender_username || 'Unknown')}
               </Text>
-              <Text style={[styles.replyPreviewText, { color: Colors.textSecondary }]} numberOfLines={1}>
-                {replyingTo.content || (replyingTo.message_type !== 'text' ? `[${replyingTo.message_type}]` : '')}
-              </Text>
+              <ReplyContent id={replyingTo.id} content={replyingTo.content} type={replyingTo.message_type}
+                uri={replyingTo.file_uri || replyingTo.file}
+                style={[styles.replyPreviewText, { color: Colors.textSecondary }]} />
             </View>
             <TouchableOpacity
               onPress={() => setReplyingTo(null)}
@@ -1559,7 +1659,9 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             </TouchableOpacity>
           </View>
         )}
-        <View style={styles.inputRowWrap}>
+        <View style={styles.inputRowWrap} onLayout={() => {
+          if (composerFocusedRef.current) scheduleKeyboardMetricSync();
+        }}>
           {!isRecording && (
             <TouchableOpacity
               onPress={() => setAttachMenuOpen(true)}
@@ -1608,7 +1710,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
             </Animated.View>
           ) : (
             <View style={[styles.inputRow, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
-              <TouchableOpacity accessibilityLabel="Open stickers" testID="axonic-open-stickers" onPress={() => { Keyboard.dismiss(); setStickerSourceUri(undefined); setStickersOpen(true); }} style={{ padding: 10, alignSelf: 'center' }}>
+              <TouchableOpacity accessibilityLabel="Open stickers" testID="axonic-open-stickers" onPress={() => { Keyboard.dismiss(); setStickerSourceUri(undefined); setStickersOpen(true); }} style={{ width: 44, height: 44, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' }}>
                 <Ionicons name="happy-outline" size={24} color={Colors.primary} />
               </TouchableOpacity>
               <TextInput
@@ -1648,6 +1750,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
                 },
               ]}
               onPress={handleSend}
+              onPressIn={() => Vibration.vibrate(15)}
               activeOpacity={0.75}
             >
               <Text style={[styles.sendIcon, { color: Colors.textInverse }]}>▶</Text>
@@ -1846,6 +1949,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         visible={mediaDraft.length > 0}
         items={mediaDraft}
         busy={sendingDraft}
+        onUpdate={(id, changes) => setMediaDraft((items) => items.map((item) => item.id === id ? { ...item, ...changes } : item))}
         onRemove={(id) => setMediaDraft((items) => items.filter((item) => item.id !== id))}
         onClose={() => { if (!sendingDraft) setMediaDraft([]); }}
         onSend={async () => {
@@ -1853,7 +1957,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
           setSendingDraft(true);
           try {
             const results = await mapWithConcurrency(mediaDraft, MEDIA_BATCH_CONCURRENCY, async (item) => {
-              try { return await item.send(); }
+              try { return await item.send(item); }
               catch { return { messageId: null, state: 'failed' as const, error: { code: 'invalid_file' as const, message: `${item.name} could not be prepared.`, retryable: false, status: 0 } }; }
             });
             showTransferResults(results);
@@ -1931,7 +2035,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  headerIdentity: { flexDirection: 'row', alignItems: 'center', gap: 8, maxWidth: 172 },
+  headerIdentity: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 172, marginLeft: Platform.OS === 'android' ? -8 : 0 },
   syncHeaderTitle: { flexDirection: 'row', alignItems: 'center', maxWidth: 130, flexShrink: 1 },
   syncLetters: { flexDirection: 'row', flexShrink: 1 },
   syncHeaderLetter: { fontSize: Font.size.md, fontWeight: '800', letterSpacing: 0.7 },
@@ -1975,14 +2079,14 @@ const styles = StyleSheet.create({
   },
 
   messageList: { flex: 1 },
-  messagesList: { paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, flexGrow: 1 },
+  messagesList: { paddingHorizontal: 10, paddingVertical: 4, flexGrow: 1 },
   historyLoader: { paddingVertical: Spacing.md, alignItems: 'center' },
 
   inputBar: {
     flexShrink: 0,
     flexDirection: 'column',
     paddingHorizontal: Spacing.sm,
-    paddingTop: Spacing.sm,
+    paddingTop: 4,
     // paddingBottom is set dynamically via insets.bottom
     borderTopWidth: 1,
   },
@@ -1993,7 +2097,8 @@ const styles = StyleSheet.create({
   inputRow: {
     flex: 1,
     borderRadius: Radius.lg,
-    paddingHorizontal: Spacing.md,
+    paddingLeft: 0,
+    paddingRight: Spacing.sm,
     minHeight: 44,
     flexDirection: 'row',
     alignItems: 'center',

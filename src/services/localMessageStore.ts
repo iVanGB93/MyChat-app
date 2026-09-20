@@ -1987,6 +1987,17 @@ export async function queueMessageUpdate(
  * room/created_at index, while callers still receive chronological rows for
  * the chat renderer.
  */
+export async function getUnreadOpeningLimit(roomId: string, minimum = 60): Promise<number> {
+  const db = await getDB();
+  const row = await db.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM messages WHERE room_id = ? AND created_at >= (
+      SELECT MIN(created_at) FROM messages WHERE room_id = ?
+        AND is_mine = 0 AND is_read = 0 AND COALESCE(is_deleted, 0) = 0
+    )`, roomId, roomId,
+  );
+  return Math.max(minimum, Number(row?.count || 0) + 5);
+}
+
 export async function getRecentMessages(roomId: string, limit = 60): Promise<LocalMessage[]> {
   const db = await getDB();
   const rows = await db.getAllAsync<any>(
@@ -2496,7 +2507,7 @@ export async function getUntrackedReceivedMediaExports(): Promise<PendingMediaEx
        AND m.file_uri != ''
        AND e.message_id IS NULL
        AND (m.file_uri LIKE ? OR m.file_uri LIKE ?)
-     ORDER BY m.created_at ASC`,
+     ORDER BY m.created_at ASC LIMIT 10`,
     `${Paths.cache.uri}%`,
     `${Paths.document.uri}%`,
   );
@@ -2588,11 +2599,19 @@ export async function recordRecoveredMediaExport(item: PendingMediaExport & { ex
 /** Pending exports are retried after the user grants storage access. */
 export async function getPendingMediaExports(limit?: number): Promise<PendingMediaExport[]> {
   const db = await getDB();
-  const query = `SELECT message_id, media_type, local_uri, file_name, mime
-    FROM media_exports
-    WHERE status = 'pending'
-    ORDER BY updated_at ASC${limit == null ? '' : '\n    LIMIT ?'}`;
+  // A process can stop after recording the public URI but before relinking
+  // the message. Include that private source so the next pass finishes the move.
+  const query = `SELECT e.message_id, e.media_type,
+      CASE WHEN e.status = 'exported' THEN m.file_uri ELSE e.local_uri END AS local_uri,
+      e.file_name, e.mime
+    FROM media_exports e
+    LEFT JOIN messages m ON m.id = e.message_id
+    WHERE e.status = 'pending' OR (
+      e.status = 'exported' AND m.is_deleted = 0 AND m.is_mine = 0
+      AND (m.file_uri LIKE ? OR m.file_uri LIKE ?))
+    ORDER BY e.updated_at ASC${limit == null ? '' : '\n    LIMIT ?'}`;
+  const roots = [`${Paths.cache.uri}%`, `${Paths.document.uri}%`];
   return limit == null
-    ? db.getAllAsync<PendingMediaExport>(query)
-    : db.getAllAsync<PendingMediaExport>(query, limit);
+    ? db.getAllAsync<PendingMediaExport>(query, ...roots)
+    : db.getAllAsync<PendingMediaExport>(query, ...roots, limit);
 }

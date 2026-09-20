@@ -1,7 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
+import { Platform, AppState } from 'react-native';
 import { Directory, File, Paths } from 'expo-file-system';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
+import { androidMediaStore, hasAutomaticDeviceStorage, isMediaStoreUri } from './android-media-store';
+export { hasAutomaticDeviceStorage } from './android-media-store';
 import {
   getPendingMediaExports,
   getUntrackedReceivedMediaExports,
@@ -24,6 +26,9 @@ let autoSaveCache: boolean | null = null;
 let downloadsDirectoryCache: string | null | undefined;
 const activeExports = new Map<string, Promise<MediaExportResult>>();
 const activeMoves = new Map<string, Promise<MediaExportResult>>();
+let exportTail: Promise<unknown> = Promise.resolve();
+let retryRunning: Promise<void> | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
 export type MediaExportResult =
   | { state: 'saved'; destination: 'gallery' | 'downloads'; uri: string }
@@ -135,10 +140,12 @@ export function parseDeviceMediaFileName(fileName: string): string | null {
   try { return decodeURIComponent(match[1]); } catch { return null; }
 }
 
-function inferredMime(request: MediaExportRequest): string {
-  if (request.mime) return request.mime;
+export function inferredMime(request: MediaExportRequest): string {
+  if (request.mime && request.mime !== 'application/octet-stream') return request.mime;
   const ext = safeExportFileName(request).split('.').pop()?.toLowerCase();
   const byExt: Record<string, string> = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+    mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm',
     pdf: 'application/pdf', zip: 'application/zip', txt: 'text/plain',
     doc: 'application/msword',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -249,6 +256,11 @@ async function performExport(request: MediaExportRequest): Promise<MediaExportRe
   }
 
   try {
+    if (hasAutomaticDeviceStorage()) {
+      const uri = await androidMediaStore!.save(request.localUri, safeExportFileName(request), inferredMime(request), request.mediaType);
+      await markMediaExported(request.messageId, uri);
+      return { state: 'saved', destination: request.mediaType === 'image' || request.mediaType === 'video' ? 'gallery' : 'downloads', uri };
+    }
     if (request.mediaType === 'image' || request.mediaType === 'video') {
       const uri = await saveToGallery(request);
       await markMediaExported(request.messageId, uri);
@@ -270,13 +282,14 @@ async function performExport(request: MediaExportRequest): Promise<MediaExportRe
 export function exportMediaToDevice(request: MediaExportRequest): Promise<MediaExportResult> {
   const running = activeExports.get(request.messageId);
   if (running) return running;
-  const work = performExport(request);
+  const work = exportTail.then(() => performExport(request));
+  exportTail = work.catch(() => {});
   activeExports.set(request.messageId, work);
   return work.finally(() => activeExports.delete(request.messageId));
 }
 
 function isAppOwnedUri(uri: string): boolean {
-  return uri.startsWith(Paths.cache.uri) || uri.startsWith(Paths.document.uri);
+  return [Paths.cache.uri, Paths.document.uri].some(root => uri.startsWith(root.replace(/\/$/, '') + '/') && !uri.includes('/../'));
 }
 
 /**
@@ -306,6 +319,9 @@ async function moveMediaToDeviceStorageOnce(request: MediaExportRequest): Promis
   const durableRequest = await preserveInsideAxonic(request);
   const result = await exportMediaToDevice(durableRequest);
   if (result.state !== 'saved' && result.state !== 'already-saved') return result;
+  if (!await isLocalMediaUriAvailable(result.uri)) {
+    return { state: 'failed', message: 'The saved file is not accessible. Your copy is still inside Axonic.' };
+  }
   await setMessageFileUri(durableRequest.messageId, result.uri);
   if (result.uri !== durableRequest.localUri && isAppOwnedUri(durableRequest.localUri)) {
     try {
@@ -336,7 +352,8 @@ export async function autoExportReceivedMedia(request: MediaExportRequest): Prom
   return moveMediaToDeviceStorage(request);
 }
 
-export async function retryPendingMediaExports(): Promise<void> {
+async function retryPendingMediaExportsOnce(): Promise<void> {
+  if (AppState.currentState !== 'active') return;
   if (!await getAutoSaveReceivedMedia()) return;
   await initDB();
 
@@ -345,18 +362,33 @@ export async function retryPendingMediaExports(): Promise<void> {
   const untracked = await getUntrackedReceivedMediaExports();
   for (const item of untracked) await queueMediaExport(item);
 
-  // Read one complete snapshot. Failed items remain pending for the next app
+  // Read a bounded batch. Failed items remain pending for the next app
   // start/setup attempt, without preventing later items from being tried now.
-  const pending = await getPendingMediaExports();
+  const pending = await getPendingMediaExports(10);
+  let saved = 0;
   for (const row of pending) {
-    await moveMediaToDeviceStorage({
+    if (AppState.currentState !== 'active' || !await getAutoSaveReceivedMedia()) break;
+    const result = await moveMediaToDeviceStorage({
       messageId: row.message_id,
       mediaType: row.media_type,
       localUri: row.local_uri,
       fileName: row.file_name,
       mime: row.mime,
     });
+    if (result.state === 'saved' || result.state === 'already-saved') saved++;
   }
+  if (pending.length === 10 && saved > 0 && !retryTimer) {
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      void retryPendingMediaExports().catch(() => {});
+    }, 60_000);
+  }
+}
+
+export function retryPendingMediaExports(): Promise<void> {
+  if (retryRunning) return retryRunning;
+  retryRunning = retryPendingMediaExportsOnce().finally(() => { retryRunning = null; });
+  return retryRunning;
 }
 
 function fileNameFromSafUri(uri: string): string {
@@ -455,6 +487,7 @@ export async function getAvailableRecoveredMediaUri(messageId: string): Promise<
  */
 export async function isLocalMediaUriAvailable(uri: string | null | undefined): Promise<boolean> {
   if (!uri) return false;
+  if (hasAutomaticDeviceStorage() && isMediaStoreUri(uri)) return androidMediaStore!.available(uri);
 
   // Fast path for Axonic-owned files and Android Gallery file URIs.
   try {

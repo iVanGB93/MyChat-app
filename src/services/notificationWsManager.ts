@@ -22,6 +22,7 @@ import { decideLocalIncomingCallNotification } from './notificationPresentationP
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
 import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
 import { classify } from './rrp/envelope';
+import { isRecentAlertUpdate } from './update-alert-policy';
 import { invalidateSession } from './sessionInvalidation';
 import { getInstallationId } from './installationIdentity';
 import type { ConnectionStatus, NotificationPayload } from './axionTypes';
@@ -72,6 +73,16 @@ function routeInboundInBackground(payload: NotificationPayload): void {
             update_ids: res.ackUpdateIds,
           }));
         } catch {}
+      }
+      // Mutations are dispatched only AFTER persistent deduplication, never
+      // from the raw frame. Replayed updates still receive their ACK above.
+      if (payload.event === 'message_update') {
+        const updates = (res.freshUpdates ?? []).filter((update) => isRecentAlertUpdate(update));
+        if (updates.length) {
+          eventListeners.forEach((fn) => {
+            try { fn({ ...payload, updates }); } catch (err) { console.warn('[WsManager] listener error:', err); }
+          });
+        }
       }
     })
     .catch(() => {});
@@ -570,6 +581,7 @@ async function connectWs() {
           invalidateCollection('calls');
         }
         routeInboundInBackground(payload);
+        if (payload.event === 'message_update') return;
 
         // Typing is ephemeral and fully owned by the router — no local
         // notification, and (matching prior behavior) no listener dispatch.

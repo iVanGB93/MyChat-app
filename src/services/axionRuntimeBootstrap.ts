@@ -1,4 +1,5 @@
 import { configureAxionRuntime } from './axionRuntimeBridge';
+import { flushPendingCallEnds } from './call-end-queue';
 import {
   applyMessageUpdateServerAck,
   connectRoom,
@@ -27,6 +28,7 @@ configureAxionRuntime({
   acceptStoredReceipts: (entries) => acceptStoredReceiptConfirmations(entries).catch(() => {}),
   applyMessageUpdateServerAck,
   onAuthenticated: () => {
+    void flushPendingCallEnds();
     // Presence subscriptions belong to one physical Axion session. Replay the
     // deduplicated desired set after authentication without coupling the
     // transport back to presenceService.

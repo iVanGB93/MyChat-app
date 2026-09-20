@@ -2,6 +2,7 @@ import { Linking, Platform } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 import * as IntentLauncher from 'expo-intent-launcher';
 import { getMessagesByIds } from './localMessageStore';
+import { inferredMime } from './media-export-service';
 
 /** Resolve again at tap time: Gallery export may have moved the original file. */
 export async function openSharedMedia(uri: string, type: string, messageId?: string): Promise<void> {
@@ -27,6 +28,10 @@ export async function openSharedMedia(uri: string, type: string, messageId?: str
   }
   let mime = '';
   try { mime = file.type; } catch { /* Some providers omit MIME metadata. */ }
+  if ((!mime || mime === 'application/octet-stream') && stored?.content) {
+    // MediaStore content URIs end in a numeric row ID, not a file extension.
+    mime = inferredMime({ messageId: stored.id, mediaType: type === 'video' ? 'video' : 'document', localUri: currentUri, fileName: stored.content });
+  }
   if (type === 'video' && !mime.startsWith('video/')) mime = 'video/*';
   if (!mime || mime === 'application/octet-stream') mime = type === 'video' ? 'video/*' : '*/*';
   await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {

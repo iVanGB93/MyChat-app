@@ -21,6 +21,7 @@ import { useContactName } from '../../hooks/useContactName';
 import { getMessagesByIds } from '../../services/localMessageStore';
 import { parseSticker } from '../../services/stickers';
 import StickerArt from './sticker-art';
+import ReplyContent from './reply-content';
 import { IMPORTED_STICKER_CONTENT } from '../../services/sticker-file-format';
 
 function ReplySenderName({ messageId, fallback }: { messageId: string; fallback: string }) {
@@ -68,9 +69,9 @@ function PendingClock({ active, color }: { active: boolean; color: string }) {
       return;
     }
     const animation = Animated.loop(Animated.sequence([
-      Animated.timing(motion, { toValue: 1, duration: 180, useNativeDriver: true }),
-      Animated.timing(motion, { toValue: -1, duration: 180, useNativeDriver: true }),
-      Animated.timing(motion, { toValue: 0, duration: 140, useNativeDriver: true }),
+      Animated.timing(motion, { toValue: 1, duration: 220, useNativeDriver: true, isInteraction: false }),
+      Animated.timing(motion, { toValue: -1, duration: 220, useNativeDriver: true, isInteraction: false }),
+      Animated.timing(motion, { toValue: 0, duration: 180, useNativeDriver: true, isInteraction: false }),
       Animated.delay(180),
     ]));
     animation.start();
@@ -85,7 +86,7 @@ function PendingClock({ active, color }: { active: boolean; color: string }) {
       accessibilityLabel={active ? 'Sending message' : 'Message pending'}
       style={{
         transform: [
-          { rotate: motion.interpolate({ inputRange: [-1, 1], outputRange: ['-8deg', '8deg'] }) },
+          { rotate: motion.interpolate({ inputRange: [-1, 1], outputRange: ['-20deg', '20deg'] }) },
           { translateY: motion.interpolate({ inputRange: [-1, 0, 1], outputRange: [0, 0, -0.7] }) },
         ],
       }}
@@ -243,19 +244,15 @@ function MessageBubbleBase({
                   <Text style={[styles.quoteName, { color: Colors.primary }]} numberOfLines={1}>
                     <ReplySenderName messageId={item.reply_to.id} fallback={item.reply_to.sender_name || 'Unknown'} />
                   </Text>
-                  <Text style={[styles.quoteText, { color: Colors.textSecondary }]} numberOfLines={2}>
-                    {item.reply_to.content
-                      || (item.reply_to.type && item.reply_to.type !== 'text'
-                        ? `[${item.reply_to.type}]`
-                        : '')}
-                  </Text>
+                  <ReplyContent id={item.reply_to.id} content={item.reply_to.content} type={item.reply_to.type}
+                    style={[styles.quoteText, { color: Colors.textSecondary }]} />
                 </View>
               )}
               {item.is_deleted ? (
                 <Text style={[styles.deletedText, { color: Colors.textTertiary }]}>🚫 This message was deleted.</Text>
               ) : sticker ? (
                 <TouchableOpacity accessibilityLabel={`Preview ${sticker.label} sticker`} onPress={() => onImagePress(item)} onLongPress={(event) => onLongPress(event.nativeEvent.pageY, item)} delayLongPress={350}>
-                  <StickerArt sticker={sticker} animate loop size={120} />
+                  <StickerArt sticker={sticker} animate loop size={104} />
                 </TouchableOpacity>
               ) : item.message_type === 'voice' ? (
                 <VoiceMessageBubble
@@ -277,7 +274,7 @@ function MessageBubbleBase({
                 >
                   <ExpoImage
                     source={{ uri: item.file_uri ?? item.file ?? '' }}
-                    style={importedSticker ? { width: 128, height: 128 } : styles.imageBubble}
+                    style={importedSticker ? { width: 108, height: 108 } : styles.imageBubble}
                     contentFit={importedSticker ? 'contain' : 'cover'}
                     cachePolicy="memory-disk"
                     transition={100}
@@ -315,6 +312,12 @@ function MessageBubbleBase({
                   {item.content}
                 </SmartMessageText>
               )}
+              {!item.is_deleted && item.message_type === 'image' && !importedSticker && !!item.content?.trim()
+                && item.content !== '📷 Photo' && (
+                  <SmartMessageText style={[styles.messageText, { color: Colors.text, marginTop: 6 }]} linkColor={Colors.primary}>
+                    {item.content}
+                  </SmartMessageText>
+                )}
               {isMine && item.transfer_error_message ? (
                 <Text style={[styles.transferError, { color: Colors.error }]} numberOfLines={2}>
                   Not sent · {item.transfer_error_message}
@@ -427,14 +430,16 @@ const styles = StyleSheet.create({
     borderWidth: 0,
     elevation: 0,
     paddingTop: 0,
+    paddingHorizontal: 4,
+    paddingBottom: 2,
   },
-  bubbleRow: { marginBottom: Spacing.md },
+  bubbleRow: { marginBottom: 6 },
   bubbleRowRight: { alignItems: 'flex-end' },
   bubbleRowLeft: { alignItems: 'flex-start' },
   bubble: {
     minWidth: 96,
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.sm,
+    paddingHorizontal: 10,
+    paddingTop: 6,
     paddingBottom: Spacing.xs,
     borderRadius: Radius.lg,
     borderWidth: 1,

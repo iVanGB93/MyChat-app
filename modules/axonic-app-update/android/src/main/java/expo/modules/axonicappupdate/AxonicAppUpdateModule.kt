@@ -1,6 +1,10 @@
 package expo.modules.axonicappupdate
 
 import android.app.Activity
+import android.content.Context
+import android.media.AudioManager
+import android.media.AudioDeviceInfo
+import android.os.Build
 import com.google.android.play.core.appupdate.AppUpdateManagerFactory
 import com.google.android.play.core.appupdate.AppUpdateOptions
 import com.google.android.play.core.install.model.AppUpdateType
@@ -12,8 +16,42 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 class AxonicAppUpdateModule : Module() {
   private var flowPending = false
+  private var previousAudioMode: Int? = null
+  private var previousSpeaker = false
+  private val audio get() = requireNotNull(appContext.reactContext).getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+  @Suppress("DEPRECATION")
+  private fun restoreCallAudio() {
+    val previous = previousAudioMode ?: return
+    if (Build.VERSION.SDK_INT >= 31) audio.clearCommunicationDevice()
+    else audio.isSpeakerphoneOn = previousSpeaker
+    audio.mode = previous
+    previousAudioMode = null
+  }
   override fun definition() = ModuleDefinition {
     Name("AxonicAppUpdate")
+    AsyncFunction("setCallSpeaker") { enabled: Boolean ->
+      val manager = audio
+      if (previousAudioMode == null) {
+        previousAudioMode = manager.mode
+        previousSpeaker = manager.isSpeakerphoneOn
+      }
+      manager.mode = AudioManager.MODE_IN_COMMUNICATION
+      if (Build.VERSION.SDK_INT >= 31) {
+        val devices = manager.availableCommunicationDevices
+        val external = devices.firstOrNull { it.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER && it.type != AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+        val target = if (enabled) devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+          else external ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+        check(target != null && manager.setCommunicationDevice(target)) { "Audio route unavailable" }
+        target.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+      } else {
+        @Suppress("DEPRECATION")
+        manager.isSpeakerphoneOn = enabled
+        manager.isSpeakerphoneOn
+      }
+    }
+    AsyncFunction("restoreCallAudio") { restoreCallAudio() }
+    OnDestroy { restoreCallAudio() }
 
     AsyncFunction("startUpdateAsync") { immediate: Boolean, promise: Promise ->
       val activity = appContext.currentActivity

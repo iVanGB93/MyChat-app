@@ -10,6 +10,17 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../s
 }).outputText, sandbox);
 const sanitize = sandbox.exports.sanitizeCrashEvent;
 
+test('safe diagnostic reasons and source-map matching survive sanitization', () => {
+  const result = sanitize({ tags: { notification_blocker: 'authentication' },
+    debug_meta: { images: [{ type: 'sourcemap', code_file: 'app:///index.android.bundle', debug_id: 'test-id' }] },
+    exception: { values: [{ value: 'notification-open-timeout', stacktrace: { frames: [{ filename: 'app:///index.android.bundle', abs_path: 'app:///index.android.bundle' }] } }] } });
+  assert.equal(result.tags.notification_blocker, 'authentication');
+  assert.equal(result.exception.values[0].value, 'notification-open-timeout');
+  assert.equal(result.debug_meta.images[0].code_file, result.exception.values[0].stacktrace.frames[0].abs_path);
+  assert.equal(result.debug_meta.images[0].debug_id, 'test-id');
+  assert.equal(sanitize({ tags: { notification_blocker: 'private-chat' } }).tags.notification_blocker, undefined);
+});
+
 test('crash reports remove private payloads while preserving stack coordinates', () => {
   const result = sanitize({
     type: undefined, release: 'com.axonic@1.0.38+40',

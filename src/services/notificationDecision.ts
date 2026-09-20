@@ -41,7 +41,7 @@ function isMutedRoom(
   payload: NotificationPayload,
   context: NotificationDecisionContext,
 ): boolean {
-  if (payload.event !== 'new_message') return false;
+  if (payload.event !== 'new_message' && payload.event !== 'message_update') return false;
   return !!context.mutedRooms?.[roomIdFromPayload(payload)];
 }
 
@@ -89,6 +89,7 @@ export function decideInAppMessageToast(
 
   if (payload.event === 'message_update') {
     if (isViewingRoom(payload, context)) return { allow: false, reason: 'viewing_room' };
+    if (isMutedRoom(payload, context)) return { allow: false, reason: 'room_muted' };
     return { allow: true, reason: 'eligible' };
   }
 

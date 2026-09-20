@@ -6,7 +6,10 @@ import { useContactName } from '../../hooks/useContactName';
 /* ------------------------------------------------------------------ */
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { AppState, View, Text, StyleSheet, TouchableOpacity, Pressable, Platform } from 'react-native';
+import { AppState, View, Text, StyleSheet, TouchableOpacity, Pressable, Platform, Modal, ScrollView, Alert } from 'react-native';
+import { setCallSpeaker, restoreCallAudio } from '../../services/call-audio-route';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import type { VideoQualityMode } from '../../services/video-quality';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useKeepAwake } from 'expo-keep-awake';
 import { RTCView } from 'react-native-webrtc';
@@ -25,6 +28,7 @@ import {
 import { useAppStore } from '../../store/appStore';
 import { debugLog } from '../../services/diagnostics';
 import useWebRTC from '../../hooks/useWebRTC';
+import { useCallNavigationGuard } from '../../hooks/use-call-navigation-guard';
 import Avatar from '../../components/ui/Avatar';
 import type { RootStackParamList } from '../../types';
 
@@ -36,6 +40,18 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   const otherName = contactName(peerUserId, originalName);
   const isVideo = callType === 'video';
   const { colors: Colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const [showOptions, setShowOptions] = useState(false);
+  const [speakerOn, setSpeakerOn] = useState(false);
+  const audioRouteBusy = useRef(false);
+  useEffect(() => () => restoreCallAudio(), []);
+  const toggleSpeaker = async () => {
+    if (audioRouteBusy.current) return;
+    audioRouteBusy.current = true;
+    try { setSpeakerOn(await setCallSpeaker(!speakerOn)); }
+    catch (error) { Alert.alert('Could not switch audio', error instanceof Error ? error.message : 'Please try again.'); }
+    finally { audioRouteBusy.current = false; }
+  };
   const CALLER_RINGBACK_CYCLE_MS = 10_200;
 
   // Keep the screen on for the entire duration of the call (voice and
@@ -56,6 +72,8 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
   const ringPulseRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const offerStartedRef = useRef(false);
   const hasEnded = useRef(false);
+  const keepCallVisible = useCallback(() => setShowVideoControls(true), []);
+  useCallNavigationGuard(status !== 'ended', keepCallVisible);
 
   // When launched directly into a call (background/killed), there is no route
   // to go back to — navigation.goBack() would throw "GO_BACK was not handled".
@@ -84,6 +102,9 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     toggleCamera,
     switchCamera,
     callQuality,
+    videoQualityMode,
+    videoQualityError,
+    selectVideoQuality,
     startAsOfferer,
     cleanup: cleanupWebRTC,
   } = useWebRTC({
@@ -204,17 +225,17 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
   /* ---- poll call status as fallback ---- */
   useEffect(() => {
-    if (!isOutgoing || status === 'connected' || status === 'ended') return;
+    if (status === 'ended') return;
     const poll = setInterval(async () => {
       if (hasEnded.current) return;
       try {
         const s = await getCallStatus(callId);
         if (hasEnded.current) return;
-        if (s === 'ringing') {
+        if (s === 'ringing' && isOutgoing) {
           setStatus((prev) => (prev === 'connected' || prev === 'ended' ? prev : 'ringing'));
         } else if (s === 'ongoing') {
           setStatus((previous) => previous === 'connected' ? previous : 'connecting');
-          if (!offerStartedRef.current) {
+          if (isOutgoing && !offerStartedRef.current) {
             offerStartedRef.current = true;
             startAsOfferer();
           }
@@ -227,7 +248,9 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
           setTimeout(() => dismiss(), 1200);
         }
       } catch { /* ignore */ }
-    }, 1200);
+    // Both peers reconcile occasionally, including during connected calls, so
+    // an end event missed during a socket outage cannot strand the callee.
+    }, status === 'connected' || !isOutgoing ? 15000 : 1200);
     return () => clearInterval(poll);
   }, [isOutgoing, status, callId, startAsOfferer, cleanupWebRTC]);
 
@@ -404,8 +427,9 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
         </View>
 
         {/* ---- Action buttons ---- */}
-        <View style={styles.actions}>
+        <View style={[styles.actions, isVideo && { paddingHorizontal: 8 }]}>
           <ActionButton
+            size={isVideo ? 52 : 64}
             icon={isMuted ? 'mic-off' : 'mic'}
             label={isMuted ? 'Unmute' : 'Mute'}
             active={isMuted}
@@ -415,6 +439,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
           {isVideo && (
             <ActionButton
+              size={52}
               icon={isCameraOff ? 'videocam-off' : 'videocam'}
               label={isCameraOff ? 'Cam On' : 'Cam Off'}
               active={isCameraOff}
@@ -426,7 +451,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
           <TouchableOpacity
             testID="axonic-end-call"
             accessibilityLabel="End call"
-            style={styles.endBtn}
+            style={[styles.endBtn, isVideo && { width: 64, height: 64, borderRadius: 32 }]}
             onPress={handleEndCall}
             activeOpacity={0.8}
           >
@@ -440,9 +465,21 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
           {isVideo && (
             <ActionButton
+              size={52}
               icon="camera-reverse-outline"
               label="Flip"
               onPress={switchCamera}
+              Colors={Colors}
+            />
+          )}
+
+          {isVideo && (
+            <ActionButton
+              size={52}
+              testID="axonic-call-options"
+              icon="options-outline"
+              label="Options"
+              onPress={() => setShowOptions(true)}
               Colors={Colors}
             />
           )}
@@ -451,13 +488,43 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
             <ActionButton
               icon="volume-high-outline"
               label="Speaker"
-              onPress={() => {}}
+              active={speakerOn}
+              onPress={() => void toggleSpeaker()}
               Colors={Colors}
             />
           )}
         </View>
       </View>
       )}
+      <Modal visible={showOptions && isVideo && status !== 'ended'} transparent animationType="slide" onRequestClose={() => setShowOptions(false)}>
+        <View style={{ flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.55)' }}>
+          <Pressable accessibilityLabel="Close call options" onPress={() => setShowOptions(false)} style={StyleSheet.absoluteFill} />
+          <View style={{ backgroundColor: Colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: Math.max(insets.bottom, 16) + 12, maxHeight: '85%' }}>
+            <ScrollView>
+              <Text style={{ color: Colors.text, fontSize: 22, ...Font.medium }}>Video quality</Text>
+              <Text style={{ color: Colors.text, opacity: 0.7, marginVertical: 12 }}>Changes the video you send for this call. Incoming video is controlled by the other phone.</Text>
+              {([
+                ['automatic', 'Automatic', 'Adjusts to your connection · Default'],
+                ['low', 'Low', 'Uses less data · Lower detail and frame rate'],
+                ['medium', 'Medium', 'Balances detail and data use'],
+                ['high', 'High', 'Best detail · Uses more data'],
+              ] as [VideoQualityMode, string, string][]).map(([mode, label, detail]) => (
+                <TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} accessibilityRole="radio" accessibilityState={{ checked: videoQualityMode === mode }} onPress={() => selectVideoQuality(mode)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 }}>
+                  <Ionicons name={videoQualityMode === mode ? 'radio-button-on' : 'radio-button-off'} size={24} color={Colors.primary} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: Colors.text, fontSize: 17 }}>{label}</Text>
+                    <Text style={{ color: Colors.text, opacity: 0.7, marginTop: 4 }}>{detail}</Text>
+                  </View>
+                </TouchableOpacity>
+              ))}
+              {videoQualityError && <Text accessibilityRole="alert" style={{ color: Colors.text, marginVertical: 8 }}>{videoQualityError}</Text>}
+              <TouchableOpacity accessibilityRole="button" onPress={() => setShowOptions(false)} style={{ alignItems: 'center', padding: 14, backgroundColor: Colors.primary, borderRadius: 16, marginTop: 12 }}>
+                <Text style={{ color: '#020413', ...Font.medium }}>Done</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -465,12 +532,16 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 /* -------------------- helpers -------------------- */
 
 function ActionButton({
+  size = 64,
+  testID,
   icon,
   label,
   active,
   onPress,
   Colors,
 }: {
+  size?: number;
+  testID?: string;
   icon: any;
   label: string;
   active?: boolean;
@@ -478,12 +549,12 @@ function ActionButton({
   Colors: any;
 }) {
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.7} style={{ alignItems: 'center' }}>
+    <TouchableOpacity testID={testID} accessibilityRole="button" accessibilityLabel={label} onPress={onPress} activeOpacity={0.7} style={{ alignItems: 'center' }}>
       <View
         style={{
-          width: 64,
-          height: 64,
-          borderRadius: 32,
+          width: size,
+          height: size,
+          borderRadius: size / 2,
           borderWidth: 1,
           borderColor: active ? Colors.primary : Colors.neonBorder,
           backgroundColor: active ? 'rgba(0,70,85,0.85)' : 'rgba(2,4,19,0.65)',

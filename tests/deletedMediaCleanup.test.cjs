@@ -12,7 +12,15 @@ function fixture(job, options = {}) {
   const removed = [], finished = [];
   const state = { currentState: options.background ? 'background' : 'active' };
   const modules = {
-    'react-native': { AppState: state },
+    './android-media-store': {
+      hasAutomaticDeviceStorage: () => !!options.native,
+      isMediaStoreUri: (uri) => uri.startsWith('content://media/'),
+      androidMediaStore: {
+        deleteOwned: async () => options.denied ? 'needs-confirmation' : 'deleted',
+        requestDelete: async () => { removed.push('confirmation'); return false; },
+      },
+    },
+    'react-native': { AppState: state, Platform: { OS: options.native || options.android ? 'android' : 'ios' } },
     'expo-file-system': {
       Paths: { cache: { uri: 'file:///cache/' }, document: { uri: 'file:///documents/' } },
       File: class { constructor(uri) { this.uri = uri; this.exists = true; } delete() { removed.push(this.uri); } },
@@ -25,7 +33,7 @@ function fixture(job, options = {}) {
       },
     },
     './localMessageStore': {
-      getMediaDeletionJobs: async () => [job],
+      getMediaDeletionJobs: async () => options.jobs ?? [job],
       finishMediaDeletionJob: async (...args) => { finished.push(args); },
       hasLiveMediaReference: async () => !!options.shared,
     },
@@ -43,6 +51,38 @@ function fixture(job, options = {}) {
   return { ...sandbox.exports, removed, finished };
 }
 const base = { message_id: 'm1', type: 'image', exported: 1, uri: 'content://gallery/7' };
+
+test('owned MediaStore deletion completes without Gallery permissions', async () => {
+  const app = fixture({ ...base, uri: 'content://media/external/images/media/7' }, { native: true });
+  await app.flushDeletedMedia();
+  assert.equal(app.finished.length, 1);
+  assert.deepEqual(app.removed, []);
+});
+
+test('older Android clients never start Gallery cleanup without user interaction', async () => {
+  const app = fixture({ ...base, uri: 'content://media/external/images/media/7' }, { android: true });
+  await app.flushDeletedMedia();
+  assert.equal(app.finished.length, 0);
+  assert.deepEqual(app.removed, []);
+});
+
+test('manual cleanup does not create a chain of consent dialogs', async () => {
+  const jobs = [7, 8, 9].map(id => ({ ...base, message_id: `m${id}`, uri: `content://media/external/images/media/${id}` }));
+  const app = fixture(base, { native: true, denied: true, jobs });
+  await app.flushDeletedMedia(true);
+  assert.deepEqual(app.removed, ['confirmation']);
+  assert.equal(app.finished.length, 0);
+});
+
+test('lost ownership stays queued without background consent prompts', async () => {
+  const app = fixture({ ...base, uri: 'content://media/external/images/media/7' }, { native: true, denied: true });
+  await app.flushDeletedMedia();
+  assert.equal(app.finished.length, 0);
+  assert.deepEqual(app.removed, []);
+  await app.flushDeletedMedia(true);
+  assert.deepEqual(app.removed, ['confirmation']);
+  assert.equal(app.finished.length, 0);
+});
 
 test('tombstone cleanup deletes its managed gallery asset once per concurrent run', async () => {
   const app = fixture(base);

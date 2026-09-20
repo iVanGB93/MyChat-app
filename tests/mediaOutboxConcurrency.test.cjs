@@ -34,8 +34,8 @@ function fixture() {
     './diagnostics': { debugLog() {} },
   };
   const module = { exports: {} };
-  vm.runInNewContext(`${compiled}\nexports.sendForTest = sendOutboxFrame; exports.stateForTest = createRoomState;
-    exports.acceptForTest = (id) => { _serverAckTimers.delete(id); _serverAcceptedAt.set(id, Date.now()); };
+  vm.runInNewContext(`${compiled}\nexports.sendForTest = sendOutboxFrame; exports.stateForTest = () => getOrCreate('room');
+    exports.acceptForTest = (id) => { clearServerAckWatch(id); _serverAcceptedAt.set(id, Date.now()); };
     exports.flushForTest = _doFlush;`, {
     module, exports: module.exports,
     require: (name) => { assert.ok(name in modules, `unexpected dependency ${name}`); return modules[name]; },
@@ -74,6 +74,8 @@ test('the room snapshot exposes only the active send attempt as sending', async 
   const visualTimer = f.timers.find((timer) => timer.delay < 1_000);
   assert.ok(visualTimer, 'expected a short minimum-visibility timer');
   visualTimer.callback();
+  assert.equal(f.state.sendingIds.has(f.message.id), true, 'keep animating until server acceptance');
+  f.acceptForTest(f.message.id);
   assert.equal(f.state.sendingIds.has(f.message.id), false);
 });
 

@@ -707,6 +707,8 @@ export interface InboundResult {
   ackUpdateIds?: string[];
   /** Sender to address the update ack to. */
   ackSenderId?: number;
+  /** Only newly applied updates may be considered for an in-app alert. */
+  freshUpdates?: Array<{ id?: string; message_id: string; changes: Record<string, unknown> }>;
 }
 
 /** Has this event id already been applied? (persistent + this-session guards). */
@@ -719,14 +721,31 @@ async function alreadyProcessed(id: string | null): Promise<boolean> {
 /** Mark an event id processed in both the session cache and the SQLite ledger. */
 async function rememberProcessed(id: string | null, type: RrpType): Promise<void> {
   if (!id) return;
+  // Do not ACK or alert until this survives process death. A failed write must
+  // remain retryable, including in this running process.
+  await markEventProcessed(id, type);
   track(_processed, id);
-  await markEventProcessed(id, type).catch(() => {});
 }
 
 /** Session-level processed cache (fast path in front of the SQLite ledger). */
 const _processed = new Set<string>();
+let updateIngressQueue: Promise<unknown> = Promise.resolve();
 
 export async function routeInbound(
+  raw: Record<string, any> | null | undefined,
+  source: IngressSource,
+): Promise<InboundResult> {
+  // A retry may arrive while the first copy is awaiting SQLite. Serialize
+  // mutations so both cannot pass the persistent dedupe check concurrently.
+  if (toEnvelope(raw).type === 'message.update') {
+    const result = updateIngressQueue.then(() => routeInboundCore(raw, source));
+    updateIngressQueue = result.catch(() => {});
+    return result;
+  }
+  return routeInboundCore(raw, source);
+}
+
+async function routeInboundCore(
   raw: Record<string, any> | null | undefined,
   source: IngressSource,
 ): Promise<InboundResult> {
@@ -783,9 +802,11 @@ export async function routeInbound(
       if (!env.room_id || updates.length === 0) return { type: env.type, handled: false };
       // Apply each update at most once (idempotent ledger keyed by update id).
       const fresh: typeof updates = [];
+      const batchIds = new Set<string>();
       for (const u of updates) {
         const uid = asStr(u.id);
-        if (uid && (await alreadyProcessed(`upd:${uid}`))) continue;
+        if (uid && (batchIds.has(uid) || await alreadyProcessed(`upd:${uid}`))) continue;
+        if (uid) batchIds.add(uid);
         fresh.push(u);
       }
       if (fresh.length > 0) {
@@ -811,7 +832,7 @@ export async function routeInbound(
       // Caller acks ALL update ids it received (ack is idempotent on the peer).
       const ackUpdateIds = updates.map((u) => String(u.id ?? '')).filter((id) => !!id);
       const ackSenderId = asNum(p.from_user_id ?? p.sender_id) ?? 0;
-      return { type: env.type, handled: true, ackUpdateIds, ackSenderId };
+      return { type: env.type, handled: true, ackUpdateIds, ackSenderId, freshUpdates: fresh };
     }
 
     /* ---- peer applied our update(s) → clear them from the outbox ---- */

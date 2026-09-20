@@ -28,26 +28,35 @@ export function navigateFromNotification(raw: Record<string, any> | null | undef
   pendingKeys.add(key);
 
   let lastNavigationAt = 0;
+  const expiresAt = Date.now() + 5 * 60_000;
+  let blockedBy = 'navigator';
   const attemptNavigation = (attempt = 0) => {
-    if (attempt > MAX_NAVIGATION_ATTEMPTS) {
+    if (attempt > MAX_NAVIGATION_ATTEMPTS || Date.now() >= expiresAt) {
       pendingKeys.delete(key);
-      reportNotificationFailure('notification-open-timeout');
+      reportNotificationFailure('notification-open-timeout', blockedBy);
       return;
     }
     const requiredRoute = destination.type === 'message' ? 'ChatRoom' : 'IncomingCall';
     const auth = useAppStore.getState();
+    // Background time and authentication are not failed navigation attempts.
+    // Keep the tap briefly so foregrounding/signing in can resume it, but never
+    // open a stale notification hours later.
+    if (AppState.currentState !== 'active' || auth.authLoading || !auth.user) {
+      blockedBy = AppState.currentState !== 'active' ? 'background' : 'authentication';
+      setTimeout(() => attemptNavigation(attempt), 1_000);
+      return;
+    }
     if (
-      AppState.currentState !== 'active'
-      || !navigationRef.isReady()
-      || auth.authLoading
-      || !auth.user
+      !navigationRef.isReady()
       || !routeIsRegistered(requiredRoute)
     ) {
+      blockedBy = 'navigator';
       setTimeout(() => attemptNavigation(attempt + 1), RETRY_DELAY_MS);
       return;
     }
 
     try {
+      blockedBy = 'route-not-applied';
       const route = navigationRef.getCurrentRoute();
       if (destination.type === 'message') {
         const params = route?.params as { roomId?: string } | undefined;
@@ -87,6 +96,7 @@ export function navigateFromNotification(raw: Record<string, any> | null | undef
       }
       pendingKeys.delete(key);
     } catch (error) {
+      blockedBy = 'navigation-exception';
       // The container can detach between isReady/getRootState/navigate while
       // authentication swaps the root stack. A notification tap must never
       // become an uncaught release-build exception; retry after it settles.

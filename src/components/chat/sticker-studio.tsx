@@ -7,15 +7,15 @@ import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { File } from 'expo-file-system';
 import { useTheme } from '../../contexts/ThemeContext';
 import { importSticker } from '../../services/imported-stickers';
-import StickerCropEditor from './sticker-crop-editor';
-import type { StickerCrop } from '../../utils/sticker-crop';
+import PhotoEditor from './photo-editor';
 
 export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri }: {
   initialUri?: string;
   ownerId: number; onBusy: (busy: boolean) => void; onSaved: () => void;
 }) {
   const { colors: c } = useTheme();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
+  const previewHeight = Math.min(240, Math.max(96, height * .3), Math.max(96, width - 56));
   const [draft, setDraft] = useState<string | undefined>(initialUri);
   const [preserveAnimation, setPreserveAnimation] = useState<boolean | null>(null);
   useEffect(() => {
@@ -27,10 +27,8 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri }: 
     }).catch(() => { if (active) Alert.alert('Sticker unavailable', 'Could not read the selected image. Please choose it again.'); });
     return () => { active = false; };
   }, [draft]);
-  const [rotation, setRotation] = useState(0);
-  const [crop, setCrop] = useState<StickerCrop>();
-  const [cropping, setCropping] = useState(false);
-  const [dragging, setDragging] = useState(false);
+  const [pendingEdits, setPendingEdits] = useState(false);
+  const [reset, setReset] = useState(0);
   const ownedDrafts = useRef(new Set<string>());
   useEffect(() => () => {
     // Only remove editor-generated temporary copies, never the source photo.
@@ -48,55 +46,46 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri }: 
     catch (error) { Alert.alert('Sticker action failed', error instanceof Error ? error.message : 'Please try again.'); }
     finally { lock.current = false; setBusy(false); onBusy(false); }
   };
-  const button = (label: string, action: () => void) => <TouchableOpacity disabled={busy} accessibilityRole="button" onPress={action} accessibilityLabel={label} style={{ padding: 16, borderRadius: 18, backgroundColor: c.surfaceVariant, alignItems: 'center' }}><Text style={{ color: c.primary, fontWeight: '700' }}>{label}</Text></TouchableOpacity>;
-  return <ScrollView scrollEnabled={!dragging} keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16, gap: 16 }}>
+  const button = (label: string, action: () => void, disabled = false) => <TouchableOpacity disabled={busy || disabled} accessibilityRole="button" onPress={action} accessibilityLabel={label} style={{ padding: 16, borderRadius: 18, backgroundColor: c.surfaceVariant, alignItems: 'center', opacity: disabled ? .45 : 1 }}><Text style={{ color: c.primary, fontWeight: '700' }}>{label}</Text></TouchableOpacity>;
+  const choose = (uri: string) => { setDraft(uri); setName(''); setPendingEdits(false); setReset((value) => value + 1); };
+  return <ScrollView keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
+    {!draft && <>
     <Text style={{ color: c.text, fontSize: 24, fontWeight: '700' }}>Little moments. Big feelings.</Text>
     <Text style={{ color: c.textSecondary }}>Turn a funny photo into your next favorite sticker. Crop, preview, then save — nothing sends automatically.</Text>
     {button('＋ Create sticker', () => { void run(async () => {
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 1 });
       if (result.canceled || !result.assets[0]) return;
-      setDraft(result.assets[0].uri); setRotation(0); setName(''); setCropping(false); setCrop(undefined);
+      choose(result.assets[0].uri);
     }); })}
     {button('Choose GIF / WebP file', () => { void run(async () => {
       const result = await DocumentPicker.getDocumentAsync({ type: ['image/gif', 'image/webp'], copyToCacheDirectory: true, multiple: false });
       if (result.canceled || !result.assets[0]) return;
-      setDraft(result.assets[0].uri); setRotation(0); setName(''); setCropping(false); setCrop(undefined);
+      choose(result.assets[0].uri);
     }); })}
-    {draft && <View style={{ gap: 12, alignItems: 'center' }}>
-      {cropping ? <>
-        <StickerCropEditor key={draft} uri={draft} size={Math.min(300, Math.max(100, width - 64))} disabled={busy} onChange={setCrop} onDragging={setDragging} />
-        {button('Apply selected area', () => { void run(async () => {
-          if (!crop) throw new Error('Wait for the photo to load before applying the selection.');
-          const result = await manipulateAsync(draft, [{ crop }], { format: SaveFormat.PNG });
-          ownedDrafts.current.add(result.uri);
-          setDraft(result.uri); setCropping(false); setCrop(undefined); setDragging(false);
-        }); })}
-        {button('Cancel selection', () => { setCropping(false); setCrop(undefined); setDragging(false); })}
-      </> : <Image source={{ uri: draft }} style={{ width: 210, height: 210, transform: [{ rotate: `${rotation}deg` }] }} contentFit="contain" />}
-      <Text style={{ color: c.textSecondary }}>Your sticker preview</Text>
-      {preserveAnimation && <Text style={{ color: c.textSecondary }}>GIF and WebP stickers keep their original animation. Crop and rotate are available for still photos only.</Text>}
+    </>}
+    {draft && <View style={{ gap: 12 }}>
+      {preserveAnimation === null ? <ActivityIndicator color={c.primary} /> : preserveAnimation
+        ? <Image source={{ uri: draft }} autoplay style={{ width: previewHeight, height: previewHeight, alignSelf: 'center' }} contentFit="contain" />
+        : <View pointerEvents={busy ? 'none' : 'auto'}><PhotoEditor embedded preserveTransparency maxPreviewHeight={previewHeight} key={`${draft}:${reset}`} uri={draft}
+            onEditingChange={setPendingEdits}
+            onClose={() => setReset((value) => value + 1)}
+            onSave={(image) => { ownedDrafts.current.add(image.uri); setDraft(image.uri); }} /></View>}
+      {preserveAnimation && <Text style={{ color: c.textSecondary }}>GIF and WebP stickers keep their original animation. Editing tools are available for still photos only.</Text>}
       <TextInput accessibilityLabel="Sticker name" placeholder="Give it a name (optional)" placeholderTextColor={c.textSecondary} value={name} onChangeText={setName} maxLength={80} editable={!busy} style={{ color: c.text, backgroundColor: c.surfaceVariant, padding: 14, borderRadius: 14, width: '100%' }} />
-      {!cropping && preserveAnimation === false && button('Select area / Resize', () => { void run(async () => {
-        if (rotation) {
-          const result = await manipulateAsync(draft, [{ rotate: rotation }], { format: SaveFormat.PNG });
-          ownedDrafts.current.add(result.uri); setDraft(result.uri); setRotation(0);
-        }
-        setCrop(undefined); setCropping(true);
-      }); })}
-      {!cropping && preserveAnimation === false && button('Rotate ↻', () => setRotation((value) => (value + 90) % 360))}
-      {!cropping && preserveAnimation !== null && button('Save sticker', () => { void run(async () => {
+      {pendingEdits && <Text style={{ color: c.textSecondary }}>Apply or discard your edits before saving the sticker.</Text>}
+      {preserveAnimation !== null && button('Save sticker', () => { void run(async () => {
         if (preserveAnimation) {
           await importSticker(ownerId, draft, name.trim() || 'My animated sticker');
           setDraft(undefined); onSaved(); return;
         }
-        const result = await manipulateAsync(draft, [{ rotate: rotation }, { resize: { width: 512 } }], { format: SaveFormat.PNG });
+        const result = await manipulateAsync(draft, [{ resize: { width: 512 } }], { format: SaveFormat.PNG });
         try {
           await importSticker(ownerId, result.uri, name.trim() || 'My photo sticker');
           setDraft(undefined);
           onSaved();
         } finally { if (result.uri !== draft) { const file = new File(result.uri); if (file.exists) file.delete(); } }
-      }); })}
-      {button('Cancel creation', () => { setDraft(undefined); setCropping(false); setDragging(false); })}
+      }); }, pendingEdits)}
+      {button('Cancel creation', () => { setDraft(undefined); setPendingEdits(false); })}
     </View>}
     {busy && <ActivityIndicator color={c.primary} />}
   </ScrollView>;

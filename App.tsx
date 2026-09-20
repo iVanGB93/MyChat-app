@@ -210,6 +210,8 @@ export default function App() {
     const appStateSub = AppState.addEventListener('change', (s) => {
       if (s === 'active') {
         void flushDeletedMedia().catch(() => {});
+        void import('./src/services/media-export-service')
+          .then(({ retryPendingMediaExports }) => retryPendingMediaExports()).catch(() => {});
         consumePendingNav();
         consumePendingCall();
       }

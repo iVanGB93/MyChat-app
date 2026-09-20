@@ -37,6 +37,7 @@ vm.runInNewContext(compiled, {
       },
     };
     if (name === './localMessageStore') return {};
+    if (name === './android-media-store') return { hasAutomaticDeviceStorage: () => false };
     throw new Error(`Unexpected import: ${name}`);
   },
   encodeURIComponent,
