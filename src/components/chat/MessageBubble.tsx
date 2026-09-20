@@ -216,6 +216,7 @@ function MessageBubbleBase({
     >
       <View style={[styles.bubbleRow, isMine ? styles.bubbleRowRight : styles.bubbleRowLeft]}>
         <TouchableOpacity
+          style={styles.bubbleTouchTarget}
           onLongPress={(event) => {
             if (!item.is_deleted) onLongPress(event.nativeEvent.pageY, item);
           }}
@@ -501,8 +502,11 @@ const styles = StyleSheet.create({
     borderRadius: Radius.sm,
   },
   mediaOverlayText: { color: '#fff', fontSize: Font.size.sm, letterSpacing: 0.3 },
-  deletedText: { fontSize: Font.size.sm, fontStyle: 'italic', lineHeight: 20 },
-  bubbleWrap: { maxWidth: '80%' },
+  deletedText: { fontSize: Font.size.sm, fontStyle: 'italic', flexShrink: 1 },
+  // Constrain against the full row, not an already content-sized touch target.
+  // The latter can clip the last word after Android measures wrapped text.
+  bubbleTouchTarget: { maxWidth: '80%' },
+  bubbleWrap: { minWidth: 0 },
   bubbleWrapWithReactions: { paddingBottom: 12 },
   reactionsOverlay: {
     position: 'absolute',

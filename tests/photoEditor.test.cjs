@@ -6,11 +6,11 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const source = fs.readFileSync(path.join(__dirname, '../src/components/chat/photo-editor.tsx'), 'utf8');
 function setup(preserveTransparency = false) {
-  const calls = [], saved = [];
+  const calls = [], saved = [], dragging = [], effects = [], canvases = [];
   let stateIndex = 0;
   const initial = [{ uri: 'file:///working-copy.jpg', width: 800, height: 600 }, false, true];
   const mocks = {
-    react: { useEffect() {}, useRef: (value) => ({ current: value }), useState: (value) => [stateIndex < initial.length ? initial[stateIndex++] : (stateIndex++, value), () => {}] },
+    react: { useCallback: (fn) => fn, useEffect: (fn) => effects.push(fn), useRef: (value) => ({ current: value }), useState: (value) => [stateIndex < initial.length ? initial[stateIndex++] : (stateIndex++, value), () => {}] },
     'react/jsx-runtime': { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }), Fragment: 'Fragment' },
     'react-native': { ActivityIndicator: 'Spinner', Alert: { alert: (...args) => calls.push(args) }, Modal: 'Modal', ScrollView: 'Scroll', Text: 'Text', TextInput: 'Input', TouchableOpacity: 'Button', View: 'View', useWindowDimensions: () => ({ width: 400, height: 800 }) },
     'react-native-svg': { default: 'Svg', Image: 'Image', Path: 'Path', Text: 'SvgText' },
@@ -24,12 +24,37 @@ function setup(preserveTransparency = false) {
   };
   const sandbox = { exports: {}, require: (name) => { assert.ok(mocks[name], name); return mocks[name]; } };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText, sandbox);
-  const tree = sandbox.exports.default({ uri: 'file:///original.jpg', preserveTransparency, onClose() {}, onSave: (image) => saved.push(image) });
+  const tree = sandbox.exports.default({ uri: 'file:///original.jpg', preserveTransparency, onDraggingChange: (active) => dragging.push(active), onClose() {}, onSave: (image) => saved.push(image) });
   const buttons = [];
-  function visit(node) { if (!node) return; if (Array.isArray(node)) return node.forEach(visit); if (node.type === 'Button') buttons.push(node); visit(node.props?.children); }
+  function visit(node) { if (!node) return; if (Array.isArray(node)) return node.forEach(visit); if (node.type === 'Button') buttons.push(node); if (node.props?.onResponderGrant) canvases.push(node); visit(node.props?.children); }
   visit(tree);
-  return { calls, saved, press: async (label) => { const button = buttons.find((node) => node.props.children.props.children === label); assert.ok(button); assert.equal(button.props.disabled, false); button.props.onPress(); await new Promise(setImmediate); } };
+  return { calls, saved, dragging, effects, canvas: canvases[0]?.props, press: async (label) => { const button = buttons.find((node) => node.props.children.props.children === label); assert.ok(button); assert.equal(button.props.disabled, false); button.props.onPress(); await new Promise(setImmediate); } };
 }
+
+test('drawing locks parent scrolling and releases it on finger-up, interruption, and unmount', () => {
+  const s = setup();
+  const event = { nativeEvent: { locationX: 20, locationY: 30 } };
+  s.canvas.onResponderGrant(event);
+  assert.equal(s.canvas.onResponderTerminationRequest(), false);
+  s.canvas.onResponderRelease();
+  s.canvas.onResponderGrant(event);
+  s.canvas.onResponderTerminate();
+  s.canvas.onResponderGrant(event);
+  // This cleanup is intentionally separate from photo loading/file cleanup.
+  const cleanupEffect = s.effects.find((fn) => fn.toString().includes('draggingCallback'));
+  assert.ok(cleanupEffect);
+  cleanupEffect()();
+  assert.deepEqual(s.dragging, [true, false, true, false, true, false]);
+});
+
+test('both embedded editors connect gesture locks to their scrolling container', () => {
+  for (const name of ['share-preview', 'sticker-studio']) {
+    const parent = fs.readFileSync(path.join(__dirname, `../src/components/chat/${name}.tsx`), 'utf8');
+    assert.match(parent, /scrollEnabled=\{!isDragging\}/);
+    assert.match(parent, /onDraggingChange=/);
+  }
+  assert.match(source, /onDragging=\{updateDragging\}/);
+});
 test('rotation edits the working copy, not the gallery original', async () => {
   const s = setup(); await s.press('Rotate 90°');
   assert.equal(s.calls[0].uri, 'file:///working-copy.jpg');

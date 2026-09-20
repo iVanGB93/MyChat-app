@@ -28,6 +28,7 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri }: 
     return () => { active = false; };
   }, [draft]);
   const [pendingEdits, setPendingEdits] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const [reset, setReset] = useState(0);
   const ownedDrafts = useRef(new Set<string>());
   useEffect(() => () => {
@@ -48,7 +49,7 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri }: 
   };
   const button = (label: string, action: () => void, disabled = false) => <TouchableOpacity disabled={busy || disabled} accessibilityRole="button" onPress={action} accessibilityLabel={label} style={{ padding: 16, borderRadius: 18, backgroundColor: c.surfaceVariant, alignItems: 'center', opacity: disabled ? .45 : 1 }}><Text style={{ color: c.primary, fontWeight: '700' }}>{label}</Text></TouchableOpacity>;
   const choose = (uri: string) => { setDraft(uri); setName(''); setPendingEdits(false); setReset((value) => value + 1); };
-  return <ScrollView keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
+  return <ScrollView scrollEnabled={!isDragging} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
     {!draft && <>
     <Text style={{ color: c.text, fontSize: 24, fontWeight: '700' }}>Little moments. Big feelings.</Text>
     <Text style={{ color: c.textSecondary }}>Turn a funny photo into your next favorite sticker. Crop, preview, then save — nothing sends automatically.</Text>
@@ -68,6 +69,7 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri }: 
         ? <Image source={{ uri: draft }} autoplay style={{ width: previewHeight, height: previewHeight, alignSelf: 'center' }} contentFit="contain" />
         : <View pointerEvents={busy ? 'none' : 'auto'}><PhotoEditor embedded preserveTransparency maxPreviewHeight={previewHeight} key={`${draft}:${reset}`} uri={draft}
             onEditingChange={setPendingEdits}
+            onDraggingChange={setIsDragging}
             onClose={() => setReset((value) => value + 1)}
             onSave={(image) => { ownedDrafts.current.add(image.uri); setDraft(image.uri); }} /></View>}
       {preserveAnimation && <Text style={{ color: c.textSecondary }}>GIF and WebP stickers keep their original animation. Editing tools are available for still photos only.</Text>}

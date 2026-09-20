@@ -16,7 +16,8 @@ import { RTCView } from 'react-native-webrtc';
 import { Font, Radius, Spacing } from '../../theme';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../../contexts/ThemeContext';
-import { endCall, getCallStatus } from '../../services/callService';
+import { endCall, getCallState, setCallVideoQuality } from '../../services/callService';
+import { readNewCallQuality } from '../../services/call-quality-state';
 import { markCallEnded } from '../../services/callDedupe';
 import { useNotificationContext } from '../../contexts/NotificationContext';
 import { playSound, stopLooping } from '../../services/soundService';
@@ -116,6 +117,40 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     onDisconnected: onPeerDisconnected,
   });
 
+  const qualityRevision = useRef(-1);
+  const sharedQuality = useRef<VideoQualityMode>('automatic');
+  const qualitySaveLock = useRef(false);
+  const [qualitySaving, setQualitySaving] = useState(false);
+  const [qualityNotice, setQualityNotice] = useState('');
+  const acceptQuality = useCallback((data: unknown) => {
+    if (hasEnded.current || !isVideo) return;
+    const next = readNewCallQuality(data, callId, qualityRevision.current);
+    if (!next) return;
+    const changed = sharedQuality.current !== next.mode;
+    qualityRevision.current = next.revision;
+    sharedQuality.current = next.mode;
+    selectVideoQuality(next.mode);
+    if (changed) setQualityNotice(`Call video quality: ${next.mode.charAt(0).toUpperCase()}${next.mode.slice(1)}`);
+  }, [callId, isVideo, selectVideoQuality]);
+  useEffect(() => {
+    if (!qualityNotice) return;
+    const timer = setTimeout(() => setQualityNotice(''), 3500);
+    return () => clearTimeout(timer);
+  }, [qualityNotice]);
+  useEffect(() => {
+    let active = true;
+    if (isVideo) void getCallState(callId).then((data) => { if (active) acceptQuality(data); }).catch(() => {});
+    return () => { active = false; };
+  }, [callId, isVideo, acceptQuality]);
+  const changeSharedQuality = async (mode: VideoQualityMode) => {
+    if (qualitySaveLock.current || hasEnded.current || mode === sharedQuality.current) return;
+    qualitySaveLock.current = true;
+    setQualitySaving(true);
+    try { acceptQuality(await setCallVideoQuality(callId, mode)); }
+    catch { if (!hasEnded.current) Alert.alert('Quality not changed', 'Could not update the call setting. Check your connection and try again.'); }
+    finally { qualitySaveLock.current = false; if (!hasEnded.current) setQualitySaving(false); }
+  };
+
   /* ---- Start foreground service for the duration of this call ---- */
   useEffect(() => {
     startForegroundService('call', callType);
@@ -203,7 +238,9 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       const { event, call_id } = payload;
       if (call_id && call_id !== callId) return;
 
-      if (event === 'call_accepted') {
+      if (event === 'call_quality_changed') {
+        acceptQuality(payload);
+      } else if (event === 'call_accepted') {
         debugLog('[ActiveCall] call_accepted → starting WebRTC offer');
         setStatus((previous) => previous === 'connected' ? previous : 'connecting');
         if (!offerStartedRef.current) {
@@ -221,7 +258,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
       }
     });
     return unsub;
-  }, [callId, subscribe, startAsOfferer, cleanupWebRTC]);
+  }, [callId, subscribe, startAsOfferer, cleanupWebRTC, acceptQuality]);
 
   /* ---- poll call status as fallback ---- */
   useEffect(() => {
@@ -229,8 +266,10 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     const poll = setInterval(async () => {
       if (hasEnded.current) return;
       try {
-        const s = await getCallStatus(callId);
+        const callState = await getCallState(callId);
+        const s = callState.status;
         if (hasEnded.current) return;
+        acceptQuality(callState);
         if (s === 'ringing' && isOutgoing) {
           setStatus((prev) => (prev === 'connected' || prev === 'ended' ? prev : 'ringing'));
         } else if (s === 'ongoing') {
@@ -252,7 +291,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
     // an end event missed during a socket outage cannot strand the callee.
     }, status === 'connected' || !isOutgoing ? 15000 : 1200);
     return () => clearInterval(poll);
-  }, [isOutgoing, status, callId, startAsOfferer, cleanupWebRTC]);
+  }, [isOutgoing, status, callId, startAsOfferer, cleanupWebRTC, acceptQuality]);
 
   /* ---- auto-timeout for outgoing calls (45s) ---- */
   useEffect(() => {
@@ -325,6 +364,7 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
 
   return (
     <View style={styles.container}>
+      {!!qualityNotice && <View pointerEvents="none" style={{ position: 'absolute', top: insets.top + 8, alignSelf: 'center', zIndex: 20, backgroundColor: Colors.surface, borderRadius: 16, padding: 12 }}><Text accessibilityLiveRegion="polite" style={{ color: Colors.text }}>{qualityNotice}</Text></View>}
       {/* ---- Video background ---- */}
       {showRemoteFullscreen && (
         <RTCView
@@ -502,14 +542,15 @@ export default function ActiveCallScreen({ route, navigation }: Props) {
           <View style={{ backgroundColor: Colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: Math.max(insets.bottom, 16) + 12, maxHeight: '85%' }}>
             <ScrollView>
               <Text style={{ color: Colors.text, fontSize: 22, ...Font.medium }}>Video quality</Text>
-              <Text style={{ color: Colors.text, opacity: 0.7, marginVertical: 12 }}>Changes the video you send for this call. Incoming video is controlled by the other phone.</Text>
+              <Text style={{ color: Colors.text, opacity: 0.7, marginVertical: 12 }}>Shared by everyone in this call. Automatic adapts to each device’s connection.</Text>
+              {qualitySaving && <Text style={{ color: Colors.primary }}>Updating call quality…</Text>}
               {([
                 ['automatic', 'Automatic', 'Adjusts to your connection · Default'],
                 ['low', 'Low', 'Uses less data · Lower detail and frame rate'],
                 ['medium', 'Medium', 'Balances detail and data use'],
                 ['high', 'High', 'Best detail · Uses more data'],
               ] as [VideoQualityMode, string, string][]).map(([mode, label, detail]) => (
-                <TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} accessibilityRole="radio" accessibilityState={{ checked: videoQualityMode === mode }} onPress={() => selectVideoQuality(mode)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 }}>
+                <TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} disabled={qualitySaving} accessibilityRole="radio" accessibilityState={{ checked: videoQualityMode === mode, disabled: qualitySaving }} onPress={() => void changeSharedQuality(mode)} style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14 }}>
                   <Ionicons name={videoQualityMode === mode ? 'radio-button-on' : 'radio-button-off'} size={24} color={Colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ color: Colors.text, fontSize: 17 }}>{label}</Text>

@@ -14,6 +14,7 @@ import {
   Platform,
   ActivityIndicator,
   Keyboard,
+  findNodeHandle,
   Modal,
   Pressable,
   Dimensions,
@@ -63,6 +64,7 @@ import { getTransferFeedback, mapWithConcurrency, MEDIA_BATCH_CONCURRENCY, valid
 import { resolveOutgoingMessageStatus } from '../../services/messageLifecycle';
 import { debugLog } from '../../services/diagnostics';
 import { getAndroidKeyboardOverlap } from '../../utils/keyboard-layout';
+import { hasLiveKeyboardInsets, readKeyboardInsets } from '../../services/keyboard-insets';
 import { resolveMediaUrl } from '../../services/api';
 import Avatar from '../../components/ui/Avatar';
 import FullscreenImageViewer from '../../components/chat/fullscreen-image-viewer';
@@ -382,11 +384,19 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
    * viewport for the IME and some leave it full-height. Normalize the measured
    * viewport to screen coordinates after each keyboard/layout change and add only the
    * overlap that native adjustResize did not consume. */
-  const measureAndroidKeyboardOverlap = useCallback((
+  const measureAndroidKeyboardOverlap = useCallback(async (
     coordinates: { screenY: number; height: number },
     generation: number,
   ) => {
     if (Platform.OS !== 'android' || !keyboardScreenActiveRef.current) return;
+    const snapshot = await readKeyboardInsets(findNodeHandle(chatViewportRef.current));
+    if (generation !== keyboardMeasurementGenerationRef.current || !keyboardScreenActiveRef.current) return;
+    if (snapshot) {
+      const overlap = snapshot.visible ? snapshot.overlap : 0;
+      setAndroidKeyboardOverlap((current) => current === overlap ? current : overlap);
+      return;
+    }
+    // Compatibility fallback for older development clients and Android < 11.
     chatViewportRef.current?.measureInWindow((_x, viewportY, _width, viewportHeight) => {
       if (generation !== keyboardMeasurementGenerationRef.current || !keyboardScreenActiveRef.current || !Keyboard.isVisible()) return;
       const overlap = getAndroidKeyboardOverlap({
@@ -404,6 +414,11 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
   const syncKeyboardMetrics = useCallback((allowFocusedFallback = false) => {
     if (Platform.OS !== 'android' || !keyboardScreenActiveRef.current) return;
     const metrics = Keyboard.metrics();
+    if (hasLiveKeyboardInsets()) {
+      const generation = ++keyboardMeasurementGenerationRef.current;
+      requestAnimationFrame(() => { void measureAndroidKeyboardOverlap(metrics ?? { screenY: 0, height: 0 }, generation); });
+      return;
+    }
     const expectsKeyboard = Keyboard.isVisible()
       || (allowFocusedFallback && composerFocusedRef.current);
     if (!metrics || !expectsKeyboard) {

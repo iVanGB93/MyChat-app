@@ -5,6 +5,11 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.AudioDeviceInfo
 import android.os.Build
+import android.view.WindowInsets
+import android.view.View
+import androidx.core.os.bundleOf
+import com.google.android.play.core.appupdate.AppUpdateManager
+import com.google.android.play.core.install.InstallStateUpdatedListener
 import com.google.android.play.core.appupdate.AppUpdateManagerFactory
 import com.google.android.play.core.appupdate.AppUpdateOptions
 import com.google.android.play.core.install.model.AppUpdateType
@@ -16,6 +21,10 @@ import expo.modules.kotlin.modules.ModuleDefinition
 
 class AxonicAppUpdateModule : Module() {
   private var flowPending = false
+  private var observedUpdateManager: AppUpdateManager? = null
+  private val installListener = InstallStateUpdatedListener { state ->
+    sendEvent("onInstallState", bundleOf("installStatus" to state.installStatus()))
+  }
   private var previousAudioMode: Int? = null
   private var previousSpeaker = false
   private val audio get() = requireNotNull(appContext.reactContext).getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -30,6 +39,47 @@ class AxonicAppUpdateModule : Module() {
   }
   override fun definition() = ModuleDefinition {
     Name("AxonicAppUpdate")
+    Events("onInstallState")
+    OnStartObserving {
+      appContext.reactContext?.let { context ->
+        if (observedUpdateManager == null) {
+          observedUpdateManager = AppUpdateManagerFactory.create(context).also { it.registerListener(installListener) }
+        }
+      }
+    }
+    OnStopObserving {
+      observedUpdateManager?.unregisterListener(installListener)
+      observedUpdateManager = null
+    }
+    // Read live IME insets, not React Native's cached keyboardDidShow frame.
+    // Measure both edges on the UI thread in screen pixels, then convert once.
+    AsyncFunction("getKeyboardOverlap") { viewTag: Int, promise: Promise ->
+      val activity = appContext.currentActivity
+      if (activity == null || Build.VERSION.SDK_INT < 30) {
+        promise.resolve(null)
+      } else activity.runOnUiThread {
+        try {
+          val context = requireNotNull(appContext.reactContext)
+          val decor = activity.window.decorView
+          val view = decor.findViewById<View>(viewTag)
+          val insets = decor.rootWindowInsets
+          if (view == null || !view.isAttachedToWindow || insets == null) {
+            promise.resolve(null)
+          } else {
+            val visible = insets.isVisible(WindowInsets.Type.ime())
+            val imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom
+            val position = IntArray(2)
+            view.getLocationOnScreen(position)
+            // WindowMetrics includes system/IME areas even when adjustResize
+            // has already reduced the content view. Do not subtract IME twice.
+            val keyboardTop = activity.windowManager.currentWindowMetrics.bounds.bottom - imeBottom
+            val overlap = if (visible && imeBottom > 0)
+              (position[1] + view.height - keyboardTop).coerceIn(0, view.height) else 0
+            promise.resolve(mapOf("visible" to visible, "overlap" to overlap / context.resources.displayMetrics.density))
+          }
+        } catch (_: Exception) { promise.resolve(null) }
+      }
+    }
     AsyncFunction("setCallSpeaker") { enabled: Boolean ->
       val manager = audio
       if (previousAudioMode == null) {
@@ -51,7 +101,11 @@ class AxonicAppUpdateModule : Module() {
       }
     }
     AsyncFunction("restoreCallAudio") { restoreCallAudio() }
-    OnDestroy { restoreCallAudio() }
+    OnDestroy {
+      observedUpdateManager?.unregisterListener(installListener)
+      observedUpdateManager = null
+      restoreCallAudio()
+    }
 
     AsyncFunction("startUpdateAsync") { immediate: Boolean, promise: Promise ->
       val activity = appContext.currentActivity

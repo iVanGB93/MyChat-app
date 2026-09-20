@@ -19,12 +19,18 @@ export interface PlayUpdateInfo {
 }
 
 interface AxonicAppUpdateNativeModule {
+  addListener?: (event: string, listener: (state: { installStatus: number }) => void) => { remove(): void };
   getUpdateInfoAsync(): Promise<PlayUpdateInfo>;
   startUpdateAsync?: (immediate: boolean) => Promise<PlayUpdateStartResult>;
   completeUpdateAsync?: () => Promise<void>;
 }
 
 const nativeModule = requireOptionalNativeModule<AxonicAppUpdateNativeModule>('AxonicAppUpdate');
+export function observePlayInstallStatus(listener: (status: number) => void): { remove(): void } | undefined {
+  try {
+    return nativeModule?.addListener?.('onInstallState', (event) => listener(event.installStatus));
+  } catch { return undefined; } // Older clients rely on status polling.
+}
 export type PlayUpdateStartResult = 'accepted' | 'cancelled' | 'failed' | 'unavailable' | 'busy' | 'downloaded';
 export function supportsPlayUpdateFlow(): boolean {
   return typeof nativeModule?.startUpdateAsync === 'function' && typeof nativeModule?.completeUpdateAsync === 'function';

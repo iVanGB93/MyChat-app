@@ -17,6 +17,8 @@ export default function SharePreview({ items, visible, busy, destination, onRemo
   const insets = useSafeAreaInsets();
   const [pendingEdits, setPendingEdits] = useState<Record<string, boolean>>({});
   const [resets, setResets] = useState<Record<string, number>>({});
+  const [draggingEditors, setDraggingEditors] = useState<Record<string, boolean>>({});
+  const isDragging = items.some((item) => draggingEditors[item.id]);
   const hasPendingEdits = items.some((item) => pendingEdits[item.id]);
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={() => { if (!busy) onClose(); }}>
@@ -26,11 +28,12 @@ export default function SharePreview({ items, visible, busy, destination, onRemo
           <Text style={{ flex: 1, color: c.text, fontSize: 20, fontWeight: '700' }}>Review before sending</Text>
         </View>
         <Text style={{ color: c.textSecondary, paddingHorizontal: 16 }}>{destination ? `To ${destination} · ` : ''}{items.length} selected</Text>
-        <ScrollView keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
+        <ScrollView scrollEnabled={!isDragging} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
           {items.map((item) => (
             <View key={item.id} style={{ backgroundColor: c.surface, borderRadius: 16, padding: 12, gap: 10 }}>
               {item.kind === 'image' ? visible && <View pointerEvents={busy ? 'none' : 'auto'}>
                 <PhotoEditor embedded key={`${item.id}:${item.uri}:${resets[item.id] || 0}`} uri={item.uri}
+                  onDraggingChange={(active) => setDraggingEditors((values) => values[item.id] === active ? values : { ...values, [item.id]: active })}
                   onClose={() => setResets((values) => ({ ...values, [item.id]: (values[item.id] || 0) + 1 }))}
                   onEditingChange={(pending) => setPendingEdits((values) => values[item.id] === pending ? values : { ...values, [item.id]: pending })}
                   onSave={(image) => onUpdate(item.id, { ...image, mimeType: 'image/jpeg' })} />

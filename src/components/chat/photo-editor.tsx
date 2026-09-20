@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, ScrollView, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import Svg, { Image as SvgImage, Path, Text as SvgText } from 'react-native-svg';
 import { manipulateAsync, SaveFormat, type ImageResult } from 'expo-image-manipulator';
@@ -9,9 +9,10 @@ import StickerCropEditor from './sticker-crop-editor';
 import type { StickerCrop } from '../../utils/sticker-crop';
 
 type Stroke = { path: string; color: string };
-export default function PhotoEditor({ uri, onClose, onSave, embedded = false, onEditingChange, preserveTransparency = false, maxPreviewHeight }: {
+export default function PhotoEditor({ uri, onClose, onSave, embedded = false, onEditingChange, onDraggingChange, preserveTransparency = false, maxPreviewHeight }: {
   uri: string; onClose: () => void; onSave: (image: { uri: string; width: number; height: number }) => void;
   embedded?: boolean; onEditingChange?: (pending: boolean) => void;
+  onDraggingChange?: (dragging: boolean) => void;
   preserveTransparency?: boolean;
   maxPreviewHeight?: number;
 }) {
@@ -32,6 +33,14 @@ export default function PhotoEditor({ uri, onClose, onSave, embedded = false, on
   const [color, setColor] = useState('#ffffff');
   const [crop, setCrop] = useState<StickerCrop>();
   const [dragging, setDragging] = useState(false);
+  const draggingCallback = useRef(onDraggingChange);
+  draggingCallback.current = onDraggingChange;
+  const updateDragging = useCallback((active: boolean) => {
+    setDragging(active);
+    draggingCallback.current?.(active);
+  }, []);
+  // Discarding/replacing an editor during a gesture must release its parent's scroll lock.
+  useEffect(() => () => draggingCallback.current?.(false), []);
   const dirty = modified || strokes.length > 0 || !!label.trim() || mode === 'crop';
   useEffect(() => { editingCallback.current?.(busy || dirty); }, [busy, dirty]);
   useEffect(() => () => editingCallback.current?.(false), []);
@@ -105,7 +114,7 @@ export default function PhotoEditor({ uri, onClose, onSave, embedded = false, on
       {!embedded && <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>{button('Cancel', onClose)}<Text style={{ color: c.text, fontSize: 20 }}>Edit picture</Text>{button('Done', () => void perform('save'), !photo || mode === 'crop' || !ready)}</View>}
       {busy && <ActivityIndicator color={c.primary} />}
       {photo && (mode === 'crop' ? <>
-        <StickerCropEditor key={photo.uri} uri={photo.uri} size={Math.min(width, previewHeight)} disabled={busy} onChange={setCrop} onDragging={setDragging} />
+        <StickerCropEditor key={photo.uri} uri={photo.uri} size={Math.min(width, previewHeight)} disabled={busy} onChange={setCrop} onDragging={updateDragging} />
         <Text style={{ color: c.textSecondary }}>Square crop · drag and resize the selection.</Text>
         {button('Apply crop', () => void perform('apply'), !crop)}
         {button('Cancel crop', () => setMode(embedded ? 'preview' : 'draw'))}
@@ -113,7 +122,7 @@ export default function PhotoEditor({ uri, onClose, onSave, embedded = false, on
         onStartShouldSetResponder={() => !busy && ready && mode !== 'preview'}
         onMoveShouldSetResponder={() => !busy && ready && mode !== 'preview'}
         onResponderGrant={(event) => {
-          setDragging(true);
+          updateDragging(true);
           const { locationX: x, locationY: y } = event.nativeEvent;
           if (mode === 'text') setPosition({ x: Math.max(0, Math.min(1, x / w)), y: Math.max(.08, Math.min(.95, y / h)) });
           else setStrokes((value) => [...value, { color, path: `M${x},${y} l0.1,0.1` }]);
@@ -124,7 +133,7 @@ export default function PhotoEditor({ uri, onClose, onSave, embedded = false, on
           if (mode === 'text') setPosition({ x: x / w, y: Math.max(.08, Math.min(.95, y / h)) });
           else setStrokes((value) => value.map((stroke, i) => i === value.length - 1 ? { ...stroke, path: `${stroke.path} L${x},${y}` } : stroke));
         }}
-        onResponderRelease={() => setDragging(false)} onResponderTerminate={() => setDragging(false)} onResponderTerminationRequest={() => false}>
+        onResponderRelease={() => updateDragging(false)} onResponderTerminate={() => updateDragging(false)} onResponderTerminationRequest={() => false}>
         <Svg ref={svg} pointerEvents="none" width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
           <SvgImage key={photo.uri} width={w} height={h} href={{ uri: photo.uri }} onLoad={() => setReady(true)} />
           {strokes.map((stroke, i) => <Path key={i} d={stroke.path} stroke={stroke.color} strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" fill="none" />)}

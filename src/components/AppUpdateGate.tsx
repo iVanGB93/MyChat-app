@@ -31,7 +31,7 @@ import {
   serializeUpdateDismissal,
   shouldShowOptionalUpdate,
 } from '../services/versionPolicy';
-import { completePlayUpdateAsync, getPlayUpdateInfoAsync, startPlayUpdateAsync, supportsPlayUpdateFlow } from '../../modules/axonic-app-update';
+import { completePlayUpdateAsync, getPlayUpdateInfoAsync, startPlayUpdateAsync, supportsPlayUpdateFlow, observePlayInstallStatus } from '../../modules/axonic-app-update';
 
 const DISMISS_KEY = 'axonic_update_dismissed_version';
 const FOREGROUND_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -45,6 +45,14 @@ export default function AppUpdateGate() {
   const checkingRef = useRef(false);
   const lastCheckedAtRef = useRef(0);
   const [installStatus, setInstallStatus] = useState(0);
+  const [watchDownload, setWatchDownload] = useState(false);
+  const installRevision = useRef(0);
+  const applyInstallStatus = useCallback((status: number) => {
+    setInstallStatus(status);
+    if ([1, 2, 3].includes(status)) setWatchDownload(true);
+    if ([4, 5, 6, 11].includes(status)) setWatchDownload(false);
+    if (status === 5 || status === 6) setDismissed(false);
+  }, []);
   const [nativeBusy, setNativeBusy] = useState(false);
   const [foreground, setForeground] = useState(AppState.currentState === 'active');
   const flowRef = useRef(false);
@@ -54,17 +62,17 @@ export default function AppUpdateGate() {
   const refreshInstallStatus = useCallback(async () => {
     if (Platform.OS !== 'android' || !supportsPlayUpdateFlow()) return;
     try {
+      const revision = installRevision.current;
       const info = await getPlayUpdateInfoAsync();
-      if (!mountedRef.current || !info) return;
-      setInstallStatus(info.installStatus ?? 0);
-      if (info.installStatus === 5 || info.installStatus === 6) setDismissed(false);
+      if (!mountedRef.current || !info || revision !== installRevision.current) return;
+      applyInstallStatus(info.installStatus ?? 0);
       // Resume a Play-owned immediate update after the app returns to foreground.
       if (info.availability === 'in_progress' && !flowRef.current && AppState.currentState === 'active') {
         flowRef.current = true;
         try { await startPlayUpdateAsync(true); } finally { flowRef.current = false; }
       }
     } catch { /* Offline/unsupported store must not interrupt the app. */ }
-  }, []);
+  }, [applyInstallStatus]);
 
   const runCheck = useCallback(async (force = false) => {
     const now = Date.now();
@@ -95,6 +103,11 @@ export default function AppUpdateGate() {
 
   useEffect(() => {
     mountedRef.current = true;
+    const installSubscription = observePlayInstallStatus((status) => {
+      if (!mountedRef.current) return;
+      installRevision.current += 1;
+      applyInstallStatus(status);
+    });
     void runCheck(true);
     void refreshInstallStatus();
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -104,14 +117,15 @@ export default function AppUpdateGate() {
     return () => {
       mountedRef.current = false;
       subscription.remove();
+      installSubscription?.remove();
     };
-  }, [runCheck, refreshInstallStatus]);
+  }, [runCheck, refreshInstallStatus, applyInstallStatus]);
 
   useEffect(() => {
-    if (!downloading || !foreground) return;
+    if ((!downloading && !watchDownload) || !foreground) return;
     const timer = setInterval(() => { void refreshInstallStatus(); }, 10_000);
     return () => clearInterval(timer);
-  }, [downloading, foreground, refreshInstallStatus]);
+  }, [downloading, watchDownload, foreground, refreshInstallStatus]);
 
   const openStore = () => {
     const url = result?.storeUrl;
@@ -125,8 +139,8 @@ export default function AppUpdateGate() {
     try {
       const outcome = Platform.OS === 'android' ? await startPlayUpdateAsync(result.status === 'forced') : 'unavailable';
       if (!mountedRef.current) return;
-      if (outcome === 'downloaded') setInstallStatus(11);
-      else if (outcome === 'accepted') { setInstallStatus(1); void refreshInstallStatus(); }
+      if (outcome === 'downloaded') { installRevision.current += 1; applyInstallStatus(11); }
+      else if (outcome === 'accepted') { setWatchDownload(true); void refreshInstallStatus(); }
       else if (outcome === 'cancelled') { if (result.status === 'optional') dismiss(); }
       else if (outcome !== 'busy' && !automatic) openStore();
     } catch {

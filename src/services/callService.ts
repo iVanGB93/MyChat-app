@@ -58,6 +58,19 @@ export async function getCallStatus(callId: string): Promise<string> {
   return data.status;
 }
 
+export interface CallState {
+  call_id: string;
+  status?: string;
+  video_quality?: import('./video-quality').VideoQualityMode;
+  quality_revision?: number;
+}
+export async function getCallState(callId: string): Promise<CallState> {
+  return (await api.get<CallState>(`/api/calls/${callId}/status/`)).data;
+}
+export async function setCallVideoQuality(callId: string, mode: import('./video-quality').VideoQualityMode): Promise<CallState> {
+  return (await api.patch<CallState>(`/api/calls/${callId}/status/`, { video_quality: mode })).data;
+}
+
 /**
  * Fetch ICE server configuration for the authenticated user.
  * The server respects the user's `connectivity_mode` preference:
