@@ -18,6 +18,7 @@ import {
 } from '@react-native-firebase/messaging';
 import { Platform } from 'react-native';
 import { debugLog } from './diagnostics';
+import { normalizePushData } from './pushData';
 import { savePushMessage } from './pushMessageStore';
 import { flushPendingAcks } from './messageAckRetryQueue';
 import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
@@ -70,7 +71,10 @@ export function onFcmTokenRefresh(cb: (token: string) => void): () => void {
 async function handleDataMessage(
   remoteMessage: FirebaseMessagingTypes.RemoteMessage,
 ): Promise<void> {
-  const data = (remoteMessage?.data ?? {}) as Record<string, string>;
+  const data = {
+    ...(normalizePushData((remoteMessage?.notification as { data?: unknown } | undefined)?.data) ?? {}),
+    ...(normalizePushData(remoteMessage?.data) ?? {}),
+  } as Record<string, string>;
 
   // Incoming call: render the proper CallStyle notification (full-screen,
   // Accept/Decline, ringtone) so a killed/backgrounded call looks like a CALL,
@@ -164,7 +168,10 @@ export function registerFcmBackgroundHandler(): void {
  */
 export function registerFcmForegroundHandler(): () => void {
   return onMessage(getMessaging(), async (remoteMessage) => {
-    const data = (remoteMessage?.data ?? {}) as Record<string, string>;
+    const data = {
+      ...(normalizePushData((remoteMessage?.notification as { data?: unknown } | undefined)?.data) ?? {}),
+      ...(normalizePushData(remoteMessage?.data) ?? {}),
+    } as Record<string, string>;
     if (!data || (data.type && data.type !== 'new_message')) return;
     try {
       await savePushMessage(data, {

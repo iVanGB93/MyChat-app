@@ -13,6 +13,7 @@ import { useAppStore } from '../store/appStore';
 import { flushPendingAcks as flushHttpAckRetryQueue } from './messageAckRetryQueue';
 import { flushPendingMediaConfirmations } from './mediaConfirmationQueue';
 import { debugLog } from './diagnostics';
+import { extractPushMessageData } from './pushData';
 
 const TASK_NAME = 'BACKGROUND_NOTIFICATION_CHECK';
 const PUSH_RECEIVE_TASK = 'PUSH_NOTIFICATION_RECEIVE';
@@ -180,11 +181,12 @@ TaskManager.defineTask(PUSH_RECEIVE_TASK, async ({ data, error }: { data: any; e
     return;
   }
   try {
-    const notification: Notifications.Notification | undefined = data?.notification;
-    const pushData = notification?.request?.content?.data as Record<string, string> | undefined;
-    if (pushData?.type === 'new_message') {
+    const pushData = extractPushMessageData(data);
+    if (pushData) {
       const { savePushMessage } = await import('./pushMessageStore');
-      await savePushMessage(pushData);
+      await savePushMessage(pushData, {
+        notificationSurface: 'none',
+      });
       // After saving, try to flush any pending ACK retries (over HTTP or WS)
       await Promise.all([
         flushHttpAckRetryQueue({ force: true }).catch(() => {}),
