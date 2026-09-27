@@ -59,11 +59,12 @@ import { resolveMediaUrl } from './api';
 import { applyPresenceSnapshot, applyPresenceUpdate } from './presenceService';
 import type { MessageDigestEntry } from './syncDelta';
 import { debugLog } from './diagnostics';
+import { presentIncomingMessageNotification, recordIncomingMessageNotificationDisposition } from './messageNotificationCoordinator';
 
 /** Where an incoming event came from. Drives the notification decision: only
  *  the `ws` source renders a local notification — for push sources the OS has
  *  already displayed the notification, so rendering another would duplicate. */
-export type IngressSource = 'ws' | 'push_receive' | 'push_tap' | 'background_task' | 'poll';
+export type IngressSource = 'ws' | 'push_receive' | 'push_tap' | 'background_task' | 'poll' | 'p2p';
 
 /** A normalized incoming chat message, independent of the transport. */
 export interface CanonicalMessage {
@@ -467,8 +468,6 @@ async function maybeNotify(evt: CanonicalMessage): Promise<void> {
     timestamp: Date.parse(evt.createdAt) || Date.now(),
   };
 
-  const { presentIncomingMessageNotification, recordIncomingMessageNotificationDisposition } =
-    await import('./messageNotificationCoordinator');
   if (evt.isRecovery) {
     await recordIncomingMessageNotificationDisposition(
       notificationData,
@@ -564,7 +563,7 @@ async function processReceivedMessage(evt: CanonicalMessage, source: IngressSour
   // peers are online. Without this the row never exists, so it can never
   // self-heal — and a killed receiver would silently lose the message.
   if (!evt.content && !hasMedia && !isMediaType) {
-    await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+    if (source !== 'p2p') await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
     debugLog('[Ingress] acked but not persisted — content missing (truncated)', evt.messageId);
     return;
   }
@@ -597,7 +596,7 @@ async function processReceivedMessage(evt: CanonicalMessage, source: IngressSour
     }
     if (fileUri) exportReceivedMedia(evt, fileUri);
     injectReceivedMessage(evt.roomId, toWsMessage(evt, fileUri), { updateExisting: hydrated });
-    if (!isMediaType || fileUri) await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
+    if ((!isMediaType || fileUri) && source !== 'p2p') await ackDelivery(evt.messageId, evt.senderId, evt.roomId);
     else if (hasPointer) await hydratePointerMedia(evt);
     return;
   }
@@ -672,14 +671,14 @@ async function processReceivedMessage(evt: CanonicalMessage, source: IngressSour
   // UI/store updates above are immediate; background callers must still await
   // the verified file and receipt before telling Android their task is done.
   // Failed downloads stay as durable pointers for the existing recovery scan.
-  const delivery = !isMediaType || fileUri
+  const delivery = source === 'p2p' ? Promise.resolve() : !isMediaType || fileUri
     ? ackDelivery(evt.messageId, evt.senderId, evt.roomId)
     : hasPointer ? hydratePointerMedia(evt) : Promise.resolve();
   // FCM owns push notifications. For WS, a slow notification/avatar must not
   // delay the file or receipt, nor should downloading delay the notification.
   await Promise.all([
     delivery,
-    source === 'ws' ? maybeNotify(evt).catch(() => {}) : Promise.resolve(),
+    source === 'ws' || source === 'p2p' ? maybeNotify(evt).catch(() => {}) : Promise.resolve(),
   ]);
 
   debugLog('[Ingress] processed message', evt.messageId, 'room', evt.roomId, 'via', source);

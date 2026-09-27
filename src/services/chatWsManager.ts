@@ -12,6 +12,11 @@ import type { MediaTransferFailure } from './mediaTransferPolicy';
 import { useAppStore } from '../store/appStore';
 import { ensureWsAlive, isNotifWsReady, reconnectWsNow, sendRawNotif, subscribeStatus } from './notificationWsManager';
 import { applyMessageLifecycleEvent, mergeMessageById, shouldSuppressOutboxReplay } from './messageLifecycle';
+import { createLegacyAxionTextTransport } from './transports/legacyAxionTextTransport';
+import { createTextTransportManager } from './transports/textTransportManager';
+import { MAILBOX_ENABLED, tryP2pText, tryMailboxText } from './transports/p2pTextBridge';
+import type { OutgoingTextMessage } from './transports/textTransport';
+import { markDelivered } from './localMessageStore';
 import { debugLog } from './diagnostics';
 import { getMessageExpectedRecipients, setMessageExpectedRecipients, getMessageReceiptStatus, getStoredReceiptConfirmations, markStoredReceiptConfirmations, markReadByRecipient } from './localMessageStore';
 // An Axion acknowledgement can arrive before the sender's asynchronous local
@@ -22,6 +27,10 @@ const _serverAckTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const _serverAcceptedAt = new Map<string, number>();
 const _inFlightFrames = new Map<string, Promise<SendAttemptResult>>();
 const _activeSendCounts = new Map<string, number>();
+const textTransport = createTextTransportManager(createLegacyAxionTextTransport({
+  isReady: isAxionReady,
+  sendFrame: sendRawNotif,
+}), tryP2pText, tryMailboxText);
 let _lastLocalMutationMs = 0;
 
 function versionLocalMutation(changes: MessageChanges): MessageChanges {
@@ -180,6 +189,7 @@ export interface SendChatResult {
 
 interface SendAttemptResult {
   sent: boolean;
+  queued?: boolean;
   error?: MediaTransferFailure;
 }
 
@@ -647,7 +657,7 @@ async function sendOutboxFrameOnce(
     mediaMime?: string | null;
   },
 ): Promise<SendAttemptResult> {
-  if (!isAxionReady()) return { sent: false };
+  if (!isAxionReady() && !(MAILBOX_ENABLED && msg.type === 'text')) return { sent: false };
   const sendingUserId = _myUserId;
   // Acceptance of the original broadcast says nothing about a reconnecting
   // recipient's delivery. Targeted recovery has its own per-recipient in-flight
@@ -734,10 +744,42 @@ async function sendOutboxFrameOnce(
     return { sent: true };
   }
 
-  // Text — single frame.
-  if (!isAxionReady() || _myUserId !== sendingUserId) return { sent: false };
+  // Text uses the transport seam; other non-media types keep their wire path.
+  if (_myUserId !== sendingUserId || (msg.type !== 'text' && !isAxionReady())) return { sent: false };
   try {
-    if (!sendRawNotif({ type: 'send_message', room_id: roomId, ...base })) return { sent: false };
+    const result = msg.type === 'text'
+      ? await textTransport.send({
+        id: msg.id,
+        roomId,
+        content: msg.content,
+        createdAt: msg.created_at,
+        replyTo: msg.reply_to,
+        durationMs: msg.duration_ms,
+      }, {
+        hydration: opts?.hydration,
+        targetRecipientId: opts?.targetRecipientId,
+        expectedRecipientIds: recipients,
+      }, () => _myUserId === sendingUserId)
+      : { sent: sendRawNotif({ type: 'send_message', room_id: roomId, ...base }), transport: 'axion' as const };
+    if (!result.sent) return { sent: false };
+    if (result.transport === 'mailbox') {
+      clearServerAckWatch(msg.id);
+      return { sent: true, queued: !result.delivered };
+    }
+    if (result.transport === 'p2p' && result.peerId != null) {
+      clearServerAckWatch(msg.id);
+      await setMessageExpectedRecipients(msg.id, [result.peerId]);
+      if (_myUserId !== sendingUserId) return { sent: false };
+      await markDelivered(msg.id, result.peerId);
+      if (_myUserId !== sendingUserId) return { sent: false };
+      await setMessageSyncState(msg.id, true);
+      if (_myUserId !== sendingUserId) return { sent: false };
+      const status = await getMessageReceiptStatus(msg.id);
+      if (_myUserId !== sendingUserId) return { sent: false };
+      if (status === 'read') markIdsAsReadInRoom(roomId, [msg.id]);
+      else markIdsAsDeliveredInRoom(roomId, [msg.id]);
+      return { sent: true }; // No server-acceptance timer for a peer receipt.
+    }
   } catch (err) {
     console.warn('[ChatWsManager] frame send failed', msg.id, err);
     return { sent: false };
@@ -746,11 +788,30 @@ async function sendOutboxFrameOnce(
   return { sent: true };
 }
 
-/**
- * Send a chat message.
- * Always saves to local DB first, then attempts WS delivery.
- * Returns the client-generated UUID plus sent/queued/failed state.
- */
+/** Apply a verified mailbox recipient receipt to its original, unchanged outgoing row. */
+export async function confirmMailboxDelivery(owner: number, message: OutgoingTextMessage, peer: number, current: () => boolean): Promise<boolean> {
+  const valid = () => _myUserId === owner && current() && !useAppStore.getState().blockedIds?.[peer];
+  if (!valid()) return false;
+  const row = (await getMessagesByIds([message.id]))[0];
+  if (!valid() || !row || !row.is_mine || row.sender_id !== owner || row.is_deleted || row.type !== 'text'
+    || row.room_id !== message.roomId || row.content !== message.content
+    || Date.parse(row.created_at) !== Date.parse(message.createdAt)) return false;
+  if (row.status === 'delivered' || row.status === 'read') return true;
+  await setMessageExpectedRecipients(message.id, [peer]);
+  if (!valid()) return false;
+  await markDelivered(message.id, peer);
+  if (!valid()) return false;
+  await setMessageSyncState(message.id, true);
+  if (!valid()) return false;
+  clearServerAckWatch(message.id);
+  const status = await getMessageReceiptStatus(message.id);
+  if (!valid()) return false;
+  if (status === 'read') markIdsAsReadInRoom(message.roomId, [message.id]);
+  else markIdsAsDeliveredInRoom(message.roomId, [message.id]);
+  return true;
+}
+
+/** Save the outgoing message, then try delivery with the same client-generated identity. */
 export async function sendChatMessage(
   roomId: string,
   content: string,
@@ -838,19 +899,20 @@ export async function sendChatMessage(
     : Promise.resolve();
 
   let attempt: SendAttemptResult = { sent: false };
-  if (isAxionReady()) {
+  if (isAxionReady() || (MAILBOX_ENABLED && messageType === 'text')) {
     // The media pointer and any transfer failure are UPDATEs to this row. Ensure
     // it exists before the HTTP request so a fast upload cannot race SQLite.
-    if (isMediaMessage) await persistLocalMessage;
-    // Text uses Axion directly. Media uploads over HTTP first, then Axion
-    // carries only its lightweight pointer.
+    if (isMediaMessage || (MAILBOX_ENABLED && messageType === 'text')) await persistLocalMessage;
+    // Text may reuse an established peer during an Axion outage. Media uploads over HTTP
+    // first, then Axion carries only its lightweight pointer.
     attempt = await sendOutboxFrame(
       s,
       roomId,
       { id: msgId, content, type: messageType, created_at: createdAt, reply_to: replyTo, duration_ms: durationMs, file_uri: fileUri },
       { audioMime, imageMime, mediaMime },
     );
-  } else {
+  }
+  if (!attempt.sent && !isAxionReady()) {
     // The message is safely persisted above. Start (or resume) Axion now; its
     // connected-status path flushes SQLite outbox rows, including this one.
     // This covers notification/deep-link cold starts and transient disconnects.
@@ -870,7 +932,7 @@ export async function sendChatMessage(
 
   return {
     messageId: msgId,
-    state: attempt.sent ? 'sent' : attempt.error && !attempt.error.retryable ? 'failed' : 'queued',
+    state: attempt.queued ? 'queued' : attempt.sent ? 'sent' : attempt.error && !attempt.error.retryable ? 'failed' : 'queued',
     ...(attempt.error ? { error: attempt.error } : {}),
   };
 }
@@ -1104,6 +1166,24 @@ export async function resendMessagesByIds(
  * the server's delivery records and the recipient's SQLite ingress dedupe it
  * if the first relay was merely delayed rather than lost.
  */
+/** Foreground nearby recovery shares the normal send lock and delivery bookkeeping. */
+export async function recoverNearbyTextOutbox(
+  roomId: string, ownerId: number, peerId: number, current: () => boolean,
+): Promise<void> {
+  const valid = () => _myUserId === ownerId && current();
+  if (!MAILBOX_ENABLED || !valid()) return;
+  const pending = await getPendingOutbox(roomId, ownerId, peerId);
+  for (const row of pending.filter(m => m.type === 'text' && !m.is_deleted).slice(0, 20)) {
+    if (!valid()) return;
+    const message = (await getMessagesByIds([row.id]))[0];
+    if (!valid()) return;
+    if (!message || message.sender_id !== ownerId || message.room_id !== roomId
+      || !message.is_mine || message.is_deleted || message.type !== 'text'
+      || message.status === 'delivered' || message.status === 'read') continue;
+    if (!(await sendOutboxFrame(getOrCreate(roomId), roomId, message)).sent) return;
+  }
+}
+
 export async function retryOutgoingMessage(
   roomId: string,
   messageId: string,

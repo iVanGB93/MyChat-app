@@ -57,6 +57,7 @@ import { getMediaDeletionJobs } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
+import NeuronSettings from '../../components/NeuronSettings';
 import type { ConnectivityMode, RootStackParamList } from '../../types';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -713,6 +714,7 @@ export default function ProfileScreen() {
       <Text style={[styles.versionText, { color: Colors.textTertiary }]}>
         Axonic v{Constants.expoConfig?.version ?? '—'}
       </Text>
+      <NeuronSettings />
     </ScrollView>
   );
 }

@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const path = require('node:path');
 
-function setup() {
+function setup({ offlineAfterStartup = false } = {}) {
   let displayed;
   const cancelled = [];
   const extra = [
@@ -25,12 +25,24 @@ function setup() {
     'expo-notifications': { dismissNotificationAsync: async (id) => cancelled.push(id),
       getPresentedNotificationsAsync: async () => extra.map((item) => ({ request: { identifier: 'expo-' + item.id, content: item.notification } })) },
   };
-  const sandbox = { exports: {}, require: (name) => { assert.ok(mocks[name], name); return mocks[name]; } };
+  let started = false;
+  const sandbox = { exports: {}, require: (name) => {
+    assert.ok(!started || !offlineAfterStartup, `Notification tried loading ${name} after startup`);
+    assert.ok(mocks[name], name); return mocks[name];
+  } };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/services/messageNotificationService.ts'), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, sandbox);
+  started = true;
   return { send: sandbox.exports.displayMessageNotification, cancel: sandbox.exports.cancelMessageNotification, cancelled, get: () => displayed };
 }
+
+test('message rendering works after the development module server becomes unavailable', async () => {
+  const s = setup({ offlineAfterStartup: true });
+  await s.send({ roomId: 'background', roomName: 'Bob', senderName: 'Bob', text: 'Hello', messageId: 'offline-alert' });
+  assert.equal(s.get().id, 'message:background');
+  assert.equal(s.get().body, 'Hello');
+});
 
 test('opening a room clears only its message cards across current and legacy paths', async () => {
   const s = setup(); await s.cancel('p');

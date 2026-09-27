@@ -14,6 +14,8 @@
  */
 
 import { ingestMessage } from './ingressRouter';
+import { parseMessageNotifData } from './messageNotificationService';
+import { recordIncomingMessageNotificationDisposition } from './messageNotificationCoordinator';
 
 /**
  * Persist + ack a message that arrived via Expo push.
@@ -32,11 +34,8 @@ export async function savePushMessage(
   const surface = options.notificationSurface ?? 'expo_os';
   if (surface !== 'none') {
     try {
-      const { parseMessageNotifData } = await import('./messageNotificationService');
       const parsed = parseMessageNotifData(data);
       if (parsed) {
-        const { recordIncomingMessageNotificationDisposition } =
-          await import('./messageNotificationCoordinator');
         await recordIncomingMessageNotificationDisposition(
           parsed,
           'expo_os',

@@ -13,6 +13,9 @@
     },
     "production": {
       "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_AXONIC_NETWORK": "1"
+      },
       "android": {
         "buildType": "app-bundle"
       }

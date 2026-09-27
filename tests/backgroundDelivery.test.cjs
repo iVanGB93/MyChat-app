@@ -22,10 +22,52 @@ function deferred() {
 }
 const drain = () => new Promise((resolve) => setTimeout(resolve, 30));
 const accepted = () => ({ status: 200, data: { status: 'delivered' } });
+
+test('P2P persistence skips server delivery ACKs and a later Axion duplicate stores only once', async () => {
+  const f = fixture();
+  const data = { type: 'new_message', message_id: 'direct-1', room_id: 'private-room', sender_id: '18',
+    sender: 'Test sender', content: 'Direct text', message_type: 'text' };
+  await f.ingestMessage(data, 'p2p');
+  assert.equal(f.rows.size, 1);
+  assert.equal(f.requests.length, 0);
+  await f.ingestMessage(data, 'ws');
+  assert.equal(f.rows.size, 1);
+  assert.equal(f.events.filter((event) => event === 'saved').length, 1);
+  assert.equal(f.requests.length, 1, 'legacy fallback still receives its normal server ACK');
+});
 const message = (type = 'voice', id = 'voice-1') => ({
   type: 'new_message', message_id: id, room_id: 'private-room', sender_id: '18',
   sender: 'Test sender', content: 'Voice message', message_type: type,
   media_id: `blob-${id}`, media_mime: 'audio/m4a', media_size: '2000',
+});
+
+test('concurrent P2P and Axion text copies share persistence and increment unread once', async () => {
+  const save = deferred();
+  const f = fixture({ controls: { save: () => save.promise } });
+  const data = message('text', 'racing-text');
+  delete data.media_id;
+  const direct = f.ingestMessage(data, 'p2p');
+  await drain();
+  const fallback = f.ingestMessage(data, 'ws');
+  save.resolve();
+  await Promise.all([direct, fallback]);
+  assert.equal(f.rows.size, 1);
+  assert.equal(f.events.filter(e => e === 'saved').length, 1);
+  assert.equal(f.unread, 1);
+  assert.equal(f.requests.length, 1);
+});
+
+test('late Axion duplicate after restart preserves a P2P message without repeated side effects', async () => {
+  const f = fixture();
+  const data = message('text', 'restart-direct');
+  delete data.media_id;
+  await f.ingestMessage(data, 'p2p');
+  const restarted = fixture({ rows: f.rows, storage: f.storage });
+  await restarted.ingestMessage(data, 'ws');
+  assert.equal(restarted.rows.size, 1);
+  assert.equal(restarted.events.filter(e => e === 'saved').length, 0);
+  assert.equal(restarted.unread, 0);
+  assert.equal(restarted.requests.length, 1);
 });
 
 function fixture(options = {}) {
@@ -115,7 +157,7 @@ function fixture(options = {}) {
       Date: class extends Date { static now() { return now; } },
       require(dep) {
         if (dep in adapters) return adapters[dep];
-        assert.ok(['./messageAckRetryQueue', './messageAckTransport', './ingressRouter', './pushMessageStore'].includes(dep), `Unexpected dependency: ${dep}`);
+        assert.ok(['./messageAckRetryQueue', './messageAckTransport', './ingressRouter', './pushMessageStore', './pushData'].includes(dep), `Unexpected dependency: ${dep}`);
         return load(dep.slice(2));
       },
     };

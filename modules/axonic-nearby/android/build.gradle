@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.axonicnearby'
+version = ''
+
+dependencies {
+  testImplementation 'junit:junit:4.13.2'
+}
+
+android {
+  namespace "expo.modules.axonicnearby"
+  defaultConfig {
+    versionCode 1
+    versionName ""
+  }
+  lintOptions {
+    abortOnError false
+  }
+}

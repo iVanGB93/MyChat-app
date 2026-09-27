@@ -75,6 +75,8 @@ import StickerPicker from '../../components/chat/sticker-picker';
 import { stickerMessage, parseSticker, loadStickerPreferences, updateStickerPreferences, type Sticker } from '../../services/stickers';
 import { importedStickerUri, importedStickerMime, stickerFileMime, importSticker, isImportedStickerFavorite } from '../../services/imported-stickers';
 import StickerPreview from '../../components/chat/sticker-preview';
+import NearbyDiscoveryControl from '../../components/chat/nearby-discovery-control';
+import { P2P_TEXT_ENABLED } from '../../services/transports/p2pTextBridge';
 import { IMPORTED_STICKER_CONTENT } from '../../services/sticker-file-format';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ChatRoom'>;
@@ -1540,6 +1542,7 @@ export default function ChatRoomScreen({ route, navigation }: Props) {
         }
       }}
     >
+      {P2P_TEXT_ENABLED && isDirectChat && <NearbyDiscoveryControl key={roomId} />}
       {/* Android uses adjustResize plus the measured IME-overlap fallback.
           Letting KeyboardAvoidingView also change height causes double/zero
           resize behavior across edge-to-edge production devices. */}

@@ -7,6 +7,9 @@
 /* ------------------------------------------------------------------ */
 
 import type { IncomingMessageNotif } from './messageNotificationService';
+// Keep the renderer in the startup bundle: background alerts must not wait
+// for Metro to build/download a lazy module in development clients.
+import { ensureMessageChannel, displayMessageNotification } from './messageNotificationService';
 import {
   claimMessageNotificationPresentation,
   finishMessageNotificationPresentation,
@@ -77,7 +80,6 @@ export async function presentIncomingMessageNotification(
   if (!claimed) return 'duplicate';
 
   try {
-    const { ensureMessageChannel, displayMessageNotification } = await import('./messageNotificationService');
     await ensureMessageChannel();
     await displayMessageNotification(data);
     await finishMessageNotificationPresentation({ messageId: id.messageId, displayed: true });
@@ -91,4 +93,3 @@ export async function presentIncomingMessageNotification(
     return 'failed';
   }
 }
-

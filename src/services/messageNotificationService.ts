@@ -16,6 +16,7 @@ import notifee, {
 import { Platform } from 'react-native';
 import { resolveMediaUrl } from './api';
 import { chatPreviewText } from '../utils/chat-preview-text';
+import { notificationContactName } from './contact-nicknames';
 
 const CHANNEL_ID = 'messages';
 const NOTIFICATION_ID_PREFIX = 'message:';
@@ -142,7 +143,6 @@ async function getExisting(
  */
 export async function displayMessageNotification(data: IncomingMessageNotif) {
   const isGroup = !!data.roomName && data.roomName !== data.senderName;
-  const { notificationContactName } = await import('./contact-nicknames');
   const localName = await notificationContactName(data.senderId, data.senderName);
   data = { ...data, text: chatPreviewText(data.text), senderName: localName, roomName: isGroup ? data.roomName : localName };
   const notifId = NOTIFICATION_ID_PREFIX + data.roomId;

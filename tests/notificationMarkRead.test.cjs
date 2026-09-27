@@ -77,6 +77,9 @@ function chatFixture({ outgoingRooms = [], pendingUpdates = [], storedMessages =
   };
   const modules = {
     './localMessageStore': localStore,
+    './transports/legacyAxionTextTransport': require('../src/services/transports/legacyAxionTextTransport.ts'),
+    './transports/textTransportManager': require('../src/services/transports/textTransportManager.ts'),
+    './transports/p2pTextBridge': { P2P_TEXT_ENABLED: false, tryP2pText: async () => null },
     './mediaLane': {},
     '../store/appStore': { useAppStore: { getState: () => ({ setChatRoomAuthenticated() {}, setChatRoomStatus() {} }) } },
     './notificationWsManager': {
