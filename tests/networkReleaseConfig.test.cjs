@@ -7,3 +7,16 @@ test('release enables only the pinned network path, with explicit build opt-in',
  }
  const eas=JSON.parse(fs.readFileSync('eas.json'));assert.equal(eas.build.production.env.EXPO_PUBLIC_AXONIC_NETWORK,'1');assert.equal(eas.build.production.android.buildType,'app-bundle');
 });
+
+// JS release flags cannot detect a native debug-only gate. Check the bridge too:
+// all six mailbox operations must be available, while unsigned LAN stays guarded.
+test('native release bridge exposes mailbox crypto but keeps unsigned LAN debug-only', () => {
+ const native = fs.readFileSync('modules/axonic-nearby/android/src/main/java/expo/modules/axonicnearby/AxonicNearbyModule.kt', 'utf8');
+ const mailbox = native.slice(native.indexOf('AsyncFunction("mailboxIdentity")'), native.indexOf('AsyncFunction("start")'));
+ for (const method of ['Identity', 'Digest', 'Sign', 'Verify', 'Seal', 'Open']) {
+  assert.ok(mailbox.includes(`AsyncFunction("mailbox${method}")`));
+ }
+ assert.doesNotMatch(mailbox, /developmentOnly|FLAG_DEBUGGABLE|BuildConfig\.DEBUG/);
+ const lan = native.slice(native.indexOf('AsyncFunction("start")'), native.indexOf('AsyncFunction("stop")'));
+ assert.match(lan, /check\(context\.applicationInfo\.flags and ApplicationInfo\.FLAG_DEBUGGABLE != 0\)/);
+});

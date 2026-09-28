@@ -30,27 +30,28 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Development-only, foreground LAN signaling. TXT identity is a claim, not authentication. */
+/** Release mailbox cryptography and development-only foreground LAN signaling.
+ * LAN TXT identity is a claim, not authentication. */
 class AxonicNearbyModule : Module() {
   private data class Peer(val endpoint: String, val address: InetAddress, val port: Int)
   @Volatile private var lane: Lane? = null
   override fun definition() = ModuleDefinition {
     Name("AxonicNearby")
     Events("onNearby")
-    AsyncFunction("mailboxIdentity") { owner: Int -> developmentOnly(); MailboxCrypto.identity(owner) }
+    AsyncFunction("mailboxIdentity") { owner: Int -> MailboxCrypto.identity(owner) }
     AsyncFunction("mailboxDigest") { value: String ->
-      developmentOnly(); require(value.length <= 16000)
+      require(value.length <= 16000)
       MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
-    AsyncFunction("mailboxSign") { owner: Int, value: String -> developmentOnly(); MailboxCrypto.sign(owner, value) }
+    AsyncFunction("mailboxSign") { owner: Int, value: String -> MailboxCrypto.sign(owner, value) }
     AsyncFunction("mailboxVerify") { key: String, value: String, signature: String ->
-      developmentOnly(); MailboxCrypto.verify(key, value, signature)
+      MailboxCrypto.verify(key, value, signature)
     }
     AsyncFunction("mailboxSeal") { key: String, header: String, plaintext: String ->
-      developmentOnly(); MailboxCrypto.seal(key, header, plaintext)
+      MailboxCrypto.seal(key, header, plaintext)
     }
     AsyncFunction("mailboxOpen") { owner: Int, header: String, key: String, iv: String, ciphertext: String ->
-      developmentOnly(); MailboxCrypto.open(owner, header, key, iv, ciphertext)
+      MailboxCrypto.open(owner, header, key, iv, ciphertext)
     }
     AsyncFunction("start") { room: String, user: Int, peer: Int ->
       synchronized(this@AxonicNearbyModule) {
@@ -68,11 +69,6 @@ class AxonicNearbyModule : Module() {
     Function("send") { frame: String -> lane?.send(frame) ?: false }
     OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) { stopLane() } }
     OnDestroy { synchronized(this@AxonicNearbyModule) { stopLane() } }
-  }
-  private fun developmentOnly() {
-    check(requireNotNull(appContext.reactContext).applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-      "Development builds only"
-    }
   }
   private fun stopLane() { val old = lane; lane = null; old?.stop() }
 

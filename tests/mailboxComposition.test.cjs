@@ -191,7 +191,7 @@ test('cold-start outbox recovery retains valid durable custody before pairing re
 
 test('old native builds fail clearly without enabling mailbox traffic', async () => {
   const f = fixture(false);
-  await assert.rejects(f.startMailboxPrototype(pairs()), /updated Android development build/);
+  await assert.rejects(f.startMailboxPrototype(pairs()), /updated Android app/);
   assert.equal(f.timers.size, 0); assert.equal(f.pins.length, 0);
 });
 test('explicit immutable pairing selects mailbox channel and validates cached relay route', async () => {

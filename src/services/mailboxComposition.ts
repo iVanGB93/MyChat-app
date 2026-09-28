@@ -32,7 +32,7 @@ const supported = () => MAILBOX_ENABLED && !!Native?.mailboxIdentity && !!Native
   && !!Native?.mailboxSign && !!Native?.mailboxVerify && !!Native?.mailboxSeal && !!Native?.mailboxOpen;
 export async function mailboxPublicIdentity(): Promise<MailboxPair> {
   const owner = useAppStore.getState().user?.id;
-  if (!owner || !supported()) throw new Error('Mailbox requires the updated Android development build');
+  if (!owner || !supported()) throw new Error('Mailbox requires an updated Android app with Axonic network support');
   const identity = await Native!.mailboxIdentity!(owner);
   if (useAppStore.getState().user?.id !== owner) throw new Error('Account changed');
   return { user: owner, ...identity };

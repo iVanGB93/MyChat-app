@@ -18,8 +18,8 @@ import javax.crypto.spec.OAEPParameterSpec
 import javax.crypto.spec.PSource
 import javax.crypto.spec.SecretKeySpec
 
-/** Development mailbox v1. Private identity keys never leave AndroidKeyStore.
- * No forward secrecy or key recovery yet; this is not the production protocol. */
+/** Early-access mailbox v1. Private identity keys never leave AndroidKeyStore.
+ * No forward secrecy or key recovery yet. */
 internal object MailboxCrypto {
   private val random = SecureRandom()
   private val oaep = OAEPParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA1, PSource.PSpecified.DEFAULT)

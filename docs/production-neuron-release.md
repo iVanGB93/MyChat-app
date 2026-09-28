@@ -57,3 +57,13 @@ The first live runs exposed stale hot-reload callbacks and a receipt waiting
 behind historical retry traffic. Fresh sessions and immediate replies for the
 current envelope resolved the confirmation delay. Receiving a receipt no longer
 triggers another historical receipt flush.
+
+Production-install correction: the native bridge still required a debuggable
+application for all six mailbox crypto operations. This caused Connect and Share
+device code to fail before contacting FirstNeuron, despite the JS release flag.
+The restriction has been removed from mailbox cryptography; unsigned LAN startup
+retains its debug-only restriction. A new native AAB is required; an OTA JS update
+or device registration cannot repair the already-installed native bridge.
+Correction validation: 19 targeted JavaScript checks passed, and the Android
+module's release compilation and `testReleaseUnitTest` succeeded. The corrected
+AAB still needs to be built and validated on an installed production app.
