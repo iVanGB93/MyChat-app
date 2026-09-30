@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, Pressable, Share, StyleSheet } from 'react-native';
 import { useAppStore } from '../store/appStore';
+import { useTheme } from '../contexts/ThemeContext';
 import { MAILBOX_ENABLED } from '../services/transports/p2pTextBridge';
 import { mailboxPublicIdentity, mailboxSessionStatus, rememberMailboxPairing, forgetMailboxPairing } from '../services/mailboxComposition';
 
@@ -10,24 +11,22 @@ const firstNeuron = {
   signing: 'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEkvsng3qLw6VLA9khCBFud6W9T7mFIIv7iK0evKA2tS0Ldhk+WLCztrdObDvfbGlnRHl4yeQTkJYa6m5hWKeqrw==',
 };
 export default function NeuronSettings() {
+  const { colors } = useTheme();
   const owner = useAppStore(s => s.user?.id);
   const [status, setStatus] = useState(mailboxSessionStatus);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   useEffect(() => { setStatus(mailboxSessionStatus()); const timer = setInterval(() => setStatus(mailboxSessionStatus()), 2000); return () => clearInterval(timer); }, [owner]);
   if (!MAILBOX_ENABLED || !owner) return null;
   const enabled = status.owner === owner;
-  const ready = !!(status.signaling as { ready?: boolean } | null)?.ready;
   async function action(work: () => Promise<unknown>) {
     setBusy(true); setError('');
     try { await work(); setStatus(mailboxSessionStatus()); }
     catch { setError('Unable to complete setup. Check your connection and device registration.'); }
     finally { setBusy(false); }
   }
-  return <View style={styles.card}>
-    <Text style={styles.title}>Axonic network · Early access</Text>
-    <Text style={styles.text}>{enabled ? ready ? 'Connected to FirstNeuron' : 'Waiting for FirstNeuron or device registration' : 'Not connected'}</Text>
-    <Text style={styles.text}>Send your device code to the network administrator to register this installation, then connect. FirstNeuron introduces your chat contacts and can hold encrypted messages until they reconnect.</Text>
-    <Text style={styles.text}>Participation pauses when the app is in the background. Regular chat and calls remain available.</Text>
+  return <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.border, borderWidth: 1 }]}>
+    <Text style={[styles.title, { color: colors.text }]}>Connection setup</Text>
+    <Text style={[styles.text, { color: colors.textSecondary }]}>This early version requires device registration. Share your device code with the operator of FirstNeuron, then connect.</Text>
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
     <Pressable accessibilityRole="button" disabled={busy} style={styles.button} onPress={() => void action(async () => {
       const identity = await mailboxPublicIdentity();

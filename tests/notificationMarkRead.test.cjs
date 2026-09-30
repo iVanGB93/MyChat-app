@@ -80,6 +80,7 @@ function chatFixture({ outgoingRooms = [], pendingUpdates = [], storedMessages =
     './transports/legacyAxionTextTransport': require('../src/services/transports/legacyAxionTextTransport.ts'),
     './transports/textTransportManager': require('../src/services/transports/textTransportManager.ts'),
     './transports/p2pTextBridge': { P2P_TEXT_ENABLED: false, tryP2pText: async () => null },
+    './transports/neuronTextBridge': { isNeuronTextReady: () => false, tryNeuronText: async () => null },
     './mediaLane': {},
     '../store/appStore': { useAppStore: { getState: () => ({ setChatRoomAuthenticated() {}, setChatRoomStatus() {} }) } },
     './notificationWsManager': {

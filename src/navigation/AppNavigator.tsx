@@ -444,6 +444,13 @@ export default function AppNavigator() {
                 })}
               />
               <Stack.Screen
+                name="Network"
+                component={require('../screens/profile/NetworkScreen').default}
+                options={{ headerShown: true, headerTitle: 'Network',
+                  headerStyle: { backgroundColor: Colors.headerBg }, headerShadowVisible: false,
+                  headerTintColor: Colors.headerText, headerTitleStyle: { ...Font.semiBold, color: Colors.headerText } }}
+              />
+              <Stack.Screen
                 name="EditAccount"
                 component={require('../screens/profile/EditAccountScreen').default}
                 options={{

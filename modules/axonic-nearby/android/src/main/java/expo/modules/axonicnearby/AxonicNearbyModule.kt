@@ -13,6 +13,7 @@ import android.os.Build
 import androidx.core.os.bundleOf
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.Promise
 import org.json.JSONObject
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -35,9 +36,101 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AxonicNearbyModule : Module() {
   private data class Peer(val endpoint: String, val address: InetAddress, val port: Int)
   @Volatile private var lane: Lane? = null
+  private val axons = AxonSockets()
+  private var axonLan: AxonLan? = null
+  private var axonForeground = true
+  private val axonWorkers = ThreadPoolExecutor(0, 20, 30L, TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue<Runnable>())
+  private fun axonWork(promise: Promise, work: () -> Any?) {
+    try { axonWorkers.execute {
+      try { promise.resolve(work()) } catch (error: Exception) { promise.reject("AXON_TRANSPORT", "Axon transport unavailable", error) }
+    } } catch (error: Exception) { promise.reject("AXON_CAPACITY", "Axon transport busy", error) }
+  }
   override fun definition() = ModuleDefinition {
     Name("AxonicNearby")
     Events("onNearby")
+    AsyncFunction("axonLanStart") { account: String -> synchronized(this@AxonicNearbyModule) {
+      val context = requireNotNull(appContext.reactContext)
+      check(axonForeground && context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+      axonLan?.stop(); axonLan = null; axons.closeLan()
+      val next = AxonLan(context, account, axons)
+      axonLan = next
+      try { next.start() } catch (error: Exception) { next.stop(); axonLan = null; throw error }
+    } }
+    Function("axonLanStop") { synchronized(this@AxonicNearbyModule) { axonLan?.stop(); axonLan = null; axons.closeLan() } }
+    Function("axonLanSnapshot") { synchronized(this@AxonicNearbyModule) {
+      axonLan?.snapshot() ?: mapOf("active" to false, "peers" to emptyList<Map<String, Any>>())
+    } }
+    AsyncFunction("axonAccept") { promise: Promise ->
+      val own = synchronized(this@AxonicNearbyModule) { axonLan }
+      axonWork(promise) { own?.accept() }
+    }
+    Function("axonClaim") { id: String -> axons.claim(id) }
+    // Experimental identity frames only. Restrict dialing to the current Wi-Fi subnet.
+    AsyncFunction("axonConnect") { host: String, port: Int, promise: Promise ->
+      val socket = Socket()
+      try {
+        val address: InetAddress
+        val id: String
+        synchronized(this@AxonicNearbyModule) {
+          val context = requireNotNull(appContext.reactContext)
+          check(axonForeground && context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+          require(port in 1..65535 && host.matches(Regex("[0-9]{1,3}(\\.[0-9]{1,3}){3}")))
+          val parts = host.split('.').map { it.toInt() }
+          require(parts.all { it in 0..255 } && parts.joinToString(".") == host)
+          require(parts[0] == 10 || (parts[0] == 172 && parts[1] in 16..31) || (parts[0] == 192 && parts[1] == 168))
+          address = InetAddress.getByAddress(parts.map { it.toByte() }.toByteArray())
+          val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+          val wifi = cm.allNetworks.firstOrNull { n ->
+            cm.getNetworkCapabilities(n)?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true &&
+              cm.getLinkProperties(n)?.linkAddresses?.any { link ->
+                val own = link.address.address
+                own.size == 4 && link.prefixLength in 1..32 && (0 until link.prefixLength).all { bit ->
+                  val mask = 1 shl (7 - bit % 8)
+                  (own[bit / 8].toInt() and mask) == (parts[bit / 8] and mask)
+                }
+              } == true
+          } ?: error("No matching Wi-Fi route")
+          wifi.bindSocket(socket)
+          id = axons.reserve(socket)
+        }
+        try { axonWorkers.execute {
+          try { axons.connect(id, InetSocketAddress(address, port)); promise.resolve(id) }
+          catch (error: Exception) { axons.close(id); promise.reject("AXON_CONNECT", "Axon connection failed", error) }
+        } } catch (error: Exception) { axons.close(id); throw error }
+      } catch (error: Exception) { runCatching { socket.close() }; promise.reject("AXON_CONNECT", "Axon connection unavailable", error) }
+    }
+    AsyncFunction("axonWssConnect") { host: String, account: String, promise: Promise ->
+      var socket: java.net.Socket? = null
+      var id: String? = null
+      try {
+        synchronized(this@AxonicNearbyModule) {
+          val context = requireNotNull(appContext.reactContext)
+          check(axonForeground && context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+          // Bootstrap endpoint allowlist, not an identity authority. Shared crypto verifies the peer.
+          require(host == "143.198.121.2" && account.matches(Regex("axonic:1:[0-9a-f]{64}")))
+          socket = javax.net.ssl.SSLSocketFactory.getDefault().createSocket()
+          id = axons.reserve(socket!!, true)
+        }
+        val key = id!!
+        axonWorkers.execute {
+          try { axons.connectWebSocket(key, host, account); promise.resolve(key) }
+          catch (error: Exception) { axons.close(key); promise.reject("AXON_CONNECT", "Internet axon connection failed", error) }
+        }
+      } catch (error: Exception) {
+        id?.let { axons.close(it) }; runCatching { socket?.close() }
+        promise.reject("AXON_CONNECT", "Internet axon connection failed", error)
+      }
+    }
+    AsyncFunction("axonRead") { id: String, promise: Promise -> axonWork(promise) { axons.read(id) } }
+    AsyncFunction("axonWrite") { id: String, raw: String, promise: Promise -> axonWork(promise) { axons.write(id, raw); true } }
+    Function("axonClose") { id: String -> axons.close(id) }
+    AsyncFunction("identityScrypt") { password: String, salt: String -> IdentityKdf.derive(password, salt) }
+    AsyncFunction("identityRandomBytes") { size: Int ->
+      require(size in 1..64)
+      val bytes = ByteArray(size)
+      java.security.SecureRandom().nextBytes(bytes)
+      bytes.joinToString("") { "%02x".format(it) }
+    }
     AsyncFunction("mailboxIdentity") { owner: Int -> MailboxCrypto.identity(owner) }
     AsyncFunction("mailboxDigest") { value: String ->
       require(value.length <= 16000)
@@ -67,8 +160,9 @@ class AxonicNearbyModule : Module() {
     }
     AsyncFunction("stop") { synchronized(this@AxonicNearbyModule) { stopLane() } }
     Function("send") { frame: String -> lane?.send(frame) ?: false }
-    OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) { stopLane() } }
-    OnDestroy { synchronized(this@AxonicNearbyModule) { stopLane() } }
+    OnActivityEntersForeground { synchronized(this@AxonicNearbyModule) { axonForeground = true } }
+    OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) { axonForeground = false; axonLan?.stop(); axonLan = null; axons.closeAll(); stopLane() } }
+    OnDestroy { synchronized(this@AxonicNearbyModule) { axonForeground = false; axonLan?.stop(); axonLan = null; axons.destroy(); axonWorkers.shutdownNow(); stopLane() } }
   }
   private fun stopLane() { val old = lane; lane = null; old?.stop() }
 

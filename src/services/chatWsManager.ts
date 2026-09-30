@@ -15,6 +15,7 @@ import { applyMessageLifecycleEvent, mergeMessageById, shouldSuppressOutboxRepla
 import { createLegacyAxionTextTransport } from './transports/legacyAxionTextTransport';
 import { createTextTransportManager } from './transports/textTransportManager';
 import { MAILBOX_ENABLED, tryP2pText, tryMailboxText } from './transports/p2pTextBridge';
+import { isNeuronTextReady, tryNeuronText } from './transports/neuronTextBridge';
 import type { OutgoingTextMessage } from './transports/textTransport';
 import { markDelivered } from './localMessageStore';
 import { debugLog } from './diagnostics';
@@ -30,7 +31,7 @@ const _activeSendCounts = new Map<string, number>();
 const textTransport = createTextTransportManager(createLegacyAxionTextTransport({
   isReady: isAxionReady,
   sendFrame: sendRawNotif,
-}), tryP2pText, tryMailboxText);
+}), tryP2pText, tryMailboxText, tryNeuronText);
 let _lastLocalMutationMs = 0;
 
 function versionLocalMutation(changes: MessageChanges): MessageChanges {
@@ -657,7 +658,7 @@ async function sendOutboxFrameOnce(
     mediaMime?: string | null;
   },
 ): Promise<SendAttemptResult> {
-  if (!isAxionReady() && !(MAILBOX_ENABLED && msg.type === 'text')) return { sent: false };
+  if (!isAxionReady() && !((MAILBOX_ENABLED || isNeuronTextReady()) && msg.type === 'text')) return { sent: false };
   const sendingUserId = _myUserId;
   // Acceptance of the original broadcast says nothing about a reconnecting
   // recipient's delivery. Targeted recovery has its own per-recipient in-flight
@@ -762,7 +763,7 @@ async function sendOutboxFrameOnce(
       }, () => _myUserId === sendingUserId)
       : { sent: sendRawNotif({ type: 'send_message', room_id: roomId, ...base }), transport: 'axion' as const };
     if (!result.sent) return { sent: false };
-    if (result.transport === 'mailbox') {
+    if (result.transport === 'mailbox' || result.transport === 'neuron') {
       clearServerAckWatch(msg.id);
       return { sent: true, queued: !result.delivered };
     }
@@ -899,10 +900,10 @@ export async function sendChatMessage(
     : Promise.resolve();
 
   let attempt: SendAttemptResult = { sent: false };
-  if (isAxionReady() || (MAILBOX_ENABLED && messageType === 'text')) {
+  if (isAxionReady() || ((MAILBOX_ENABLED || isNeuronTextReady()) && messageType === 'text')) {
     // The media pointer and any transfer failure are UPDATEs to this row. Ensure
     // it exists before the HTTP request so a fast upload cannot race SQLite.
-    if (isMediaMessage || (MAILBOX_ENABLED && messageType === 'text')) await persistLocalMessage;
+    if (isMediaMessage || ((MAILBOX_ENABLED || isNeuronTextReady()) && messageType === 'text')) await persistLocalMessage;
     // Text may reuse an established peer during an Axion outage. Media uploads over HTTP
     // first, then Axion carries only its lightweight pointer.
     attempt = await sendOutboxFrame(
@@ -1171,7 +1172,7 @@ export async function recoverNearbyTextOutbox(
   roomId: string, ownerId: number, peerId: number, current: () => boolean,
 ): Promise<void> {
   const valid = () => _myUserId === ownerId && current();
-  if (!MAILBOX_ENABLED || !valid()) return;
+  if (!(MAILBOX_ENABLED || isNeuronTextReady()) || !valid()) return;
   const pending = await getPendingOutbox(roomId, ownerId, peerId);
   for (const row of pending.filter(m => m.type === 'text' && !m.is_deleted).slice(0, 20)) {
     if (!valid()) return;

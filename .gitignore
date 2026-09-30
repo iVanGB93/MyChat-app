@@ -48,6 +48,7 @@ sentry.options.json
 
 # generated local Expo-module Android output
 /modules/**/android/build/
+/modules/**/android/.gradle/
 
 # local installable test artifacts
 /builds/

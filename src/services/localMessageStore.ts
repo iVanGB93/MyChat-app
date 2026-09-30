@@ -943,7 +943,7 @@ function genOutboxId(): string {
 // Writes
 // ---------------------------------------------------------------------------
 
-export async function saveMessage(msg: LocalMessage): Promise<void> {
+async function insertMessage(db: SQLite.SQLiteDatabase, msg: LocalMessage): Promise<void> {
   // expo-sqlite passes primitiveParams as Map<String, Any> in Kotlin — Any is
   // non-nullable, so passing JS null through the bridge throws the
   // "Cannot convert '[object Object]' to a Kotlin type" error.
@@ -968,12 +968,48 @@ export async function saveMessage(msg: LocalMessage): Promise<void> {
   if (msg.duration_ms != null) params.$duration_ms = Number(msg.duration_ms);
   if (msg.media_ptr != null) params.$media_ptr = JSON.stringify(msg.media_ptr);
 
-  await runSerializedWrite((db) => db.runAsync(
+  await db.runAsync(
     `INSERT OR IGNORE INTO messages
        (id, room_id, sender_id, sender_name, content, type, file_uri, created_at, updated_at, revision, accepted_at, is_mine, sync, status, reply_to, duration_ms, media_ptr)
      VALUES ($id, $room_id, $sender_id, $sender_name, $content, $type, $file_uri, $created_at, $updated_at, $revision, $accepted_at, $is_mine, $sync, $status, $reply_to, $duration_ms, $media_ptr)`,
     params,
-  ));
+  );
+}
+
+export async function saveMessage(msg: LocalMessage): Promise<void> {
+  await runSerializedWrite(db => insertMessage(db, msg));
+}
+
+/** Atomic normal neuron inbox write. Null never permits a recipient receipt. */
+export async function saveVerifiedIncomingText(msg: LocalMessage, owner: number, current: () => boolean): Promise<'inserted' | 'duplicate' | null> {
+  msg = { ...msg };
+  if (!current() || !Number.isSafeInteger(owner) || owner < 1 || msg.sender_id === owner || msg.is_mine
+    || msg.type !== 'text' || !msg.content || msg.is_deleted || msg.reply_to || msg.duration_ms != null || msg.file_uri || msg.media_ptr) return null;
+  let result: 'inserted' | 'duplicate' | null = null;
+  const cancelled = new Error('Incoming account changed');
+  try {
+    await runExclusiveWrite(async db => {
+      result = null;
+      if (!current()) return;
+      const cached = await db.getFirstAsync<{ payload: string }>('SELECT payload FROM room_cache WHERE owner_user_id=? AND room_id=?', owner, msg.room_id);
+      const room = cached ? JSON.parse(cached.payload) : null;
+      if (!room || room.room_type !== 'direct' || !Array.isArray(room.members) || room.members.length !== 2
+        || !room.members.includes(owner) || !room.members.includes(msg.sender_id)) return;
+      const blocked = await db.getFirstAsync("SELECT 1 FROM relationship_cache WHERE owner_user_id=? AND other_user_id=? AND state='blocked'", owner, msg.sender_id);
+      if (blocked || !current()) return;
+      const existing = await db.getFirstAsync<any>('SELECT * FROM messages WHERE id=?', msg.id);
+      if (existing) {
+        if (!existing.is_mine && !existing.is_deleted && existing.type === 'text' && existing.room_id === msg.room_id
+          && existing.sender_id === msg.sender_id && existing.content === msg.content && !existing.reply_to
+          && existing.duration_ms == null && Date.parse(existing.created_at) === Date.parse(msg.created_at)) result = 'duplicate';
+      } else {
+        await insertMessage(db, msg);
+        result = 'inserted';
+      }
+      if (!current()) throw cancelled;
+    });
+  } catch (error) { if (error !== cancelled) throw error; result = null; }
+  return current() ? result : null;
 }
 
 /** Store/replace the out-of-band media pointer for a message (after upload, or

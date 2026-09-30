@@ -20,6 +20,7 @@ import { flushPendingAcks } from './messageAckRetryQueue';
 import { configureNearbyOutboxRecovery, resetP2pTextSessions, routeP2pTextSignal } from './p2pTextComposition';
 import { initializeMailboxRecovery, routeMailboxSignal } from './mailboxComposition';
 import { configureMailboxDelivered } from './transports/p2pTextBridge';
+import { routeChatBindingFrame } from './identity/chatBindingBridge';
 
 configureNearbyOutboxRecovery(recoverNearbyTextOutbox);
 configureMailboxDelivered(confirmMailboxDelivery);
@@ -32,6 +33,10 @@ configureAxionRuntime({
   connectRoom,
   checkPendingNotifications: () => checkPendingNotifications(),
   routeInbound: async (payload) => {
+    if (payload.event === 'chat_identity_binding') {
+      await routeChatBindingFrame(payload);
+      return {};
+    }
     if (payload.event === 'p2p_text_signal') {
       await routeMailboxSignal(payload);
       await routeP2pTextSignal(payload);

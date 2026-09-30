@@ -101,6 +101,14 @@ function fixture(options = {}) {
     '../store/appStore': { useAppStore: { getState: () => state } },
     './localMessageStore': {
       messageExists: async (id) => rows.has(id),
+      saveVerifiedIncomingText: async (row, owner, current) => {
+        await controls.save(row);
+        if (!current() || state.user?.id !== owner || state.blockedIds[row.sender_id]) return null;
+        const old = rows.get(row.id);
+        if (old) return old.room_id === row.room_id && old.sender_id === row.sender_id && old.content === row.content
+          && !old.is_deleted && !old.is_mine && old.created_at === row.created_at ? 'duplicate' : null;
+        rows.set(row.id, { ...row }); events.push('saved'); return 'inserted';
+      },
       getMessageTransferFailure: async (id) => rows.get(id)?.failure ?? null,
       setMessageTransferFailure: async (id, code, message, blocked) => { rows.get(id).failure = { code, message, blocked }; },
       clearMessageTransferFailure: async (id) => { delete rows.get(id).failure; },
@@ -117,7 +125,7 @@ function fixture(options = {}) {
         .map((row) => ({ ...row, media_ptr: JSON.stringify(row.media_ptr), reply_to: null })),
     },
     './chatWsManager': { injectReceivedMessage: (room, msg, opts) => injections.push({ room, msg, opts }) },
-    './notificationPresentationPolicy': { decideLocalMessageNotification: () => ({ allow: false }) },
+    './notificationPresentationPolicy': { decideLocalMessageNotification: () => ({ allow: options.notify === true }) },
     './rrp/envelope': {},
     './presenceService': {},
     './mediaLane': {
@@ -178,12 +186,17 @@ function fixture(options = {}) {
 }
 
 for (const type of ['voice', 'image', 'video', 'document']) {
-  test(`${type}: background task awaits verified bytes AND the delivery receipt, with a prompt notification`, async () => {
+  test(`${type}: background task awaits verified bytes AND the delivery receipt, with a prompt notification`, { timeout: 5000 }, async () => {
     const download = deferred(), ack = deferred();
-    const app = fixture({ controls: { download: () => download.promise, post: () => ack.promise } });
+    const downloadStarted = deferred(), notificationShown = deferred(), ackStarted = deferred();
+    const app = fixture({ controls: {
+      download: () => { downloadStarted.resolve(); return download.promise; },
+      display: async () => { notificationShown.resolve(); },
+      post: () => { ackStarted.resolve(); return ack.promise; },
+    } });
     let finished = false;
     const task = app.receive(message(type)).then(() => { finished = true; });
-    await drain();
+    await Promise.all([downloadStarted.promise, notificationShown.promise]);
     assert.equal(app.notifications.length, 1);
     assert.equal(app.downloads.length, 1);
     assert.equal(app.rows.get('voice-1').file_uri, null);
@@ -191,7 +204,7 @@ for (const type of ['voice', 'image', 'video', 'document']) {
     assert.equal(app.requests.length, 0, 'placeholder must not acknowledge media');
     assert.equal(finished, false);
     download.resolve('file://durable/voice-1');
-    await drain();
+    await ackStarted.promise;
     assert.equal(app.rows.get('voice-1').file_uri, 'file://durable/voice-1');
     assert.equal(app.requests.length, 1);
     assert.equal((await app.queue.getQueueStatus()).length, 1);
@@ -354,4 +367,35 @@ test('successful receipt removal preserves concurrent enqueues and other sender/
   const pending = await app.queue.getQueueStatus();
   assert.equal(pending.length, 3);
   assert.ok(!pending.some((item) => item.message_id === ack.message_id && item.room_id === ack.room_id && item.sender_id === ack.sender_id));
+});
+
+test('verified neuron text shares normal ingress side effects and rejects conflicting duplicates', async () => {
+  const f = fixture({ notify: true });
+  const m = { id: 'neuron-normal-1', roomId: 'private-room', sender: 18, recipient: 14,
+    createdAt: '2026-09-29T12:00:00.000Z', content: 'Normal neuron text' };
+  assert.equal(await f.ingestVerifiedNeuronText(m, 14, 'Test sender', () => true), true);
+  assert.equal(await f.ingestVerifiedNeuronText(m, 14, 'Test sender', () => true), true);
+  assert.equal(await f.ingestVerifiedNeuronText({ ...m, content: 'conflict' }, 14, 'Test sender', () => true), false);
+  assert.equal(f.unread, 1); assert.equal(f.events.filter(e => e === 'preview').length, 1);
+  assert.equal(f.notifications.length, 1); assert.equal(f.requests.length, 0);
+});
+
+test('account switch while verified neuron persistence is pending produces no receipt or presentation', async () => {
+  const save = deferred(), f = fixture({ controls: { save: () => save.promise } });
+  const m = { id: 'cancel-neuron', roomId: 'private-room', sender: 18, recipient: 14,
+    createdAt: '2026-09-29T12:00:00.000Z', content: 'Interrupted' };
+  const result = f.ingestVerifiedNeuronText(m, 14, 'Test sender', () => true);
+  await drain(); f.state.user = { id: 27 }; save.resolve();
+  assert.equal(await result, false); assert.equal(f.rows.size, 0); assert.equal(f.unread, 0); assert.equal(f.notifications.length, 0);
+});
+
+test('concurrent verified neuron and Axion copies increment unread only once', async () => {
+  const save = deferred(), f = fixture({ controls: { save: () => save.promise } });
+  const m = { id: 'mixed-neuron', roomId: 'private-room', sender: 18, recipient: 14,
+    createdAt: '2026-09-29T12:00:00.000Z', content: 'One message' };
+  const neuron = f.ingestVerifiedNeuronText(m, 14, 'Test sender', () => true);
+  const axion = f.ingestMessage({ message_id: m.id, room_id: m.roomId, sender_id: m.sender, sender: 'Test sender',
+    content: m.content, message_type: 'text', created_at: m.createdAt }, 'ws');
+  save.resolve(); assert.equal(await neuron, true); await axion;
+  assert.equal(f.rows.size, 1); assert.equal(f.unread, 1); assert.equal(f.events.filter(e => e === 'saved').length, 1);
 });

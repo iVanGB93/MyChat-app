@@ -164,6 +164,7 @@ export type RootStackParamList = {
   ScanTag: undefined;
   ChatRoom: { roomId: string; roomName: string; otherUserId?: number };
   EditAccount: undefined;
+  Network: undefined;
   ChatStorage: undefined;
   ChatStorageMedia: { roomId: string; roomName: string };
   ChangePassword: undefined;

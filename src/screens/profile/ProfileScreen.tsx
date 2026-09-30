@@ -57,7 +57,6 @@ import { getMediaDeletionJobs } from '../../services/localMessageStore';
 import Avatar from '../../components/ui/Avatar';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';
-import NeuronSettings from '../../components/NeuronSettings';
 import type { ConnectivityMode, RootStackParamList } from '../../types';
 
 type Nav = NativeStackNavigationProp<RootStackParamList>;
@@ -460,6 +459,13 @@ export default function ProfileScreen() {
         <Button title="SAVE" onPress={handleSave} loading={saving} style={styles.saveBtn} />
       </View>
 
+      <TouchableOpacity accessibilityRole="button" accessibilityLabel="Network"
+        onPress={() => navigation.navigate('Network')}
+        style={[styles.card, { backgroundColor: Colors.card, borderColor: Colors.border }]}>
+        <Text style={[styles.cardTitle, { color: Colors.primary }]}>◎ NETWORK</Text>
+        <Text style={{ color: Colors.textSecondary }}>Connections, participation, and network information →</Text>
+      </TouchableOpacity>
+
       {/* Account card */}
       <View style={[styles.card, { backgroundColor: Colors.surface, borderColor: Colors.neonBorder }]}>
         <Text style={[styles.cardTitle, { color: Colors.primary }]}>◈ ACCOUNT</Text>
@@ -714,7 +720,6 @@ export default function ProfileScreen() {
       <Text style={[styles.versionText, { color: Colors.textTertiary }]}>
         Axonic v{Constants.expoConfig?.version ?? '—'}
       </Text>
-      <NeuronSettings />
     </ScrollView>
   );
 }

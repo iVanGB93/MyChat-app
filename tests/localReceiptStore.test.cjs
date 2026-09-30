@@ -94,6 +94,49 @@ const message = {
   reactions: {}, is_deleted: false, is_read: false, reply_to: null, duration_ms: null,
 };
 
+test('verified neuron inbox commits once and rejects conflicting IDs without overwriting normal messages', async () => {
+  const app = await fixture();
+  try {
+    await app.cacheRooms(18, [{ id: 'room', room_type: 'direct', members: [14, 18], members_detail: [], updated_at: message.created_at }]);
+    const incoming = { ...message, is_mine: false, sync: true, status: 'delivered' };
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 18, () => true), 'inserted');
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 18, () => true), 'duplicate');
+    for (const patch of [{ content: 'changed' }, { created_at: '2026-09-04T10:00:00Z' }, { sender_id: 99 }]) {
+      assert.equal(await app.saveVerifiedIncomingText({ ...incoming, ...patch }, 18, () => true), null);
+    }
+    assert.equal(app.row().content, 'Hello');
+    await app.applyMessageChanges('m1', { is_deleted: true });
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 18, () => true), null);
+  } finally { app.database.close(); }
+});
+
+test('verified neuron inbox enforces cached room ownership and block state', async () => {
+  const app = await fixture();
+  try {
+    const incoming = { ...message, is_mine: false, sync: true, status: 'delivered' };
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 18, () => true), null);
+    await app.cacheRooms(18, [{ id: 'room', room_type: 'direct', members: [14, 18], members_detail: [] }]);
+    await app.setCachedRelationship(18, 14, 'blocked');
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 18, () => true), null);
+    await app.setCachedRelationship(18, 14, null);
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 27, () => true), null);
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 18, () => false), null);
+    assert.equal(await app.messageExists('m1'), false);
+  } finally { app.database.close(); }
+});
+
+test('verified neuron write rolls back if ownership changes after the insert', async () => {
+  const app = await fixture();
+  try {
+    await app.cacheRooms(18, [{ id: 'room', room_type: 'direct', members: [14, 18], members_detail: [] }]);
+    const incoming = { ...message, is_mine: false, sync: true, status: 'delivered' };
+    let reads = 0;
+    const current = () => { reads++; return !app.row(); };
+    assert.equal(await app.saveVerifiedIncomingText(incoming, 18, current), null);
+    assert(reads >= 4); assert.equal(await app.messageExists('m1'), false);
+  } finally { app.database.close(); }
+});
+
 test('original recipient snapshot survives duplicate acceptance and a process restart', async () => {
   const app = await fixture();
   await app.saveMessage(message);

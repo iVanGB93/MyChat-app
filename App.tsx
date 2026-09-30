@@ -40,8 +40,12 @@ import { markCallEnded, isCallEnded } from './src/services/callDedupe';
 import { useAppStore } from './src/store/appStore';
 import { navigateFromNotification } from './src/services/notificationNavigation';
 import { DarkColors } from './src/theme';
+import { startMobileIdentityNetwork } from './src/services/identity/mobileIdentityNetwork';
+import { startAccountChatBinding } from './src/services/identity/mobileChatBinding';
 
 export default function App() {
+  useEffect(() => startMobileIdentityNetwork(), []);
+  useEffect(() => startAccountChatBinding(), []);
   const responseListener = useRef<Notifications.EventSubscription | null>(null);
   const receivedListener = useRef<Notifications.EventSubscription | null>(null);
 

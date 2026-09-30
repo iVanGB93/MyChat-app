@@ -40,3 +40,29 @@ test('a connection or account change during the attempt prevents fallback', asyn
   const manager = createTextTransportManager({ send: () => assert.fail('wrong session') }, async () => { valid = false; return null; });
   assert.equal((await manager.send(message, undefined, () => valid)).sent, false);
 });
+
+test('normal neuron custody follows direct attempts and stays pending without server handoff', async () => {
+  const calls=[];
+  const manager=createTextTransportManager({send:()=>assert.fail('duplicate server submission')},
+    async()=>{calls.push('direct');return null;},async()=>assert.fail('legacy mailbox'),
+    async m=>{assert.equal(m,message);calls.push('neuron');return {peerId:14,delivered:false};});
+  assert.deepEqual(await manager.send(message),{sent:true,transport:'neuron',peerId:14,delivered:false});
+  assert.deepEqual(calls,['direct','neuron']);
+});
+
+test('unavailable normal neuron falls back once and an account change cancels further delivery', async () => {
+  let sent=0,current=true;
+  const manager=createTextTransportManager({send:()=>{sent++;return true;}},undefined,undefined,async()=>{throw Error('No route');});
+  assert.equal((await manager.send(message)).transport,'axion');assert.equal(sent,1);
+  const stale=createTextTransportManager({send:()=>assert.fail('stale send')},undefined,undefined,async()=>{current=false;return {peerId:14,delivered:false};});
+  assert.equal((await stale.send(message,undefined,()=>current)).sent,false);
+});
+
+test('normal neuron bridge drops late results and ignores stale cleanup from a prior registration', async () => {
+  const bridge=require('../src/services/transports/neuronTextBridge.ts');let release;
+  assert.equal(await bridge.tryNeuronText(message),null);
+  const handler=()=>new Promise(r=>release=r),old=bridge.registerNeuronTextAttempt(handler);
+  const pending=bridge.tryNeuronText(message),next=bridge.registerNeuronTextAttempt(handler);old();
+  release({peerId:14,delivered:true});assert.equal(await pending,null);
+  next();assert.equal(await bridge.tryNeuronText(message),null);
+});

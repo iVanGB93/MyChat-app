@@ -11,7 +11,7 @@ const compiled = ts.transpileModule(
   { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } },
 ).outputText;
 
-function fixture({ isReady = () => true, sendFrame, getRecipients = async () => null, tryDirect = async () => null, tryMailbox = async () => null, p2pEnabled = false } = {}) {
+function fixture({ isReady = () => true, sendFrame, getRecipients = async () => null, tryDirect = async () => null, tryMailbox = async () => null, tryNeuron = async () => null, neuronEnabled = false, p2pEnabled = false } = {}) {
   const frames = [], pointers = new Map(), pendingByRecipient = new Map();
   const timers = [];
   const peerReceipts = [];
@@ -39,6 +39,7 @@ function fixture({ isReady = () => true, sendFrame, getRecipients = async () => 
     './transports/legacyAxionTextTransport': require('../src/services/transports/legacyAxionTextTransport.ts'),
     './transports/textTransportManager': require('../src/services/transports/textTransportManager.ts'),
     './transports/p2pTextBridge': { MAILBOX_ENABLED: p2pEnabled, tryP2pText: tryDirect, tryMailboxText: tryMailbox },
+    './transports/neuronTextBridge': { isNeuronTextReady: () => neuronEnabled, tryNeuronText: tryNeuron },
     './messageLifecycle': require('../src/services/messageLifecycle.ts'),
     './diagnostics': { debugLog() {} },
   };
@@ -297,4 +298,12 @@ test('failed P2P during Axion outage remains pending without a false receipt or 
   const f = fixture({ isReady: () => false, p2pEnabled: true });
   assert.equal((await f.sendForTest(f.state, 'room', { ...f.message, type: 'text' })).sent, false);
   assert.equal(f.frames.length, 0); assert.equal(f.peerReceipts.length, 0);
+});
+
+test('normal neuron custody stays pending without Axion and does not start a server acceptance timer', async () => {
+  const f=fixture({isReady:()=>false,neuronEnabled:true,tryNeuron:async()=>({peerId:14,delivered:false})});
+  const msg={...f.message,type:'text'};f.state.pendingIds.add(msg.id);
+  const result=await f.sendForTest(f.state,'room',msg);
+  assert.equal(result.sent,true);assert.equal(result.queued,true);assert.equal(f.state.pendingIds.has(msg.id),true);
+  assert.equal(f.peerReceipts.length,0);assert.equal(f.frames.length,0);assert.equal(f.timers.some(t=>t.delay===6000),false);
 });

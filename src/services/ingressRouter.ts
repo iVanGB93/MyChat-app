@@ -20,6 +20,7 @@
 
 import {
   saveMessage,
+  saveVerifiedIncomingText,
   messageExists,
   markDelivered,
   markReadByRecipient,
@@ -36,7 +37,8 @@ import {
   clearMessageTransferFailure,
   setMediaPointer,
 } from './localMessageStore';
-import type { ReplyRef } from './localMessageStore';
+import type { ReplyRef, LocalMessage } from './localMessageStore';
+import type { NormalChatText } from './identity/normalChatProtocol';
 import {
   injectReceivedMessage,
   markIdsAsReadInRoom,
@@ -541,6 +543,35 @@ export async function ingestMessage(
   }
 }
 
+/** Cryptographically verified normal text enters the same per-message queue and presentation path.
+ * Account/room/pin guards come from the normal-chat boundary; storage repeats room/block checks.
+ */
+export async function ingestVerifiedNeuronText(message: NormalChatText, owner: number, senderName: string,
+  current: () => boolean): Promise<boolean> {
+  message = { ...message };
+  const evt = normalizeMessage({ message_id: message.id, room_id: message.roomId, sender_id: message.sender,
+    sender: senderName, room_name: senderName, content: message.content, message_type: 'text', created_at: message.createdAt });
+  const permitted = () => current() && useAppStore.getState().user?.id === owner && !isBlockedSender(message.sender);
+  if (!evt || message.recipient !== owner || !permitted()) return false;
+  let accepted = false;
+  const previous = _ingesting.get(evt.messageId) ?? Promise.resolve();
+  const work = previous.catch(() => {}).then(async () => {
+    if (!permitted()) return;
+    const row: LocalMessage = { id: evt.messageId, room_id: evt.roomId, sender_id: evt.senderId,
+      sender_name: evt.senderName, content: evt.content, type: 'text', file_uri: null, created_at: evt.createdAt,
+      is_mine: false, sync: true, status: 'delivered', reactions: {}, is_deleted: false,
+      is_read: false, reply_to: null, duration_ms: null };
+    const result = await saveVerifiedIncomingText(row, owner, permitted);
+    if (!result || !permitted()) return;
+    if (result === 'inserted') await presentReceivedMessage(evt, 'p2p', null);
+    else injectReceivedMessage(evt.roomId, toWsMessage(evt, null));
+    accepted = permitted();
+  });
+  _ingesting.set(evt.messageId, work);
+  try { await work; return accepted; }
+  finally { if (_ingesting.get(evt.messageId) === work) _ingesting.delete(evt.messageId); }
+}
+
 async function processReceivedMessage(evt: CanonicalMessage, source: IngressSource): Promise<void> {
   // 1. Delivery ACK. For NON-media messages, identity is enough so it fires even
   //    when a push truncated `content`. MEDIA is acked ONLY once the actual file
@@ -634,6 +665,12 @@ async function processReceivedMessage(evt: CanonicalMessage, source: IngressSour
   });
   if (fileUri) exportReceivedMedia(evt, fileUri);
 
+  await presentReceivedMessage(evt, source, fileUri);
+}
+
+async function presentReceivedMessage(evt: CanonicalMessage, source: IngressSource, fileUri: string | null) {
+  const isMediaType = ['image', 'voice', 'video', 'document'].includes(evt.messageType);
+  const hasPointer = !!evt.mediaId;
   // 5. Hydrate an open chat room (no-op if the room screen isn't mounted).
   injectReceivedMessage(evt.roomId, toWsMessage(evt, fileUri));
 
