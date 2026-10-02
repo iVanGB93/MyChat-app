@@ -20,6 +20,7 @@ export interface AxonWire {
  */
 export function createPersistentAxon(d: {
   record: IdentityRecord; history?: IdentityRecord[]; signingSeed: Uint8Array; instance: Uint8Array; store: IdentityRecordStore;
+  onDirectory?(raw: string, peer: IdentityPeer): Promise<string>;
   onCustody?(raw: string, peer: IdentityPeer): Promise<string>;
   onSignal?(raw: string, peer: IdentityPeer): Promise<boolean>;
   testMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
@@ -28,7 +29,7 @@ export function createPersistentAxon(d: {
   random(size: number): Promise<Uint8Array>; onClosed(): void;
 }) {
   let stopped = false, remote: string | null = null, peer: IdentityPeer | null = null;
-  let peerTests = false, peerCustody = false, peerChat = false;
+  let peerTests = false, peerDirectory = false, peerCustody = false, peerChat = false;
   const chat = d.chatMessages ? createAxonNormalMessages({
     local: { account: d.record.account, device: publicDevice(d.signingSeed, d.chatMessages.encryptionSeed).id, instance: bytesToHex(d.instance) },
     encryptionSeed: d.chatMessages.encryptionSeed, peer: () => peer, store: d.store, now: d.now, random: d.random,
@@ -73,7 +74,7 @@ export function createPersistentAxon(d: {
     if (new TextEncoder().encode(raw).length > AXON_FRAME_BYTES) throw Error('Axon frame too large');
     d.wire.send(raw);
   }
-  function exchange(operation: 'describe' | 'authenticate' | 'introductions' | 'custody', body: string): Promise<string> {
+  function exchange(operation: 'describe' | 'authenticate' | 'introductions' | 'custody' | 'directory', body: string): Promise<string> {
     if (pending || stopped) return Promise.reject(Error('Axon exchange unavailable'));
     return new Promise((resolve, reject) => {
       const id = ++sequence;
@@ -125,6 +126,7 @@ export function createPersistentAxon(d: {
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop(); return; }
         peerSignals = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('rtc-signals-v1');
+        peerDirectory = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('identity-directory-v1');
         peerCustody = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('custody-v1');
         peerTests = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('test-messages-v2');
         peerChat = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('chat-text-v1');
@@ -163,6 +165,7 @@ export function createPersistentAxon(d: {
           const body = JSON.parse(f.body);
           if (body?.record?.account === remote) response = await service.authenticate(f.body);
         }
+        if (f.operation === 'directory' && d.onDirectory && peerDirectory && peer && peer.expiresAt > d.now()) response = await d.onDirectory(f.body, peer);
         if (f.operation === 'custody' && d.onCustody && peer && peer.expiresAt > d.now()) response = await d.onCustody(f.body, peer);
         if (f.operation === 'introductions' && introduce && peerIntroductions) response = await introduce(f.body);
         if (!response || stopped || !d.current()) { stop(); return; }
@@ -177,9 +180,23 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, features: [...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, features: [...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
+    supportsDirectory: () => !!d.onDirectory && peerDirectory && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
+    async directoryRequest(raw: string): Promise<string | null> {
+      const permitted = () => !!d.onDirectory && !!peer && peer.expiresAt > d.now() && peerDirectory && !stopped && d.current();
+      if (!permitted() || raw.length > 13_000 || custodyWaiting >= 2) return null;
+      custodyWaiting++;
+      try {
+        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        if (!permitted() || authenticating || introducing || pending) return null;
+        const result = await exchange('directory', raw);
+        return permitted() ? result : null;
+      } catch { return null; }
+      finally { custodyWaiting--; }
+    },
     supportsCustody: () => peerCustody && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async custodyRequest(raw: string): Promise<string | null> {
       const permitted = () => !!peer && peer.expiresAt > d.now() && peerCustody && !stopped && d.current();

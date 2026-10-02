@@ -121,6 +121,8 @@ export function createLanIdentityRuntime(d: Dependencies) {
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,
     custodyRequest: network.custodyRequest,
+    directoryPeers: network.directoryPeers,
+    directoryRequest: network.directoryRequest,
     custodians: network.custodians,
     snapshot: () => ({ ...network.snapshot(), rtc: rtc?.snapshot() ?? [], discovering: !!active && !starting, error }),
     stop() { if (disposed) return; disposed = true; unsubscribe(); rtc?.stop(); network.stop(); stopLan(); failedLan.clear(); },

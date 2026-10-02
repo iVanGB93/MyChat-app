@@ -2,13 +2,15 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 
 function fixture(t,dev=true,flag='1'){
  const room='22222222-2222-4222-8222-222222222222',account='axonic:1:'+'a1'.repeat(32),peerAccount='axonic:1:'+'b1'.repeat(32);
- let state={user:{id:14},appLifecycle:'active',blockedIds:{}},lease=true,config,networkConfig,registration=null,stops=0,timer;
+ let state={user:{id:14},appLifecycle:'active',blockedIds:{}},lease=true,config,networkConfig,registration=null,stops=0,directoryStops=0,timer;
  let rooms=[{id:room,room_type:'direct',members:[14,18]}],pin=peerAccount;
  let row={id:'11111111-1111-4111-8111-111111111111',room_id:room,sender_id:14,content:'Own text',created_at:new Date().toISOString(),
   is_mine:true,is_deleted:false,type:'text',status:'pending',reply_to:null,duration_ms:null,file_uri:null};
  const identity={status:()=>({state:'unlocked',account}),signSignal(){}};
  const noop=()=>{},native={axonLanStart:noop,axonLanStop:noop,axonLanSnapshot:noop,axonAccept:noop,axonClaim:noop};
  const mocks={
+  './identityDirectoryLookup':{unavailableDirectoryLookup:()=>({status:'unavailable'})},
+  './mobileDirectory':{createMobileDirectory:()=>({receive:async()=>'{"status":"rejected"}',tick:async()=>{},snapshot:()=>({confirmed:0,target:3}),stop(){directoryStops++;}})},
   'react-native':{NativeModules:{},Platform:{OS:'android'}},'react-native-webrtc':{RTCPeerConnection:class{}},
   '../../../modules/axonic-nearby':{default:native},'../../store/appStore':{useAppStore:{getState:()=>state}},
   '../allowedAxons':{allowedAxons:()=>5,loadAllowedAxons:async()=>{},subscribeAllowedAxons:()=>noop},
@@ -28,7 +30,7 @@ function fixture(t,dev=true,flag='1'){
   p=>{if(!mocks[p])throw Error(`Unexpected dependency ${p}`);return mocks[p];},out,dev,{env:{EXPO_PUBLIC_AXONIC_CHAT_IDENTITY:flag}},
   f=>{timer=f;return 1;},()=>{timer=null;});
  const stop=out.startMobileNormalChatRuntime(14,identity,()=>lease);t.after(stop);
- return {room,account,peerAccount,config,networkConfig,stop,registration:()=>registration,timer:()=>timer,
+ return {directoryStops:()=>directoryStops,room,account,peerAccount,config,networkConfig,stop,registration:()=>registration,timer:()=>timer,
   change:p=>{state={...state,...p};},rooms:v=>{rooms=v;},pin:v=>{pin=v;},edit:p=>{row={...row,...p};},invalidate:()=>{lease=false;}};
 }
 
@@ -43,7 +45,7 @@ test('mobile account runtime uses verified room pins, respects blocks, and detac
  f.pin(f.peerAccount);assert.deepEqual(await f.config.boundary.peer(f.room),peer);
  f.rooms([]);assert.equal(await f.config.boundary.peer(f.room),null);
  f.change({user:{id:18}});assert.equal(f.config.boundary.current(),false);
- f.stop();assert.equal(f.registration(),null);assert.equal(f.timer(),null);
+ f.stop();assert.equal(f.directoryStops(),1);assert.equal(f.registration(),null);assert.equal(f.timer(),null);
 });
 
 test('release account runtime requires an explicit feature flag and stays account-scoped',async t=>{

@@ -1,3 +1,5 @@
+import { unavailableDirectoryLookup, type DirectoryLookupResult } from './identityDirectoryLookup';
+import { createMobileDirectory } from './mobileDirectory';
 import { NativeModules, Platform } from 'react-native';
 import { RTCPeerConnection } from 'react-native-webrtc';
 import Native from '../../../modules/axonic-nearby';
@@ -24,6 +26,10 @@ import type { NormalChatBinding } from './normalChatBoundary';
 export const accountNeuronEnabled = () => process.env.EXPO_PUBLIC_AXONIC_CHAT_IDENTITY === '1';
 
 let inspectNetwork: (() => ReturnType<ReturnType<typeof createLanIdentityRuntime>['snapshot']> | null) | null = null;
+let activeLookup: ((account: string) => Promise<DirectoryLookupResult>) | null = null;
+export const mobileNormalChatLookupIdentity = (account: string) => activeLookup?.(account) ?? Promise.resolve(unavailableDirectoryLookup());
+let inspectDirectory: (() => ReturnType<ReturnType<typeof createMobileDirectory>['snapshot']>) | null = null;
+export const mobileNormalChatDirectorySnapshot = () => inspectDirectory?.() ?? null;
 /** Read-only view of the signed-in account's runtime, never the experimental identity. */
 export const mobileNormalChatNetworkSnapshot = () => inspectNetwork?.() ?? null;
 
@@ -62,6 +68,8 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
   const read = async (id: string) => outgoing((await getMessagesByIds([id]))[0]);
   const records = createMobileIdentityRecordStore(Date.now);
   let network: ReturnType<typeof createLanIdentityRuntime> | undefined;
+  const directory = createMobileDirectory(identity, records, current, () => network);
+  inspectDirectory = directory.snapshot; activeLookup = directory.lookup;
   const runtime = createNormalChatRuntime({ identity, records, own: createOwnCustodyStore(), bindings: createNormalChatOutboxStore(),
     custodyStore: createMobileCustodyStore(account),
     allowed: id => [...peers].some(([room, peer]) => peer.account === id && authorized(room, peer)),
@@ -84,7 +92,7 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
       return [...messages.slice(offset), ...messages.slice(0, offset)].slice(0, 20);
     },
     network: hooks => network = createLanIdentityRuntime({ identity, native: Native as NativeAxonLan,
-      store: records, now: Date.now, limit: allowedAxons(), ...hooks,
+      store: records, now: Date.now, limit: allowedAxons(), ...hooks, onDirectory: (raw, peer) => directory.receive(peer.account, raw),
       rtc: Platform.OS === 'android' && NativeModules.WebRTCModule?.axonicIdentityGuardVersion?.() === 1 ? {
         random: () => Native!.identityRandomBytes!(32), sign: (...args) => identity.signSignal(...args),
         createConnection: () => {
@@ -102,10 +110,10 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
   const stopLimit = subscribeAllowedAxons(() => network?.setLimit(allowedAxons()));
   void loadAllowedAxons().catch(() => {});
   runtime.tick();
-  const timer = setInterval(() => runtime.tick(), 1000);
+  const timer = setInterval(() => { runtime.tick(); void directory.tick().catch(() => {}); }, 1000);
   return () => {
     if (stopped) return;
-    stopped = true; unregister(); clearInterval(timer); stopLimit(); runtime.stop(); peers.clear(); messageCursors.clear();
+    stopped = true; directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory === directory.snapshot) inspectDirectory = null; unregister(); clearInterval(timer); stopLimit(); runtime.stop(); peers.clear(); messageCursors.clear();
     if (inspectNetwork === inspect) inspectNetwork = null;
   };
 }

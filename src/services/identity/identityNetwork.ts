@@ -17,6 +17,7 @@ export function createIdentityNetwork(d: {
   onSignal?(signal: AxonSignal, via: string): void;
   onTestMessage?: TestMessageHandler;
   onChatMessage?: TestMessageHandler;
+  onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'];
   onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'];
   connect(candidate: NeuronCandidate, context: ConnectionContext): Promise<AxonWire>;
 }) {
@@ -66,7 +67,7 @@ export function createIdentityNetwork(d: {
             list: () => (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && c.expiresAt !== null)
               .map(c => ({ account: c.account, expiresAt: c.expiresAt! })),
             received: peers => { if (valid()) directory.replace(candidate.account, peers); },
-          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage);
+          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage, d.onDirectory);
           if (closed || !valid() || session.snapshot().state === 'closed') { session.stop(); close(); return null; }
           sessions.add(session);
           const link = await session.ready;
@@ -86,6 +87,12 @@ export function createIdentityNetwork(d: {
     setLimit(next: number) {
       if (!Number.isInteger(next) || next < 3 || next > 10) throw Error('Allow axons must be between 3 and 10');
       limit = next; pool?.setLimit(next);
+    },
+    directoryPeers() { return (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected'
+      && [...sessions].some(s => s.snapshot().account === c.account && s.supportsDirectory())).map(c => c.account); },
+    directoryRequest(target: string, raw: string) {
+      const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
+      return session?.directoryRequest(raw) ?? Promise.resolve(null);
     },
     custodians() {
       const ranks = { lan: 0, private: 1, internet: 2 };

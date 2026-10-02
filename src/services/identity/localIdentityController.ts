@@ -5,11 +5,11 @@ import type { IntroductionHooks } from './identityIntroductions';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { verifyRecord, renewIdentityRecord, type IdentityRecord } from './identityProtocol';
+import { verifyRecord, renewIdentityRecord, validRecordHistory, HISTORY_BYTES, HISTORY_RECORDS, type IdentityRecord } from './identityProtocol';
 import { signIdentityRequest, type IdentityRequest, type IdentityRecordStore } from './identityAdmission';
 import { createPersistentAxon, type AxonWire } from './persistentAxon';
 import type { TestMessageHandler } from './axonTestMessages';
-import { createLocalIdentity, destroyIdentity, sealIdentity, unlockIdentity, rootFromEntropy,
+import { createLocalIdentity, recoverReplacingDevices, destroyIdentity, sealIdentity, unlockIdentity, rootFromEntropy,
   type SecureRandom, type UnlockedIdentity, type PasswordDerivation } from './identityVault';
 
 export interface IdentityStorage {
@@ -75,6 +75,33 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         identity = source; draft = null; state = 'unlocked';
       } finally { secret?.fill(0); destroyIdentity(copy); }
     }); },
+    /** Public metadata only. Recovery still requires the separately saved words. */
+    recoveryRecord() {
+      if (!identity || busy) throw Error('Unlock the local account first');
+      return JSON.stringify({ version: 1, record: identity.record, history: identity.history ?? [] });
+    },
+    restore(phrase: string, recoveryRecord: string, password: string, verify?: () => Promise<void>) { return exclusive(async e => {
+      if (identity || draft || await storage.readVault()) throw Error('A local identity already exists');
+      assertCurrent(e);
+      if (recoveryRecord.length > 12_000) throw Error('Invalid recovery record');
+      const packet = JSON.parse(recoveryRecord);
+      if (packet.version !== 1 || !validRecordHistory(packet.history, packet.record, now())) throw Error('Invalid recovery record');
+      const restored = await recoverReplacingDevices(phrase, packet.record, random, now());
+      let secret: Uint8Array | undefined;
+      try {
+        assertCurrent(e);
+        if (verify) { await verify(); assertCurrent(e); }
+        restored.history = [...packet.history, packet.record];
+        while (restored.history.length > HISTORY_RECORDS || new TextEncoder().encode(JSON.stringify(restored.history)).length > HISTORY_BYTES) restored.history.shift();
+        secret = await random(32); assertCurrent(e);
+        const sealed = await sealIdentity(restored, password, secret, random, now(), derive); assertCurrent(e);
+        if (verify) { await verify(); assertCurrent(e); }
+        await storage.writeDeviceSecret(bytesToHex(secret)); assertCurrent(e);
+        await storage.writeVault(JSON.stringify(sealed));
+        account = sealed.record.account; state = 'locked';
+        // Restored accounts require an explicit unlock; a background race never exposes keys.
+      } finally { secret?.fill(0); destroyIdentity(restored); }
+    }); },
     unlock(password: string) { return exclusive(async e => {
       if (draft) throw Error('Finish or cancel account creation first');
       const raw = await storage.readVault(), secretHex = await storage.readDeviceSecret(); assertCurrent(e);
@@ -129,7 +156,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       return signAxonSignal(identity.record, identity.signingSeed, identity.history ?? [], target, session, kind, sdp, now());
     },
     /** Keys stay inside the controller. Pending sockets are owned before the first await. */
-    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler) {
+    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler, onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory']) {
       const e = epoch, source = identity;
       let session: ReturnType<typeof createPersistentAxon> | undefined, closed = false;
       const close = () => {
@@ -145,7 +172,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         const instance = await random(32); assertCurrent(e);
         if (closed || source !== identity || busy) throw Error('Account operation interrupted');
         session = createPersistentAxon({ record: source.record, history: source.history, signingSeed: source.signingSeed, instance, store,
-          expectedAccount, introductions, onSignal, onCustody,
+          expectedAccount, introductions, onSignal, onCustody, onDirectory,
           testMessages: onTestMessage ? { encryptionSeed: source.encryptionSeed, received: onTestMessage } : undefined,
           chatMessages: onChatMessage ? { encryptionSeed: source.encryptionSeed, received: onChatMessage } : undefined,
           wire, now, random, current: () => !closed && epoch === e && source === identity, onClosed: close });
