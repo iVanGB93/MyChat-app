@@ -121,6 +121,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,
     custodyRequest: network.custodyRequest,
+    pushRequest: network.pushRequest,
     directoryPeers: network.directoryPeers,
     directoryRequest: network.directoryRequest,
     custodians: network.custodians,

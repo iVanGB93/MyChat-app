@@ -20,6 +20,7 @@ export interface AxonWire {
  */
 export function createPersistentAxon(d: {
   record: IdentityRecord; history?: IdentityRecord[]; signingSeed: Uint8Array; instance: Uint8Array; store: IdentityRecordStore;
+  onPush?(raw: string, peer: IdentityPeer): Promise<string>;
   onDirectory?(raw: string, peer: IdentityPeer): Promise<string>;
   onCustody?(raw: string, peer: IdentityPeer): Promise<string>;
   onSignal?(raw: string, peer: IdentityPeer): Promise<boolean>;
@@ -29,6 +30,7 @@ export function createPersistentAxon(d: {
   random(size: number): Promise<Uint8Array>; onClosed(): void;
 }) {
   let stopped = false, remote: string | null = null, peer: IdentityPeer | null = null;
+  let peerPush = false;
   let peerTests = false, peerDirectory = false, peerCustody = false, peerChat = false;
   const chat = d.chatMessages ? createAxonNormalMessages({
     local: { account: d.record.account, device: publicDevice(d.signingSeed, d.chatMessages.encryptionSeed).id, instance: bytesToHex(d.instance) },
@@ -74,7 +76,7 @@ export function createPersistentAxon(d: {
     if (new TextEncoder().encode(raw).length > AXON_FRAME_BYTES) throw Error('Axon frame too large');
     d.wire.send(raw);
   }
-  function exchange(operation: 'describe' | 'authenticate' | 'introductions' | 'custody' | 'directory', body: string): Promise<string> {
+  function exchange(operation: 'describe' | 'authenticate' | 'introductions' | 'custody' | 'directory' | 'push', body: string): Promise<string> {
     if (pending || stopped) return Promise.reject(Error('Axon exchange unavailable'));
     return new Promise((resolve, reject) => {
       const id = ++sequence;
@@ -125,6 +127,7 @@ export function createPersistentAxon(d: {
       if (f.version !== 1) { stop(); return; }
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop(); return; }
+        peerPush = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('push-registration-v1');
         peerSignals = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('rtc-signals-v1');
         peerDirectory = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('identity-directory-v1');
         peerCustody = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('custody-v1');
@@ -165,6 +168,7 @@ export function createPersistentAxon(d: {
           const body = JSON.parse(f.body);
           if (body?.record?.account === remote) response = await service.authenticate(f.body);
         }
+        if (f.operation === 'push' && d.onPush && peerPush && peer && peer.expiresAt > d.now()) response = await d.onPush(f.body, peer);
         if (f.operation === 'directory' && d.onDirectory && peerDirectory && peer && peer.expiresAt > d.now()) response = await d.onDirectory(f.body, peer);
         if (f.operation === 'custody' && d.onCustody && peer && peer.expiresAt > d.now()) response = await d.onCustody(f.body, peer);
         if (f.operation === 'introductions' && introduce && peerIntroductions) response = await introduce(f.body);
@@ -180,10 +184,24 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, features: [...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, features: [...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
     supportsDirectory: () => !!d.onDirectory && peerDirectory && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
+    supportsPush: () => !!d.onPush && peerPush && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
+    async pushRequest(raw: string): Promise<string | null> {
+      const permitted = () => !!d.onPush && !!peer && peer.expiresAt > d.now() && peerPush && !stopped && d.current();
+      if (!permitted() || raw.length > 5000 || custodyWaiting >= 2) return null;
+      custodyWaiting++;
+      try {
+        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        if (!permitted() || authenticating || introducing || pending) return null;
+        const result = await exchange('push', raw);
+        return permitted() ? result : null;
+      } catch { return null; }
+      finally { custodyWaiting--; }
+    },
     async directoryRequest(raw: string): Promise<string | null> {
       const permitted = () => !!d.onDirectory && !!peer && peer.expiresAt > d.now() && peerDirectory && !stopped && d.current();
       if (!permitted() || raw.length > 13_000 || custodyWaiting >= 2) return null;

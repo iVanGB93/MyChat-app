@@ -8,7 +8,7 @@ function fixture(t,dev=true,flag='1'){
   is_mine:true,is_deleted:false,type:'text',status:'pending',reply_to:null,duration_ms:null,file_uri:null};
  const identity={status:()=>({state:'unlocked',account}),signSignal(){}};
  const noop=()=>{},native={axonLanStart:noop,axonLanStop:noop,axonLanSnapshot:noop,axonAccept:noop,axonClaim:noop};
- const mocks={
+ const mocks={ './mobilePushRegistration':{startMobilePushRegistration:()=>({tick(){},stop(){}}),rejectPushRegistration:async()=>null},
   './identityDirectoryLookup':{unavailableDirectoryLookup:()=>({status:'unavailable'})},
   './mobileDirectory':{createMobileDirectory:()=>({receive:async()=>'{"status":"rejected"}',tick:async()=>{},snapshot:()=>({confirmed:0,target:3}),stop(){directoryStops++;}})},
   'react-native':{NativeModules:{},Platform:{OS:'android'}},'react-native-webrtc':{RTCPeerConnection:class{}},

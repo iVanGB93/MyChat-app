@@ -1,3 +1,4 @@
+import { unregisterFirstNeuronPush } from '../services/identity/mobilePushRegistration';
 /* ------------------------------------------------------------------ */
 /*  Auth context — provides user state & auth actions across the app   */
 /* ------------------------------------------------------------------ */
@@ -289,6 +290,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [ensureBackgroundServices, loadCachedContactSets, syncPushToken, syncContactSets]);
 
   const logout = useCallback(async () => {
+    await unregisterFirstNeuronPush();
     destroyWsManager();
     await unregisterPushToken();
     lastPushSyncSuccessAtRef.current = 0;

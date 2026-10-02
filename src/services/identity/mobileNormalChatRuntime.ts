@@ -1,3 +1,4 @@
+import { startMobilePushRegistration, rejectPushRegistration } from './mobilePushRegistration';
 import { unavailableDirectoryLookup, type DirectoryLookupResult } from './identityDirectoryLookup';
 import { createMobileDirectory } from './mobileDirectory';
 import { NativeModules, Platform } from 'react-native';
@@ -68,6 +69,7 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
   const read = async (id: string) => outgoing((await getMessagesByIds([id]))[0]);
   const records = createMobileIdentityRecordStore(Date.now);
   let network: ReturnType<typeof createLanIdentityRuntime> | undefined;
+  const push = startMobilePushRegistration(current, (peer, raw) => network?.pushRequest(peer, raw) ?? Promise.resolve(null), account);
   const directory = createMobileDirectory(identity, records, current, () => network);
   inspectDirectory = directory.snapshot; activeLookup = directory.lookup;
   const runtime = createNormalChatRuntime({ identity, records, own: createOwnCustodyStore(), bindings: createNormalChatOutboxStore(),
@@ -92,7 +94,7 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
       return [...messages.slice(offset), ...messages.slice(0, offset)].slice(0, 20);
     },
     network: hooks => network = createLanIdentityRuntime({ identity, native: Native as NativeAxonLan,
-      store: records, now: Date.now, limit: allowedAxons(), ...hooks, onDirectory: (raw, peer) => directory.receive(peer.account, raw),
+      store: records, now: Date.now, limit: allowedAxons(), ...hooks, onPush: rejectPushRegistration, onDirectory: (raw, peer) => directory.receive(peer.account, raw),
       rtc: Platform.OS === 'android' && NativeModules.WebRTCModule?.axonicIdentityGuardVersion?.() === 1 ? {
         random: () => Native!.identityRandomBytes!(32), sign: (...args) => identity.signSignal(...args),
         createConnection: () => {
@@ -110,10 +112,10 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
   const stopLimit = subscribeAllowedAxons(() => network?.setLimit(allowedAxons()));
   void loadAllowedAxons().catch(() => {});
   runtime.tick();
-  const timer = setInterval(() => { runtime.tick(); void directory.tick().catch(() => {}); }, 1000);
+  const timer = setInterval(() => { runtime.tick(); void push.tick(); void directory.tick().catch(() => {}); }, 1000);
   return () => {
     if (stopped) return;
-    stopped = true; directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory === directory.snapshot) inspectDirectory = null; unregister(); clearInterval(timer); stopLimit(); runtime.stop(); peers.clear(); messageCursors.clear();
+    stopped = true; push.stop(); directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory === directory.snapshot) inspectDirectory = null; unregister(); clearInterval(timer); stopLimit(); runtime.stop(); peers.clear(); messageCursors.clear();
     if (inspectNetwork === inspect) inspectNetwork = null;
   };
 }
