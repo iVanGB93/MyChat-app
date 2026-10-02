@@ -497,3 +497,28 @@ The current live validation used development clients, not a signed release.
 Only one physical phone was available; a two-physical-phone release check remains.
 Keep automatic device time enabled: RTC signaling still deliberately rejects
 proofs more than five seconds ahead; the emulator time-drift limitation remains.
+
+## FirstNeuron normal-chat interoperability — October 2, 2026
+
+The hosted inbox now uses the same normal-chat protocol, boundary, outbox, binding
+exchange and custody courier as mobile. Mobile changes for this step only extract
+portable TypeScript contracts and explicit shared imports; the submitted production
+artifact already has the wire protocol. No replacement production build was created.
+
+Validation: mobile typecheck, 600 unit tests, native identity guard and 146-module cycle
+check passed. FirstNeuron passed 40 tests and was deployed with identity/history preserved.
+The user authorized a current x86_64 debug build and install-over update on both saved
+emulators because their old native clients lacked ExpoAppMetrics. Both retained their
+accounts/data and were signed back in after expired refresh tokens were rejected.
+
+Live user 34 to test user 18 direct text and the actual emulator-composer reply passed.
+A further message arrived with recipient Axion explicitly stopped; the host recorded a
+direct recipient receipt and the local row was present while Axion remained unavailable.
+Axion was restored and both emulator sessions were connected afterward. Hosted details,
+message IDs, limits and rollback path are in Axonic-neuron/README.md. Ignored scoped
+evidence: builds/hosted-chat-neuron-live-evidence.json.
+
+Initial account binding/username room creation and background wake fallback still use
+Django/Axion. Encrypted offline custody, restart and recipient-signed payload cleanup were
+verified in real-socket automated tests; this step did not repeat live multi-phone custody.
+Next release gate remains testing the exact approved Play Store artifact on physical phones.

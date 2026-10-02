@@ -1,7 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
-import { validAccountId } from './identityProtocol';
-import type { OutgoingTextMessage } from '../transports/textTransport';
+import { validAccountId } from './identityProtocol.ts';
+import type { OutgoingTextMessage } from './normalChatContracts.ts';
 
 const DOMAIN = 'axonic-chat-text-v1';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

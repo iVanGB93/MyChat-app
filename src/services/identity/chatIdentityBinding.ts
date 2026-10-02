@@ -1,7 +1,7 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
-import { recordDigest, validAccountId, verifyRecord, type IdentityRecord } from './identityProtocol';
-import type { NormalChatBinding } from './normalChatBoundary';
+import { recordDigest, validAccountId, verifyRecord, type IdentityRecord } from './identityProtocol.ts';
+import type { NormalChatBinding } from './normalChatBoundary.ts';
 
 /** Migration metadata only. Authenticated Axion supplies the numeric sender; neurons cannot do so. */
 export interface ChatBindingChallenge {

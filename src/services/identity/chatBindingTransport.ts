@@ -1,4 +1,4 @@
-import { validChatBindingChallenge, type ChatBindingChallenge, type ChatBindingProof, type createChatBindingExchange } from './chatIdentityBinding';
+import { validChatBindingChallenge, type ChatBindingChallenge, type ChatBindingProof, type createChatBindingExchange } from './chatIdentityBinding.ts';
 
 /** Metadata only. The send and receive hooks must belong to the authenticated Axion session. */
 export function createChatBindingTransport(d: {

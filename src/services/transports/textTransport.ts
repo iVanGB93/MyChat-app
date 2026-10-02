@@ -1,21 +1,5 @@
-import type { ReplyRef } from '../localMessageStore';
-
-/** Message identity is assigned by the outbox, never by a transport. */
-export interface OutgoingTextMessage {
-  readonly id: string;
-  readonly roomId: string;
-  readonly content: string | null;
-  readonly createdAt: string;
-  readonly replyTo?: ReplyRef | null;
-  readonly durationMs?: number | null;
-}
-
-/** Recovery routing is separate from the message itself. */
-export interface TextDeliveryOptions {
-  readonly hydration?: boolean;
-  readonly targetRecipientId?: number;
-  readonly expectedRecipientIds?: readonly number[] | null;
-}
+import type { OutgoingTextMessage, TextDeliveryOptions } from '../identity/normalChatContracts';
+export type { OutgoingTextMessage, TextDeliveryOptions } from '../identity/normalChatContracts';
 
 export interface TextTransport {
   /**

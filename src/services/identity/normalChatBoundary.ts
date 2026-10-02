@@ -1,6 +1,6 @@
-import type { OutgoingTextMessage, TextDeliveryOptions } from '../transports/textTransport';
-import { decodeNormalChat, encodeNormalChat, normalChatTransportId, type NormalChatText } from './normalChatProtocol';
-import { validAccountId } from './identityProtocol';
+import type { OutgoingTextMessage, TextDeliveryOptions } from './normalChatContracts.ts';
+import { decodeNormalChat, encodeNormalChat, normalChatTransportId, type NormalChatText } from './normalChatProtocol.ts';
+import { validAccountId } from './identityProtocol.ts';
 
 export interface NormalChatBinding { user: number; account: string }
 interface Dependencies {

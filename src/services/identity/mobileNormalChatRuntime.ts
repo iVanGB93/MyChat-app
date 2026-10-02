@@ -23,6 +23,10 @@ import type { NormalChatBinding } from './normalChatBoundary';
 
 export const accountNeuronEnabled = () => process.env.EXPO_PUBLIC_AXONIC_CHAT_IDENTITY === '1';
 
+let inspectNetwork: (() => ReturnType<ReturnType<typeof createLanIdentityRuntime>['snapshot']> | null) | null = null;
+/** Read-only view of the signed-in account's runtime, never the experimental identity. */
+export const mobileNormalChatNetworkSnapshot = () => inspectNetwork?.() ?? null;
+
 /** Explicitly enabled account composition. The app root reserves native discovery for this runtime. */
 export function startMobileNormalChatRuntime(owner: number, identity: ReturnType<typeof createLocalIdentityController>, lease: () => boolean) {
   if (!accountNeuronEnabled() || !mobileAxonTransportSupported() || !Native?.axonLanStart
@@ -92,6 +96,8 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
       internet: Native?.axonWssConnect ? { peers: [FIRST_NEURON], connect: createInternetAxonConnector(
         Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> }, () => current() ? account : null) } : undefined }),
   });
+  const inspect = () => current() ? network?.snapshot() ?? null : null;
+  inspectNetwork = inspect;
   const unregister = registerNeuronTextAttempt(runtime.attempt);
   const stopLimit = subscribeAllowedAxons(() => network?.setLimit(allowedAxons()));
   void loadAllowedAxons().catch(() => {});
@@ -100,5 +106,6 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
   return () => {
     if (stopped) return;
     stopped = true; unregister(); clearInterval(timer); stopLimit(); runtime.stop(); peers.clear(); messageCursors.clear();
+    if (inspectNetwork === inspect) inspectNetwork = null;
   };
 }

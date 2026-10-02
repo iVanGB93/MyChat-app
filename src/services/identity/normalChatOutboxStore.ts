@@ -1,12 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import { validAccountId } from './identityProtocol';
-export interface NormalChatOutgoingBinding {
-  owner: string; messageId: string; transportId: string; peer: string; peerUser: number; digest: string;
-}
-export interface NormalChatOutboxStore {
-  find(owner: string, transportId: string): Promise<NormalChatOutgoingBinding | null>;
-  bind(row: NormalChatOutgoingBinding, current: () => boolean): Promise<boolean>;
-}
+export type { NormalChatOutgoingBinding, NormalChatOutboxStore } from './normalChatContracts';
+import type { NormalChatOutgoingBinding, NormalChatOutboxStore } from './normalChatContracts';
 let opening: Promise<SQLite.SQLiteDatabase> | undefined;
 let tail: Promise<unknown> = Promise.resolve();
 const hex = (v: unknown) => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);

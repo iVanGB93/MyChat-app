@@ -1,11 +1,11 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
-import { custodyDigest, verifyCustody, type CustodyReceipt } from './custodyProtocol';
-import type { IdentityRecordStore } from './identityAdmission';
-import type { OwnCustodyStore } from './ownCustodyStore';
-import type { NormalChatOutboxStore } from './normalChatOutboxStore';
-import type { createNormalChatBoundary } from './normalChatBoundary';
-import type { OutgoingTextMessage, TextDeliveryOptions } from '../transports/textTransport';
+import { custodyDigest, verifyCustody, type CustodyReceipt } from './custodyProtocol.ts';
+import type { IdentityRecordStore } from './identityAdmission.ts';
+import type { OwnCustodyStore } from './normalChatContracts.ts';
+import type { NormalChatOutboxStore } from './normalChatContracts.ts';
+import type { createNormalChatBoundary } from './normalChatBoundary.ts';
+import type { OutgoingTextMessage, TextDeliveryOptions } from './normalChatContracts.ts';
 
 const digest = (raw: string) => bytesToHex(sha256(utf8ToBytes(raw)));
 /** Normal outbox adapter. Transport custody and recipient delivery are deliberately separate. */

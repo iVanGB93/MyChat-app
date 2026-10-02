@@ -3,8 +3,8 @@ import { validAccountId } from './identityProtocol';
 // Keep the native handle alive across store factories and identity lock/unlock cycles.
 let opening: Promise<SQLite.SQLiteDatabase> | undefined;
 
-export type TestRow = { owner: string; peer: string; direction: 'in' | 'out'; id: string;
-  text: string; state: 'pending' | 'delivered'; created: number; attempts: number; next: number };
+export type { TestRow } from './custodyCourierTypes';
+import type { TestRow } from './custodyCourierTypes';
 export type TestMessageStore = ReturnType<typeof createTestMessageStore>;
 let writes: Promise<unknown> = Promise.resolve();
 function write<T>(fn: () => Promise<T>): Promise<T> {

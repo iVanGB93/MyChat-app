@@ -1,8 +1,9 @@
-import { custodyDigest, parseCustody, verifyCustody, type CustodyEnvelope, type CustodyReceipt } from './custodyProtocol';
-import type { OwnCustodyStore } from './ownCustodyStore';
-import type { IdentityRecordStore } from './identityAdmission';
-import type { IdentityRecord } from './identityProtocol';
-import type { TestMessageStore } from './testMessageStore';
+import { custodyDigest, parseCustody, verifyCustody, type CustodyEnvelope, type CustodyReceipt } from './custodyProtocol.ts';
+import type { OwnCustodyStore } from './normalChatContracts.ts';
+import type { IdentityRecordStore } from './identityAdmission.ts';
+import type { IdentityRecord } from './identityProtocol.ts';
+import type { TestRow } from './custodyCourierTypes.ts';
+interface TestMessageStore { list(owner: string): Promise<TestRow[]>; update(row: TestRow, delivered: boolean, next: number, current: () => boolean): Promise<void>; }
 // Longer than the outbox's maximum retry interval (60s), so a failed
 // first-choice peer cannot become eligible again before fallback runs.
 const CUSTODIAN_BACKOFF_MS = 120_000;

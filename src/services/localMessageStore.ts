@@ -859,15 +859,8 @@ export async function getLocalChatMediaItems(roomId: string): Promise<LocalChatS
 
 /** Light reference embedded in a reply so the bubble can render a quoted snippet
  *  without having to look up the original message. */
-export interface ReplyRef {
-  id: string;
-  sender_name: string;
-  /** Short preview of the original content (truncated client-side before sending). */
-  content: string;
-  /** Type of the original message ('text', 'image', etc.) — used to render an icon
-   *  hint for non-text replies. */
-  type?: string;
-}
+export type { ReplyRef } from './identity/normalChatContracts';
+import type { ReplyRef } from './identity/normalChatContracts';
 
 /** Pointer to an out-of-band media blob (Phase 2). The bytes live on the server
  *  (chat.MediaBlob) and are moved via HTTP (mediaLane); only this rides the WS. */

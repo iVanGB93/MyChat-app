@@ -3,13 +3,8 @@ import { validAccountId } from './identityProtocol';
 import type { CustodyEnvelope } from './custodyProtocol';
 // Keep the native handle alive across store factories and identity lock/unlock cycles.
 let opening: Promise<SQLite.SQLiteDatabase> | undefined;
-export interface OwnCustodyRow { owner: string; id: string; envelope: CustodyEnvelope; relay: string | null }
-export interface OwnCustodyStore {
-  get(owner: string, id: string): Promise<OwnCustodyRow | null>;
-  save(owner: string, envelope: CustodyEnvelope, current: () => boolean): Promise<OwnCustodyRow | null>;
-  held(owner: string, id: string, relay: string, current: () => boolean): Promise<void>;
-  clear(owner: string): Promise<void>;
-}
+export type { OwnCustodyRow, OwnCustodyStore } from './normalChatContracts';
+import type { OwnCustodyRow, OwnCustodyStore } from './normalChatContracts';
 let writes: Promise<unknown> = Promise.resolve();
 const serial = <T>(fn: () => Promise<T>) => { const result = writes.then(fn); writes = result.catch(() => {}); return result; };
 /** Own outgoing encrypted envelopes, retained to verify receipts and reuse exact ciphertext after restart. */
