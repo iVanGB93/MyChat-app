@@ -61,6 +61,24 @@ test('ordinary neurons mutually authenticate and renew the same open axon', asyn
   links[0].close(); assert.deepEqual(f.closed, [1, 1]);
   f.sessions.forEach(s => s.stop()); assert.deepEqual(f.closed, [1, 1]);
 });
+test('custody waits for a busy request slot, bounds queued work and cancels when locked', async t => {
+  for (const lock of [false,true]) {
+    let release,received=0;
+    const f=pair(t,{1:{onCustody:async()=>{received++;if(received===1)await new Promise(r=>release=r);return '{"status":"ok"}';}}});
+    await Promise.all(f.sessions.map(s=>s.ready));
+    const first=f.sessions[0].custodyRequest('{"operation":"poll"}');
+    await settle(()=>!!release);
+    const second=f.sessions[0].custodyRequest('{"operation":"poll"}');
+    assert.equal(await f.sessions[0].custodyRequest('{"operation":"poll"}'),null);
+    assert.equal(received,1);
+    if(lock){f.lock();f.sessions[0].tick();}
+    release();
+    assert.equal(await first,lock?null:'{"status":"ok"}');
+    assert.equal(await second,lock?null:'{"status":"ok"}');
+    assert.equal(received,lock?1:2);
+  }
+});
+
 test('locking or expiring a proof closes authenticated connections', async t => {
   for (const lock of [true, false]) {
     const f = pair(t); await Promise.all(f.sessions.map(s => s.ready));
@@ -105,12 +123,13 @@ test('concurrent identity pins accept only the exact durably stored record', asy
 
 const { createLocalIdentityController } = load('localIdentityController');
 const { createIdentityNetwork } = load('identityNetwork');
-async function testMessagePair(t, transform, existing, received) {
+async function testMessagePair(t, transform, existing, received, normal = false) {
   const ids=existing??[await controller(),await controller()],bus=wires(), inbox=[[],[]];
   const sessions=await Promise.all(ids.map((id,i)=>{
     const wire=bus.wire(i),send=wire.send;
     wire.send=raw=>{const changed=transform?transform(raw,i):raw;if(changed!==null)send(changed);};
-    return id.createAxon(wire,store(),ids[1-i].status().account,()=>{},undefined,undefined,message=>received?received(message,i):((inbox[i].push(message)),true));
+    const handler=message=>received?received(message,i):((inbox[i].push(message)),true);
+    return id.createAxon(wire,store(),ids[1-i].status().account,()=>{},undefined,undefined,handler,undefined,normal?handler:undefined);
   }));
   t.after(()=>{sessions.forEach(s=>s.stop());if(!existing)ids.forEach(id=>id.lock());});
   await Promise.all(sessions.map(s=>s.ready));
@@ -299,6 +318,20 @@ test('incoming sockets cannot exceed a pool occupied by an outgoing attempt', ()
   assert.equal(runtime.accept({ account: 'axonic:1:' + 'ef'.repeat(32), endpoint: 'accepted:test', route: 'lan', expiresAt: now + 60000 },
     { close() { closed++; } }), false);
   assert.equal(closed, 1); assert.equal(runtime.snapshot().pool.connections.length, 1); runtime.stop();
+});
+
+test('normal chat traverses the composed LAN runtime without enabling experimental messages',async t=>{
+ const ids=[await controller(),await controller()],bus=lanBus(),inbox=[[],[]];
+ const runtimes=ids.map((identity,i)=>createLanIdentityRuntime({identity,native:bus.device(`192.168.1.${30+i}`).api,store:store(),now:()=>now,
+  onChatMessage:message=>{inbox[i].push(message);return true;}}));
+ t.after(()=>{runtimes.forEach(r=>r.stop());ids.forEach(id=>id.lock());});
+ runtimes.forEach(r=>r.tick());await new Promise(r=>setImmediate(r));runtimes.forEach(r=>r.tick());
+ await settle(()=>runtimes.every(r=>r.snapshot().pool?.connections.some(c=>c.state==='connected')));
+ const target=ids[1].status().account,id='af'.repeat(32);
+ assert.equal(await runtimes[0].sendTestMessage(target,'test channel disabled'),false);
+ assert.equal(await runtimes[0].sendChatMessage(target,'normal runtime payload',id),true);
+ assert.deepEqual(inbox[1],[{from:ids[0].status().account,id,text:'normal runtime payload'}]);
+ ids[0].lock();assert.equal(await runtimes[0].sendChatMessage(target,'after lock',id),false);
 });
 
 test('internet participation survives unavailable Wi-Fi and shares the global pool', async t => {
@@ -588,6 +621,42 @@ test('failed storage and lock during storage produce no successful receipt',asyn
 test('v1 volatile receipt capability is not accepted as v2 persistence',async t=>{
  const f=await testMessagePair(t,raw=>{const frame=JSON.parse(raw);if(frame.kind==='hello')frame.features=frame.features.map(x=>x==='test-messages-v2'?'test-messages-v1':x);return JSON.stringify(frame);});
  assert.equal(await f.sessions[0].sendTestMessage('must not send'),false);assert.equal(f.inbox[1].length,0);
+});
+
+test('normal chat negotiates independently and acknowledges only after durable storage',async t=>{
+ let release,committed=false;
+ const f=await testMessagePair(t,undefined,undefined,async()=>{await new Promise(r=>release=r);committed=true;return true;},true);
+ let finished=false;const pending=f.sessions[0].sendChatMessage('normal durable payload','ab'.repeat(32)).then(ok=>{finished=true;return ok;});
+ await settle(()=>!!release);assert.equal(finished,false);assert.equal(committed,false);
+ release();assert.equal(await pending,true);assert.equal(committed,true);
+ const packets=f.bus.history.flat().map(JSON.parse).filter(f=>f.kind==='chat-message');
+ assert.equal(packets.length,2);assert.ok(packets.every(f=>!f.body.includes('normal durable payload')));
+});
+
+test('older test-only peers decline normal chat while retaining the experimental channel',async t=>{
+ const f=await testMessagePair(t,raw=>{const frame=JSON.parse(raw);if(frame.kind==='hello')frame.features=frame.features.filter(x=>x!=='chat-text-v1');return JSON.stringify(frame);},undefined,undefined,true);
+ assert.equal(await f.sessions[0].sendChatMessage('must not send','ac'.repeat(32)),false);
+ assert.equal(f.bus.history.flat().some(raw=>JSON.parse(raw).kind==='chat-message'),false);
+ assert.equal(await f.sessions[0].sendTestMessage('compatible probe'),true);
+ assert.equal(f.inbox[1].length,1);
+});
+
+test('relabeling experimental or normal ciphertext cannot cross message domains',async t=>{
+ for(const kind of ['test-message','chat-message']){
+  const f=await testMessagePair(t,raw=>{const frame=JSON.parse(raw);if(frame.kind===kind)frame.kind=kind==='test-message'?'chat-message':'test-message';return JSON.stringify(frame);},undefined,undefined,true);
+  const result=kind==='test-message'?await f.sessions[0].sendTestMessage('domain probe'):await f.sessions[0].sendChatMessage('domain probe','ad'.repeat(32));
+  assert.equal(result,false);assert.equal(f.inbox[1].length,0);
+  assert.equal(f.sessions[1].snapshot().state,'closed');
+ }
+});
+
+test('normal storage failure or locking during persistence cannot acknowledge delivery',async t=>{
+ for(const failure of ['disk','lock']){
+  let release;const f=await testMessagePair(t,undefined,undefined,async()=>{await new Promise(r=>release=r);if(failure==='disk')throw Error('disk full');return true;},true);
+  const pending=f.sessions[0].sendChatMessage('commit failure','ae'.repeat(32));await settle(()=>!!release);
+  if(failure==='lock')f.ids[1].lock();release();assert.equal(await pending,false);
+  assert.equal(f.bus.history[1].filter(raw=>JSON.parse(raw).kind==='chat-message').length,0);
+ }
 });
 
 test('custody controller signs receipt only after own inbox commit and never after a lock race',async t=>{

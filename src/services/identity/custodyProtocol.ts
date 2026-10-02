@@ -64,7 +64,8 @@ export async function sealCustody(d: { record: IdentityRecord; signingSeed: Uint
   try {
     const nonce = await d.random(24); if (secret.length !== 32 || nonce.length !== 24) throw Error('Invalid randomness');
     const e: CustodyEnvelope = { version: 1, kind: 'envelope', id: d.id, sender: d.record.account, senderDevice: device.id,
-      recipient: d.recipient.account, recipientDevice: recipient.id, created: d.now, expires: d.now + CUSTODY_TTL,
+      // Leave headroom for a slower peer without extending its retention cap.
+      recipient: d.recipient.account, recipientDevice: recipient.id, created: d.now, expires: d.now + CUSTODY_TTL - 30_000,
       ephemeral: bytesToHex(x25519.getPublicKey(secret)), nonce: bytesToHex(nonce), ciphertext: '', signature: '' };
     const aad = bytes(header(e)); shared = x25519.getSharedSecret(secret, hexToBytes(recipient.encryption));
     key = hkdf(sha256, shared, sha256(aad), utf8ToBytes('axonic-custody-key-v1'), 32);

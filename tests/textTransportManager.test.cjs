@@ -41,13 +41,24 @@ test('a connection or account change during the attempt prevents fallback', asyn
   assert.equal((await manager.send(message, undefined, () => valid)).sent, false);
 });
 
-test('normal neuron custody follows direct attempts and stays pending without server handoff', async () => {
+test('normal neuron custody stays pending when the migration server is unavailable', async () => {
   const calls=[];
-  const manager=createTextTransportManager({send:()=>assert.fail('duplicate server submission')},
+  const manager=createTextTransportManager({send:()=>{calls.push('axion');return false;}},
     async()=>{calls.push('direct');return null;},async()=>assert.fail('legacy mailbox'),
     async m=>{assert.equal(m,message);calls.push('neuron');return {peerId:14,delivered:false};});
   assert.deepEqual(await manager.send(message),{sent:true,transport:'neuron',peerId:14,delivered:false});
-  assert.deepEqual(calls,['direct','neuron']);
+  assert.deepEqual(calls,['direct','neuron','axion']);
+});
+
+test('held normal custody uses the same message for wake-capable fallback but direct receipts skip it',async()=>{
+ for(const delivered of [false,true]){
+  const sent=[];
+  const manager=createTextTransportManager({send:m=>{sent.push(m);return true;}},undefined,undefined,async()=>({peerId:14,delivered}));
+  assert.equal((await manager.send(message)).transport,delivered?'neuron':'axion');
+  assert.deepEqual(sent,delivered?[]:[message]);
+ }
+ const offline=createTextTransportManager({send:()=>{throw Error('offline');}},undefined,undefined,async()=>({peerId:14,delivered:false}));
+ assert.deepEqual(await offline.send(message),{sent:true,transport:'neuron',peerId:14,delivered:false});
 });
 
 test('unavailable normal neuron falls back once and an account change cancels further delivery', async () => {

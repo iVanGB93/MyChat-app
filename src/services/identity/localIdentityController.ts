@@ -129,7 +129,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       return signAxonSignal(identity.record, identity.signingSeed, identity.history ?? [], target, session, kind, sdp, now());
     },
     /** Keys stay inside the controller. Pending sockets are owned before the first await. */
-    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody']) {
+    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler) {
       const e = epoch, source = identity;
       let session: ReturnType<typeof createPersistentAxon> | undefined, closed = false;
       const close = () => {
@@ -147,6 +147,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         session = createPersistentAxon({ record: source.record, history: source.history, signingSeed: source.signingSeed, instance, store,
           expectedAccount, introductions, onSignal, onCustody,
           testMessages: onTestMessage ? { encryptionSeed: source.encryptionSeed, received: onTestMessage } : undefined,
+          chatMessages: onChatMessage ? { encryptionSeed: source.encryptionSeed, received: onChatMessage } : undefined,
           wire, now, random, current: () => !closed && epoch === e && source === identity, onClosed: close });
         if (closed) session.stop();
         return session;

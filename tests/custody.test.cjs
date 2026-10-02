@@ -53,12 +53,20 @@ test('custody exchanges use mutually authenticated Axons and preserve optional-f
 });
 test('revoked/expired signing identity, malformed packet and wrong signer lookup fail closed',async t=>{
  const f=fixture(t),e=await f.seal();assert.equal(await f.protocol.verifyCustody(e,{read:async()=>f.ids[3].record},f.now()),false);
- assert.equal(f.protocol.parseCustody(JSON.stringify({...e,expires:e.expires+1}),f.now()),null);
+ assert.equal(f.protocol.parseCustody(JSON.stringify({...e,expires:f.now()+f.protocol.CUSTODY_TTL+1}),f.now()),null);
  assert.equal(f.protocol.parseCustody(JSON.stringify({...e,signature:'00'}),f.now()),null);
  const device=f.ids[0].record.devices[0];f.ids[0].record.devices=[];
  assert.equal((await f.request(f.service(),0,'deposit',e)).status,'rejected');f.ids[0].record.devices=[device];
  f.expire();assert.equal(await f.protocol.verifyCustody(e,f.records,f.now()),false);
 });
+test('new custody envelopes tolerate a slower peer without extending expiry or accepting expired packets',async t=>{
+ const f=fixture(t);f.advance(60_000);const e=await f.seal();
+ assert.equal(await f.protocol.verifyCustody(e,f.records,f.now()-30_000),true);
+ assert.equal(f.protocol.parseCustody(JSON.stringify(e),f.now()-30_001),null);
+ assert.equal(f.protocol.parseCustody(JSON.stringify(e),e.expires),null);
+ assert.equal(e.expires-e.created,f.protocol.CUSTODY_TTL-30_000);
+});
+
 test('no held confirmation escapes a failing storage transaction',async t=>{
  const f=fixture(t),e=await f.seal(),s=f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,records:f.records,now:f.now,current:()=>true,
  store:{transaction:async change=>{change([]);throw Error('disk full');}}});
@@ -213,4 +221,69 @@ test('normal outbox bindings reject changed payload digests and isolate cryptogr
  assert.equal(await n.bindings.bind({...row,digest:'00'.repeat(32)},()=>true),false);
  assert.equal(await n.bindings.find(n.recipient.record.account,packet.id),null);
  assert.equal((await n.bindings.find(n.owner,packet.id)).digest,row.digest);
+});
+
+test('composed normal runtimes retry via an ordinary custodian and consume only verified delivery',async t=>{
+ const f=fixture(t),[sender,relay,recipient]=f.ids,make=f.load('normalChatRuntime').createNormalChatRuntime;
+ const own=f.load('ownCustodyStore').createOwnCustodyStore(),bindings=f.load('normalChatOutboxStore').createNormalChatOutboxStore();
+ const hooks=new Map(),inbox=new Map();let delivered=false,pendingReads=0;
+ const message={id:'11111111-1111-4111-8111-111111111111',roomId:'22222222-2222-4222-8222-222222222222',content:'Composed offline normal chat',createdAt:new Date(f.now()).toISOString()};
+ const makeRuntime=(id,user,peer,peerUser)=>make({
+  identity:{status:()=>({state:'unlocked',account:id.record.account}),
+   sealCustody:(record,device,key,text)=>f.protocol.sealCustody({...id,recipient:record,recipientDevice:device,id:key,text,now:f.now(),random:f.random}),
+   receiveCustody:async(e,records,persist)=>{
+    if(!await f.protocol.verifyCustody(e,records,f.now()))return null;
+    const text=f.protocol.openCustody(e,id.record.account,id.signingSeed,id.encryptionSeed);
+    return await persist({from:e.sender,id:e.id,text})?f.protocol.signCustodyReceipt(e,id.signingSeed,id.encryptionSeed):null;
+   }},
+  records:f.records,own,bindings,custodyStore:f.load('mobileCustodyStore').createMobileCustodyStore(id.record.account),
+  allowed:account=>account===peer.record.account,
+  boundary:{owner:{user,account:id.record.account},current:()=>true,now:f.now,
+   peer:async room=>room===message.roomId?{user:peerUser,account:peer.record.account}:null,authorized:()=>true,
+   readOutgoing:async()=>user===14?message:null,
+   persist:async(m,guard)=>{if(!guard())return false;inbox.set(m.id,m);return true;},
+   delivered:async(_m,_p,guard)=>{if(!guard())return false;delivered=true;return true;}},
+  pending:async()=>{if(user===14){pendingReads++;return delivered?[]:[message];}return [];},
+  network:h=>{hooks.set(id.record.account,h);return {sendChatMessage:async()=>false,custodians:()=>[relay.record.account],
+   custodyRequest:(_target,raw)=>relayService.receive(id.record.account,raw),tick(){},stop(){hooks.delete(id.record.account);}};}
+ });
+ const relayService=f.service(),a=makeRuntime(sender,14,recipient,18),b=makeRuntime(recipient,18,sender,14);
+ t.after(()=>{a.stop();b.stop();});
+ const settle=async predicate=>{for(let i=0;i<100;i++){if(await predicate())return;await new Promise(r=>setImmediate(r));}assert.fail('Runtime did not settle');};
+ a.tick();await settle(async()=>!!(await f.store.transaction(rows=>rows[0]?.packet)));
+ assert.equal(delivered,false);assert.equal(pendingReads,1);
+ b.tick();await settle(async()=>await f.store.transaction(rows=>rows[0]?.packet?.kind==='receipt'));
+ assert.equal(inbox.size,1);assert.equal(inbox.get(message.id).content,message.content);
+ f.advance(5001);a.tick();await settle(async()=>delivered&&await f.store.transaction(rows=>rows[0]?.packet===null));
+ assert.equal(pendingReads,1,'retry interval is independent of receipt polling');
+ a.stop();assert.equal(await a.attempt(message),null);assert.equal(hooks.has(sender.record.account),false);
+});
+
+test('runtime shutdown cancels an asynchronous pending-row scan before any network send',async t=>{
+ const f=fixture(t),id=f.ids[0];let release,sends=0,closed=0;
+ const runtime=f.load('normalChatRuntime').createNormalChatRuntime({identity:{status:()=>({state:'unlocked',account:id.record.account})},
+  records:f.records,own:f.load('ownCustodyStore').createOwnCustodyStore(),bindings:f.load('normalChatOutboxStore').createNormalChatOutboxStore(),
+  custodyStore:{transaction:async fn=>fn([])},allowed:()=>true,
+  boundary:{owner:{user:14,account:id.record.account},current:()=>true,now:f.now,peer:async()=>null,authorized:()=>true,
+   readOutgoing:async()=>null,persist:async()=>false,delivered:async()=>false},
+  pending:()=>new Promise(r=>release=r),network:()=>({sendChatMessage:async()=>{sends++;return true;},custodians:()=>[],custodyRequest:async()=>null,tick(){},stop(){closed++;}})});
+ runtime.tick();runtime.tick();while(!release)await new Promise(r=>setImmediate(r));runtime.stop();release([{id:'cancelled'}]);await new Promise(r=>setImmediate(r));
+ runtime.stop();assert.equal(sends,0);assert.equal(closed,1);
+});
+
+test('normal background retry waits for the custody poll slot and cancels cleanly during polling',async t=>{
+ for(const stopDuringPoll of [false,true]){
+  const f=fixture(t),id=f.ids[0];let release,polls=0,scans=0;
+  const runtime=f.load('normalChatRuntime').createNormalChatRuntime({identity:{status:()=>({state:'unlocked',account:id.record.account})},
+   records:f.records,own:f.load('ownCustodyStore').createOwnCustodyStore(),bindings:f.load('normalChatOutboxStore').createNormalChatOutboxStore(),
+   custodyStore:{transaction:async fn=>fn([])},allowed:()=>true,
+   boundary:{owner:{user:14,account:id.record.account},current:()=>true,now:f.now,peer:async()=>null,authorized:()=>true,
+    readOutgoing:async()=>null,persist:async()=>false,delivered:async()=>false},
+   pending:async()=>{scans++;return [];},network:()=>({sendChatMessage:async()=>false,custodians:()=>[f.ids[1].record.account],
+    custodyRequest:()=>{polls++;return new Promise(r=>release=r);},tick(){},stop(){}})});
+  t.after(()=>runtime.stop());runtime.tick();runtime.tick();await new Promise(r=>setImmediate(r));
+  assert.equal(polls,1);assert.equal(scans,0,'retry must wait until poll releases the request slot');
+  if(stopDuringPoll)runtime.stop();release(JSON.stringify({status:'ok',packet:null}));await new Promise(r=>setImmediate(r));
+  assert.equal(scans,stopDuringPoll?0:1);runtime.stop();
+ }
 });

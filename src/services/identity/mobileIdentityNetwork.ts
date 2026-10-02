@@ -110,7 +110,8 @@ export const requestMobileIdentityCustody = (target: string, raw: string) =>
 export const mobileIdentityNetworkSnapshot = () => active?.snapshot() ?? null;
 let stopForeground: (() => void) | null = null;
 export function startMobileIdentityNetwork() {
-  if (!__DEV__) return () => {};
+  // The account runtime exclusively owns the native LAN listener in staging.
+  if (!__DEV__ || process.env.EXPO_PUBLIC_AXONIC_CHAT_IDENTITY === '1') return () => {};
   if (owners++ === 0) {
     stopForeground = observeIdentityForeground({ identity: localIdentity,
       currentState: () => AppState.currentState,

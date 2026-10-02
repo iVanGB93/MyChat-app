@@ -11,9 +11,10 @@ import { createChatBindingExchange } from './chatIdentityBinding';
 import { createChatBindingTransport } from './chatBindingTransport';
 import { createChatIdentityPinStore } from './chatIdentityPinStore';
 import { registerChatBindingHandler } from './chatBindingBridge';
+import { startMobileNormalChatRuntime } from './mobileNormalChatRuntime';
 
-// Staging only: normal chat transport and production participation remain disabled.
-const enabled = () => __DEV__ && process.env.EXPO_PUBLIC_AXONIC_CHAT_IDENTITY === '1'
+// Explicit release gate; experimental identities and test channels remain development-only.
+const enabled = () => process.env.EXPO_PUBLIC_AXONIC_CHAT_IDENTITY === '1'
   && !!Native?.identityRandomBytes && !!Native?.identityScrypt;
 export function startAccountChatBinding() {
   if (!enabled()) return () => {};
@@ -71,8 +72,9 @@ export function startAccountChatBinding() {
         lastRequest = Date.now(); await transport.request(room, peer);
       });
       refresh = poll;
+      const stopNetwork = startMobileNormalChatRuntime(owner, identity, permitted);
       void poll().catch(() => {});
-      return () => { if (refresh === poll) refresh = null; unregister(); transport.stop(); rooms.clear(); };
+      return () => { if (refresh === poll) refresh = null; stopNetwork(); unregister(); transport.stop(); rooms.clear(); };
     },
   });
   const update = () => {

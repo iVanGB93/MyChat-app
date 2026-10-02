@@ -20,7 +20,15 @@ export function createTextTransportManager(
       let neuron = null;
       try { neuron = await tryNeuron?.(message, options) ?? null; } catch { /* fallback */ }
       if (!canSend()) return { sent: false, transport: 'axion' as const };
-      if (neuron) return { sent: true, transport: 'neuron' as const, ...neuron };
+      if (neuron) {
+        // Custody cannot wake a background phone yet. Preserve the same UUID on
+        // the migration fallback so push delivery and later custody deduplicate.
+        if (!neuron.delivered) {
+          try { if (legacyTransport.send(message, options)) return { sent: true, transport: 'axion' as const }; }
+          catch { /* The encrypted custody copy remains queued when Axion is unavailable. */ }
+        }
+        return { sent: true, transport: 'neuron' as const, ...neuron };
+      }
       let mailbox = null;
       try { mailbox = await tryMailbox?.(message, options) ?? null; } catch { /* fallback */ }
       if (!canSend()) return { sent: false, transport: 'axion' as const };

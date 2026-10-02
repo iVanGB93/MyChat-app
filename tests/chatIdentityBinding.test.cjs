@@ -17,6 +17,17 @@ test('a fresh proof on the authenticated sender channel pins once and concurrent
  assert.deepEqual(await Promise.all([f.exchange.accept(18,p),f.exchange.accept(18,p)]),[true,false]);
  assert.equal(f.pins.get(18),f.record.account);
 });
+
+test('issued challenges allow modest clock skew without weakening the expiry cap',async()=>{
+ const f=fixture(),c=await f.exchange.challenge(f.room,18);
+ assert.equal(c.expiresAt-f.now(),55000);
+ assert.equal(binding.validChatBindingChallenge(c,f.now()-4000),true);
+ assert.equal(binding.validChatBindingChallenge(c,f.now()+4000),true);
+ assert.equal(binding.validChatBindingChallenge(c,f.now()-5001),false);
+ assert.equal(binding.validChatBindingChallenge(c,c.expiresAt),false);
+ const proof=binding.signChatBinding(f.record,f.key,18,c,f.now()-4000);
+ assert.equal(await f.exchange.accept(18,proof),true);
+});
 test('a signature alone cannot substitute for authenticated numeric identity, room or fresh challenge',async()=>{
  const f=fixture(),c=await f.exchange.challenge(f.room,18),p=f.proof(c);
  assert.equal(await f.exchange.accept(99,p),false);

@@ -70,7 +70,9 @@ export function createChatBindingExchange(d: {
       try {
         const nonce = await d.random();
         const c: ChatBindingChallenge = { version: 1, roomId, requester: owner.user, requesterAccount: owner.account,
-          peer, nonce, expiresAt: d.now() + 60_000 };
+          // Leave five seconds of headroom inside the verifier/server's 60s cap.
+          // Otherwise even a slightly faster sender clock breaks one direction.
+          peer, nonce, expiresAt: d.now() + 55_000 };
         if (!current() || !valid(c, d.now()) || !d.authorized(roomId, peer) || pending.has(nonce)) return null;
         pending.set(nonce, c); return { ...c };
       } finally { creating = false; }

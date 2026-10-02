@@ -16,10 +16,11 @@ test('app composition isolates account vaults, routes authenticated challenges, 
   '../localMessageStore':{getCachedRooms:async()=>[{id:room,room_type:'direct',members:[14,18]}]},
   '../notificationWsManager':{isNotifWsReady:()=>true,sendRawNotif:f=>{frames.push(f);return true;}},
   './chatIdentityPinStore':{createChatIdentityPinStore:()=>({read:async()=>null,pin:async()=>true})},
+  './mobileNormalChatRuntime':{startMobileNormalChatRuntime:()=>()=>{}},
  };
  function load(name){if(cache.has(name))return cache.get(name);const out={};new Function('require','exports','__DEV__','process','setInterval','clearInterval',
  ts.transpileModule(fs.readFileSync(`src/services/identity/${name}.ts`,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(
-  p=>mocks[p]??(p.startsWith('./')?load(p.slice(2).replace(/\.ts$/,'')):require(p)),out,true,{env:{EXPO_PUBLIC_AXONIC_CHAT_IDENTITY:'1'}},
+  p=>mocks[p]??(p.startsWith('./')?load(p.slice(2).replace(/\.ts$/,'')):require(p)),out,false,{env:{EXPO_PUBLIC_AXONIC_CHAT_IDENTITY:'1'}},
   fn=>{timer=fn;return 1;},()=>{timer=null;});cache.set(name,out);return out;}
  const waitFor=async f=>{for(let i=0;i<200;i++){if(f())return;await new Promise(r=>setImmediate(r));}throw Error('Composition did not settle');};
  const stop=load('mobileChatBinding').startAccountChatBinding();

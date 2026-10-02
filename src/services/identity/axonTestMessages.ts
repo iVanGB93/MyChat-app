@@ -18,7 +18,7 @@ export function createAxonTestMessages(d: {
   local: { account: string; device: string; instance: string }; encryptionSeed: Uint8Array;
   peer(): IdentityPeer | null; store: IdentityRecordStore; now(): number; current(): boolean;
   random(n: number): Promise<Uint8Array>; send(raw: string): void; received: TestMessageHandler;
-}) {
+}, purpose: 'test' | 'normal' = 'test') {
   let stopped = false, sending = false, receiving = false;
   const seen = new Set<string>();
   let pending: { id: string; digest: string; done(ok: boolean): void; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -33,10 +33,10 @@ export function createAxonTestMessages(d: {
       || !remoteDevice) throw Error('Test peer key unavailable');
     const local = [d.local.account, d.local.device, d.local.instance];
     const remote = [peer.account, peer.device, peer.instance];
-    const aad = utf8ToBytes(JSON.stringify(['axonic-test-message-v2', kind, id,
+    const aad = utf8ToBytes(JSON.stringify([purpose === 'normal' ? 'axonic-chat-message-v1' : 'axonic-test-message-v2', kind, id,
       ...(outgoing ? [local, remote] : [remote, local])]));
     const shared = x25519.getSharedSecret(d.encryptionSeed, hexToBytes(remoteDevice.encryption));
-    try { return { aad, key: hkdf(sha256, shared, sha256(aad), utf8ToBytes('axonic-test-message-key-v2'), 32), peer }; }
+    try { return { aad, key: hkdf(sha256, shared, sha256(aad), utf8ToBytes(purpose === 'normal' ? 'axonic-chat-message-key-v1' : 'axonic-test-message-key-v2'), 32), peer }; }
     finally { shared.fill(0); }
   }
   async function seal(kind: Packet['kind'], id: string, text: string): Promise<Packet> {
@@ -94,3 +94,6 @@ export function createAxonTestMessages(d: {
     stop() { stopped = true; seen.clear(); finish(false); },
   };
 }
+
+/** Separate cryptographic domain; a renamed experimental frame cannot become normal chat. */
+export const createAxonNormalMessages = (d: Parameters<typeof createAxonTestMessages>[0]) => createAxonTestMessages(d, 'normal');

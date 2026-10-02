@@ -1,6 +1,6 @@
 import { createIntroductionService, verifyIntroductions, type IntroductionHooks } from './identityIntroductions.ts';
 import { createIdentityExchange } from './identityExchange.ts';
-import { createAxonTestMessages, type TestMessageHandler } from './axonTestMessages.ts';
+import { createAxonTestMessages, createAxonNormalMessages, type TestMessageHandler } from './axonTestMessages.ts';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { authenticateIdentityPeer, type IdentityPeer } from './identityClient.ts';
 import { signIdentityRequest, type IdentityRecordStore } from './identityAdmission.ts';
@@ -23,11 +23,18 @@ export function createPersistentAxon(d: {
   onCustody?(raw: string, peer: IdentityPeer): Promise<string>;
   onSignal?(raw: string, peer: IdentityPeer): Promise<boolean>;
   testMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
+  chatMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
   expectedAccount?: string; introductions?: IntroductionHooks; wire: AxonWire; now(): number; current(): boolean;
   random(size: number): Promise<Uint8Array>; onClosed(): void;
 }) {
   let stopped = false, remote: string | null = null, peer: IdentityPeer | null = null;
-  let peerTests = false, peerCustody = false;
+  let peerTests = false, peerCustody = false, peerChat = false;
+  const chat = d.chatMessages ? createAxonNormalMessages({
+    local: { account: d.record.account, device: publicDevice(d.signingSeed, d.chatMessages.encryptionSeed).id, instance: bytesToHex(d.instance) },
+    encryptionSeed: d.chatMessages.encryptionSeed, peer: () => peer, store: d.store, now: d.now, random: d.random,
+    current: () => !stopped && peerChat && d.current(), received: d.chatMessages.received,
+    send: body => send({ version: 1, kind: 'chat-message', body }),
+  }) : null;
   const tests = d.testMessages ? createAxonTestMessages({
     local: { account: d.record.account, device: publicDevice(d.signingSeed, d.testMessages.encryptionSeed).id, instance: bytesToHex(d.instance) },
     encryptionSeed: d.testMessages.encryptionSeed, peer: () => peer, store: d.store, now: d.now, random: d.random,
@@ -37,6 +44,7 @@ export function createPersistentAxon(d: {
   let peerSignals = false, signalBusy = false, signalWindow = d.now(), signalCount = 0;
   let peerIntroductions = false, introducing = false, introduceAt = d.now() + 5000;
   let authenticating = false, renewalAt = 0, inboundBusy = false, sequence = 0;
+  let custodyWaiting = 0;
   let windowAt = d.now(), frames = 0;
   const started = d.now();
   let pending: { id: number; resolve(raw: string): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -52,6 +60,7 @@ export function createPersistentAxon(d: {
     if (stopped) return;
     stopped = true;
     tests?.stop();
+    chat?.stop();
     try { unsubscribe(); } catch { /* Cleanup must continue even if an adapter fails. */ }
     if (pending) { clearTimeout(pending.timer); pending.reject(Error('Axon closed')); pending = null; }
     rejectReady(Error('Axon closed'));
@@ -118,6 +127,7 @@ export function createPersistentAxon(d: {
         peerSignals = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('rtc-signals-v1');
         peerCustody = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('custody-v1');
         peerTests = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('test-messages-v2');
+        peerChat = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('chat-text-v1');
         peerIntroductions = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('introductions-v1');
         remote = f.account; void authenticate(); return;
       }
@@ -131,6 +141,10 @@ export function createPersistentAxon(d: {
       }
       if (f.kind === 'test-message') {
         if (!tests || !peerTests || !peer || peer.expiresAt <= d.now() || !await tests.receive(f.body)) stop();
+        return;
+      }
+      if (f.kind === 'chat-message') {
+        if (!chat || !peerChat || !peer || peer.expiresAt <= d.now() || !await chat.receive(f.body)) stop();
         return;
       }
       if (!remote || !Number.isSafeInteger(f.id) || f.id < 1 || typeof f.body !== 'string' || f.body.length > 16000) { stop(); return; }
@@ -163,15 +177,27 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, features: [...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, features: [...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
     supportsCustody: () => peerCustody && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async custodyRequest(raw: string): Promise<string | null> {
-      if (!peer || peer.expiresAt <= d.now() || !peerCustody || stopped || !d.current() || authenticating || introducing || pending || raw.length > 8000) return null;
-      try { const result = await exchange('custody', raw); return !stopped && d.current() && peer.expiresAt > d.now() ? result : null; } catch { return null; }
+      const permitted = () => !!peer && peer.expiresAt > d.now() && peerCustody && !stopped && d.current();
+      if (!permitted() || raw.length > 8000 || custodyWaiting >= 2) return null;
+      custodyWaiting++;
+      try {
+        // Bounded local contention must not immediately mark a healthy relay unavailable.
+        // Use a bounded number of waits so clock changes cannot prolong the queue.
+        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        if (!permitted() || authenticating || introducing || pending) return null;
+        const result = await exchange('custody', raw);
+        return permitted() ? result : null;
+      } catch { return null; }
+      finally { custodyWaiting--; }
     },
     sendTestMessage: (text: string, id?: string) => tests?.send(text, id) ?? Promise.resolve(false),
+    sendChatMessage: (text: string, id: string) => chat?.send(text, id) ?? Promise.resolve(false),
     sendSignal(raw: string) {
       if (!peer || peer.expiresAt <= d.now() || !peerSignals || !d.onSignal || stopped || !d.current()) return false;
       try { send({ version: 1, kind: 'signal', body: raw }); return true; } catch { stop(); return false; }

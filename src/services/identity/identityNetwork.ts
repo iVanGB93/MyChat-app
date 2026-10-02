@@ -16,6 +16,7 @@ export function createIdentityNetwork(d: {
   identity: Identity; store: IdentityRecordStore; now(): number; limit?: number;
   onSignal?(signal: AxonSignal, via: string): void;
   onTestMessage?: TestMessageHandler;
+  onChatMessage?: TestMessageHandler;
   onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'];
   connect(candidate: NeuronCandidate, context: ConnectionContext): Promise<AxonWire>;
 }) {
@@ -65,7 +66,7 @@ export function createIdentityNetwork(d: {
             list: () => (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && c.expiresAt !== null)
               .map(c => ({ account: c.account, expiresAt: c.expiresAt! })),
             received: peers => { if (valid()) directory.replace(candidate.account, peers); },
-          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody);
+          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage);
           if (closed || !valid() || session.snapshot().state === 'closed') { session.stop(); close(); return null; }
           sessions.add(session);
           const link = await session.ready;
@@ -98,6 +99,10 @@ export function createIdentityNetwork(d: {
     sendTestMessage(target: string, text: string, id?: string) {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.sendTestMessage(text, id) ?? Promise.resolve(false);
+    },
+    sendChatMessage(target: string, text: string, id: string) {
+      const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
+      return session?.sendChatMessage(text, id) ?? Promise.resolve(false);
     },
     offer(candidate: NeuronCandidate) { reconcile(); return !!account && !!pool?.offer(candidate); },
     /** Transport reserves native capacity and rate-limits before reading the initial hello.

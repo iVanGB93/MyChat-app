@@ -119,6 +119,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
     },
     setLimit: network.setLimit,
     sendTestMessage: network.sendTestMessage,
+    sendChatMessage: network.sendChatMessage,
     custodyRequest: network.custodyRequest,
     custodians: network.custodians,
     snapshot: () => ({ ...network.snapshot(), rtc: rtc?.snapshot() ?? [], discovering: !!active && !starting, error }),
