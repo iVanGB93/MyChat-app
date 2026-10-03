@@ -8,13 +8,14 @@ const { parseNotificationDestination } = require('../src/services/notificationDe
 
 function fixture() {
   let handler;
-  let pending;
+  let pending;let neuronEvents=0,legacyEvents=0;
   const modules = {
     '@notifee/react-native': {
       default: { onBackgroundEvent: (callback) => { handler = callback; } },
       EventType: { PRESS: 1, ACTION_PRESS: 2 },
     },
-    './callNotificationService': { handleCallNotificationEvent: () => {} },
+    './callNotificationService': { handleCallNotificationEvent: () => {legacyEvents++;} },
+    './identity/mobileCallWake':{handleNeuronCallNotification:async()=>{neuronEvents++;return true;}},
     './notificationReplyService': { handleMessageReplyEvent: async () => {} },
     './notificationActionService': { handleMarkReadEvent: async () => {} },
     './pendingRoomNav': { setPendingRoomNav: async (value) => { pending = JSON.parse(JSON.stringify(value)); } },
@@ -32,7 +33,7 @@ function fixture() {
   sandbox.exports.registerNotificationBackgroundHandler();
   return {
     press: (data, action = 'default') => handler({ type: 1, detail: { notification: { data }, pressAction: { id: action } } }),
-    pending: () => pending,
+    pending: () => pending,counts:()=>({neuronEvents,legacyEvents}),
   };
 }
 
@@ -61,4 +62,9 @@ test('direct-message background taps retain the peer and action buttons do not n
   assert.equal(app.pending(), undefined);
   await app.press(data);
   assert.equal(parseNotificationDestination({ type: 'new_message', ...app.pending() }).otherUserId, 7);
+});
+
+test('neuron call taps never enter legacy call or room navigation handlers',async()=>{
+ const app=fixture();await app.press({type:'neuron_call',neuronCallId:'abc',owner:'14'},'neuron-open');
+ assert.deepEqual(app.counts(),{neuronEvents:1,legacyEvents:0});assert.equal(app.pending(),undefined);
 });

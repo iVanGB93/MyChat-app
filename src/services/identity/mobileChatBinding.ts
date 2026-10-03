@@ -1,3 +1,4 @@
+import { accountIdentityMayRun } from './accountIdentityActivity';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -40,7 +41,7 @@ export function startAccountChatBinding() {
     attach(owner, identity, current) {
       const pins = createChatIdentityPinStore(owner), rooms = new Map<string, number>();
       const permitted = () => current() && identity.status().state === 'unlocked'
-        && useAppStore.getState().user?.id === owner && useAppStore.getState().appLifecycle === 'active';
+        && useAppStore.getState().user?.id === owner && accountIdentityMayRun(useAppStore.getState());
       const authorized = (room: string, peer: number) => permitted() && rooms.get(room) === peer
         && !useAppStore.getState().blockedIds[peer];
       const exchange = createChatBindingExchange({ owner: { user: owner, account: identity.status().account! },
@@ -79,7 +80,7 @@ export function startAccountChatBinding() {
   });
   const update = () => {
     const state = useAppStore.getState();
-    lifecycle.set(state.user?.id ?? null, !state.authLoading && state.appLifecycle === 'active');
+    lifecycle.set(state.user?.id ?? null, !state.authLoading && accountIdentityMayRun(state));
   };
   const unsubscribe = useAppStore.subscribe(update);
   update();

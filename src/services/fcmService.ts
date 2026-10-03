@@ -79,6 +79,9 @@ async function handleDataMessage(
   // Incoming call: render the proper CallStyle notification (full-screen,
   // Accept/Decline, ringtone) so a killed/backgrounded call looks like a CALL,
   // not a plain message banner. Stable per-callId id dedupes with the WS path.
+  if (data.type === 'neuron_call') {
+    await (await import('./identity/mobileCallWake')).receiveNeuronCallWake(data);return;
+  }
   if (data.type === 'incoming_call') {
     const callNav = {
       callId: String(data.callId ?? data.call_id ?? ''),
@@ -172,6 +175,7 @@ export function registerFcmForegroundHandler(): () => void {
       ...(normalizePushData((remoteMessage?.notification as { data?: unknown } | undefined)?.data) ?? {}),
       ...(normalizePushData(remoteMessage?.data) ?? {}),
     } as Record<string, string>;
+    if (data.type === 'neuron_call') { await (await import('./identity/mobileCallWake')).receiveNeuronCallWake(data);return; }
     if (!data || (data.type && data.type !== 'new_message')) return;
     try {
       await savePushMessage(data, {

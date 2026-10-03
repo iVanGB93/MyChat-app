@@ -49,6 +49,66 @@ async function settle(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 5)); }
   assert.fail('condition did not settle');
 }
+test('negotiated call control returns a verified durable receipt and tolerates safe rejection', async t => {
+  const calls=load('callControlProtocol'), receipts=load('callControlDelivery'), durable=load('durableCallControl');
+  let f, saved=null, receiver;
+  const journal={read:async()=>saved,compareAndSet:async(o,id,before,after)=>{if(saved!==before)return false;saved=after;return true;}};
+  f=pair(t,{0:{onCallControl:async()=>null},1:{onCallControl:async(raw,peer)=>receiver.receive(raw,peer)}});
+  await Promise.all(f.sessions.map(s=>s.ready));
+  const [a,b]=f.identities, id='ca'.repeat(32);
+  const state=durable.createDurableRecipientCallControl(journal,b.record.account,id,b.record.devices[0].id);
+  receiver=receipts.createCallControlDelivery({account:b.record.account,device:b.record.devices[0].id,
+    records:{read:async account=>f.identities.find(x=>x.record.account===account)?.record??null},
+    current:()=>true,now:()=>now,blocked:()=>false,
+    commit:async(raw,latest,time)=>(JSON.parse(raw).kind==='invite'?await state.begin(raw,latest,time):await state.receive(raw,latest,time))||await state.hasStoredEvent(raw,latest,time),
+    signReceipt:async(event,time)=>receipts.signCallControlReceipt(event,b.record,b.signingSeed,time)});
+  const raw=calls.signCallControl({record:a.record,callId:id,caller:a.record.account,callee:b.record.account,
+    callerDevice:a.record.devices[0].id,media:'voice',kind:'invite',invitation:null,sequence:0,issuedAt:now,expiresAt:now+60000},a.signingSeed,now);
+  assert.equal(f.sessions[0].supportsCallControl(),true);
+  assert.ok(await f.sessions[0].callControlRequest(raw));
+  assert.ok(await f.sessions[0].callControlRequest(raw));
+  assert.equal(JSON.parse(saved).entries.length,1);
+  receiver={receive:async()=>null};
+  assert.equal(await f.sessions[0].callControlRequest(raw),null);
+  receiver={receive:async()=>JSON.stringify({status:'ok'})};
+  assert.equal(await f.sessions[0].callControlRequest(raw),null);
+  assert.deepEqual(f.closed,[0,0]);
+});
+test('legacy peers do not advertise or receive call-control requests',async t=>{
+  const f=pair(t,{0:{onCallControl:async()=>null}});
+  await Promise.all(f.sessions.map(s=>s.ready));
+  assert.equal(f.sessions[0].supportsCallControl(),false);
+  assert.equal(await f.sessions[0].callControlRequest('{}'),null);
+  assert.equal(f.transport.history[0].some(raw=>JSON.parse(raw).operation==='call-control'),false);
+  assert.deepEqual(f.closed,[0,0]);
+});
+
+test('v2 call peers carry bounded signed media bound to the exact live axon instances',async t=>{
+  const media=load('callMediaProtocol');let f,received=0;
+  f=pair(t,{0:{onCallControl:async()=>null,onCallMedia:async()=>false},
+    1:{onCallControl:async()=>null,onCallMedia:async(raw,peer,instance)=>{
+      const e=media.verifyCallMediaSignal(raw,f.identities[0].record,now);
+      if(e&&e.sourceInstance===peer.instance&&e.targetInstance===instance){received++;return true;}return false;
+    }}});
+  await Promise.all(f.sessions.map(s=>s.ready));
+  const context=f.sessions[0].mediaContext(),a=f.identities[0],b=f.identities[1];
+  const fields={record:a.record,callId:'ab'.repeat(32),invitation:'cd'.repeat(32),acceptance:'ef'.repeat(32),
+    target:b.record.account,targetDevice:b.record.devices[0].id,sourceInstance:context.instance,targetInstance:context.peer.instance,
+    sequence:1,issuedAt:now,expiresAt:now+30000,kind:'offer',data:{type:'offer',sdp:'v=0'}};
+  assert.equal(await f.sessions[0].callMediaRequest(media.signCallMediaSignal(fields,a.signingSeed,now)),true);
+  assert.equal(received,1);
+  assert.equal(await f.sessions[0].callMediaRequest(media.signCallMediaSignal({...fields,targetInstance:'ff'.repeat(32)},a.signingSeed,now)),false);
+  f.lock();assert.equal(f.sessions[0].mediaContext(),null);
+  assert.equal(await f.sessions[0].callMediaRequest(media.signCallMediaSignal(fields,a.signingSeed,now)),false);
+});
+
+test('v1 call peers never receive v2 media frames',async t=>{
+  const f=pair(t,{0:{onCallControl:async()=>null,onCallMedia:async()=>false},1:{onCallControl:async()=>null}});
+  await Promise.all(f.sessions.map(s=>s.ready));
+  assert.equal(f.sessions[0].mediaContext(),null);
+  assert.equal(await f.sessions[0].callMediaRequest('{}'),false);
+  assert.equal(f.transport.history[0].some(raw=>JSON.parse(raw).operation==='call-media'),false);
+});
 test('ordinary neurons mutually authenticate and renew the same open axon', async t => {
   const f = pair(t), links = await Promise.all(f.sessions.map(s => s.ready));
   assert.equal(links[0].peer.account, f.identities[1].record.account);
@@ -667,4 +727,27 @@ test('custody controller signs receipt only after own inbox commit and never aft
  const receipt=await b.receiveCustody(e,records,async message=>{assert.equal(message.text,'own durable custody probe');return true;});
  assert.equal(await load('custodyProtocol').verifyCustody(receipt,records,now),true);
  let release;const pending=b.receiveCustody(e,records,()=>new Promise(r=>release=r));await settle(()=>!!release);b.lock();release(true);await assert.rejects(pending);
+});
+
+test('call relay is negotiated independently without changing legacy feature slots',async t=>{
+ let seen=null;
+ const f=pair(t,{1:{onCallRelay:async(raw,peer)=>{seen={raw,peer};return JSON.stringify({accepted:true});}}});
+ await Promise.all(f.sessions.map(s=>s.ready));
+ assert.equal(f.sessions[0].relayPeer().account,f.identities[1].record.account);
+ const raw=JSON.stringify({version:1,operation:'pending'});
+ assert.deepEqual(JSON.parse(await f.sessions[0].callRelayRequest(raw)),{accepted:true});
+ assert.equal(seen.raw,raw);assert.equal(seen.peer.account,f.identities[0].record.account);
+ assert.equal(f.sessions[1].relayPeer(),null);
+ assert.equal(await f.sessions[1].callRelayRequest(raw),null);
+ assert.equal(await f.sessions[0].callRelayRequest('x'.repeat(13001)),null);
+ assert.deepEqual(f.closed,[0,0]);
+});
+test('call relay refuses old peers and a session locked while awaiting a response',async t=>{
+ const old=pair(t);await Promise.all(old.sessions.map(s=>s.ready));
+ assert.equal(await old.sessions[0].callRelayRequest('{}'),null);
+ let release;
+ const f=pair(t,{1:{onCallRelay:()=>new Promise(r=>release=r)}});
+ await Promise.all(f.sessions.map(s=>s.ready));
+ const pending=f.sessions[0].callRelayRequest('{}');await settle(()=>!!release);f.lock();release('{}');
+ assert.equal(await pending,null);
 });

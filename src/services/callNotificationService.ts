@@ -1,3 +1,4 @@
+import { ensureCallChannel } from './callNotificationChannel';
 /* ------------------------------------------------------------------ */
 /*  Call Notification Service — Notifee (Android CallStyle + iOS)      */
 /*                                                                      */
@@ -78,6 +79,9 @@ function handleEvent({ type, detail }: Event) {
   // Notifee fires the same set of events for both foreground and background
   // dispatchers, so we centralise the parsing/dispatch logic here.
   if (type !== EventType.ACTION_PRESS && type !== EventType.PRESS) return;
+  if (detail.notification?.data?.type === 'neuron_call') {
+    void import('./identity/mobileCallWake').then(m=>m.handleNeuronCallNotification({type,detail})).catch(()=>{});return;
+  }
   const data = parseData(detail.notification?.data as any);
   if (!data) return;
   if (type === EventType.PRESS) {
@@ -115,24 +119,7 @@ export function registerCallNotificationBackgroundHandler() {
  * Create the high-importance Android channel used for call notifications.
  * Safe to call multiple times — Android dedupes by channel id.
  */
-export async function ensureCallChannel() {
-  if (Platform.OS !== 'android') return;
-  // Remove the pre-v2 channel so upgraded users don't see two "Incoming Calls"
-  // entries in system settings (the old one may be stuck at a lower importance).
-  await notifee.deleteChannel('incoming-calls').catch(() => {});
-  await notifee.createChannel({
-    id: CHANNEL_ID,
-    name: 'Incoming Calls',
-    importance: AndroidImportance.HIGH, // highest Notifee level; triggers heads-up display
-    visibility: AndroidVisibility.PUBLIC,
-    sound: 'ringtone', // resolves to res/raw/ringtone.mp3 (bundled in /assets/sounds)
-    vibration: true,
-    // Phone ring-like pattern: 1s on, 0.5s off, 1s on, 0.5s off
-    vibrationPattern: [1000, 500, 1000, 500],
-    bypassDnd: true,
-    lightColor: '#FF0000', // Red LED light for call urgency
-  });
-}
+export { ensureCallChannel } from './callNotificationChannel';
 
 /** Register the iOS notification category with Accept / Decline buttons. */
 export async function ensureIosCallCategory() {

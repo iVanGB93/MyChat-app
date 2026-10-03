@@ -48,6 +48,8 @@ export type { PresenceStatus };
 export interface UserPresenceState extends PresenceLease {}
 
 export interface ActiveCall {
+  ownerId?: number;
+  transport?: 'neuron';
   callId: string;
   peerId: number;
   peerName: string;

@@ -81,7 +81,7 @@ export function ActiveCallBanner() {
     };
   }, []);
   const onCallScreen =
-    currentRouteName === 'ActiveCall' || currentRouteName === 'IncomingCall';
+    currentRouteName === 'ActiveCall' || currentRouteName === 'IncomingCall' || currentRouteName === 'NeuronCall';
 
   // Animated slide-in
   const slide = useRef(new Animated.Value(0)).current;
@@ -104,6 +104,9 @@ export function ActiveCallBanner() {
 
   const handlePress = () => {
     if (!navigationRef.isReady()) return;
+    if(activeCall.transport==='neuron'){
+      navigationRef.navigate('NeuronCall',{callId:activeCall.callId,otherName:activeCall.peerName});return;
+    }
     if (activeCall.state === 'ringing' && (activeCall as any).isOutgoing === false) {
       navigationRef.navigate('IncomingCall', {
         callId: activeCall.callId,

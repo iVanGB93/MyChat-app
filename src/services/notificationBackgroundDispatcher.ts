@@ -17,6 +17,9 @@ import { debugLog } from './diagnostics';
 
 export function registerNotificationBackgroundHandler() {
   notifee.onBackgroundEvent(async (event) => {
+    if(event.detail.notification?.data?.type==='neuron_call') {
+      await (await import('./identity/mobileCallWake')).handleNeuronCallNotification(event);return;
+    }
     // Call accept/decline/press (synchronous, ignores non-call events).
     try {
       handleCallNotificationEvent(event);

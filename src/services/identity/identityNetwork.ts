@@ -18,6 +18,11 @@ export function createIdentityNetwork(d: {
   onTestMessage?: TestMessageHandler;
   onChatMessage?: TestMessageHandler;
   onPush?: Parameters<typeof createPersistentAxon>[0]['onPush'];
+  onCallMediaRelay?: Parameters<typeof createPersistentAxon>[0]['onCallMediaRelay'];
+  onRelayedCallMedia?: Parameters<typeof createPersistentAxon>[0]['onRelayedCallMedia'];
+  onCallRelay?: Parameters<typeof createPersistentAxon>[0]['onCallRelay'];
+  onCallControl?: Parameters<typeof createPersistentAxon>[0]['onCallControl'];
+  onCallMedia?: Parameters<typeof createPersistentAxon>[0]['onCallMedia'];
   onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'];
   onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'];
   connect(candidate: NeuronCandidate, context: ConnectionContext): Promise<AxonWire>;
@@ -68,7 +73,7 @@ export function createIdentityNetwork(d: {
             list: () => (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && c.expiresAt !== null)
               .map(c => ({ account: c.account, expiresAt: c.expiresAt! })),
             received: peers => { if (valid()) directory.replace(candidate.account, peers); },
-          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage, d.onDirectory, d.onPush);
+          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage, d.onDirectory, d.onPush, d.onCallControl, d.onCallMedia, d.onCallRelay, d.onCallMediaRelay, d.onRelayedCallMedia);
           if (closed || !valid() || session.snapshot().state === 'closed') { session.stop(); close(); return null; }
           sessions.add(session);
           const link = await session.ready;
@@ -85,6 +90,30 @@ export function createIdentityNetwork(d: {
   reconcile();
   return {
     sendSignal,
+    mediaContexts: () => [...sessions].flatMap(s => { const c=s.mediaContext(); return c ? [c] : []; }),
+    callMediaRequest(target: string, device: string, raw: string) {
+      const session=[...sessions].find(s=>s.mediaContext()?.peer.account===target && s.mediaContext()?.peer.device===device);
+      return session?.callMediaRequest(raw) ?? Promise.resolve(false);
+    },
+    mediaRelayPeers:()=>[...sessions].flatMap(s=>{const p=s.mediaRelayPeer();return p?[p]:[];}),
+    async sendRelayedMedia(raw:string) {
+      for(const session of sessions)if(session.mediaRelayPeer()&&await session.mediaRelayRequest(raw))return true;
+      return false;
+    },
+    forwardMedia(account:string,device:string,raw:string) {
+      const session=[...sessions].find(s=>s.mediaForwardPeer()?.account===account&&s.mediaForwardPeer()?.device===device);
+      return session?.mediaRelayRequest(raw,true)??Promise.resolve(false);
+    },
+    relayPeers: () => [...sessions].flatMap(s => { const peer=s.relayPeer(); return peer ? [peer] : []; }),
+    callRelayRequest(peer: import('./identityClient').IdentityPeer, raw: string) {
+      const session=[...sessions].find(s=>{const p=s.relayPeer();return p?.account===peer.account&&p.device===peer.device&&p.instance===peer.instance;});
+      return session?.callRelayRequest(raw) ?? Promise.resolve(null);
+    },
+    callPeers: () => [...sessions].flatMap(s => { const peer=s.callPeer(); return peer ? [peer] : []; }),
+    callControlRequest(target: string, device: string, raw: string) {
+      const session=[...sessions].find(s=>s.callPeer()?.account===target && s.callPeer()?.device===device);
+      return session?.callControlRequest(raw) ?? Promise.resolve(null);
+    },
     setLimit(next: number) {
       if (!Number.isInteger(next) || next < 3 || next > 10) throw Error('Allow axons must be between 3 and 10');
       limit = next; pool?.setLimit(next);

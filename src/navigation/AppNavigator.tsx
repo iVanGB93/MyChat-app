@@ -1,3 +1,4 @@
+import { neuronCallsEnabled } from '../services/identity/neuronCallFeature';
 /* ------------------------------------------------------------------ */
 /*  Navigation — Auth stack  +  Main bottom tabs  +  Chat room stack   */
 /*  Modern purple theme, incoming call & message listeners             */
@@ -49,6 +50,8 @@ import ChatRoomScreen from '../screens/chat/ChatRoomScreen';
 import CallsScreen from '../screens/calls/CallsScreen';
 import IncomingCallScreen from '../screens/calls/IncomingCallScreen';
 import ActiveCallScreen from '../screens/calls/ActiveCallScreen';
+import NeuronCallScreen from '../screens/calls/NeuronCallScreen';
+import { subscribeNeuronCalls, neuronCalls } from '../services/identity/mobileNeuronCalls';
 import OutgoingCallScreen from '../screens/calls/outgoing-call-screen';
 import ProfileScreen from '../screens/profile/ProfileScreen';
 
@@ -130,6 +133,19 @@ function MainTabs() {
 }
 
 /* ---- Incoming call listener (active only when authenticated) ---- */
+function NeuronCallListener() {
+  useEffect(() => {
+    let shown: string | null = null;
+    const show = () => {
+      const call=neuronCalls()?.snapshot();
+      if(!call || call.outgoing || call.status==='ended' || shown===call.id || !navigationRef.isReady()) return;
+      shown=call.id;navigationRef.navigate('NeuronCall',{callId:call.id});
+    };
+    const unsub=subscribeNeuronCalls(show),timer=setInterval(show,500);
+    return()=>{unsub();clearInterval(timer);};
+  },[]);
+  return null;
+}
 function IncomingCallListener() {
   const { subscribe } = useNotificationContext();
   const handled = useRef<string | null>(null);
@@ -392,6 +408,7 @@ export default function AppNavigator() {
   return (
     <>
       {isAuthenticated && <IncomingCallListener />}
+      {isAuthenticated && neuronCallsEnabled() && <NeuronCallListener />}
       <NavigationContainer
         ref={navigationRef}
         theme={navTheme}
@@ -561,6 +578,7 @@ export default function AppNavigator() {
                 component={ActiveCallScreen}
                 options={{ headerShown: false, presentation: 'fullScreenModal', animation: 'fade', gestureEnabled: false }}
               />
+              <Stack.Screen name="NeuronCall" component={NeuronCallScreen} options={{headerShown:false,presentation:'fullScreenModal',gestureEnabled:false}} />
               <Stack.Screen name="OutgoingCall" component={OutgoingCallScreen} options={{ headerShown: false, presentation: 'transparentModal', animation: 'slide_from_bottom', contentStyle: { backgroundColor: 'transparent' }, gestureEnabled: false }} />
               <Stack.Screen
                 name="ShareTarget"

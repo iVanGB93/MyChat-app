@@ -2,10 +2,14 @@ import { createIntroductionService, verifyIntroductions, type IntroductionHooks 
 import { createIdentityExchange } from './identityExchange.ts';
 import { createAxonTestMessages, createAxonNormalMessages, type TestMessageHandler } from './axonTestMessages.ts';
 import { bytesToHex } from '@noble/hashes/utils.js';
+import { ed25519 } from '@noble/curves/ed25519.js';
 import { authenticateIdentityPeer, type IdentityPeer } from './identityClient.ts';
 import { signIdentityRequest, type IdentityRecordStore } from './identityAdmission.ts';
 import { validAccountId, publicDevice, type IdentityRecord } from './identityProtocol.ts';
 import type { NeuronLink } from './neuronConnections.ts';
+import { verifyCallControl } from './callControlProtocol.ts';
+import { verifyCallControlReceipt } from './callControlDelivery.ts';
+import { verifyCallMediaSignal, CALL_MEDIA_MAX_BYTES } from './callMediaProtocol.ts';
 
 export const AXON_FRAME_BYTES = 20_000;
 export interface AxonWire {
@@ -21,6 +25,11 @@ export interface AxonWire {
 export function createPersistentAxon(d: {
   record: IdentityRecord; history?: IdentityRecord[]; signingSeed: Uint8Array; instance: Uint8Array; store: IdentityRecordStore;
   onPush?(raw: string, peer: IdentityPeer): Promise<string>;
+  onCallMediaRelay?(raw: string, peer: IdentityPeer): Promise<boolean>;
+  onRelayedCallMedia?(raw: string, peer: IdentityPeer): Promise<boolean>;
+  onCallRelay?(raw: string, peer: IdentityPeer): Promise<string>;
+  onCallControl?(raw: string, peer: IdentityPeer): Promise<string | null>;
+  onCallMedia?(raw: string, peer: IdentityPeer, localInstance: string): Promise<boolean>;
   onDirectory?(raw: string, peer: IdentityPeer): Promise<string>;
   onCustody?(raw: string, peer: IdentityPeer): Promise<string>;
   onSignal?(raw: string, peer: IdentityPeer): Promise<boolean>;
@@ -30,7 +39,9 @@ export function createPersistentAxon(d: {
   random(size: number): Promise<Uint8Array>; onClosed(): void;
 }) {
   let stopped = false, remote: string | null = null, peer: IdentityPeer | null = null;
-  let peerPush = false;
+  let peerPush = false, peerRelay = false, peerMediaRelay = false, peerMediaForward = false;
+  let peerCalls = false;
+  let peerMedia = false;
   let peerTests = false, peerDirectory = false, peerCustody = false, peerChat = false;
   const chat = d.chatMessages ? createAxonNormalMessages({
     local: { account: d.record.account, device: publicDevice(d.signingSeed, d.chatMessages.encryptionSeed).id, instance: bytesToHex(d.instance) },
@@ -76,11 +87,11 @@ export function createPersistentAxon(d: {
     if (new TextEncoder().encode(raw).length > AXON_FRAME_BYTES) throw Error('Axon frame too large');
     d.wire.send(raw);
   }
-  function exchange(operation: 'describe' | 'authenticate' | 'introductions' | 'custody' | 'directory' | 'push', body: string): Promise<string> {
+  function exchange(operation: 'describe' | 'authenticate' | 'introductions' | 'custody' | 'directory' | 'push' | 'call-control' | 'call-media' | 'call-relay' | 'call-media-relay' | 'call-media-forward', body: string): Promise<string> {
     if (pending || stopped) return Promise.reject(Error('Axon exchange unavailable'));
     return new Promise((resolve, reject) => {
       const id = ++sequence;
-      pending = { id, resolve, reject, timer: setTimeout(stop, 4000) };
+      pending = { id, resolve, reject, timer: setTimeout(stop, operation === 'call-control' || operation === 'call-media' || operation === 'call-relay' || operation === 'call-media-relay' || operation === 'call-media-forward' ? 15000 : 4000) };
       try { send({ version: 1, kind: 'request', id, operation, body }); }
       catch { stop(); }
     });
@@ -127,7 +138,10 @@ export function createPersistentAxon(d: {
       if (f.version !== 1) { stop(); return; }
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop(); return; }
+        peerRelay = f.callRelay === 1;peerMediaRelay=f.callMediaRelay===1;peerMediaForward=f.callMediaForward===1;
         peerPush = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('push-registration-v1');
+        peerMedia = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('call-control-v2');
+        peerCalls = peerMedia || Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('call-control-v1');
         peerSignals = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('rtc-signals-v1');
         peerDirectory = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('identity-directory-v1');
         peerCustody = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('custody-v1');
@@ -168,7 +182,19 @@ export function createPersistentAxon(d: {
           const body = JSON.parse(f.body);
           if (body?.record?.account === remote) response = await service.authenticate(f.body);
         }
+        if ((f.operation === 'call-media-relay' || f.operation === 'call-media-forward') && peer && peer.expiresAt>d.now()
+          && new TextEncoder().encode(f.body).length<=12000) {
+          const handler=f.operation==='call-media-relay'?d.onCallMediaRelay:d.onRelayedCallMedia;
+          response=JSON.stringify({accepted:handler?await handler(f.body,peer):false});
+        }
+        if (f.operation === 'call-relay' && d.onCallRelay && peer && peer.expiresAt > d.now()
+          && new TextEncoder().encode(f.body).length <= 13000) response = await d.onCallRelay(f.body, peer);
         if (f.operation === 'push' && d.onPush && peerPush && peer && peer.expiresAt > d.now()) response = await d.onPush(f.body, peer);
+        if (f.operation === 'call-control' && d.onCallControl && peerCalls && peer && peer.expiresAt > d.now()
+          && new TextEncoder().encode(f.body).length <= 6000) response = await d.onCallControl(f.body, peer) ?? '{}';
+        if (f.operation === 'call-media' && d.onCallMedia && peerMedia && peer && peer.expiresAt > d.now()
+          && new TextEncoder().encode(f.body).length <= CALL_MEDIA_MAX_BYTES)
+          response = JSON.stringify({ accepted: await d.onCallMedia(f.body, peer, bytesToHex(d.instance)) });
         if (f.operation === 'directory' && d.onDirectory && peerDirectory && peer && peer.expiresAt > d.now()) response = await d.onDirectory(f.body, peer);
         if (f.operation === 'custody' && d.onCustody && peer && peer.expiresAt > d.now()) response = await d.onCustody(f.body, peer);
         if (f.operation === 'introductions' && introduce && peerIntroductions) response = await introduce(f.body);
@@ -184,9 +210,76 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, features: [...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
+    mediaRelayPeer:()=>peerMediaRelay && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
+    mediaForwardPeer:()=>peerMediaForward && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
+    async mediaRelayRequest(raw:string,forward=false):Promise<boolean> {
+      const permitted=()=>!!peer&&(forward?peerMediaForward:peerMediaRelay)&&peer.expiresAt>d.now()&&!stopped&&d.current();
+      if(!permitted()||typeof raw!=='string'||new TextEncoder().encode(raw).length>12000||custodyWaiting>=2)return false;
+      custodyWaiting++;
+      try {
+        for(let waits=0;permitted()&&(authenticating||introducing||pending)&&waits<80;waits++)await new Promise(r=>setTimeout(r,25));
+        if(!permitted()||authenticating||introducing||pending)return false;
+        const reply=await exchange(forward?'call-media-forward':'call-media-relay',raw);
+        return permitted()&&JSON.parse(reply)?.accepted===true;
+      }catch{return false;}finally{custodyWaiting--;}
+    },
+    relayPeer: () => peerRelay && peer && !stopped && d.current() && peer.expiresAt > d.now() ? { ...peer } : null,
+    async callRelayRequest(raw: string): Promise<string | null> {
+      const permitted = () => peerRelay && !!peer && peer.expiresAt > d.now() && !stopped && d.current();
+      if (!permitted() || typeof raw !== 'string' || new TextEncoder().encode(raw).length > 13000 || custodyWaiting >= 2) return null;
+      custodyWaiting++;
+      try {
+        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        if (!permitted() || authenticating || introducing || pending) return null;
+        const result = await exchange('call-relay', raw);
+        return permitted() && new TextEncoder().encode(result).length <= 13000 ? result : null;
+      } catch { return null; }
+      finally { custodyWaiting--; }
+    },
+    mediaContext: () => d.onCallMedia && peerMedia && peer && !stopped && d.current() && peer.expiresAt > d.now()
+      ? { peer: { ...peer }, instance: bytesToHex(d.instance) } : null,
+    async callMediaRequest(raw: string): Promise<boolean> {
+      const permitted = () => !!d.onCallMedia && peerMedia && !!peer && peer.expiresAt > d.now() && !stopped && d.current();
+      const event = verifyCallMediaSignal(raw, d.record, d.now());
+      if (!permitted() || !event || event.record.account !== d.record.account || custodyWaiting >= 2
+        || event.sourceInstance !== bytesToHex(d.instance) || event.targetInstance !== peer!.instance
+        || event.target !== peer!.account || event.targetDevice !== peer!.device
+        || !d.record.devices.some(device => device.id === event.device && device.signing === bytesToHex(ed25519.getPublicKey(d.signingSeed)))) return false;
+      custodyWaiting++;
+      try {
+        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        if (!permitted() || authenticating || introducing || pending || event.expiresAt <= d.now()) return false;
+        const reply = await exchange('call-media', raw);
+        return permitted() && JSON.parse(reply)?.accepted === true;
+      } catch { return false; }
+      finally { custodyWaiting--; }
+    },
+    callPeer: () => d.onCallControl && peerCalls && peer && !stopped && d.current() && peer.expiresAt > d.now() ? { ...peer } : null,
+    supportsCallControl: () => !!d.onCallControl && peerCalls && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
+    async callControlRequest(raw: string): Promise<string | null> {
+      const permitted = () => !!d.onCallControl && peerCalls && !!peer && peer.expiresAt > d.now() && !stopped && d.current();
+      const event = verifyCallControl(raw, d.record, d.now());
+      if (!permitted() || !event || event.record.account !== d.record.account || custodyWaiting >= 2
+        || !d.record.devices.some(device => device.id === event.device && device.signing === bytesToHex(ed25519.getPublicKey(d.signingSeed)))) return null;
+      if (
+        (event.record.account === event.caller ? event.callee : event.caller) !== peer!.account) return null;
+      custodyWaiting++;
+      try {
+        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+          await new Promise(resolve => setTimeout(resolve, 25));
+        if (!permitted() || authenticating || introducing || pending || event.expiresAt <= d.now()) return null;
+        const reply = await exchange('call-control', raw);
+        const latest = await d.store.read(peer!.account);
+        const receipt = latest && verifyCallControlReceipt(reply, event, latest, d.now());
+        return permitted() && receipt?.device === peer!.device ? reply : null;
+      } catch { return null; }
+      finally { custodyWaiting--; }
+    },
     supportsDirectory: () => !!d.onDirectory && peerDirectory && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     supportsPush: () => !!d.onPush && peerPush && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async pushRequest(raw: string): Promise<string | null> {

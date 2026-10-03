@@ -6,9 +6,14 @@ function fixture(t,dev=true,flag='1'){
  let rooms=[{id:room,room_type:'direct',members:[14,18]}],pin=peerAccount;
  let row={id:'11111111-1111-4111-8111-111111111111',room_id:room,sender_id:14,content:'Own text',created_at:new Date().toISOString(),
   is_mine:true,is_deleted:false,type:'text',status:'pending',reply_to:null,duration_ms:null,file_uri:null};
- const identity={status:()=>({state:'unlocked',account}),signSignal(){}};
+ const identity={status:()=>({state:'unlocked',account}),signSignal(){},callDevice:()=>null};
  const noop=()=>{},native={axonLanStart:noop,axonLanStop:noop,axonLanSnapshot:noop,axonAccept:noop,axonClaim:noop};
- const mocks={ './mobilePushRegistration':{startMobilePushRegistration:()=>({tick(){},stop(){}}),rejectPushRegistration:async()=>null},
+ const mocks={ './neuronCallFeature':{neuronCallsEnabled:()=>false}, './accountIdentityActivity':{accountIdentityMayRun:s=>s.appLifecycle==='active'},
+  // This fixture exercises the normal-text runtime with the call feature disabled.
+  './neuronIceConfig':{},'./callMediaRelay':{},'./mobileCallWake':{},'./durableCallControl':{},
+  './callControlProtocol':{},'./callControlRelay':{},'./callRelayPump':{},'./mobileCallControlRuntime':{},
+  './mobileCallJournalStore':{},'./neuronCallCoordinator':{},'./mobileNeuronCalls':{},'./callRetryScheduler':{},
+  '@noble/hashes/utils.js':{hexToBytes:()=>new Uint8Array()}, './mobilePushRegistration':{startMobilePushRegistration:()=>({tick(){},stop(){}}),rejectPushRegistration:async()=>null},
   './identityDirectoryLookup':{unavailableDirectoryLookup:()=>({status:'unavailable'})},
   './mobileDirectory':{createMobileDirectory:()=>({receive:async()=>'{"status":"rejected"}',tick:async()=>{},snapshot:()=>({confirmed:0,target:3}),stop(){directoryStops++;}})},
   'react-native':{NativeModules:{},Platform:{OS:'android'}},'react-native-webrtc':{RTCPeerConnection:class{}},

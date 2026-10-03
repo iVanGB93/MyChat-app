@@ -1,5 +1,9 @@
 import { sealCustody, openCustody, verifyCustody, signCustodyReceipt, type CustodyEnvelope } from './custodyProtocol';
 import { signAxonSignal, type AxonSignal } from './axonSignaling';
+import { signCallControl, type CallControl } from './callControlProtocol';
+import { signCallControlReceipt } from './callControlDelivery';
+import { signCallMediaSignal, type CallMediaSignal } from './callMediaProtocol';
+import { publicDevice } from './identityProtocol';
 import { signChatBinding, type ChatBindingChallenge } from './chatIdentityBinding';
 import type { IntroductionHooks } from './identityIntroductions';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -138,6 +142,19 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       return signCustodyReceipt(envelope, source.signingSeed, source.encryptionSeed);
     },
     publicRecord(): IdentityRecord | null { return identity ? JSON.parse(JSON.stringify(identity.record)) : null; },
+    callDevice(): string | null { return identity && !busy ? publicDevice(identity.signingSeed,identity.encryptionSeed).id : null; },
+    signCall(input: Omit<CallControl,'version'|'record'|'device'|'signature'>) {
+      if (!identity || busy) throw Error('Unlock the local account first');
+      return signCallControl({...input,record:identity.record},identity.signingSeed,now());
+    },
+    signCallReceipt(event: CallControl) {
+      if (!identity || busy) throw Error('Unlock the local account first');
+      return signCallControlReceipt(event,identity.record,identity.signingSeed,now());
+    },
+    signCallMedia(input: Omit<CallMediaSignal,'version'|'record'|'device'|'signature'>) {
+      if (!identity || busy) throw Error('Unlock the local account first');
+      return signCallMediaSignal({...input,record:identity.record},identity.signingSeed,now());
+    },
     /** Caller supplies its authenticated legacy owner; private keys remain controller-owned. */
     signChatBinding(owner: number, challenge: ChatBindingChallenge) {
       if (!identity || busy) throw Error('Unlock the local account first');
@@ -156,7 +173,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       return signAxonSignal(identity.record, identity.signingSeed, identity.history ?? [], target, session, kind, sdp, now());
     },
     /** Keys stay inside the controller. Pending sockets are owned before the first await. */
-    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler, onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'], onPush?: Parameters<typeof createPersistentAxon>[0]['onPush']) {
+    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler, onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'], onPush?: Parameters<typeof createPersistentAxon>[0]['onPush'], onCallControl?: Parameters<typeof createPersistentAxon>[0]['onCallControl'], onCallMedia?: Parameters<typeof createPersistentAxon>[0]['onCallMedia'], onCallRelay?: Parameters<typeof createPersistentAxon>[0]['onCallRelay'], onCallMediaRelay?: Parameters<typeof createPersistentAxon>[0]['onCallMediaRelay'], onRelayedCallMedia?: Parameters<typeof createPersistentAxon>[0]['onRelayedCallMedia']) {
       const e = epoch, source = identity;
       let session: ReturnType<typeof createPersistentAxon> | undefined, closed = false;
       const close = () => {
@@ -172,7 +189,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         const instance = await random(32); assertCurrent(e);
         if (closed || source !== identity || busy) throw Error('Account operation interrupted');
         session = createPersistentAxon({ record: source.record, history: source.history, signingSeed: source.signingSeed, instance, store,
-          expectedAccount, introductions, onSignal, onCustody, onDirectory, onPush,
+          expectedAccount, introductions, onSignal, onCustody, onDirectory, onPush, onCallControl, onCallMedia, onCallRelay, onCallMediaRelay, onRelayedCallMedia,
           testMessages: onTestMessage ? { encryptionSeed: source.encryptionSeed, received: onTestMessage } : undefined,
           chatMessages: onChatMessage ? { encryptionSeed: source.encryptionSeed, received: onChatMessage } : undefined,
           wire, now, random, current: () => !closed && epoch === e && source === identity, onClosed: close });

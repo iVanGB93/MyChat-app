@@ -5,6 +5,19 @@ import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 
 export const RECORD_LIFETIME = 30 * 24 * 60 * 60 * 1000;
 export const CHALLENGE_LIFETIME = 60_000;
+/** Cache only the cryptographic result for exact signed bytes, never identity policy.
+ * Expiry, revocation, replay and target checks must still run at every admission.
+ * Bounded and memory-only; negative results never occupy the cache. */
+const signatureCache = new Set<string>();
+export function verifyPublicSignature(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array, _options: {zip215:false}) {
+  if(signature.length!==64||publicKey.length!==32)return false;
+  const key=bytesToHex(publicKey)+bytesToHex(signature)+bytesToHex(sha256(message));
+  if(signatureCache.has(key))return true;
+  if(!ed25519.verify(signature,message,publicKey,{zip215:false}))return false;
+  if(signatureCache.size>=256)signatureCache.delete(signatureCache.values().next().value!);
+  signatureCache.add(key);return true;
+}
+
 export interface IdentityDevice { id: string; signing: string; encryption: string }
 export interface IdentityRecord {
   version: 1; account: string; root: string; revision: number;
@@ -53,7 +66,7 @@ export function verifyRecord(record: unknown, now: number, allowExpired = false)
   try {
     return time(now) && validRecordShape(record) && record.issuedAt <= now + 30_000
       && (allowExpired || record.expiresAt > now)
-      && ed25519.verify(hexToBytes(record.signature), recordBody(record), hexToBytes(record.root), { zip215: false });
+      && verifyPublicSignature(hexToBytes(record.signature), recordBody(record), hexToBytes(record.root), { zip215: false });
   } catch { return false; }
 }
 export function issueRecord(rootSeed: Uint8Array, devices: IdentityDevice[], now: number, previous?: IdentityRecord): IdentityRecord {
@@ -152,7 +165,7 @@ export function createIdentityVerifier(verifier: string, random: (size: number) 
         pending.delete(c.nonce);
         if (p.version !== 1 || !hex(p.signature, 64) || compareRecord(p.record, previous, now()) !== 'accept') return null;
         const device = p.record.devices.find(d => d.id === p.device);
-        if (!device || !ed25519.verify(hexToBytes(p.signature), proofBody(p.record, p.device, c),
+        if (!device || !verifyPublicSignature(hexToBytes(p.signature), proofBody(p.record, p.device, c),
           hexToBytes(device.signing), { zip215: false })) return null;
         return p.record;
       } catch { return null; }

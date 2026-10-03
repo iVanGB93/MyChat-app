@@ -1,3 +1,4 @@
+import { neuronCallsEnabled } from '../../services/identity/neuronCallFeature';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,6 +11,7 @@ import { initiateCall, endCall } from '../../services/callService';
 import { useAppStore } from '../../store/appStore';
 import type { RootStackParamList } from '../../types';
 import { Font, Radius, Spacing } from '../../theme';
+import { neuronCalls } from '../../services/identity/mobileNeuronCalls';
 
 export default function OutgoingCallScreen({ route, navigation }: NativeStackScreenProps<RootStackParamList, 'OutgoingCall'>) {
   const { colors: c } = useTheme();
@@ -35,12 +37,20 @@ export default function OutgoingCallScreen({ route, navigation }: NativeStackScr
     try {
       if (!await ensure(route.params.callType === 'video' ? 'camera+microphone' : 'microphone')) return;
       if (!mounted.current) return;
+      if (neuronCallsEnabled()) {
+        const calls=neuronCalls();
+        if(!calls)throw Error('Neuron calls are not ready. Keep the app open and try again.');
+        const callId=await calls.start(route.params.peerUserId,route.params.callType);
+        if(!mounted.current){await calls.end(callId);return;}
+        proceed.current=true;
+        navigation.replace('NeuronCall',{callId,otherName:name});return;
+      }
       const result = await initiateCall(route.params.peerUserId, route.params.callType);
       if (!mounted.current) { await endCall(result.call_id); return; }
       proceed.current = true;
       navigation.replace('ActiveCall', { ...route.params, callId: result.call_id, roomName: result.room_name, isOutgoing: true });
     } catch (failure: any) {
-      if (mounted.current) setError(failure?.response?.data?.error || 'The call could not be confirmed. Check your connection before trying again.');
+      if (mounted.current) setError(failure?.response?.data?.error || failure?.message || 'The call could not be confirmed. Check your connection before trying again.');
     } finally {
       lock.current = false;
       if (mounted.current) setBusy(false);

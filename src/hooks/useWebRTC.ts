@@ -29,9 +29,32 @@ import { scopeCallSignal, readCallSignal } from '../services/call-signal';
 import { createMediaPrewarmer } from '../services/media-prewarmer';
 import { videoQualityParameters, type VideoQualityMode } from '../services/video-quality';
 import type { CallType, IceConfig } from '../types';
+import type { CallMediaTransport } from '../services/call-media-transport';
 
 /** The ICE gather timeout — same as web app */
 const ICE_GATHER_TIMEOUT = 5000;
+const developmentPeers = new Map<string, RTCPeerConnection>();
+/** Public counters only; never return SDP, ICE addresses, tokens or keys. */
+export async function developmentCallMediaSnapshot(callId: string) {
+  if (typeof __DEV__ === 'undefined' || !__DEV__) return null;
+  const pc=developmentPeers.get(callId);if(!pc)return null;
+  const reports=await pc.getStats();
+  const media: Array<Record<string,unknown>>=[];
+  reports.forEach((r:any)=>{
+    if(['inbound-rtp','outbound-rtp'].includes(r.type))media.push({type:r.type,kind:r.kind??r.mediaType,
+      packetsReceived:r.packetsReceived,packetsSent:r.packetsSent,bytesReceived:r.bytesReceived,bytesSent:r.bytesSent,
+      framesDecoded:r.framesDecoded,framesEncoded:r.framesEncoded});
+  });
+  const candidates: Array<{local?:string;remote?:string}>=[];
+  reports.forEach((r:any)=>{if(r.type==='candidate-pair'&&r.state==='succeeded'&&(r.nominated||r.selected))
+    candidates.push({local:reports.get(r.localCandidateId)?.candidateType,remote:reports.get(r.remoteCandidateId)?.candidateType});});
+  const candidateInventory: Record<string,number>={};
+  reports.forEach((r:any)=>{if(['local-candidate','remote-candidate','candidate-pair'].includes(r.type)){
+    const key=r.type+':'+(r.candidateType??r.state)+':'+(r.protocol??'');candidateInventory[key]=(candidateInventory[key]??0)+1;
+  }});
+  return {ice:pc.iceConnectionState,connection:pc.connectionState,media,candidates,candidateInventory,
+    localTracks:pc.getSenders().flatMap(sender=>sender.track?[{kind:sender.track.kind,enabled:sender.track.enabled}]:[])};
+}
 
 const videoPrewarmer = createMediaPrewarmer<MediaStream>(async () => {
   try {
@@ -81,6 +104,8 @@ interface UseWebRTCOptions {
   isOutgoing: boolean;
   /** The other user's numeric ID (needed for sendSignal). */
   peerUserId: number;
+  /** Omit for existing Django calls. A neuron adapter owns signaling and ICE configuration. */
+  mediaTransport?: CallMediaTransport;
   /** Called when the peer connection reaches the connected state. */
   onConnected?: () => void;
   /** Called when the peer connection disconnects/fails. */
@@ -92,13 +117,21 @@ export default function useWebRTC({
   callType,
   isOutgoing,
   peerUserId,
+  mediaTransport,
   onConnected,
   onDisconnected,
 }: UseWebRTCOptions) {
   const { sendSignal: sendRawSignal, subscribe } = useNotificationContext();
+  const disconnectedRef = useRef(onDisconnected);
+  disconnectedRef.current = onDisconnected;
   const sendSignal = useCallback((userId: number, type: string, data: any) => {
-    sendRawSignal(userId, type, scopeCallSignal(data, callId));
-  }, [sendRawSignal, callId]);
+    if (cleanedUp.current) return;
+    if (mediaTransport) {
+      void mediaTransport.send(type, data).then(sent => {
+        if (!sent && !cleanedUp.current) disconnectedRef.current?.();
+      }).catch(() => { if (!cleanedUp.current) disconnectedRef.current?.(); });
+    } else sendRawSignal(userId, type, scopeCallSignal(data, callId));
+  }, [sendRawSignal, callId, mediaTransport]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const [videoQualityMode, setVideoQualityMode] = useState<VideoQualityMode>('automatic');
@@ -110,6 +143,7 @@ export default function useWebRTC({
   const mediaAcquirePromiseRef = useRef<Promise<MediaStream> | null>(null);
   const pendingCandidates = useRef<RTCIceCandidate[]>([]);
   const hasRemoteDesc = useRef(false);
+  const fullDescriptionSent = useRef(false);
   const cleanedUp = useRef(false);
   const iceConfigRef = useRef<IceConfig>(FALLBACK_ICE_CONFIG);
   const iceConfigReadyRef = useRef<Promise<void> | null>(null);
@@ -131,13 +165,19 @@ export default function useWebRTC({
   const qualityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const qualitySampleRef = useRef<{ timestamp: number; bytesSent: number } | null>(null);
 
-  /* ---- Fetch ICE config from server on mount ---- */
+  /* ---- Resolve this call's ICE configuration before negotiating ---- */
   useEffect(() => {
-    iceConfigReadyRef.current = getIceConfig().then((cfg) => {
+    iceConfigReadyRef.current = (mediaTransport ? mediaTransport.loadIceConfig() : getIceConfig()).then((cfg) => {
+      if (cleanedUp.current) return;
       iceConfigRef.current = cfg;
       debugLog(
         `[WebRTC] ICE config loaded — policy: ${cfg.ice_transport_policy}, servers: ${cfg.ice_servers.length}`
       );
+    }).catch(() => {
+      if (cleanedUp.current) return;
+      // A failed neuron configuration must not fall through to Django or start an offer.
+      cleanup();
+      disconnectedRef.current?.();
     });
   }, []);
 
@@ -372,9 +412,13 @@ export default function useWebRTC({
       const pc = new RTCPeerConnection({
         iceServers: ice_servers,
         iceTransportPolicy: ice_transport_policy,
+        // Neuron peers support BUNDLE: use one allocation for audio and video.
+        ...(mediaTransport?{bundlePolicy:'max-bundle' as const}:{}),
       } as any);
       pcRef.current = pc;
+      if(typeof __DEV__ !== 'undefined' && __DEV__)developmentPeers.set(callId,pc);
       hasRemoteDesc.current = false;
+      fullDescriptionSent.current = false;
       startQualityMonitoring(pc);
 
       // Add local tracks
@@ -392,6 +436,9 @@ export default function useWebRTC({
 
       // Trickle ICE candidates (backup — primary is full SDP)
       (pc as any).onicecandidate = (event: any) => {
+        // Neuron descriptions already include gathered candidates. Avoid putting each signed
+        // candidate ahead of the offer in the durable-admission queue; retain late trickle ICE.
+        if (mediaTransport && !fullDescriptionSent.current) return;
         if (event.candidate) {
           sendSignal(peerUserId, 'ice-candidate', event.candidate.toJSON());
         }
@@ -417,6 +464,7 @@ export default function useWebRTC({
               .then(() => {
                 if (pc.localDescription && !cleanedUp.current) {
                   sendSignal(peerUserId, 'offer', pc.localDescription.toJSON());
+                  fullDescriptionSent.current = true;
                 }
               })
               .catch(() => {});
@@ -426,7 +474,7 @@ export default function useWebRTC({
 
       return pc;
     },
-    [peerUserId, sendSignal, isOutgoing, onConnected, onDisconnected, waitForIceGathering, detectConnectionType, startQualityMonitoring],
+    [peerUserId, sendSignal, mediaTransport, isOutgoing, onConnected, onDisconnected, waitForIceGathering, detectConnectionType, startQualityMonitoring],
   );
 
   /* ---- Caller flow: called after call_accepted ---- */
@@ -448,6 +496,7 @@ export default function useWebRTC({
       if (pc.localDescription && !cleanedUp.current) {
         debugLog('[WebRTC] sending offer');
         sendSignal(peerUserId, 'offer', pc.localDescription.toJSON());
+        fullDescriptionSent.current = true;
       }
     } catch (err) {
       console.error('[WebRTC] startAsOfferer error:', err);
@@ -468,19 +517,22 @@ export default function useWebRTC({
 
   /* ---- Handle incoming WebRTC signals ---- */
   useEffect(() => {
-    const unsub = subscribe((payload) => {
-      if (payload.event !== 'webrtc_signal') return;
+    let subscribed = true;
+    let queuedSignals = 0;
+    const handle = (signal_type: string | undefined, from_user_id: number | undefined, rawData: unknown) => {
+      if (!subscribed) return;
       if (cleanedUp.current) return;
-
-      const { signal_type, from_user_id } = payload;
-      const data = readCallSignal(payload.data, callId);
+      const data = readCallSignal(rawData, callId);
       if (!data) return;
       // Only handle signals from our peer
       if (from_user_id !== peerUserId) return;
+      if (!['offer', 'answer', 'ice-candidate'].includes(signal_type ?? '')) return;
+      if (queuedSignals >= 64) { disconnectedRef.current?.(); return; }
+      queuedSignals++;
 
       // Enqueue to serial signal queue (prevents race conditions)
       signalQueue.current = signalQueue.current.then(async () => {
-        if (cleanedUp.current) return;
+        if (!subscribed || cleanedUp.current) return;
 
         if (signal_type === 'offer') {
           if (data.type !== 'offer' || typeof data.sdp !== 'string') return;
@@ -508,6 +560,7 @@ export default function useWebRTC({
             if (pc.localDescription && !cleanedUp.current) {
               debugLog('[WebRTC] sending answer');
               sendSignal(from_user_id!, 'answer', pc.localDescription.toJSON());
+              fullDescriptionSent.current = true;
             }
           } catch (err) {
             console.error('[WebRTC] handle offer error:', err);
@@ -538,11 +591,16 @@ export default function useWebRTC({
             console.error('[WebRTC] add ICE error:', err);
           }
         }
+      }).catch(() => { if (subscribed && !cleanedUp.current) disconnectedRef.current?.(); })
+        .finally(() => { queuedSignals--; });
+    };
+    const unsub = mediaTransport
+      ? mediaTransport.subscribe((kind, data) => handle(kind, peerUserId, data))
+      : subscribe(payload => {
+        if (payload.event === 'webrtc_signal') handle(payload.signal_type, payload.from_user_id, payload.data);
       });
-    });
-
-    return unsub;
-  }, [subscribe, peerUserId, callId, acquireMedia, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
+    return () => { subscribed = false; unsub(); };
+  }, [subscribe, mediaTransport, peerUserId, callId, acquireMedia, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
 
   /* ---- Kick off the right flow on mount ---- */
   useEffect(() => {
@@ -606,6 +664,7 @@ export default function useWebRTC({
     }
 
     if (pcRef.current) {
+      if(developmentPeers.get(callId)===pcRef.current)developmentPeers.delete(callId);
       pcRef.current.close();
       pcRef.current = null;
     }

@@ -190,4 +190,5 @@ export type RootStackParamList = {
     peerUserId: number;
   };
   OutgoingCall: { peerUserId: number; otherName: string; callType: CallType };
+  NeuronCall: { callId: string; otherName?: string };
 };

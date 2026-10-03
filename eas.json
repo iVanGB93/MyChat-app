@@ -15,7 +15,8 @@
       "autoIncrement": true,
       "env": {
         "EXPO_PUBLIC_AXONIC_NETWORK": "1",
-        "EXPO_PUBLIC_AXONIC_CHAT_IDENTITY": "1"
+        "EXPO_PUBLIC_AXONIC_CHAT_IDENTITY": "1",
+        "EXPO_PUBLIC_AXONIC_CALL_CONTROL": "1"
       },
       "android": {
         "buildType": "app-bundle"
