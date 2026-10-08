@@ -10,6 +10,28 @@ import java.net.ServerSocket
 import java.net.Socket
 
 class AxonSocketsTest {
+  @Test(timeout = 15000) fun authenticatedBudgetIncludesControlAndAttachmentFrames() {
+    for (authenticated in listOf(false, true)) {
+      val transport = AxonSockets()
+      ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { server ->
+        try {
+          val id = transport.reserve(Socket())
+          transport.connect(id, InetSocketAddress(server.inetAddress, server.localPort))
+          server.accept().use { peer ->
+            if (authenticated) transport.enableAttachments(id)
+            val output = DataOutputStream(peer.getOutputStream())
+            val budget = if (authenticated) 3856 else 64
+            repeat(budget) {
+              output.writeInt(1); output.writeByte(65); output.flush()
+              assertEquals("A", transport.read(id))
+            }
+            output.writeInt(1); output.writeByte(65); output.flush()
+            assertThrows(IllegalStateException::class.java) { transport.read(id) }
+          }
+        } finally { transport.destroy() }
+      }
+    }
+  }
   @Test(timeout = 5000) fun incomingAndOutgoingSocketsShareOneAdmissionLimit() {
     val transport = AxonSockets()
     transport.setLimit(2)

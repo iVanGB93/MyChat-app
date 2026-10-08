@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.1.5",
+  "version": "1.1.6",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -9,13 +9,15 @@
     "web": "expo start --web",
     "fix:gradle9": "node scripts/patch-react-native-gradle-plugin.cjs",
     "fix:rtc-identity": "node scripts/patch-webrtc-identity.cjs",
-    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity",
-    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity",
+    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder",
+    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --test tests/*.test.cjs",
     "test:rtc-native": "node scripts/test-native-identity-guard.cjs",
     "check:cycles": "node scripts/check-service-cycles.cjs",
-    "check": "npm run typecheck && npm run test:unit && npm run check:cycles"
+    "check": "npm run typecheck && npm run test:unit && npm run check:cycles && npm run check:modules",
+    "check:modules": "node scripts/check-module-boundaries.cjs",
+    "fix:audio-recorder": "node scripts/patch-audio-recorder.cjs"
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^14.0.0",
@@ -89,6 +91,13 @@
           "@supersami/rn-foreground-service",
           "react-native-webrtc",
           "@notifee/react-native"
+        ]
+      }
+    },
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-audio"
         ]
       }
     }

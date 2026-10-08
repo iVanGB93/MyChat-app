@@ -21,6 +21,24 @@ function db() {
 function key(owner: string, callId: string) {
   if (!validAccountId(owner) || !/^[0-9a-f]{64}$/.test(callId)) throw Error('Invalid call journal key');
 }
+export interface OwnCallSummary {id:string;peer:string;outgoing:boolean;media:'voice'|'video';at:number}
+/** Display-only own history; it cannot authorize signaling or recreate a call. */
+export async function listOwnCallHistory(owner:string):Promise<OwnCallSummary[]>{
+ if(!validAccountId(owner))throw Error('Invalid call owner');
+ return serial(async()=>{
+  const database=await db(),active=await database.getAllAsync<{call_id:string;data:string}>('SELECT call_id,data FROM call_journal WHERE owner=? LIMIT 64',owner);
+  const archived=await database.getAllAsync<{call_id:string;data:string}>('SELECT call_id,data FROM call_history WHERE owner=? ORDER BY archived_at DESC LIMIT 100',owner);
+  const calls=new Map<string,OwnCallSummary>();
+  for(const row of [...active,...archived]){
+   if(row.data.length>800000)throw Error('Oversized call history');const journal=JSON.parse(row.data);
+   if(journal.owner!==owner||journal.callId!==row.call_id||!Array.isArray(journal.entries)||!journal.entries.length)throw Error('Invalid own call history');
+   const event=JSON.parse(journal.entries[0].raw) as CallControl;
+   if(event.callId!==row.call_id||!validAccountId(event.caller)||!validAccountId(event.callee)||event.caller===event.callee
+    ||!['voice','video'].includes(event.media)||!Number.isSafeInteger(event.issuedAt)||![event.caller,event.callee].includes(owner))throw Error('Invalid own call history');
+   calls.set(event.callId,{id:event.callId,peer:event.caller===owner?event.callee:event.caller,outgoing:event.caller===owner,media:event.media,at:event.issuedAt});
+  }return [...calls.values()].sort((a,b)=>b.at-a.at).slice(0,100);
+ });
+}
 /** Bounded own-call inventory for restart recovery, never a public network directory. */
 export async function listMobileCallJournals(owner: string, pendingAt?: number): Promise<CallControl[]> {
   return serial(async()=>{

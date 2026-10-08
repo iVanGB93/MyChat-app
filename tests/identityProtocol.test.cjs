@@ -92,7 +92,7 @@ test('pending challenges are bounded, expired entries are reclaimed, and no pred
 });
 test('recovery retains account identity, replaces device keys, and requires the prior signed record', async () => {
   const created = await vault.createLocalIdentity(async n => random(n), now);
-  assert.equal(created.recoveryPhrase.split(' ').length, 24);
+  assert.equal(created.recoveryPhrase.split(' ').length, 12);
   const restored = await vault.recoverReplacingDevices(created.recoveryPhrase, created.identity.record, async n => random(n), now + 1);
   assert.equal(restored.record.account, created.identity.record.account);
   assert.notEqual(restored.record.devices[0].id, created.identity.record.devices[0].id);
@@ -346,4 +346,38 @@ test('unlock renews and saves the vault before admission; failed writes preserve
   storage.writeVault=write;await c.unlock('test renewal password');
   assert.equal(c.publicRecord().revision,1);assert.equal(c.publicRecord().account,original.account);assert.deepEqual(c.publicRecord().devices,original.devices);
   c.lock();const cold=make();await cold.unlock('test renewal password');assert.equal(cold.publicRecord().revision,1);cold.lock();
+});
+
+test('12-word public lookup identifier matches creation; malformed words never derive an account', async () => {
+  const created = await vault.createLocalIdentity(async n => random(n), now);
+  assert.equal(vault.accountFromRecoveryPhrase(created.recoveryPhrase), created.identity.record.account);
+  assert.equal(vault.accountFromRecoveryPhrase('  ' + created.recoveryPhrase.toUpperCase().replaceAll(' ', '  ') + '  '), created.identity.record.account);
+  assert.throws(() => vault.accountFromRecoveryPhrase('invalid words'));
+  assert.throws(() => vault.rootFromEntropy(new Uint8Array(20)));
+  vault.destroyIdentity(created.identity);
+});
+test('old 24-word vaults still unlock and recover; vault version cannot be substituted', async () => {
+  const entropy = random(32), root = vault.rootFromEntropy(entropy);
+  const signingSeed = random(32), encryptionSeed = random(32);
+  const identity = {entropy, signingSeed, encryptionSeed, record:p.issueRecord(root,[p.publicDevice(signingSeed,encryptionSeed)],now)};
+  const secret = random(32), password = 'synthetic compatibility password';
+  const derive = async (password,salt) => new Uint8Array(crypto.createHash('sha256').update(password).update(salt).digest());
+  const sealed = await vault.sealIdentity(identity,password,secret,async n=>random(n),now,derive);
+  assert.equal(sealed.version,1);
+  const opened = await vault.unlockIdentity(JSON.stringify(sealed),password,secret,now,derive);
+  assert.deepEqual(opened.entropy,entropy);
+  const phrase = require('@scure/bip39').entropyToMnemonic(entropy,require('@scure/bip39/wordlists/english.js').wordlist);
+  assert.equal(phrase.split(' ').length,24);
+  assert.equal(vault.accountFromRecoveryPhrase(phrase),identity.record.account);
+  const restored = await vault.recoverReplacingDevices(phrase,identity.record,async n=>random(n),now+1);
+  assert.equal(restored.record.account,identity.record.account);
+  await assert.rejects(vault.unlockIdentity(JSON.stringify({...sealed,version:2}),password,secret,now,derive));
+  const fresh = await vault.createLocalIdentity(async n=>random(n),now);
+  const compact = await vault.sealIdentity(fresh.identity,password,secret,async n=>random(n),now,derive);
+  assert.equal(compact.version,2);assert.equal(compact.ciphertext.length,192);
+  const freshOpened = await vault.unlockIdentity(JSON.stringify(compact),password,secret,now,derive);
+  assert.deepEqual(freshOpened.entropy,fresh.identity.entropy);
+  await assert.rejects(vault.unlockIdentity(JSON.stringify({...compact,version:1}),password,secret,now,derive));
+  for(const item of [opened,restored,identity,fresh.identity,freshOpened])vault.destroyIdentity(item);
+  root.fill(0);secret.fill(0);
 });

@@ -80,10 +80,11 @@ export function startAccountChatBinding() {
   });
   const update = () => {
     const state = useAppStore.getState();
+    Native?.axonConnectedCall?.(!state.authLoading && accountIdentityMayRun({...state, appLifecycle:'background'}));
     lifecycle.set(state.user?.id ?? null, !state.authLoading && accountIdentityMayRun(state));
   };
   const unsubscribe = useAppStore.subscribe(update);
   update();
   const timer = setInterval(() => { void refresh?.().catch(() => {}); }, 5000);
-  return () => { clearInterval(timer); unsubscribe(); lifecycle.stop(); };
+  return () => { clearInterval(timer); unsubscribe(); Native?.axonConnectedCall?.(false); lifecycle.stop(); };
 }

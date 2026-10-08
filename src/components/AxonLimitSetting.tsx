@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useSyncExternalStore } from 'react';
 import { View, Text, Pressable } from 'react-native';
 import { useTheme } from '../contexts/ThemeContext';
-import { allowedAxons, subscribeAllowedAxons, loadAllowedAxons, setAllowedAxons } from '../services/allowedAxons';
+import { allowedAxons, subscribeAllowedAxons, loadAllowedAxons, setAllowedAxons } from '../modules/network';
 export default function AxonLimitSetting() {
   const { colors } = useTheme(), value = useSyncExternalStore(subscribeAllowedAxons, allowedAxons);
   const [busy, setBusy] = useState(true), [error, setError] = useState('');

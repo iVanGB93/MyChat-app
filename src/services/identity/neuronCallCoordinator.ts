@@ -1,14 +1,14 @@
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { callControlDigest, type CallControl } from './callControlProtocol';
-import { createDurableCallerCallControl, createDurableRecipientCallControl, type CallJournalStore } from './durableCallControl';
-import { createCallMediaSession } from './callMediaSession';
-import type { CallMediaSignal, CallMediaData } from './callMediaProtocol';
-import type { IdentityPeer } from './identityClient';
-import type { IdentityRecord } from './identityProtocol';
-import type { CallMediaTransport } from '../call-media-transport';
+import { callControlDigest, type CallControl } from './callControlProtocol.ts';
+import { createDurableCallerCallControl, createDurableRecipientCallControl, type CallJournalStore } from './durableCallControl.ts';
+import { createCallMediaSession } from './callMediaSession.ts';
+import type { CallMediaSignal, CallMediaData } from './callMediaProtocol.ts';
+import type { IdentityPeer } from './identityClient.ts';
+import type { IdentityRecord } from './identityProtocol.ts';
+import type { CallMediaTransport } from './callMediaTransport.ts';
 
-export interface NeuronCallView {
-  id: string; peerUser: number; peerName: string; outgoing: boolean; media: 'voice' | 'video';
+export interface NeuronCallView<Peer = number> {
+  id: string; peerUser: Peer; peerName: string; outgoing: boolean; media: 'voice' | 'video';
   status: 'ringing' | 'connecting' | 'ready' | 'ended'; reason?: string;
   transport?: CallMediaTransport;
 }
@@ -19,11 +19,12 @@ export type CallMediaContext = { peer: IdentityPeer; instance: string };
 /** Foreground development calls. One call, bounded ephemeral media, durable control.
  * A process restart ends old calls; no old SDP is replayed into a new media connection.
  */
-export function createNeuronCallCoordinator(d: {
+export function createNeuronCallCoordinator<Peer = number>(d: {
   account: string; device: string; store: CallJournalStore; now(): number; current(): boolean;
   busy(): boolean; blocked(account: string): boolean;
-  lookup(account: string): { user: number; name: string } | null;
-  resolve(user: number): Promise<{ account: string; name: string } | null>;
+  preserveIncoming?(id:string):boolean;
+  lookup(account: string): { user: Peer; name: string } | null;
+  resolve(user: Peer): Promise<{ account: string; name: string } | null>;
   readRecord(account: string): Promise<IdentityRecord | null>; list(): Promise<CallControl[]>;
   random(): Promise<Uint8Array>; sign(input: ControlInput): string; submit(raw: string): Promise<boolean>;
   signMedia(input: MediaInput): string; contexts(): CallMediaContext[];
@@ -31,10 +32,11 @@ export function createNeuronCallCoordinator(d: {
   loadIceConfig?: CallMediaTransport['loadIceConfig'];
   callRoute?(account:string,device:string): {expiresAt:number}|null;
   sendRoutedMedia?(raw:string):Promise<boolean>;
-  changed(view: NeuronCallView | null): void;
+  changed(view: NeuronCallView<Peer> | null): void;
 }) {
-  let stopped = false, active: CallControl | null = null, view: NeuronCallView | null = null;
+  let stopped = false, active: CallControl | null = null, view: NeuronCallView<Peer> | null = null;
   const declined=new Set<string>();
+  let awaitingRouteSince: number | null = null;
   let media: { context: CallMediaContext; receiver: ReturnType<typeof createCallMediaSession>; transport: CallMediaTransport; stop(): void } | null = null;
   let tail: Promise<unknown> = Promise.resolve();
   const diagnostics={sent:0,received:0,accepted:0,sendStage:'idle',receiveStage:'idle',error:null as string|null};
@@ -63,7 +65,10 @@ export function createNeuronCallCoordinator(d: {
   let recovery: Promise<void> | null = null;
   let ticking: Promise<void> | null = null;
   const recover = () => recovery ??= (async()=>{
-    for(const e of await d.list()) { if(!current())return;if(e.kind==='invite')await terminate(e); }
+    for(const e of await d.list()) { if(!current())return;if(e.kind==='invite'){
+      const pending=e.callee===d.account&&d.preserveIncoming?.(e.callId)&&(await state(e).snapshot(d.now()))?.status==='ringing';
+      if(!pending)await terminate(e);
+    } }
   })().catch(error=>{recovery=null;throw error;});
   void recover().catch(()=>{});
 
@@ -134,6 +139,13 @@ export function createNeuronCallCoordinator(d: {
     if(view.status==='ringing'){view={...view,status:'connecting'};emit();}
     const peerDevice=view.outgoing?s.selectedDevice:e.callerDevice;
     const context=d.callRoute?routedContext(e,s.acceptance,peerDevice):d.contexts().find(c=>c.peer.account===remote(e)&&c.peer.device===peerDevice);
+    // A permission prompt can reconnect the recipient while selection is in flight.
+    // Routed media is bound to this call/acceptance, so a short route gap need not end its media.
+    // A changed direct session still fails closed; no signaling is accepted during a route gap.
+    if(!context&&(!media||d.callRoute)){
+      awaitingRouteSince ??= d.now();
+      if(d.now()-awaitingRouteSince<10000)return;
+    }else awaitingRouteSince=null;
     if(!context || media&&(context.instance!==media.context.instance||context.peer.instance!==media.context.peer.instance)){
       await terminate(e);finish('Peer disconnected');return;
     }
@@ -148,9 +160,20 @@ export function createNeuronCallCoordinator(d: {
   }
   return {
     ready:recover,
+    async peerReady(user:Peer){const target=await d.resolve(user);return current()&&!!target&&!d.blocked(target.account)&&
+      (d.contexts().some(c=>c.peer.account===target.account)||!!d.callRoute?.(target.account,''));},
+    resumeIncoming(id:string){return serial(async()=>{
+      await recover();if(!current()||!d.preserveIncoming?.(id))return false;
+      if(active?.callId===id&&view?.status==='ringing')return true;
+      if(view&&view.status!=='ended'||d.busy())return false;
+      const e=(await d.list()).find(e=>e.kind==='invite'&&e.callId===id&&e.callee===d.account);
+      if(!e||!current()||d.blocked(e.caller)||(await state(e).snapshot(d.now()))?.status!=='ringing')return false;
+      const peer=d.lookup(e.caller);if(!peer||!current())return false;
+      active=e;view={id:e.callId,peerUser:peer.user,peerName:peer.name,outgoing:false,media:e.media,status:'ringing'};emit();return true;
+    });},
     diagnostics:()=>({...diagnostics}),
     snapshot:()=>view?{...view}:null,
-    async start(user:number,kind:'voice'|'video') {return serial(async()=>{
+    async start(user:Peer,kind:'voice'|'video') {return serial(async()=>{
       await recover();
       if(!current()||view&&view.status!=='ended'||d.busy())throw Error('Finish your current call first.');
       const target=await d.resolve(user);

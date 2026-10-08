@@ -13,6 +13,7 @@ type Session = ReturnType<typeof createPersistentAxon>;
  * Caller drives tick every second. No discovery or transport is implicitly enabled.
  */
 export function createIdentityNetwork(d: {
+  onConnected?(candidate:NeuronCandidate):void;
   identity: Identity; store: IdentityRecordStore; now(): number; limit?: number;
   onSignal?(signal: AxonSignal, via: string): void;
   onTestMessage?: TestMessageHandler;
@@ -24,6 +25,7 @@ export function createIdentityNetwork(d: {
   onCallControl?: Parameters<typeof createPersistentAxon>[0]['onCallControl'];
   onCallMedia?: Parameters<typeof createPersistentAxon>[0]['onCallMedia'];
   onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'];
+  onAttachment?: Parameters<typeof createPersistentAxon>[0]['onAttachment'];
   onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'];
   connect(candidate: NeuronCandidate, context: ConnectionContext): Promise<AxonWire>;
 }) {
@@ -69,15 +71,19 @@ export function createIdentityNetwork(d: {
         try {
           wire = incoming ?? await d.connect(candidate, context);
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
-          session = await d.identity.createAxon(wire, d.store, candidate.account, () => { close(); context.onClosed(); }, {
+          session = await d.identity.createAxon(wire, d.store, candidate.account, () => {
+            console.info('[Axonic connection]', candidate.route, session?.snapshot().closeReason ?? 'handshake-closed', JSON.stringify(session?.snapshot().traffic ?? {}));
+            close(); context.onClosed();
+          }, {
             list: () => (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && c.expiresAt !== null)
               .map(c => ({ account: c.account, expiresAt: c.expiresAt! })),
             received: peers => { if (valid()) directory.replace(candidate.account, peers); },
-          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage, d.onDirectory, d.onPush, d.onCallControl, d.onCallMedia, d.onCallRelay, d.onCallMediaRelay, d.onRelayedCallMedia);
+          }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage, d.onDirectory, d.onPush, d.onCallControl, d.onCallMedia, d.onCallRelay, d.onCallMediaRelay, d.onRelayedCallMedia, d.onAttachment);
           if (closed || !valid() || session.snapshot().state === 'closed') { session.stop(); close(); return null; }
           sessions.add(session);
           const link = await session.ready;
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
+          if(!incoming){try{d.onConnected?.({...candidate});}catch{/* Locator persistence cannot hold an authenticated socket open. */}}
           return { peer: link.peer, close };
         } catch { close(); return null; }
         finally { if (!session || session.snapshot().state === 'closed') context.signal.removeEventListener('abort', close); }
@@ -118,6 +124,7 @@ export function createIdentityNetwork(d: {
       if (!Number.isInteger(next) || next < 3 || next > 10) throw Error('Allow axons must be between 3 and 10');
       limit = next; pool?.setLimit(next);
     },
+    pushPeers: () => [...sessions].filter(s => s.snapshot().state === 'connected' && s.supportsPush()).map(s => s.snapshot().account!).filter(Boolean),
     pushRequest(target: string, raw: string) {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.supportsPush() ? session.pushRequest(raw) : Promise.resolve(null);
@@ -133,6 +140,8 @@ export function createIdentityNetwork(d: {
       return (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && [...sessions].some(s => s.snapshot().account === c.account && s.supportsCustody()))
         .sort((a, b) => ranks[a.route] - ranks[b.route]).map(c => c.account);
     },
+    attachmentPeers(){const ranks={lan:0,private:1,internet:2};return (pool?.snapshot().connections??[]).filter(c=>c.state==='connected'&&[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).sort((a,b)=>ranks[a.route]-ranks[b.route]).map(c=>c.account);},
+    attachmentRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.snapshot().state==='connected')?.attachmentRequest(raw)??Promise.resolve(null);},
     custodyRequest(target: string, raw: string) {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.custodyRequest(raw) ?? Promise.resolve(null);
@@ -155,12 +164,13 @@ export function createIdentityNetwork(d: {
       try { wire.close(); } catch { /* Rejected inbound sockets must not remain owned. */ }
       return false;
     },
+    resume() { reconcile(); if (account) pool?.resume(); },
     tick() { reconcile(); for (const session of sessions) session.tick(); if (account) pool?.tick(); },
     setParticipation(value: boolean) { enabled = value; reconcile(); },
     snapshot() {
       const status = d.identity.status();
       return { state: disposed ? 'stopped' : !enabled ? 'paused' : status.state !== 'unlocked' ? 'locked'
-        : account ? 'active' : 'waiting', account, limit, pool: pool?.snapshot() ?? null, introductions: directory.snapshot() };
+        : account ? 'active' : 'waiting', account, limit, pool: pool?.snapshot() ?? null, sessions:[...sessions].map(s=>({...s.snapshot(),push:s.supportsPush(),custody:s.supportsCustody()})), introductions: directory.snapshot() };
     },
     stop() { if (disposed) return; disposed = true; unsubscribe(); pause(); },
   };

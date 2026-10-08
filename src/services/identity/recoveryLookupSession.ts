@@ -36,7 +36,7 @@ export function createRecoveryLookupSession(d: {
     lifetime = setTimeout(stop, 5 * 60_000);
   }
   return {
-    async lookup(checkpoint: IdentityRecord) {
+    async lookup(checkpoint: IdentityRecord | string) {
       if (busy) return { ...unavailableDirectoryLookup(), status: 'busy' as const };
       busy = true;
       // Bounded dial/handshake/query; close also cancels an unresolved native dial.
@@ -45,10 +45,10 @@ export function createRecoveryLookupSession(d: {
       try {
         return await Promise.race([timeout, (async () => {
           await (connecting ??= start());
-          const lookup = createIdentityDirectoryLookup({ pins: { read: async () => checkpoint }, now: d.now,
+          const lookup = createIdentityDirectoryLookup({ pins: { read: async () => typeof checkpoint === 'string' ? null : checkpoint }, now: d.now,
             current: () => !abort.signal.aborted, peers: () => session?.supportsDirectory() ? [d.peer] : [],
             request: async (_peer, raw) => session?.directoryRequest(raw) ?? null });
-          try { return await lookup.lookup(checkpoint.account); } finally { lookup.stop(); }
+          try { return await lookup.lookup(typeof checkpoint === 'string' ? checkpoint : checkpoint.account); } finally { lookup.stop(); }
         })()]);
       } catch { stop(); return unavailableDirectoryLookup(); }
       finally { clearTimeout(deadline); busy = false; }

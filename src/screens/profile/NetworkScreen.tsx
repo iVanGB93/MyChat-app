@@ -1,4 +1,4 @@
-import IdentityLookup from '../../components/IdentityLookup';
+import NetworkDiagnostics from '../../components/NetworkDiagnostics';
 import React, { useCallback, useState } from 'react';
 import { ScrollView, View, Text, StyleSheet } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
@@ -40,7 +40,7 @@ export default function NetworkScreen() {
       {pending > 0 && <Text style={text}>Connecting to {pending} {pending === 1 ? 'neuron' : 'neurons'}…</Text>}
       {!!snapshot?.error && lifecycle === 'active' && !!user && <Text style={text}>{snapshot.error}</Text>}
     </View>
-    {!!user && lifecycle === 'active' && accountNeuronEnabled() && <IdentityLookup key={user} lookup={mobileNormalChatLookupIdentity} color={colors.text} muted={colors.textSecondary} border={colors.border} />}
+    {!!user && lifecycle === 'active' && accountNeuronEnabled() && <NetworkDiagnostics key={user} lookup={mobileNormalChatLookupIdentity} />}
     <Text style={[text, styles.explanation]}>Participation pauses when the app is in the background.</Text>
   </ScrollView>;
 }

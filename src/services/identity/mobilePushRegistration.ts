@@ -6,7 +6,10 @@ import { getInstallationId } from '../installationIdentity';
 let revoke: (() => Promise<boolean>) | null = null;
 export const rejectPushRegistration = async () => JSON.stringify({ status: 'unsupported' });
 export function startMobilePushRegistration(current: () => boolean, request: (peer: string, raw: string) => Promise<string | null>, account: string) {
+  let lastDiagnostic='';
   const worker = createPushRegistration({ current, now: Date.now, token: () => getToken(getMessaging()), request: raw => request(FIRST_NEURON.account, raw),
+    diagnostic:stage=>{if(stage!==lastDiagnostic){lastDiagnostic=stage;console.info('[NeuronPush]',stage);}},
+    rotateToken:()=>deleteToken(getMessaging()),
     binding: async () => {
       const installation_id = await getInstallationId();
       if (!current()) return null;

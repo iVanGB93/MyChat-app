@@ -125,6 +125,8 @@ export function createNeuronConnections(d: {
   }
   return {
     offer, tick,
+    // Local lifecycle wake only: discovery refreshes must still preserve backoff.
+    resume() { if (stopped) return; for (const c of candidates.values()) { c.failures = 0; c.retryAt = 0; } tick(); },
     setLimit(next: number) {
       if (!Number.isInteger(next) || next < 1 || next > 20) throw Error('Invalid axon limit');
       limit = next;

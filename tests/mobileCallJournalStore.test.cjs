@@ -4,7 +4,7 @@ const ts = require('typescript'), { DatabaseSync } = require('node:sqlite');
 test('mobile journal SQL preserves CAS, ownership and state across database reopen', async () => {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'axonic-call-sql-'));
   const filename = path.join(folder, 'calls.db');
-  let database, inventory, tail=Promise.resolve(), transactionOpen=false;
+  let database, inventory, history, tail=Promise.resolve(), transactionOpen=false;
   const read=(s,...args)=>database.prepare(s).get(...args)??null;
   const sql = {
     execAsync: async s => { database.exec(s); },
@@ -32,7 +32,7 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
       if(name==='./identityProtocol')return {validAccountId:v=>typeof v==='string'&&/^axonic:1:[0-9a-f]{64}$/.test(v)};
       throw Error(name);
     },exports);
-    inventory=exports.listMobileCallJournals;return exports.createMobileCallJournalStore();
+    inventory=exports.listMobileCallJournals;history=exports.listOwnCallHistory;return exports.createMobileCallJournalStore();
   }
   try {
     const owner='axonic:1:'+'ab'.repeat(32), other='axonic:1:'+'cd'.repeat(32), id='ef'.repeat(32);
@@ -44,10 +44,12 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
     const saved=await store.read(owner,id);
     database.close(); store=openStore();
     assert.equal(await store.read(owner,id),saved);
-    const first={record:{account:owner},callId:id,kind:'invite',expiresAt:10};
+    const first={record:{account:owner},callId:id,kind:'invite',expiresAt:10,issuedAt:1,caller:owner,callee:other,media:'voice'};
     const journal=JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify(first)}]});
     assert.equal(await store.compareAndSet(owner,id,saved,journal),true);
     assert.equal((await inventory(owner)).length,1);
+    assert.deepEqual(await history(owner),[{id,peer:other,outgoing:true,media:'voice',at:1}]);
+    assert.deepEqual(await history(other),[]);
     assert.equal((await inventory(owner,10)).length,0,'expired history must not consume retry slots');
     const ending=JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify(first)},{raw:JSON.stringify({...first,kind:'end',expiresAt:30})}]});
     assert.equal(await store.compareAndSet(owner,id,journal,ending),true);

@@ -1,3 +1,4 @@
+import {stickerOwnerKey,type StickerOwner} from './stickers';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Directory, File, Paths } from 'expo-file-system';
 import { Image } from 'react-native';
@@ -11,17 +12,16 @@ export function importedStickerMime(sticker: ImportedSticker): string {
 export async function stickerFileMime(uri: string): Promise<string> {
   return `image/${validateStickerFile(await new File(uri).bytes())}`;
 }
-const key = (owner: number) => `@axonic_imported_stickers:v1:${owner}`;
-function directory(owner: number) {
-  if (!Number.isSafeInteger(owner) || owner <= 0) throw new Error('Sign in to import stickers.');
-  return new Directory(Paths.document, 'stickers', String(owner));
+const key = (owner: StickerOwner) => `@axonic_imported_stickers:v1:${stickerOwnerKey(owner)}`;
+function directory(owner: StickerOwner) {
+  return new Directory(Paths.document, 'stickers', stickerOwnerKey(owner));
 }
-export function importedStickerUri(owner: number, sticker: ImportedSticker): string {
+export function importedStickerUri(owner: StickerOwner, sticker: ImportedSticker): string {
   if (!/^[a-f0-9]{32}$/.test(sticker.id)) throw new Error('Invalid sticker.');
   const extension = sticker.format === 'webp' || sticker.format === 'gif' ? sticker.format : 'png';
   return new File(directory(owner), `${sticker.id}.${extension}`).uri;
 }
-export async function loadImportedStickers(owner: number): Promise<ImportedSticker[]> {
+export async function loadImportedStickers(owner: StickerOwner): Promise<ImportedSticker[]> {
   const raw = await AsyncStorage.getItem(key(owner));
   try {
     const rows = JSON.parse(raw || '[]');
@@ -29,7 +29,7 @@ export async function loadImportedStickers(owner: number): Promise<ImportedStick
   } catch { return []; }
 }
 let writes: Promise<unknown> = Promise.resolve();
-export function markImportedStickerSent(owner: number, id: string): Promise<void> {
+export function markImportedStickerSent(owner: StickerOwner, id: string): Promise<void> {
   const task = writes.then(async () => {
     const rows = await loadImportedStickers(owner);
     await AsyncStorage.setItem(key(owner), JSON.stringify(rows.map((s) => s.id === id ? { ...s, lastSentAt: Date.now() } : s)));
@@ -37,14 +37,14 @@ export function markImportedStickerSent(owner: number, id: string): Promise<void
   writes = task.catch(() => {});
   return task;
 }
-export async function isImportedStickerFavorite(owner: number, uri: string): Promise<boolean> {
+export async function isImportedStickerFavorite(owner: StickerOwner, uri: string): Promise<boolean> {
   const file = new File(uri);
   if (!file.exists) return false;
   const id = file.md5;
   return (await loadImportedStickers(owner)).some((sticker) => sticker.id === id && sticker.favorite === true);
 }
 
-export function importSticker(owner: number, uri: string, name: string, favorite = false): Promise<ImportedSticker[]> {
+export function importSticker(owner: StickerOwner, uri: string, name: string, favorite = false): Promise<ImportedSticker[]> {
   const task = writes.then(async () => {
     const source = new File(uri);
     if (!source.exists || source.size <= 0 || source.size > MAX_STICKER_BYTES) throw new Error('Choose a readable image no larger than 2 MB.');
@@ -74,7 +74,7 @@ export function importSticker(owner: number, uri: string, name: string, favorite
   writes = task.catch(() => {});
   return task;
 }
-export function removeImportedSticker(owner: number, sticker: ImportedSticker): Promise<ImportedSticker[]> {
+export function removeImportedSticker(owner: StickerOwner, sticker: ImportedSticker): Promise<ImportedSticker[]> {
   const task = writes.then(async () => {
     const previous = await loadImportedStickers(owner);
     const rows = previous.filter((s) => s.id !== sticker.id);

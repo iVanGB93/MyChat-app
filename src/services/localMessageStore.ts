@@ -425,7 +425,7 @@ async function addColumnsIfMissing(
 // Local room metadata cache (local-first chat list)
 // ---------------------------------------------------------------------------
 
-export async function getCachedRooms(ownerUserId: number): Promise<import('../types').ChatRoom[]> {
+export async function getCachedRooms(ownerUserId: number, strict = false): Promise<import('../types').ChatRoom[]> {
   const db = await getDB();
   const rows = await db.getAllAsync<{ payload: string }>(
     `SELECT payload FROM room_cache WHERE owner_user_id = ? ORDER BY updated_at DESC`,
@@ -438,8 +438,9 @@ export async function getCachedRooms(ownerUserId: number): Promise<import('../ty
       if (room?.id && Array.isArray(room.members_detail)) {
         room.members_detail = room.members_detail.map((member: any) => ({ ...member, is_online: false }));
         rooms.push(room);
-      }
+      } else if (strict) throw new Error('Invalid saved room');
     } catch {
+      if (strict) throw new Error('Saved chat metadata needs recovery; history was not migrated');
       // A corrupt/stale row is ignored and repaired by the next server sync.
     }
   }

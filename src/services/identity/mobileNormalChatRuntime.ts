@@ -11,7 +11,7 @@ import { startMobilePushRegistration, rejectPushRegistration } from './mobilePus
 import { createMobileCallControlRuntime } from './mobileCallControlRuntime';
 import { listMobileCallJournals, createMobileCallJournalStore } from './mobileCallJournalStore';
 import { createNeuronCallCoordinator } from './neuronCallCoordinator';
-import { registerNeuronCalls, notifyNeuronCall } from './mobileNeuronCalls';
+import { registerNeuronCalls, notifyNeuronCall, incomingCallPermissionHeld } from './mobileNeuronCalls';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { createCallRetryScheduler } from './callRetryScheduler';
 import type { CallControl } from './callControlProtocol';
@@ -116,6 +116,7 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
     diagnostics:()=>({peers:network?.callPeers()??[],relayPeers:network?.relayPeers()??[],relay:callRelayPump?.diagnostics(),retryError:callRetryError,sent:sentCalls,received:receivedCalls,acknowledged:acknowledgedCalls,retryFailures:callRetryFailures})}:null;
   if(callAccess)developmentCalls=callAccess;
   const callCoordinator=calls&&callDevice?createNeuronCallCoordinator({account,device:callDevice,
+    preserveIncoming:id=>incomingCallPermissionHeld(owner,id),
     store:createMobileCallJournalStore(),now:Date.now,current,
     busy:()=>!!useAppStore.getState().activeCall||!!useAppStore.getState().incomingCall,
     blocked:id=>![...peers].some(([room,peer])=>peer.account===id&&authorized(room,peer)),

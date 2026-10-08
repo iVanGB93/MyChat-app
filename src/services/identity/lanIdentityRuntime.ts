@@ -10,8 +10,9 @@ export interface NativeAxonLan extends NativeAxonTransport {
   axonClaim(id: string): void;
 }
 type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'> & {
+  remembered?():import('./neuronConnections').NeuronCandidate[];
   native: NativeAxonLan;
-  rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign'>;
+  rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait'>;
   internet?: { connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
     peers: { account: string; endpoint: string }[] };
 };
@@ -93,14 +94,19 @@ export function createLanIdentityRuntime(d: Dependencies) {
     tick() {
       if (disposed) return;
       for (const [account, until] of failedLan) if (until <= d.now()) failedLan.delete(account);
-      for (const peer of d.internet?.peers.slice(0, 10) ?? []) {
+      for(const peer of d.remembered?.().slice(0,16)??[]){if(peer.expiresAt>d.now()&&!lanDeferred(peer.account))network.offer(peer);}
+      const internetPeers=d.internet?.peers.slice(0,10)??[];
+      for (const peer of internetPeers) {
         network.offer({ ...peer, route: 'internet', expiresAt: d.now() + 60_000 });
       }
       if (rtc) {
         const state = network.snapshot();
         let nearby = new Set<string>();
         try { if (active) nearby = new Set(d.native.axonLanSnapshot().peers.map(p => p.account)); } catch { /* RTC remains a fallback. */ }
+        // An introduction is a signaling locator, not proof that an endpoint
+        // supports RTC. Keep the configured direct route to a bootstrap peer.
         for (const peer of state.introductions) if (state.account && state.account < peer.account
+          && !internetPeers.some(seed=>seed.account===peer.account)
           && (!nearby.has(peer.account) || lanDeferred(peer.account)))
           network.offer({ account: peer.account, endpoint: 'rtc:' + peer.via, route: 'internet', expiresAt: peer.expiresAt });
       }
@@ -118,10 +124,13 @@ export function createLanIdentityRuntime(d: Dependencies) {
       } catch { error = 'LAN discovery unavailable'; retryAt = d.now() + 5000; stopLan(); }
     },
     setLimit: network.setLimit,
+    resume() { retryAt = 0; network.resume(); },
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,
     custodyRequest: network.custodyRequest,
+    attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
     pushRequest: network.pushRequest,
+    pushPeers: network.pushPeers,
     mediaRelayPeers:network.mediaRelayPeers,
     sendRelayedMedia:network.sendRelayedMedia,
     forwardMedia:network.forwardMedia,

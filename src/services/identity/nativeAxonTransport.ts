@@ -6,6 +6,7 @@ export interface NativeAxonTransport {
   axonRead(id: string): Promise<string>;
   axonWrite(id: string, raw: string): Promise<boolean>;
   axonClose(id: string): void;
+  axonEnableAttachments?(id:string):void;
 }
 /** Foreground development LAN transport. Native code independently checks the Wi-Fi
  * subnet and bounds frame allocation; callers cannot label an internet route as LAN.
@@ -72,6 +73,8 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
     }
     return {
       close,
+      attachments:typeof native.axonEnableAttachments==='function',
+      enableAttachments(){if(!closed&&id)native.axonEnableAttachments?.(id);},
       send(raw) {
         const bytes = new TextEncoder().encode(raw).length;
         if (closed || !bytes || bytes > AXON_FRAME_BYTES || queuedBytes + bytes > 2 * AXON_FRAME_BYTES || queue.length >= 8) {

@@ -41,6 +41,8 @@ interface Props {
   subtleColor: string;
   /** Track background color. */
   trackBg: string;
+  playbackAllowed?:()=>boolean;
+  onPlaybackError?:(error:string)=>void;
 }
 
 function fmtTime(ms: number): string {
@@ -58,6 +60,8 @@ export default function VoiceMessageBubble({
   tint,
   subtleColor,
   trackBg,
+  playbackAllowed,
+  onPlaybackError,
 }: Props) {
   const player = useAudioPlayer(fileUri || null, { updateInterval: 250 });
   const status = useAudioPlayerStatus(player);
@@ -68,6 +72,7 @@ export default function VoiceMessageBubble({
 
   // Ensure audio routes to the speaker (not call earpiece) when playing
   useEffect(() => {
+    if(playbackAllowed&&!playbackAllowed())return;
     setAudioModeAsync({
       playsInSilentMode: true,
       shouldPlayInBackground: false,
@@ -88,14 +93,17 @@ export default function VoiceMessageBubble({
     if (isPlaying) {
       player.pause();
     } else {
+      if(playbackAllowed&&!playbackAllowed()){onPlaybackError?.('Finish your call or recording before playing a voice message.');return;}
       // Restart from the beginning if it had finished playing
       if (status?.didJustFinish || (totalMs > 0 && curMs >= totalMs - 50)) {
-        player.seekTo(0).then(() => player.play()).catch(() => player.play());
+        player.seekTo(0).then(() => {if(!playbackAllowed||playbackAllowed())player.play();}).catch(() => {if(!playbackAllowed||playbackAllowed())player.play();});
       } else {
         player.play();
       }
     }
   };
+
+  useEffect(()=>{if(!playbackAllowed)return;const timer=setInterval(()=>{if(!playbackAllowed())player.pause();},250);return()=>clearInterval(timer);},[playbackAllowed,player]);
 
   // Stop playback if the file disappears (e.g. message deleted)
   useEffect(() => {

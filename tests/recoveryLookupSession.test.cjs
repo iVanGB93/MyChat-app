@@ -20,7 +20,7 @@ test('a temporary visitor reads a record without account recovery, reuses one co
  }});t.after(()=>{client.stop();hostSession?.stop();});
  // Both peers authenticate asynchronously; a startup race may return unavailable and is retryable.
  let result;for(let i=0;i<3;i++){result=await client.lookup(owner.record);if(result.status==='found')break;await new Promise(r=>setTimeout(r,25));}
- assert.equal(result.status,'found');assert.equal((await client.lookup(owner.record)).status,'found');assert.equal(dials,1);
+ assert.equal(result.status,'found');assert.equal((await client.lookup(owner.record)).status,'found');assert.equal((await client.lookup(owner.record.account)).status,'found');assert.equal(dials,1);
  assert(seen.every(v=>v.operation==='get'&&v.account===owner.record.account));
  assert(!transport.frames.some(v=>v.includes('recoveryPhrase')||v.includes('password')||v.includes('entropy')));
  client.stop();assert(transport.closed());assert.equal((await client.lookup(owner.record)).status,'cancelled');

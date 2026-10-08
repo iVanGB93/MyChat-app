@@ -1,11 +1,15 @@
 import { requireOptionalNativeModule } from 'expo';
 export interface NearbyEvent { type: 'peers' | 'signal' | 'stopped' | 'error'; count?: number; frame?: string; reason?: string }
 interface NearbyModule {
+  axonMessageWake?(milliseconds:number):void;
+  axonMessageWait?(milliseconds:number):Promise<void>;
+  axonConnectedCall?(enabled: boolean): void;
   axonLanStart?(account: string): Promise<void>;
   axonLanStop?(): void;
   axonLanSnapshot?(): { active: boolean; peers: { account: string; host: string; port: number }[] };
   axonAccept?(): Promise<{ id: string; account: string; host: string; hello: string } | null>;
   axonClaim?(id: string): void;
+  axonEnableAttachments?(id:string):void;
   axonConnect?(host: string, port: number): Promise<string>;
   axonWssConnect?(host: string, account: string): Promise<string>;
   axonRead?(id: string): Promise<string>;

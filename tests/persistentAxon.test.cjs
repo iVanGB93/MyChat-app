@@ -49,6 +49,47 @@ async function settle(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 5)); }
   assert.fail('condition did not settle');
 }
+
+test('bidirectional background control traffic survives repeated minute windows', async t => {
+  const hooks = {onCustody:async()=> 'ok', onDirectory:async()=> 'ok', onCallRelay:async()=> 'ok'};
+  const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+  // 120 ordinary request/response frames per side each minute, plus renewal.
+  // The former 64-frame ceiling disconnected this otherwise idle pair.
+  for(let second=0;second<180;second++){
+    f.advance(1000);f.sessions.forEach(s=>s.tick());
+    for(const s of f.sessions)assert.equal(await s.custodyRequest('poll'),'ok');
+    assert(f.sessions.every(s=>s.snapshot().state==='connected'));
+  }
+});
+
+test('authenticated control flood still closes at the bounded budget',async t=>{
+  const f=pair(t,{0:{onCustody:async()=> 'ok'},1:{onCustody:async()=> 'ok'}});
+  await Promise.all(f.sessions.map(s=>s.ready));
+  for(let i=0;i<260&&f.sessions[0].snapshot().state==='connected';i++)await f.sessions[0].custodyRequest('poll');
+  assert(f.sessions.some(s=>s.snapshot().closeReason==='control-rate-limit'));
+});
+
+test('native-driven ticks release queued exchanges and enforce deadlines without waiting for JS timers',async t=>{
+ let release,count=0;const gate=new Promise(r=>release=r);
+ const f=pair(t,{0:{onPush:async()=>null},1:{onPush:async()=>{if(++count===1)await gate;return 'registered';}}});
+ await Promise.all(f.sessions.map(s=>s.ready));
+ const first=f.sessions[0].pushRequest('first');await settle(()=>count===1);
+ const second=f.sessions[0].pushRequest('second');release();assert.equal(await first,'registered');
+ f.advance(30);f.sessions[0].tick();assert.equal(await second,'registered');
+ f.transport.blackhole();const unanswered=f.sessions[0].pushRequest('third');
+ await Promise.resolve();f.advance(4001);f.sessions[0].tick();assert.equal(await unanswered,null);
+ assert.equal(f.sessions[0].snapshot().state,'closed');
+});
+
+test('push registration waits for occupied request capacity without exceeding it',async t=>{
+ let release;const gate=new Promise(r=>release=r);let count=0;
+ const f=pair(t,{0:{onPush:async()=>null},1:{onPush:async()=>{if(++count===1)await gate;return 'registered';}}});
+ await Promise.all(f.sessions.map(s=>s.ready));
+ const a=f.sessions[0].pushRequest('first'),b=f.sessions[0].pushRequest('second');
+ await settle(()=>count===1);
+ const c=f.sessions[0].pushRequest('third');setTimeout(release,40);
+ assert.deepEqual(await Promise.all([a,b,c]),['registered','registered','registered']);
+});
 test('negotiated call control returns a verified durable receipt and tolerates safe rejection', async t => {
   const calls=load('callControlProtocol'), receipts=load('callControlDelivery'), durable=load('durableCallControl');
   let f, saved=null, receiver;
@@ -588,10 +629,11 @@ test('RTC rejects oversized, binary and empty frames and bounds the pre-listener
 });
 test('RTC data channels carry independent mutual identity authentication and close together on lock', async t => {
   const { PC } = rtcFixture(), ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
-  const transports=[],sessions=[], wires=[];
+  const transports=[],sessions=[], wires=[], admitted=[0,0];
   const attach=(i,wire)=>{wires[i]=wire;sessions[i]=createPersistentAxon({...ids[i],store:store(),instance:random(32),random:async n=>random(n),
     now:()=>now,current:()=>true,expectedAccount:ids[1-i].record.account,wire,onClosed(){}});};
   for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,random:async()=>Buffer.from(random(32)).toString('hex'),
+    authenticated:()=>{assert.equal(sessions[i].snapshot().state,'connected');admitted[i]++;},
     createConnection:()=>new PC(),sign:(target,session,kind,sdp)=>JSON.stringify({target,session,kind,sdp,record:ids[i].record,expiresAt:now+30000}),
     send:(_via,raw)=>{queueMicrotask(()=>transports[1-i].receive(JSON.parse(raw),'relay'));return true;},
     accept:(_candidate,wire)=>{attach(i,wire);return true;}});
@@ -599,6 +641,7 @@ test('RTC data channels carry independent mutual identity authentication and clo
   const abort=new AbortController();attach(0,await transports[0].connect({account:ids[1].record.account,endpoint:'rtc:relay'}, {signal:abort.signal,onClosed(){}}));
   await settle(()=>sessions.length===2);await Promise.all(sessions.map(s=>s.ready));
   assert.ok(sessions.every(s=>s.snapshot().state==='connected'));
+  assert.deepEqual(admitted,[1,1]);
   transports[0].stop();assert.ok(sessions.every(s=>s.snapshot().state==='closed'));
   assert.deepEqual(transports.map(t=>t.snapshot()),[[],[]]);
 });
@@ -750,4 +793,52 @@ test('call relay refuses old peers and a session locked while awaiting a respons
  await Promise.all(f.sessions.map(s=>s.ready));
  const pending=f.sessions[0].callRelayRequest('{}');await settle(()=>!!release);f.lock();release('{}');
  assert.equal(await pending,null);
+});
+
+test('authenticated negotiated attachments have a separate bounded budget and keep normal control alive',async t=>{
+ const f=pair(t,{0:{onAttachment:async()=>'{"status":"ok"}'},1:{onAttachment:async raw=>raw}});await Promise.all(f.sessions.map(s=>s.ready));
+ assert(f.sessions[0].supportsAttachments());
+ for(let i=0;i<80;i++){f.advance(25);assert.equal(await f.sessions[0].attachmentRequest(JSON.stringify({version:1,index:i})),JSON.stringify({version:1,index:i}));}
+ assert.equal(f.sessions[0].snapshot().state,'connected');f.advance(20000);f.sessions.forEach(s=>s.tick());await settle(()=>f.transport.history[0].filter(s=>s.includes('authenticate')).length>=2);
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+});
+test('an old peer cannot be sent attachment frames',async t=>{
+ const f=pair(t,{0:{onAttachment:async()=>'{"status":"ok"}'}});await Promise.all(f.sessions.map(s=>s.ready));
+ assert.equal(f.sessions[0].supportsAttachments(),false);assert.equal(await f.sessions[0].attachmentRequest('{}'),null);
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+});
+
+test('remembered locator callback follows mutual authentication and excludes inbound source addresses',async t=>{
+ const a=await controller(),b=await controller(),left=[],right=[];
+ const listeners=[],queues=[[],[]],closed=[];let dead=false;
+ const w={wire:i=>({listen(fn,end){listeners[i]=fn;closed[i]=end;for(const raw of queues[i])queueMicrotask(()=>!dead&&fn(raw));queues[i]=[];return()=>{listeners[i]=null;};},send(raw){queueMicrotask(()=>{if(dead)return;if(listeners[1-i])listeners[1-i](raw);else queues[1-i].push(raw);});},close(){if(dead)return;dead=true;for(const end of closed)end?.();}})};
+ const A=createIdentityNetwork({identity:a,store:store(),now:()=>now,onConnected:c=>left.push(c),connect:async()=>w.wire(0)});
+ const B=createIdentityNetwork({identity:b,store:store(),now:()=>now,onConnected:c=>right.push(c),connect:async()=>{throw Error('No inbound dial');}});
+ t.after(()=>{A.stop();B.stop();a.lock();b.lock();});
+ const candidate={account:b.status().account,endpoint:'axon-lan://10.0.0.2:18080',route:'lan',expiresAt:now+60000};
+ assert(B.accept({account:a.status().account,endpoint:'axon-lan://10.0.0.1:49152',route:'lan',expiresAt:now+60000},w.wire(1)));
+ assert(A.offer(candidate));A.tick();assert.equal(left.length,0);assert.equal(right.length,0);
+ await settle(()=>A.snapshot().pool.connections.some(c=>c.state==='connected')&&B.snapshot().pool.connections.some(c=>c.state==='connected'));
+ assert.deepEqual(left,[candidate]);assert.deepEqual(right,[]);
+});
+
+test('waiting push registration prevents new poll reservations from starving it',async t=>{
+ let release,entered=0;const gate=new Promise(r=>release=r);
+ const f=pair(t,{0:{onPush:async()=>null,onCustody:async()=>null},1:{onPush:async()=> 'registered',onCustody:async()=>{entered++;await gate;return 'ok';}}});
+ await Promise.all(f.sessions.map(s=>s.ready));const first=f.sessions[0].custodyRequest('poll-one'),second=f.sessions[0].custodyRequest('poll-two');
+ await settle(()=>entered===1);const push=f.sessions[0].pushRequest('register');
+ assert.equal(await f.sessions[0].custodyRequest('new-poll'),null);release();
+ assert.equal(await push,'registered');await Promise.all([first,second]);assert(f.sessions[0].supportsPush());
+});
+
+test('RTC candidate gathering progresses with a native clock while JS timers are suspended',async()=>{
+ const {PC}=rtcFixture(),ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+ let waits=0,sent=0,pc;const original=global.setTimeout;
+ global.setTimeout=()=>({unref(){}});
+ const transport=createRtcAxonTransport({account:()=>ids[0].record.account,now:()=>now,random:async()=> 'ab'.repeat(32),
+ createConnection:()=>{pc=new PC();pc.iceGatheringState='gathering';return pc;},
+ wait:async ms=>{assert.equal(ms,25);waits++;pc.iceGatheringState='complete';},sign:()=> 'signed',send:()=>{sent++;return true;},accept:()=>false});
+ try {await transport.connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
+  for(let i=0;i<12;i++)await Promise.resolve();assert.equal(waits,1);assert.equal(sent,1);
+ } finally {transport.stop();global.setTimeout=original;}
 });

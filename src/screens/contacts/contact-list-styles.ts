@@ -1,0 +1,50 @@
+import {StyleSheet} from 'react-native';
+import {Font,Spacing,Radius} from '../../theme';
+export const contactListStyles = StyleSheet.create({
+  container: { flex: 1 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  list: { paddingBottom: Spacing.md },
+  emptyContainer: { flexGrow: 1 },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    gap: Spacing.sm,
+  },
+  searchInput: { marginBottom: 0 },
+  scanBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  searchSpinner: { marginVertical: Spacing.sm },
+  item: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+  },
+  info: { flex: 1, marginLeft: Spacing.md },
+  name: { fontSize: Font.size.md, ...Font.semiBold },
+  sub: { fontSize: Font.size.sm, marginTop: 1 },
+  addBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+  },
+  addBtnText: { fontSize: Font.size.sm, ...Font.semiBold },
+  added: { fontSize: Font.size.sm, ...Font.medium, marginRight: Spacing.xs },
+  actionBtns: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs },
+  chatBtn: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+  },
+  chatBtnText: { fontSize: Font.size.sm, ...Font.semiBold },
+  separator: { height: 1, marginLeft: 76 },
+});

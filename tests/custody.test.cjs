@@ -287,3 +287,93 @@ test('normal background retry waits for the custody poll slot and cancels cleanl
   assert.equal(scans,stopDuringPoll?0:1);runtime.stop();
  }
 });
+
+test('compact custody wake authenticates its recipient, device, digest and expiry without including content',async t=>{
+ const f=fixture(t),e=await f.seal(),p=f.protocol,data=p.createCustodyWake(e,f.ids[0].record);
+ const verify=d=>p.verifyCustodyWake(d,f.ids[0].record,e.recipient,e.recipientDevice,f.now());
+ assert.equal(verify(data).id,e.id);assert(!JSON.stringify(data).includes(e.ciphertext));assert(!JSON.stringify(data).includes('offline synthetic message'));
+ for(const patch of [{recipient:f.ids[3].record.account},{recipientDevice:'00'.repeat(32)},{digest:'00'.repeat(32)},{expires:e.expires-1},{senderDevice:'00'.repeat(32)}])assert.equal(verify({...data,event:JSON.stringify({...JSON.parse(data.event),...patch})}),null);
+ assert.equal(verify({...data,type:'neuron_call'}),null);assert.equal(verify({...data,record:'00'.repeat(32)}),null);
+ assert.equal(p.verifyCustodyWake(data,f.ids[0].record,e.recipient,e.recipientDevice,e.expires),null);
+ const old={...e};delete old.wakeSignature;assert.equal(p.createCustodyWake(old,f.ids[0].record),null);
+ assert.equal(await p.verifyCustody(old,f.records,f.now()),true);assert.equal(p.custodyDigest(old),p.custodyDigest(e));
+});
+
+test('custody notification hook runs only after successful new durable deposits',async t=>{
+ const f=fixture(t),e=await f.seal();let committed=false,called=0;
+ const create=store=>f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,records:f.records,now:f.now,current:()=>true,store,
+ stored:async packet=>{assert(committed);assert.equal(packet.id,e.id);called++;throw Error('provider unavailable');}});
+ const relay=create({transaction:async change=>{const result=await f.store.transaction(change);committed=true;return result;}});
+ assert.equal((await f.request(relay,0,'deposit',e)).status,'held');await new Promise(setImmediate);assert.equal(called,1);
+ assert.equal((await f.request(relay,0,'deposit',e)).status,'held');await new Promise(setImmediate);assert.equal(called,1);
+ committed=false;const broken=create({transaction:async change=>{change([]);throw Error('disk full');}});
+ assert.equal((await f.request(broken,0,'deposit',e)).status,'rejected');await new Promise(setImmediate);assert.equal(called,1);
+});
+
+test('ordinary custody forwards only signed wake metadata and retries other peers',async t=>{
+ const f=fixture(t),e=await f.seal(),service=f.service(),sent=[];
+ await f.request(service,0,'deposit',e);
+ const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,current:()=>true,now:f.now,
+ peers:()=>['ordinary','gateway'],request:async(peer,raw)=>{sent.push({peer,raw});return JSON.stringify({status:peer==='gateway'?'forwarded':'unsupported'});}});
+ await Promise.all([forward.tick(),forward.tick()]);assert.equal(sent.length,2);
+ const data=JSON.parse(sent[1].raw).data;
+ assert(f.protocol.verifyCustodyWake(data,f.ids[0].record,e.recipient,e.recipientDevice,f.now()));
+ assert(!sent[1].raw.includes(e.ciphertext));assert(!sent[1].raw.includes('offline synthetic message'));
+ f.advance(31000);await forward.tick();assert.equal(sent.length,2);
+ assert.equal((await f.store.transaction(r=>r[0].packet)).kind,'envelope','provider acceptance never consumes custody');
+ const receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ await f.request(service,2,'receipt',receipt);f.advance(1000);await forward.tick();assert.equal(sent.length,2);
+});
+
+test('custody wake retry survives forwarder restart and stops on owner change',async t=>{
+ const f=fixture(t),e=await f.seal();await f.request(f.service(),0,'deposit',e);let calls=0,active=true;
+ const make=()=>f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,current:()=>active,now:f.now,
+ peers:()=>['gateway'],request:async()=>{calls++;return '{"status":"retry"}';}});
+ let forward=make();await forward.tick();f.advance(1000);await forward.tick();assert.equal(calls,1);
+ f.advance(30000);await forward.tick();assert.equal(calls,2);forward.stop();forward=make();await forward.tick();assert.equal(calls,3);
+ active=false;f.advance(30000);await forward.tick();assert.equal(calls,3);
+});
+
+test('custody wake suppresses legacy packets and expired or forged stored envelopes',async t=>{
+ const f=fixture(t),e=await f.seal();let calls=0;
+ const make=packet=>f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:{transaction:async change=>change([{id:packet.id,expires:packet.expires,packet}])},records:f.records,current:()=>true,now:f.now,
+ peers:()=>['gateway'],request:async()=>{calls++;return '{"status":"forwarded"}';}});
+ const legacy={...e};delete legacy.wakeSignature;await make(legacy).tick();await make({...e,ciphertext:'00'.repeat(20)}).tick();f.expire();await make(e).tick();assert.equal(calls,0);
+});
+
+test('a stalled custodian cannot block another relay from draining a background batch',async t=>{
+ const f=fixture(t),[a,hub,b,backup]=f.ids,relay=f.service();
+ for(let i=0;i<5;i++)await f.request(relay,0,'deposit',await f.seal('batch '+i));
+ let release,received=0;const blocked=new Promise(r=>release=r);
+ const q=f.load('custodyCourier').createCustodyCourier({owner:()=>b.record.account,allowed:()=>true,now:f.now,records:f.records,
+ own:f.load('ownCustodyStore').createOwnCustodyStore(),relays:()=>[backup.record.account,hub.record.account],
+ request:(peer,raw)=>peer===backup.record.account?blocked:relay.receive(b.record.account,raw),seal:()=>{throw Error('unexpected');},
+ receive:async e=>{received++;return f.protocol.signCustodyReceipt(e,b.signingSeed,b.encryptionSeed);}});
+ const pending=q.tick();
+ for(let i=0;i<100&&received<4;i++)await new Promise(r=>setImmediate(r));
+ assert.equal(received,4,'healthy relay drains four packets before stalled peer answers');
+ release(null);await pending;
+ assert.equal(await f.store.transaction(rows=>rows.filter(r=>r.packet.kind==='envelope').length),1);
+ f.advance(5000);await q.tick();assert.equal(received,5);
+});
+
+test('lost receipt acknowledgement retries in five seconds without duplicating durable inbox content',async t=>{
+ const f=fixture(t),[a,hub,b]=f.ids,relay=f.service(),e=await f.seal(),inbox=new Set();
+ await f.request(relay,0,'deposit',e);let drop=true,attempts=0;
+ const q=f.load('custodyCourier').createCustodyCourier({owner:()=>b.record.account,allowed:()=>true,now:f.now,records:f.records,
+ own:f.load('ownCustodyStore').createOwnCustodyStore(),relays:()=>[hub.record.account],seal:()=>{throw Error('unexpected');},
+ request:async(peer,raw)=>{if(JSON.parse(raw).operation==='receipt'){attempts++;if(drop)return null;}return relay.receive(b.record.account,raw);},
+ receive:async packet=>{inbox.add(packet.id);return f.protocol.signCustodyReceipt(packet,b.signingSeed,b.encryptionSeed);}});
+ await q.tick();assert.equal(attempts,1);assert.equal(await f.store.transaction(rows=>rows[0].packet.kind),'envelope');
+ drop=false;f.advance(5000);await q.tick();assert.equal(attempts,2);assert.equal(inbox.size,1);
+ assert.equal(await f.store.transaction(rows=>rows[0].packet.kind),'receipt');
+});
+
+test('custody polling cannot send a receipt after its account lease changes',async t=>{
+ const f=fixture(t),[a,hub,b]=f.ids,relay=f.service(),e=await f.seal();await f.request(relay,0,'deposit',e);
+ let active=true,q;
+ q=f.load('custodyCourier').createCustodyCourier({owner:()=>active?b.record.account:null,allowed:()=>true,now:f.now,records:f.records,
+ own:f.load('ownCustodyStore').createOwnCustodyStore(),relays:()=>[hub.record.account],seal:()=>{throw Error('unexpected');},
+ request:(peer,raw)=>relay.receive(b.record.account,raw),receive:async packet=>{active=false;q.invalidate();return f.protocol.signCustodyReceipt(packet,b.signingSeed,b.encryptionSeed);}});
+ await q.tick();assert.equal(await f.store.transaction(rows=>rows[0].packet.kind),'envelope');
+});

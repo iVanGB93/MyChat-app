@@ -3,6 +3,7 @@ import type { AxonWire } from './persistentAxon.ts';
 import type { ConnectionContext, NeuronCandidate } from './neuronConnections.ts';
 
 interface Channel {
+  _peerConnectionId?: number; _reactTag?: string;
   label: string; protocol: string; readyState: string; bufferedAmount: number;
   send(data: string): void; close(): void;
   addEventListener(event: string, callback: (event: any) => void): void;
@@ -30,8 +31,11 @@ export function validAxonSdp(sdp: string) {
     && !lines.some(l => l.startsWith('a=candidate:') && / typ relay(?: |$)/.test(l));
 }
 export function createRtcAxonTransport(d: {
+  authenticated?(channel: Channel):void;
   account(): string | null; now(): number; random(): Promise<string>;
   createConnection(): AxonPeerConnection;
+  /** Native clock for bounded background work where React Native timers can pause. */
+  wait?(milliseconds: number): Promise<unknown>;
   sign(target: string, session: string, kind: AxonSignal['kind'], sdp: string): string;
   send(via: string, raw: string): boolean;
   accept(candidate: NeuronCandidate, wire: AxonWire): boolean;
@@ -81,6 +85,8 @@ export function createRtcAxonTransport(d: {
       if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) stop();
     });
     const wire: AxonWire = {
+      attachments:!!d.authenticated,
+      enableAttachments(){if(!dead&&channel)d.authenticated?.(channel);},
       close: stop,
       send(raw) {
         if (dead || size(raw) > 20000) throw Error('RTC axon unavailable');
@@ -101,7 +107,7 @@ export function createRtcAxonTransport(d: {
       // Gathering has a deadline; a bounded partial candidate set may still succeed.
       const until = d.now() + 2000;
       for (let attempts = 0; !dead && pc.iceGatheringState !== 'complete' && d.now() < until && attempts < 80; attempts++)
-        await new Promise(resolve => setTimeout(resolve, 25));
+        await (d.wait?.(25) ?? new Promise(resolve => setTimeout(resolve, 25)));
       if (dead) return;
       const sdp = pc.localDescription?.sdp;
       if (!sdp || !validAxonSdp(sdp) || !d.send(via, d.sign(account, session, kind, sdp))) stop();

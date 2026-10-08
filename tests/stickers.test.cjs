@@ -57,3 +57,11 @@ test('storage failure is surfaced rather than pretending favorite was saved', as
   const s = fixture(new Map(), true);
   await assert.rejects(s.updateStickerPreferences(1, 'love', 'favorite'), /disk full/);
 });
+
+test('root identities keep sticker preferences separate from one another and legacy accounts',async()=>{
+ const s=fixture(),a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64);
+ await s.updateStickerPreferences(a,'hello','favorite');await s.updateStickerPreferences(b,'love','recent');await s.updateStickerPreferences(1,'party','favorite');
+ assert.equal((await s.loadStickerPreferences(a)).favorites.join(','),'hello');assert.equal((await s.loadStickerPreferences(b)).favorites.length,0);assert.equal((await s.loadStickerPreferences(1)).favorites.join(','),'party');
+ assert.match(s.stickerOwnerKey(a),/^root-[a-f0-9]{64}$/);
+ for(const bad of ['../1','1','axonic:1:../../',0,-1,NaN])assert.throws(()=>s.stickerOwnerKey(bad));
+});

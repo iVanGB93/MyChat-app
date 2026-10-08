@@ -1,3 +1,5 @@
+import {messageToastStyles as toastStyles} from '../components/chat/message-toast-styles';
+import {useMainTabOptions} from './main-tab-options';
 import { neuronCallsEnabled } from '../services/identity/neuronCallFeature';
 /* ------------------------------------------------------------------ */
 /*  Navigation — Auth stack  +  Main bottom tabs  +  Chat room stack   */
@@ -62,68 +64,14 @@ const Tab = createBottomTabNavigator();
 export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 /* ---- Tab icons ---- */
-function TabIcon({ label, focused }: { label: string; focused: boolean }) {
-  const { colors: Colors } = useTheme();
-  // Outline when inactive, filled when focused — matches the rest of the UI
-  // and feels closer to the cyberpunk "glowing line" aesthetic.
-  const iconMap: Record<string, [React.ComponentProps<typeof Ionicons>['name'], React.ComponentProps<typeof Ionicons>['name']]> = {
-    Chats:   ['chatbubble-ellipses-outline', 'chatbubble-ellipses'],
-    Calls:   ['call-outline',                'call'],
-    Profile: ['person-outline',              'person'],
-  };
-  const [outline, filled] = iconMap[label] ?? ['ellipse-outline', 'ellipse'];
-  return (
-    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
-      <Ionicons
-        name={focused ? filled : outline}
-        size={24}
-        color={focused ? Colors.primary : Colors.textTertiary}
-        style={{
-          opacity: focused ? 1 : 0.7,
-          transform: [{ scale: focused ? 1.05 : 1 }],
-        }}
-      />
-    </View>
-  );
-}
-
 /* ---- Bottom Tab Navigator ---- */
 function MainTabs() {
+  const tabOptions=useMainTabOptions();
   const { colors: Colors } = useTheme();
   const insets = useSafeAreaInsets();
   return (
     <Tab.Navigator
-      screenOptions={({ route }) => ({
-        headerStyle: {
-          backgroundColor: Colors.headerBg,
-          elevation: 0,
-          shadowOpacity: 0,
-          borderBottomWidth: 1,
-          borderBottomColor: Colors.neonBorder,
-        },
-        headerTitleStyle: { fontWeight: '800', letterSpacing: 3, color: Colors.primary, fontSize: Font.size.lg },
-        headerTintColor: Colors.primary,
-        tabBarStyle: {
-          backgroundColor: Colors.tabBarBg,
-          borderTopColor: Colors.neonBorder,
-          borderTopWidth: 1,
-          // Grow the bar to host the system nav inset (3-button bar on
-          // Android, home indicator on iOS) so labels/icons aren't
-          // covered by the OS bar on devices without gesture nav.
-          height: 62 + insets.bottom,
-          paddingBottom: 10 + insets.bottom,
-          paddingTop: 6,
-          elevation: 12,
-          shadowColor: Colors.primary,
-          shadowOpacity: 0.15,
-          shadowRadius: 16,
-          shadowOffset: { width: 0, height: -4 },
-        },
-        tabBarActiveTintColor: Colors.primary,
-        tabBarInactiveTintColor: Colors.textTertiary,
-        tabBarLabelStyle: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1 },
-        tabBarIcon: ({ focused }) => <TabIcon label={route.name} focused={focused} />,
-      })}
+      screenOptions={tabOptions}
     >
       <Tab.Screen name="Chats" component={ChatListScreen} options={{ headerTitle: 'AXONIC' }} />
       <Tab.Screen name="Calls" component={CallsScreen} options={{ headerTitle: 'CALLS' }} />
@@ -623,57 +571,3 @@ export default function AppNavigator() {
   );
 }
 
-const toastStyles = StyleSheet.create({
-  container: {
-    position: 'absolute',
-    top: Platform.OS === 'ios' ? 50 : 30,
-    left: 12,
-    right: 12,
-    zIndex: 9999,
-    elevation: 10,
-  },
-  inner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: Radius.md,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1,
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 10,
-  },
-  avatar: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  avatarText: {
-    fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  textCol: {
-    flex: 1,
-    marginRight: 8,
-  },
-  sender: {
-    fontSize: Font.size.sm,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  content: {
-    fontSize: Font.size.sm,
-    marginTop: 2,
-    letterSpacing: 0.2,
-  },
-  close: {
-    fontSize: 14,
-    padding: 4,
-  },
-});

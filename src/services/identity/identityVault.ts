@@ -15,15 +15,15 @@ export type PasswordDerivation = (password: string, salt: Uint8Array) => Promise
 const portableDerivation: PasswordDerivation = (password, salt) =>
   scryptAsync(password, salt, { N: 131072, r: 8, p: 1, dkLen: 32, maxmem: 160 * 1024 * 1024 });
 export interface IdentityVault {
-  version: 1; kdf: 'scrypt-131072-8-1'; cipher: 'xchacha20poly1305';
+  version: 1 | 2; kdf: 'scrypt-131072-8-1'; cipher: 'xchacha20poly1305';
   salt: string; nonce: string; ciphertext: string; record: IdentityRecord; history?: IdentityRecord[];
 }
 export interface UnlockedIdentity {
   entropy: Uint8Array; signingSeed: Uint8Array; encryptionSeed: Uint8Array; record: IdentityRecord; history?: IdentityRecord[];
 }
-/** 256 random bits encoded as BIP39 words; Axonic HKDF derivation, not a wallet derivation path. */
+/** 128 or 256 random bits encoded as BIP39 words; Axonic HKDF derivation, not a wallet derivation path. */
 export function rootFromEntropy(entropy: Uint8Array): Uint8Array {
-  if (entropy.length !== 32) throw Error('Expected a 24-word Axonic recovery phrase');
+  if (entropy.length !== 16 && entropy.length !== 32) throw Error('Use a valid 12- or 24-word recovery phrase');
   return hkdf(sha256, entropy, utf8ToBytes('axonic-root-v1'), utf8ToBytes('ed25519-account-authority'), 32);
 }
 export function destroyIdentity(identity: UnlockedIdentity): void {
@@ -64,10 +64,10 @@ export async function sealIdentity(identity: UnlockedIdentity, password: string,
   random: SecureRandom, now: number, derive: PasswordDerivation = portableDerivation): Promise<IdentityVault> {
   validateIdentity(identity, now); checkPassword(password);
   const salt = await randomBytes(random, 32), nonce = await randomBytes(random, 24);
-  const v: IdentityVault = { version: 1, kdf: 'scrypt-131072-8-1', cipher: 'xchacha20poly1305',
+  const v: IdentityVault = { version: identity.entropy.length === 16 ? 2 : 1, kdf: 'scrypt-131072-8-1', cipher: 'xchacha20poly1305',
     salt: bytesToHex(salt), nonce: bytesToHex(nonce), ciphertext: '', ...(identity.history?.length ? { history: JSON.parse(JSON.stringify(identity.history)) } : {}), record: JSON.parse(JSON.stringify(identity.record)) };
-  const plaintext = new Uint8Array(96);
-  plaintext.set(identity.entropy); plaintext.set(identity.signingSeed, 32); plaintext.set(identity.encryptionSeed, 64);
+  const plaintext = new Uint8Array(identity.entropy.length + 64);
+  plaintext.set(identity.entropy); plaintext.set(identity.signingSeed, identity.entropy.length); plaintext.set(identity.encryptionSeed, identity.entropy.length + 32);
   let key: Uint8Array | undefined;
   try {
     key = await wrappingKey(password, salt, deviceSecret, derive);
@@ -82,14 +82,15 @@ export async function unlockIdentity(raw: string, password: string, deviceSecret
   try {
     if (raw.length > 12_000) throw Error('Invalid vault');
     const v = JSON.parse(raw) as IdentityVault;
-    if (v.version !== 1 || v.kdf !== 'scrypt-131072-8-1' || v.cipher !== 'xchacha20poly1305'
+    if ((v.version !== 1 && v.version !== 2) || v.kdf !== 'scrypt-131072-8-1' || v.cipher !== 'xchacha20poly1305'
       || typeof v.salt !== 'string' || !/^[0-9a-f]{64}$/.test(v.salt)
       || typeof v.nonce !== 'string' || !/^[0-9a-f]{48}$/.test(v.nonce)
-      || typeof v.ciphertext !== 'string' || !/^[0-9a-f]{224}$/.test(v.ciphertext)
+      || typeof v.ciphertext !== 'string' || !(v.version === 1 ? /^[0-9a-f]{224}$/ : /^[0-9a-f]{192}$/).test(v.ciphertext)
       || !verifyRecord(v.record, now, true)) throw Error('Invalid vault');
     key = await wrappingKey(password, hexToBytes(v.salt), deviceSecret, derive);
     plaintext = xchacha20poly1305(key, hexToBytes(v.nonce), aad(v)).decrypt(hexToBytes(v.ciphertext));
-    identity = { entropy: plaintext.slice(0, 32), signingSeed: plaintext.slice(32, 64), encryptionSeed: plaintext.slice(64, 96), record: v.record, history: v.history ?? [] };
+    const size = v.version === 1 ? 32 : 16;
+    identity = { entropy: plaintext.slice(0, size), signingSeed: plaintext.slice(size, size + 32), encryptionSeed: plaintext.slice(size + 32, size + 64), record: v.record, history: v.history ?? [] };
     validateIdentity(identity, now);
     return identity;
   } catch {
@@ -98,7 +99,7 @@ export async function unlockIdentity(raw: string, password: string, deviceSecret
   } finally { key?.fill(0); plaintext?.fill(0); }
 }
 export async function createLocalIdentity(random: SecureRandom, now: number): Promise<{ identity: UnlockedIdentity; recoveryPhrase: string }> {
-  const entropy = await randomBytes(random, 32);
+  const entropy = await randomBytes(random, 16);
   try {
     const identity = await identityFromEntropy(entropy, random, now);
     return { identity, recoveryPhrase: entropyToMnemonic(entropy, wordlist) };
@@ -120,4 +121,13 @@ export async function recoverReplacingDevices(phrase: string, previous: Identity
   const entropy = mnemonicToEntropy(phrase.trim().toLowerCase().replace(/\s+/g, ' '), wordlist);
   try { return await identityFromEntropy(entropy, random, now, previous); }
   finally { entropy.fill(0); }
+}
+
+/** Only the public identifier leaves this device during recovery. */
+export function accountFromRecoveryPhrase(phrase: string): string {
+  if (typeof phrase !== 'string' || phrase.length > 512) throw Error('Invalid recovery words');
+  const entropy = mnemonicToEntropy(phrase.trim().toLowerCase().replace(/\s+/g, ' '), wordlist);
+  let root: Uint8Array | undefined;
+  try { root = rootFromEntropy(entropy); return accountId(bytesToHex(ed25519.getPublicKey(root))); }
+  finally { entropy.fill(0); root?.fill(0); }
 }

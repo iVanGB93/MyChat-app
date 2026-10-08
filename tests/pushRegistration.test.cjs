@@ -2,6 +2,19 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const cache=new Map();function load(name){if(cache.has(name))return cache.get(name);const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/'+name+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(p=>p.startsWith('./')?load(p.slice(2).replace(/\.ts$/,'')):require(p),out);cache.set(name,out);return out;}
 
 const {createPushRegistration}=load('pushRegistration');
+test('rejected legacy binding does not disable authenticated crypto wake registration',async()=>{
+ let now=100000;const sent=[];const worker=createPushRegistration({now:()=>now,current:()=>true,token:async()=> 'fixture-token',
+ binding:async()=>({payload:'old-installation-anchor'}),request:async raw=>{const input=JSON.parse(raw);sent.push(input);return JSON.stringify(input.binding?{status:'binding_rejected'}:{status:'registered',until:now+86400000,bound:false});}});
+ await worker.tick();now+=30000;await worker.tick();assert.ok(sent[0].binding);assert.equal(sent[1].binding,undefined);
+ now+=300000;await worker.tick();assert.ok(sent[2].binding);
+});
+test('token owned by an earlier identity is rotated rather than reassigned',async()=>{
+ let now=100000,token='old-token',rotations=0;const seen=[];
+ const worker=createPushRegistration({now:()=>now,current:()=>true,token:async()=>token,
+ rotateToken:async()=>{rotations++;token='new-token';},request:async raw=>{seen.push(JSON.parse(raw).token);return JSON.stringify(seen.length===1?{status:'token_in_use'}:{status:'registered',until:now+86400000});}});
+ await worker.tick();assert.equal(rotations,1);await worker.tick();assert.equal(seen.length,1);
+ now+=30000;await worker.tick();assert.deepEqual(seen,['old-token','new-token']);assert.equal(rotations,1);
+});
 test('registration refreshes on rotation, backs off failures, and never sends while inactive',async()=>{
  let now=100000,active=true,token='first-token',sent=[];
  const worker=createPushRegistration({now:()=>now,current:()=>active,token:async()=>token,request:async raw=>{sent.push(JSON.parse(raw));return JSON.stringify({status:'registered',until:now+86400000});}});

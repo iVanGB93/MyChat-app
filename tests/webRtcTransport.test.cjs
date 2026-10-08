@@ -15,10 +15,12 @@ function harness(custom=true,failConfig=false){
     setRemoteDescription(d){this.remoteDescription=d;return Promise.resolve();}
     close(){closed++;}
   }
-  const code=ts.transpileModule(fs.readFileSync('src/hooks/useWebRTC.ts','utf8'),{
+  function loadHook(file){
+  const code=ts.transpileModule(fs.readFileSync('src/hooks/'+file+'.ts','utf8'),{
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports={};
   new Function('require','exports',code)(name=>{
+    if(name==='./useWebRTCCore')return loadHook('useWebRTCCore');
     if(name==='react')return {useRef:v=>({current:v}),useCallback:f=>f,useEffect:f=>effects.push(f),useState:v=>[v,()=>{}]};
     if(name==='react-native-webrtc')return {RTCPeerConnection:PC,RTCSessionDescription:class {constructor(d){Object.assign(this,d);}},
       RTCIceCandidate:class {constructor(d){Object.assign(this,d);}},mediaDevices:{getUserMedia:async()=>stream}};
@@ -28,6 +30,9 @@ function harness(custom=true,failConfig=false){
     if(name.includes('diagnostics'))return {debugLog:()=>{}};
     return require('../src/services/'+name.split('/').at(-1)+'.ts');
   },exports);
+  return exports;
+  }
+  const exports=loadHook(custom?'useWebRTCCore':'useWebRTC');
   const transport={send:async(...args)=>{sent.push(args);return true;},subscribe:fn=>{listener=fn;return()=>{listener=null;};},
     loadIceConfig:async()=>{if(failConfig)throw Error('unavailable');return {ice_servers:[],ice_transport_policy:'all'};}};
   const hook=exports.default({callId:'one-call',peerUserId:14,callType:'voice',isOutgoing:true,

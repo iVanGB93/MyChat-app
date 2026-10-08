@@ -31,6 +31,12 @@ public final class AxonicIdentityDataGuardTest {
         g = new AxonicIdentityDataGuard();
         for (int i=0; i<64; i++) check(g.receive(text("x"), false, i) != null, "bounded valid burst");
         check(g.receive(text("x"), false, 64) == null, "burst limit enforced");
+        g.authenticated();check(g.receive(text("x"), false, 65)==null,"authentication cannot revive a rejected channel");
+        g = new AxonicIdentityDataGuard();
+        for(int i=0;i<10;i++)check(g.receive(text("x"),false,i)!=null,"handshake frames");
+        g.authenticated();
+        for(int i=10;i<3856;i++)check(g.receive(text("x"),false,i)!=null,"authenticated control and attachment budget");
+        check(g.receive(text("x"),false,3856)==null,"authenticated budget remains bounded");
         g = new AxonicIdentityDataGuard();
         for (int i=0; i<64; i++) check(g.receive(text("x"), false, i) != null, "first window");
         check(g.receive(text("x"), false, 60000) != null, "new window allowed");

@@ -88,8 +88,8 @@ test('biometrics cannot bypass an unavailable device capability',async()=>{
 });
 test('opt-in entry never initializes legacy delivery or authentication; default retains the original entry',()=>{
  const source=fs.readFileSync('index.ts','utf8');
- function run(flag){const calls=[];new Function('process','require',source)({env:{EXPO_PUBLIC_AXONIC_LOCAL_ACCOUNT:flag}},path=>{calls.push(path);return path==='expo'?{registerRootComponent:()=>calls.push('registered')}:{default:{}};});return calls;}
- assert.deepEqual(run('1'),['expo','./src/screens/LocalAccountApp','registered']);assert.deepEqual(run(undefined),['./legacyEntry']);
+ function run(flag){const calls=[];new Function('process','require',source)({env:{EXPO_PUBLIC_AXONIC_LOCAL_ACCOUNT:flag}},path=>{calls.push(path);return path==='expo'?{registerRootComponent:()=>calls.push('registered')}:path.endsWith('rootBackgroundEntry')?{registerRootBackgroundHandlers:()=>calls.push('root-background')}:{default:{}};});return calls;}
+ assert.deepEqual(run('1'),['./src/services/identity/rootBackgroundEntry','root-background','expo','./src/screens/LocalAccountApp','registered']);assert.deepEqual(run(undefined),['./legacyEntry']);
 });
 
 
@@ -109,4 +109,36 @@ test('successful guarded recovery remains locked and checks twice',async()=>{
  const original=await created(),target=fixture();let checks=0;
  await target.id.restore(original.words,original.id.recoveryRecord(),password,async()=>{checks++;});
  assert.equal(checks,2);assert.equal(target.id.status().state,'locked');original.id.lock();
+});
+test('import retains the existing root and device while changing only local protection',async()=>{
+ const source=await created(),target=fixture(),before=source.data.vault;
+ const words=await target.id.beginImport(source.data.vault,password,source.data.secret);
+ assert.equal(words,source.words);assert.equal(target.data.vault,null);
+ await target.id.confirmBackup(words,'a different local password');
+ assert.equal(target.id.status().account,source.id.status().account);
+ assert.equal(target.id.callDevice(),source.id.callDevice());
+ assert.equal(source.data.vault,before);
+ target.id.lock();await target.id.unlock('a different local password');
+ assert.equal(target.id.callDevice(),source.id.callDevice());
+});
+test('import refuses wrong protection or an occupied target without replacing either identity',async()=>{
+ const source=await created(),target=fixture();
+ await assert.rejects(target.id.beginImport(source.data.vault,'a wrong local password',source.data.secret));assert.equal(target.data.vault,null);
+ const occupied=await created(),before=occupied.data.vault;
+ await assert.rejects(occupied.id.beginImport(source.data.vault,password,source.data.secret));assert.equal(occupied.data.vault,before);
+});
+
+test('password change preserves identity/device/history and survives cold unlock; old password fails',async()=>{
+ const f=await created(),account=f.id.status().account,device=f.id.callDevice(),record=f.id.recoveryRecord();
+ await assert.rejects(f.id.changePassword('incorrect password','a new valid password'));
+ await assert.rejects(f.id.changePassword(password,'short'));
+ await f.id.changePassword(password,'a new valid password');assert.equal(f.id.callDevice(),device);assert.equal(f.id.recoveryRecord(),record);
+ f.id.lock();const cold=createLocalIdentityController(f.storage,random,()=>now,derive);await cold.inspect();
+ await assert.rejects(cold.unlock(password));await cold.unlock('a new valid password');assert.equal(cold.status().account,account);assert.equal(cold.callDevice(),device);cold.lock();
+});
+test('failed password change storage write retains the previous password',async()=>{
+ const f=await created(),original=f.data.vault;
+ const storage={...f.storage,writeVault:async()=>{throw Error('disk');}},broken=createLocalIdentityController(storage,random,()=>now,derive);
+ await broken.inspect();await broken.unlock(password);await assert.rejects(broken.changePassword(password,'a new valid password'),/disk/);assert.equal(f.data.vault,original);
+ broken.lock();f.id.lock();await f.id.unlock(password);f.id.lock();
 });

@@ -1,3 +1,4 @@
+import { accountFromRecoveryPhrase } from './identityVault';
 import { compareRecord, recordDigest, validRecordHistory, type IdentityRecord } from './identityProtocol';
 import type { DirectoryLookupResult } from './identityDirectoryLookup';
 export type RecoveryLookup = (checkpoint: IdentityRecord) => Promise<DirectoryLookupResult>;
@@ -20,4 +21,14 @@ export async function checkRecoveryRecord(raw: string, lookup: RecoveryLookup, n
   const result = JSON.stringify({ version: 1, record: packet.record, history: packet.history });
   if (result.length > 12000) throw Error('Recovery history exceeds the supported size');
   return { raw: result, revision: packet.record.revision, sources: response.sources.length };
+}
+
+export async function findRecoveryRecord(words: string, lookup: (account: string) => Promise<DirectoryLookupResult>, now: () => number) {
+  const account = accountFromRecoveryPhrase(words);
+  const response = await lookup(account);
+  if (response.status !== 'found' || !response.packet) throw Error('Identity unavailable. Connect to the network and try again.');
+  const raw = JSON.stringify({ version: 1, ...response.packet });
+  const checkpoint = parseRecoveryCheckpoint(raw, now());
+  if (checkpoint.record.account !== account) throw Error('Recovery record does not match your words');
+  return raw;
 }

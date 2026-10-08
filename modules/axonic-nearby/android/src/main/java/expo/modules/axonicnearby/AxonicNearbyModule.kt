@@ -1,5 +1,6 @@
 package expo.modules.axonicnearby
 
+import android.app.ActivityManager
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.net.ConnectivityManager
@@ -9,6 +10,7 @@ import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.SystemClock
 import android.os.Build
 import androidx.core.os.bundleOf
 import expo.modules.kotlin.modules.Module
@@ -31,7 +33,8 @@ import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Release mailbox cryptography and development-only foreground LAN signaling.
+/** Release mailbox cryptography and authenticated foreground axon transports.
+ * The legacy room-based LAN diagnostic remains development-only.
  * LAN TXT identity is a claim, not authentication. */
 class AxonicNearbyModule : Module() {
   private data class Peer(val endpoint: String, val address: InetAddress, val port: Int)
@@ -39,6 +42,23 @@ class AxonicNearbyModule : Module() {
   private val axons = AxonSockets()
   private var axonLan: AxonLan? = null
   private var axonForeground = true
+  private var wakeUntil = 0L
+  private val wakeTimer = Executors.newSingleThreadScheduledExecutor()
+  private fun transportAllowed() = axonForeground || protectedCall() || SystemClock.elapsedRealtime() < wakeUntil
+  private var connectedCall = false
+  private fun protectedCall(): Boolean {
+    if (!connectedCall) return false
+    val context = appContext.reactContext ?: return false
+    val manager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+    @Suppress("DEPRECATION")
+    return manager.getRunningServices(Int.MAX_VALUE).any {
+      it.service.packageName == context.packageName &&
+        it.service.className.endsWith(".MyChatForegroundService") && it.foreground
+    }
+  }
+  private fun closeBackgroundAxons() {
+    axonLan?.stop(); axonLan = null; axons.closeAll(); stopLane()
+  }
   private val axonWorkers = ThreadPoolExecutor(0, 20, 30L, TimeUnit.SECONDS, java.util.concurrent.SynchronousQueue<Runnable>())
   private fun axonWork(promise: Promise, work: () -> Any?) {
     try { axonWorkers.execute {
@@ -48,9 +68,29 @@ class AxonicNearbyModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("AxonicNearby")
     Events("onNearby")
+    // Unlike JS timers, this bounded wake timer does not depend on display frames.
+    AsyncFunction("axonMessageWait") { milliseconds: Int, promise: Promise ->
+      require(milliseconds in 1..1000)
+      wakeTimer.schedule({ promise.resolve(null) }, milliseconds.toLong(), TimeUnit.MILLISECONDS)
+    }
+    // A verified FCM wake grants a bounded window for authenticated encrypted inbox recovery.
+    Function("axonMessageWake") { milliseconds: Int -> synchronized(this@AxonicNearbyModule) {
+      require(milliseconds in 0..30000)
+      wakeUntil = if (milliseconds == 0) 0L else SystemClock.elapsedRealtime() + milliseconds
+      if (milliseconds == 0) { if (!transportAllowed()) closeBackgroundAxons() }
+      else wakeTimer.schedule({ synchronized(this@AxonicNearbyModule) {
+        if (!transportAllowed()) closeBackgroundAxons()
+      } }, milliseconds.toLong(), TimeUnit.MILLISECONDS)
+      Unit
+    } }
+
+    Function("axonConnectedCall") { enabled: Boolean -> synchronized(this@AxonicNearbyModule) {
+      connectedCall = enabled
+      if (!transportAllowed()) closeBackgroundAxons()
+    } }
     AsyncFunction("axonLanStart") { account: String -> synchronized(this@AxonicNearbyModule) {
       val context = requireNotNull(appContext.reactContext)
-      check(axonForeground && context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+      check(transportAllowed()) { "Axon transport requires an active app" }
       axonLan?.stop(); axonLan = null; axons.closeLan()
       val next = AxonLan(context, account, axons)
       axonLan = next
@@ -65,6 +105,7 @@ class AxonicNearbyModule : Module() {
       axonWork(promise) { own?.accept() }
     }
     Function("axonClaim") { id: String -> axons.claim(id) }
+    Function("axonEnableAttachments") { id: String -> axons.enableAttachments(id) }
     // Experimental identity frames only. Restrict dialing to the current Wi-Fi subnet.
     AsyncFunction("axonConnect") { host: String, port: Int, promise: Promise ->
       val socket = Socket()
@@ -73,7 +114,7 @@ class AxonicNearbyModule : Module() {
         val id: String
         synchronized(this@AxonicNearbyModule) {
           val context = requireNotNull(appContext.reactContext)
-          check(axonForeground && context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+          check(transportAllowed()) { "Axon transport requires an active app" }
           require(port in 1..65535 && host.matches(Regex("[0-9]{1,3}(\\.[0-9]{1,3}){3}")))
           val parts = host.split('.').map { it.toInt() }
           require(parts.all { it in 0..255 } && parts.joinToString(".") == host)
@@ -105,7 +146,7 @@ class AxonicNearbyModule : Module() {
       try {
         synchronized(this@AxonicNearbyModule) {
           val context = requireNotNull(appContext.reactContext)
-          check(axonForeground && context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0)
+          check(transportAllowed()) { "Axon transport requires an active app" }
           // Bootstrap endpoint allowlist, not an identity authority. Shared crypto verifies the peer.
           require(host == "143.198.121.2" && account.matches(Regex("axonic:1:[0-9a-f]{64}")))
           socket = javax.net.ssl.SSLSocketFactory.getDefault().createSocket()
@@ -161,8 +202,8 @@ class AxonicNearbyModule : Module() {
     AsyncFunction("stop") { synchronized(this@AxonicNearbyModule) { stopLane() } }
     Function("send") { frame: String -> lane?.send(frame) ?: false }
     OnActivityEntersForeground { synchronized(this@AxonicNearbyModule) { axonForeground = true } }
-    OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) { axonForeground = false; axonLan?.stop(); axonLan = null; axons.closeAll(); stopLane() } }
-    OnDestroy { synchronized(this@AxonicNearbyModule) { axonForeground = false; axonLan?.stop(); axonLan = null; axons.destroy(); axonWorkers.shutdownNow(); stopLane() } }
+    OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) { axonForeground = false; if (!transportAllowed()) closeBackgroundAxons() } }
+    OnDestroy { synchronized(this@AxonicNearbyModule) { axonForeground = false; axonLan?.stop(); axonLan = null; axons.destroy(); wakeTimer.shutdownNow(); axonWorkers.shutdownNow(); stopLane() } }
   }
   private fun stopLane() { val old = lane; lane = null; old?.stop() }
 

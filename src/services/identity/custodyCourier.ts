@@ -17,8 +17,9 @@ export function createCustodyCourier(d: {
   seal(record: IdentityRecord, device: string, id: string, text: string): Promise<CustodyEnvelope>;
   receive(envelope: CustodyEnvelope): Promise<CustodyReceipt | null>;
 }) {
-  let epoch = 0, stopped = false, polling = false, depositing = false, nextPoll = 0, cursor = 0;
+  let epoch = 0, stopped = false, depositing = false;
   const unavailable = new Map<string, number>();
+  const polls = new Map<string, { busy: boolean; next: number }>();
   const skips = new Map<string, { until: number; ids: string[] }>();
   const lease = () => { const owner = d.owner(), generation = epoch; return { owner, current: () => !!owner && !stopped && generation === epoch && d.owner() === owner }; };
   async function request(relay: string, body: unknown) {
@@ -59,37 +60,58 @@ export function createCustodyCourier(d: {
       } finally { depositing = false; }
     },
     async tick() {
-      const l = lease(); if (!l.current() || polling || d.now() < nextPoll) return;
-      const relays = d.relays().slice(0, 10); if (!relays.length) return;
-      const relay = relays[cursor++ % relays.length]; nextPoll = d.now() + 5000; polling = true;
-      try {
-        let skip = skips.get(relay); if (!skip || skip.until <= d.now()) { skip = { until: d.now() + 60000, ids: [] }; if (skips.size >= 10) skips.clear(); skips.set(relay, skip); }
-        const reply = await request(relay, { operation: 'poll', exclude: skip.ids });
-        if (!l.current() || reply?.status !== 'ok' || !reply.packet) return;
-        const packet = parseCustody(JSON.stringify(reply.packet), d.now());
-        if (!packet) return;
-        if (skip.ids.length < 128) skip.ids.push(packet.id);
-        if (packet.kind === 'envelope') {
-          if (packet.recipient !== l.owner || !d.allowed(packet.sender)) return;
-          const receipt = await d.receive(packet);
-          if (receipt && l.current()) await request(relay, { operation: 'receipt', packet: receipt });
-        } else {
-          if (packet.sender !== l.owner || !d.allowed(packet.recipient) || !await verifyCustody(packet, d.records, d.now()) || !l.current()) return;
-          const saved = await d.own.get(l.owner!, packet.id);
-          const e = saved?.envelope;
-          if (!e || packet.digest !== custodyDigest(e) || packet.recipient !== e.recipient || packet.recipientDevice !== e.recipientDevice || packet.expires !== e.expires) return;
-          if (d.confirmReceipt) {
-            if (!await d.confirmReceipt(packet, l.current) || !l.current()) return;
-          } else {
-            const row = (await d.messages?.list(l.owner!) ?? []).find(r => r.direction === 'out' && r.id === packet.id && r.peer === packet.recipient);
-            if (!row || !l.current()) return;
-            await d.messages!.update(row, true, 0, l.current);
+      const l = lease(); if (!l.current()) return;
+      const relays = [...new Set(d.relays())].slice(0, 10);
+      for (const [peer, state] of polls) if (!state.busy && !relays.includes(peer)) polls.delete(peer);
+      await Promise.all(relays.map(async relay => {
+        let state = polls.get(relay);
+        if (!state) { if (polls.size >= 10) return; state = { busy: false, next: 0 }; polls.set(relay, state); }
+        if (state.busy || d.now() < state.next) return;
+        state.busy = true; state.next = d.now() + 5000;
+        try {
+          let skip = skips.get(relay);
+          if (!skip || skip.until <= d.now()) {
+            skip = { until: d.now() + 60000, ids: [] };
+            if (skips.size >= 10) skips.clear(); skips.set(relay, skip);
           }
-          if (l.current()) await request(relay, { operation: 'consume', id: packet.id, digest: packet.digest });
-        }
-      } finally { polling = false; }
+          // Drain a bounded batch on each independent connection. A slow peer
+          // must not consume the entire background recovery window.
+          const pass = [...skip.ids];
+          for (let count = 0; count < 4 && l.current() && pass.length < 128; count++) {
+            const reply = await request(relay, { operation: 'poll', exclude: pass });
+            if (!l.current() || reply?.status !== 'ok' || !reply.packet) break;
+            const packet = parseCustody(JSON.stringify(reply.packet), d.now());
+            if (!packet || pass.includes(packet.id)) break;
+            pass.push(packet.id);
+            let accepted = false;
+            if (packet.kind === 'envelope') {
+              if (packet.recipient !== l.owner || !d.allowed(packet.sender)) {
+                skip.ids.push(packet.id); continue;
+              }
+              const receipt = await d.receive(packet);
+              if (receipt && l.current()) accepted = (await request(relay, { operation: 'receipt', packet: receipt }))?.status === 'accepted';
+            } else {
+              if (packet.sender !== l.owner || !d.allowed(packet.recipient) || !await verifyCustody(packet, d.records, d.now()) || !l.current()) continue;
+              const saved = await d.own.get(l.owner!, packet.id), e = saved?.envelope;
+              if (!e || packet.digest !== custodyDigest(e) || packet.recipient !== e.recipient || packet.recipientDevice !== e.recipientDevice || packet.expires !== e.expires || !l.current()) continue;
+              if (d.confirmReceipt) {
+                if (!await d.confirmReceipt(packet, l.current) || !l.current()) continue;
+              } else {
+                const row = (await d.messages?.list(l.owner!) ?? []).find(r => r.direction === 'out' && r.id === packet.id && r.peer === packet.recipient);
+                if (!row || !l.current()) continue;
+                await d.messages!.update(row, true, 0, l.current);
+              }
+              if (l.current()) accepted = (await request(relay, { operation: 'consume', id: packet.id, digest: packet.digest }))?.status === 'accepted';
+            }
+            // Lost acknowledgements retry next pass, not a minute later. The
+            // durable recipient store makes duplicate delivery idempotent.
+            if (accepted && l.current()) skip.ids.push(packet.id);
+          }
+        } catch { /* This relay retries without blocking the other custodians. */ }
+        finally { state.busy = false; }
+      }));
     },
-    invalidate() { epoch++; unavailable.clear(); skips.clear(); nextPoll = 0; },
+    invalidate() { epoch++; unavailable.clear(); skips.clear(); for (const state of polls.values()) state.next = 0; },
     stop() { stopped = true; epoch++; skips.clear(); },
   };
 }

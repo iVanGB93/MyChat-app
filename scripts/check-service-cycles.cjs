@@ -11,7 +11,7 @@ function collectFiles(directory) {
   });
 }
 
-const files = collectFiles(servicesRoot);
+const files = [servicesRoot, path.resolve(servicesRoot, '../modules'), path.resolve(servicesRoot, '../composition')].flatMap(collectFiles);
 const fileSet = new Set(files.map((file) => path.normalize(file)));
 
 function resolveImport(fromFile, request) {

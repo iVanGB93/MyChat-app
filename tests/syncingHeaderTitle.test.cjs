@@ -6,8 +6,8 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 // Exercise the actual component without loading the entire chat screen.
-const screen = fs.readFileSync(path.join(__dirname, '../src/screens/chat/ChatRoomScreen.tsx'), 'utf8');
-const component = screen.slice(screen.indexOf('function SyncingHeaderTitle('), screen.indexOf('\nfunction ChatHeaderIdentity('));
+const screen = fs.readFileSync(path.join(__dirname, '../src/components/chat/SyncingHeaderTitle.tsx'), 'utf8');
+const component = screen.slice(screen.indexOf('function SyncingHeaderTitle('));
 const compiled = ts.transpileModule(`${component}\nexports.render = SyncingHeaderTitle;`, {
   compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
 }).outputText;

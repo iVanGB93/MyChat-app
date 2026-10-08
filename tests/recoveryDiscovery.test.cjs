@@ -32,3 +32,20 @@ test('untrusted lookup responses cannot bypass signatures, target identity, ance
 test('invalid checkpoint is rejected before contacting a peer',async()=>{
  let requests=0;for(const raw of ['bad','null','{}','x'.repeat(12001)])await assert.rejects(checkRecoveryRecord(raw,async()=>{requests++;},()=>now));assert.equal(requests,0);
 });
+
+test('word-only recovery sends only the derived account and refuses missing or mismatched records',async()=>{
+ const vault=load('identityVault'),{findRecoveryRecord}=load('recoveryDiscovery');
+ const created=await vault.createLocalIdentity(async n=>new Uint8Array(crypto.randomBytes(n)),now);
+ const words=created.recoveryPhrase,record=created.identity.record;
+ const raw=await findRecoveryRecord(words,async account=>{
+   assert.equal(account,record.account);assert(!account.includes(words));
+   return found({record,history:[]});
+ },()=>now);
+ assert.equal(JSON.parse(raw).record.account,record.account);
+ await assert.rejects(findRecoveryRecord(words,async()=>({...found({record}),status:'not-found'}),()=>now),/unavailable/);
+ await assert.rejects(findRecoveryRecord(words,async()=>found(owner()),()=>now),/match/);
+ const bad=structuredClone(record);bad.signature='00'.repeat(64);
+ await assert.rejects(findRecoveryRecord(words,async()=>found({record:bad}),()=>now),/Invalid/);
+ let requests=0;await assert.rejects(findRecoveryRecord('wrong words',async()=>{requests++;},()=>now));assert.equal(requests,0);
+ vault.destroyIdentity(created.identity);
+});

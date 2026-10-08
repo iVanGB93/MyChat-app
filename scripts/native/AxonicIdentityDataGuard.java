@@ -10,6 +10,9 @@ final class AxonicIdentityDataGuard {
     private boolean rejected;
     private long windowStart = -1;
     private int frames;
+    private boolean authenticated;
+
+    synchronized void authenticated() { if (!rejected) authenticated = true; }
 
     synchronized String receive(ByteBuffer data, boolean binary, long now) {
         if (rejected) return null;
@@ -17,7 +20,7 @@ final class AxonicIdentityDataGuard {
             windowStart = now;
             frames = 0;
         }
-        if (binary || data == null || data.remaining() == 0 || data.remaining() > 20_000 || ++frames > 64) {
+        if (binary || data == null || data.remaining() == 0 || data.remaining() > 20_000 || ++frames > (authenticated ? 3856 : 64)) {
             rejected = true;
             return null;
         }

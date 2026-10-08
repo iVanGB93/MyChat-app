@@ -5,6 +5,13 @@ new Function('exports', ts.transpileModule(fs.readFileSync('src/services/identit
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText)(out);
 const { createNeuronConnections } = out;
+test('local wake bypasses failed-dial backoff once without duplicating active slots or reviving a stopped pool',async()=>{
+ const f=fixture(1);f.pool.offer(f.candidate(1));f.pool.tick();f.opens[0].resolve(null);await drain();
+ f.pool.offer(f.candidate(1));f.pool.tick();assert.equal(f.opens.length,1);
+ f.pool.resume();assert.equal(f.opens.length,2);f.pool.resume();assert.equal(f.opens.length,2);
+ f.finish(1);await drain();f.pool.resume();assert.equal(f.opens.length,2);
+ f.pool.stop();f.pool.resume();assert.equal(f.opens.length,2);
+});
 const account = n => 'axonic:1:' + n.toString(16).padStart(64, '0');
 const drain = () => new Promise(r => setImmediate(r));
 function fixture(limit) {

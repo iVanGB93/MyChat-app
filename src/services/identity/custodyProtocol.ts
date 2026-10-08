@@ -4,13 +4,15 @@ import { xchacha20poly1305 } from '@noble/ciphers/chacha.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
-import { publicDevice, validAccountId, verifyRecord, type IdentityRecord } from './identityProtocol.ts';
+import { publicDevice, recordDigest, validAccountId, verifyRecord, type IdentityRecord } from './identityProtocol.ts';
 import type { IdentityRecordStore } from './identityAdmission.ts';
 export const CUSTODY_TTL = 24 * 60 * 60 * 1000;
 export interface CustodyEnvelope {
   version: 1; kind: 'envelope'; id: string; sender: string; senderDevice: string;
   recipient: string; recipientDevice: string; created: number; expires: number;
   ephemeral: string; nonce: string; ciphertext: string; signature: string;
+  /** Optional signed public wake metadata; older custodians can ignore it. */
+  wakeSignature?: string;
 }
 export interface CustodyReceipt {
   version: 1; kind: 'receipt'; id: string; sender: string; recipient: string;
@@ -23,6 +25,24 @@ const header = (e: CustodyEnvelope) => ['axonic-custody-envelope-v1', e.id, e.se
 const signedEnvelope = (e: CustodyEnvelope) => bytes([...header(e), e.ciphertext]);
 const signedReceipt = (r: CustodyReceipt) => bytes(['axonic-custody-receipt-v1', r.id, r.sender, r.recipient, r.recipientDevice, r.expires, r.digest]);
 export const custodyDigest = (e: CustodyEnvelope) => bytesToHex(sha256(bytes([bytesToHex(signedEnvelope(e)), e.signature])));
+type CustodyWake = {version:1;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;expires:number;digest:string;signature:string};
+const wakeBody=(e:CustodyWake)=>bytes(['axonic-custody-wake-v1',e.version,e.id,e.sender,e.senderDevice,e.recipient,e.recipientDevice,e.expires,e.digest]);
+const wakeFields=(e:CustodyEnvelope):CustodyWake=>({version:1,id:e.id,sender:e.sender,senderDevice:e.senderDevice,recipient:e.recipient,recipientDevice:e.recipientDevice,expires:e.expires,digest:custodyDigest(e),signature:e.wakeSignature??''});
+export function createCustodyWake(e:CustodyEnvelope,record:IdentityRecord){
+  return e.wakeSignature?{type:'neuron_message',event:JSON.stringify(wakeFields(e)),record:recordDigest(record)}:null;
+}
+/** A locked recipient needs only pinned public keys; no ciphertext or private keys enter FCM. */
+export function verifyCustodyWake(data:unknown,record:IdentityRecord,account:string,device:string,now:number):CustodyWake|null{
+  try{
+    const d=data as {type:string;event:string;record:string};
+    if(!d||d.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048||d.record!==recordDigest(record)||!verifyRecord(record,now))return null;
+    const e=JSON.parse(d.event) as CustodyWake;
+    if(e.version!==1||e.sender!==record.account||e.recipient!==account||e.recipientDevice!==device||e.sender===e.recipient
+      ||!hex(e.id,32)||!hex(e.senderDevice,32)||!hex(e.digest,32)||!hex(e.signature,64)||!Number.isSafeInteger(e.expires)||e.expires<=now||e.expires>now+CUSTODY_TTL)return null;
+    const signer=record.devices.find(v=>v.id===e.senderDevice);
+    return signer&&ed25519.verify(hexToBytes(e.signature),wakeBody(e),hexToBytes(signer.signing),{zip215:false})?e:null;
+  }catch{return null;}
+}
 export function parseCustody(raw: string, now: number): CustodyEnvelope | CustodyReceipt | null {
   if (typeof raw !== 'string' || raw.length > 7000 || !Number.isSafeInteger(now) || now < 0) return null;
   try {
@@ -34,7 +54,8 @@ export function parseCustody(raw: string, now: number): CustodyEnvelope | Custod
       && typeof p.ciphertext === 'string' && p.ciphertext.length >= 34 && p.ciphertext.length <= 4128 && /^(?:[a-f0-9]{2})+$/.test(p.ciphertext)
       && Number.isSafeInteger(p.created) && p.created >= 0 && p.created <= now + 30000 && p.expires > p.created && p.expires - p.created <= CUSTODY_TTL) {
       const { version, kind, id, sender, senderDevice, recipient, recipientDevice, created, expires, ephemeral, nonce, ciphertext, signature } = p;
-      return { version, kind, id, sender, senderDevice, recipient, recipientDevice, created, expires, ephemeral, nonce, ciphertext, signature };
+      if(p.wakeSignature!==undefined&&!hex(p.wakeSignature,64))return null;
+      return { version, kind, id, sender, senderDevice, recipient, recipientDevice, created, expires, ephemeral, nonce, ciphertext, signature,...(p.wakeSignature?{wakeSignature:p.wakeSignature}:{}) };
     }
     if (p.kind === 'receipt' && hex(p.digest, 32)) {
       const { version, kind, id, sender, recipient, recipientDevice, expires, digest, signature } = p;
@@ -70,7 +91,8 @@ export async function sealCustody(d: { record: IdentityRecord; signingSeed: Uint
     const aad = bytes(header(e)); shared = x25519.getSharedSecret(secret, hexToBytes(recipient.encryption));
     key = hkdf(sha256, shared, sha256(aad), utf8ToBytes('axonic-custody-key-v1'), 32);
     e.ciphertext = bytesToHex(xchacha20poly1305(key, nonce, aad).encrypt(plain));
-    e.signature = bytesToHex(ed25519.sign(signedEnvelope(e), d.signingSeed)); return e;
+    e.signature = bytesToHex(ed25519.sign(signedEnvelope(e), d.signingSeed));
+    e.wakeSignature=bytesToHex(ed25519.sign(wakeBody(wakeFields(e)),d.signingSeed));return e;
   } finally { secret.fill(0); shared?.fill(0); key?.fill(0); plain.fill(0); }
 }
 /** Caller verifies the envelope against current pinned records before decrypting. */

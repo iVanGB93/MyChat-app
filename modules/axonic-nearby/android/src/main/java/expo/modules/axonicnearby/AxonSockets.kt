@@ -46,6 +46,7 @@ internal class AxonSockets {
     val writing = AtomicBoolean(false)
     var windowAt = System.nanoTime()
     var frames = 0
+    @Volatile var attachments = false
   }
   private val sockets = ConcurrentHashMap<String, Entry>()
   private var limit = 5
@@ -68,6 +69,8 @@ internal class AxonSockets {
     entry.admission?.cancel(false); entry.admission = null
     entry.socket.soTimeout = 30_000
   }
+  // Only the verified JS session enables this; discovery/claim alone leaves the admission limit intact.
+  fun enableAttachments(id:String) { (sockets[id] ?: error("Axon closed")).attachments = true }
   fun connect(id: String, address: InetSocketAddress) {
     val entry = sockets[id] ?: error("Axon closed")
     try {
@@ -101,7 +104,7 @@ internal class AxonSockets {
       try {
         val now = System.nanoTime()
         if (now - entry.windowAt >= TimeUnit.MINUTES.toNanos(1)) { entry.windowAt = now; entry.frames = 0 }
-        check(++entry.frames <= 64) { "Axon frame rate exceeded" }
+        check(++entry.frames <= if(entry.attachments) 3856 else 64) { "Axon frame rate exceeded" }
         return if (entry.websocket) AxonWebSocket.read(first, input) { opcode, bytes -> AxonWebSocket.write(entry.output, bytes, opcode) }
           else AxonFrames.read(first, input)
       } finally { deadline.cancel(false) }

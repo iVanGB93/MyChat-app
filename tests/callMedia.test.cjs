@@ -94,7 +94,7 @@ test('bounded queue serializes simultaneous duplicate signals',async()=>{
   assert.equal(f.received[1].length,1);
 });
 
-async function coordinatedPair(routed=false){
+async function coordinatedPair(routed=false,preserveIncoming=()=>false,routeAvailable=()=>true){
   const f=await fixture(),stores=[0,1].map(()=>{let v=null;return {read:async()=>v,compareAndSet:async(o,id,b,a)=>{if(v!==b)return false;v=a;return true;}};});
   const control=load('callControlRuntime'),delivery=load('callControlDelivery'),coordinator=load('neuronCallCoordinator');
   const peers=f.records.map((r,i)=>({account:r.account,device:f.devices[i].id,instance:String(i+1).repeat(64),expiresAt:now+60000}));
@@ -105,11 +105,11 @@ async function coordinatedPair(routed=false){
     signReceipt:async e=>delivery.signCallControlReceipt(e,f.records[i],seed(i?5:2),now),
     send:async(a,d,raw)=>{const receipt=await runtimes[1-i].receive(raw,peers[i]);if(receipt)await coords[1-i].observe(JSON.parse(raw));return receipt;}}));
   const make=i=>coordinator.createNeuronCallCoordinator({account:peers[i].account,device:peers[i].device,store:stores[i],now:()=>now,current:()=>true,
-    busy:()=>false,blocked:()=>false,lookup:()=>({user:1-i,name:'Test peer'}),resolve:async()=>({account:peers[1-i].account,name:'Test peer'}),
+    preserveIncoming,busy:()=>false,blocked:()=>false,lookup:()=>({user:1-i,name:'Test peer'}),resolve:async()=>({account:peers[1-i].account,name:'Test peer'}),
     readRecord,list:async()=>{const raw=await stores[i].read();return raw?[JSON.parse(JSON.parse(raw).entries[0].raw)]:[];},
     random:async()=>seed(31),sign:input=>c.signCallControl({...input,record:f.records[i]},seed(i?5:2),now),submit:runtimes[i].submit,
     signMedia:input=>m.signCallMediaSignal({...input,record:f.records[i]},seed(i?5:2),now),contexts:()=>contexts[i],
-    ...(routed?{callRoute:()=>({expiresAt:now+60000}),sendRoutedMedia:raw=>coords[1-i].receiveRoutedMedia(raw)}:{}),
+    ...(routed?{callRoute:()=>routeAvailable()?({expiresAt:now+60000}):null,sendRoutedMedia:raw=>coords[1-i].receiveRoutedMedia(raw)}:{}),
     sendMedia:(a,d,raw)=>coords[1-i].receiveMedia(raw,peers[i],peers[1-i].instance),changed:v=>{views[i]=v;}});
   coords.push(make(0),make(1));
   const drain=async i=>{const raw=await stores[i].read();return runtimes[i].drain(JSON.parse(JSON.parse(raw).entries[0].raw),peers[1-i]);};
@@ -138,6 +138,14 @@ test('restart cancels old calls and changed axon instances cannot reuse an activ
   const y=await coordinatedPair();await y.coords[0].start(1,'voice');await y.drain(0);
   y.reopen(0);await y.coords[0].tick();await y.drain(0);
   assert.equal(y.views[1].status,'ended');
+});
+
+test('selection waits for a recovering route before opening media',async()=>{
+ const x=await coordinatedPair(),id=await x.coords[0].start(1,'video');await x.drain(0);
+ const saved=x.contexts[0];x.contexts[0]=[];
+ await x.coords[1].accept(id);await x.drain(1);await x.drain(0);await x.coords[0].tick();
+ assert.equal(x.views[0].status,'connecting');
+ x.contexts[0]=saved;await x.coords[0].tick();assert.equal(x.views[0].status,'ready');
 });
 
 test('decline ends ringing only when no other connected recipient device remains',async()=>{
@@ -181,4 +189,60 @@ test('cached cryptographic success cannot authorize changed bytes, devices or ex
  assert.equal(m.verifyCallMediaSignal(JSON.stringify({...event,device:f.devices[1].id}),f.records[0],now),null);
  assert.equal(m.verifyCallMediaSignal(raw,f.records[0],now+30001),null);
  assert.equal(p.verifyRecord(f.records[0],f.records[0].expiresAt+1),false);
+});
+
+test('permission reattachment restores only a held incoming ringing invitation',async()=>{
+ let held=null;const x=await coordinatedPair(false,id=>id===held);const id=await x.coords[0].start(1,'voice');await x.drain(0);held=id;
+ x.reopen(1);await x.coords[1].ready();assert.equal(await x.coords[1].resumeIncoming(id),true);assert.equal(await x.coords[1].accept(id),true);
+ await x.drain(1);await x.drain(0);await x.coords[0].tick();assert.equal(x.views[1].status,'ready');
+ x.reopen(1);await x.coords[1].ready();assert.equal(await x.coords[1].resumeIncoming(id),false);
+});
+test('a cancelled invitation cannot be restored after a permission interruption',async()=>{
+ let held=null;const x=await coordinatedPair(false,id=>id===held);const id=await x.coords[0].start(1,'voice');await x.drain(0);held=id;
+ await x.coords[0].end(id);await x.drain(0);x.reopen(1);await x.coords[1].ready();assert.equal(await x.coords[1].resumeIncoming(id),false);
+});
+
+test('call-bound media survives a transient relay route gap',async()=>{
+ let available=true;const x=await coordinatedPair(true,()=>false,()=>available),id=await x.coords[0].start(1,'voice');
+ await x.drain(0);await x.coords[1].accept(id);await x.drain(1);await x.drain(0);await x.coords[0].tick();
+ const transport=x.views[0].transport;available=false;await x.coords[0].tick();assert.equal(x.views[0].status,'ready');
+ assert.equal(await transport.send('offer',{type:'offer',sdp:'v=0'}),false);
+ available=true;await x.coords[0].tick();assert.equal(x.views[0].transport,transport);
+});
+
+test('fresh root-account runtime rings, accepts, signals media and blocks without numeric accounts',async()=>{
+ const f=await fixture(),factory=load('rootAccountCalls'),delivery=load('callControlDelivery');
+ let clock=now;const values=[null,null],blocked=[false,false],live=[true,true],views=[null,null],apps=[];
+ const peers=f.records.map((r,i)=>({account:r.account,device:f.devices[i].id,instance:String(i+1).repeat(64),expiresAt:now+60000}));
+ for(let i=0;i<2;i++){
+  const record=f.records[i],signing=seed(i?5:2),other=1-i;
+  const store={read:async()=>values[i],compareAndSet:async(o,id,b,a)=>{if(values[i]!==b)return false;values[i]=a;return true;}};
+  apps.push(factory.createRootAccountCalls({
+   identity:{status:()=>({account:record.account,state:'unlocked'}),callDevice:()=>peers[i].device,publicRecord:()=>record,
+    signCall:input=>c.signCallControl({...input,record},signing,clock),signCallMedia:input=>m.signCallMediaSignal({...input,record},signing,clock),
+    signCallReceipt:event=>delivery.signCallControlReceipt(event,record,signing,clock)},
+   network:()=>({callPeers:()=>[peers[other]],mediaContexts:()=>[{peer:peers[other],instance:peers[i].instance}],
+    relayPeers:()=>[],mediaRelayPeers:()=>[],callControlRequest:(a,d,raw)=>apps[other].receive(raw,peers[i]),
+    callMediaRequest:(a,d,raw)=>apps[other].receiveMedia(raw,peers[i],peers[other].instance),
+    sendRelayedMedia:raw=>apps[other].receiveRoutedMedia(raw,peers[i])}),
+   records:{read:async id=>f.records.find(r=>r.account===id)??null},store,
+   list:async()=>values[i]?[JSON.parse(JSON.parse(values[i]).entries[0].raw)]:[],
+   current:()=>live[i],now:()=>clock,random:async()=>seed(31),
+   contacts:async()=>[{account:peers[other].account,alias:'Local nickname',blocked:blocked[i]}],changed:v=>views[i]=v,
+  }));
+ }
+ const id=await apps[0].coordinator.start(peers[1].account,'video');
+ for(let n=0;n<2;n++){clock+=2100;await apps[0].tick();await apps[1].tick();}
+ assert.equal(views[1].status,'ringing');assert.equal(views[1].peerUser,peers[0].account);
+ assert.equal(views[1].peerName,'Local nickname');
+ assert.equal(await apps[1].coordinator.accept(id),true);
+ for(let n=0;n<3;n++){clock+=2100;await apps[1].tick();await apps[0].tick();}
+ assert.equal(views[0].status,'ready');assert.equal(views[1].status,'ready');
+ const received=[];views[1].transport.subscribe((kind,data)=>received.push(kind));
+ assert.equal(await views[0].transport.send('offer',{type:'offer',sdp:'v=0'}),true);assert.deepEqual(received,['offer']);
+ const old=views[0].transport;blocked[0]=true;clock+=2100;await apps[0].tick();
+ assert.equal(views[0].status,'ended');assert.equal(await old.send('offer',{type:'offer',sdp:'v=0'}),false);
+ await assert.rejects(apps[0].coordinator.start(peers[1].account,'voice'));
+ live[1]=false;await assert.rejects(apps[1].receive('{}',peers[0]));
+ for(const app of apps)app.stop();
 });

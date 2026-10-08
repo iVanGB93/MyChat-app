@@ -25,7 +25,7 @@ export function validateCustodyRows(value: unknown): asserts value is CustodyRow
 /** Ordinary participant's bounded custody service. Authenticated caller is supplied by the Axon, never the payload.
  * No relay-to-relay deposits. Holding confirmation is NOT a delivery receipt.
  */
-export function createCustodyService(d: { owner: string; store: CustodyStore; records: IdentityRecordStore; now(): number; current(): boolean }) {
+export function createCustodyService(d: { owner: string; store: CustodyStore; records: IdentityRecordStore; now(): number; current(): boolean; stored?(packet:CustodyEnvelope):Promise<void> }) {
   let queued = 0;
   const prune = (rows: CustodyRow[]) => { for (let i = rows.length - 1; i >= 0; i--) if (rows[i].expires <= d.now()) rows.splice(i, 1); };
   async function handle(peer: string, raw: string): Promise<string> {
@@ -38,7 +38,8 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
         || peer !== (packet.kind === 'envelope' ? packet.sender : packet.recipient) || packet.sender === d.owner || packet.recipient === d.owner
         || !await verifyCustody(packet, d.records, d.now()) || !d.current()) return JSON.stringify({ status: 'rejected' });
     }
-    return d.store.transaction(rows => {
+    let deposited:CustodyEnvelope|null=null;
+    const result=await d.store.transaction(rows => {
       validateCustodyRows(rows); prune(rows);
       if (!d.current()) return JSON.stringify({ status: 'rejected' });
       if (packet) {
@@ -58,6 +59,7 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
           || JSON.stringify(rows).length + JSON.stringify(packet).length + 600 > 512_000) return JSON.stringify({ status: 'full' });
         rows.push({ sender: packet.sender, recipient: packet.recipient, recipientDevice: packet.recipientDevice,
           id: packet.id, expires: packet.expires, digest, packet });
+        deposited=packet;
         return JSON.stringify({ status: 'held' });
       }
       if (request.operation === 'poll') {
@@ -74,6 +76,9 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
       }
       return JSON.stringify({ status: 'rejected' });
     });
+    // Notify only after durable commit. Push failure must never undo custody or imply delivery.
+    if(deposited&&d.current()&&d.stored)void Promise.resolve().then(()=>d.stored!(deposited!)).catch(()=>{});
+    return result;
   }
   return {
     async receive(peer: string, raw: string): Promise<string> {

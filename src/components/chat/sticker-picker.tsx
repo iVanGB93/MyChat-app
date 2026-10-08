@@ -1,3 +1,4 @@
+import type {StickerDraftStorage} from '../../services/sticker-draft-store';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, ScrollView, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -10,9 +11,9 @@ import { loadImportedStickers, importedStickerUri, markImportedStickerSent, remo
 import { Image } from 'expo-image';
 import { stickerGridCellWidth } from '../../utils/sticker-grid';
 
-export default function StickerPicker({ ownerId, onClose, onSend, onSendImported, initialUri }: {
-  initialUri?: string;
-  ownerId: number; onClose: () => void; onSend: (sticker: Sticker) => Promise<void>;
+export default function StickerPicker({ ownerId, onClose, onSend, onSendImported, initialUri, allowCreate = true, draftStorage }: {
+  initialUri?: string; allowCreate?: boolean; draftStorage?: StickerDraftStorage;
+  ownerId: number | string; onClose: () => void; onSend: (sticker: Sticker) => Promise<void>;
   onSendImported: (sticker: ImportedSticker) => Promise<void>;
 }) {
   const { colors: c } = useTheme();
@@ -51,9 +52,9 @@ export default function StickerPicker({ ownerId, onClose, onSend, onSendImported
         <TouchableOpacity disabled={busy} onPress={onClose} accessibilityLabel="Close stickers" style={{ padding: 12 }}><Text style={{ color: c.primary }}>Close</Text></TouchableOpacity>
       </View>
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, gap: 8 }}>
-        {['All', 'Axonic', 'Recent', 'Favorites', 'Create'].map((name) => <TouchableOpacity disabled={busy} key={name} accessibilityRole="tab" accessibilityState={{ selected: tab === name }} onPress={() => { tabChosen.current = true; setSelected(undefined); setSelectedCustom(undefined); setTab(name); }} style={{ padding: 12, borderRadius: 20, backgroundColor: tab === name ? c.primary : c.surface }}><Text style={{ color: tab === name ? c.textInverse : c.text }}>{name}</Text></TouchableOpacity>)}
+        {['All', 'Axonic', 'Recent', 'Favorites', 'Create'].filter(name => allowCreate || name !== 'Create').map((name) => <TouchableOpacity disabled={busy} key={name} accessibilityRole="tab" accessibilityState={{ selected: tab === name }} onPress={() => { tabChosen.current = true; setSelected(undefined); setSelectedCustom(undefined); setTab(name); }} style={{ padding: 12, borderRadius: 20, backgroundColor: tab === name ? c.primary : c.surface }}><Text style={{ color: tab === name ? c.textInverse : c.text }}>{name}</Text></TouchableOpacity>)}
       </View>
-      {tab === 'Create' ? <StickerStudio ownerId={ownerId} initialUri={initialUri} onBusy={(value) => { sending.current = value; setBusy(value); }} onSaved={() => setTab('All')} /> : <>
+      {tab === 'Create' ? <StickerStudio draftStorage={draftStorage} ownerId={ownerId} initialUri={initialUri} onBusy={(value) => { sending.current = value; setBusy(value); }} onSaved={() => setTab('All')} /> : <>
       <ScrollView contentContainerStyle={{ padding: 16, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
         {!stickers.length && !customVisible.length && <Text style={{ color: c.textSecondary }}>{tab === 'Recent' ? 'Your sent stickers will appear here.' : 'Choose a sticker and tap Add to favorites.'}</Text>}
         {customVisible.map((sticker) => <TouchableOpacity key={sticker.id} accessibilityLabel={`Preview ${sticker.name}`} onPress={() => { setSelected(undefined); setSelectedCustom(sticker); }} style={{ width: cellWidth, alignItems: 'center', paddingVertical: 4 }}><Image source={{ uri: importedStickerUri(ownerId, sticker) }} contentFit="contain" style={{ width: Math.min(110, cellWidth), height: Math.min(110, cellWidth) }} /></TouchableOpacity>)}

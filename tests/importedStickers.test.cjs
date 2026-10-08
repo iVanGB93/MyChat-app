@@ -70,6 +70,7 @@ function fixture() {
     delete() { files.delete(this.uri); }
   }
   const api = moduleFrom('imported-stickers.ts', {
+    './stickers': moduleFrom('stickers.ts', {'@react-native-async-storage/async-storage': {default: {}}}),
     '@react-native-async-storage/async-storage': { default: { getItem: async (k) => disk.get(k), setItem: async (k, v) => { if (failWrite) throw new Error('disk full'); disk.set(k, v); } } },
     'expo-file-system': { Directory, File, Paths: { document: 'file:///documents' } },
     'react-native': { Image: { getSize: async () => ({ width: 512, height: 512 }) } },
@@ -130,3 +131,5 @@ test('sent custom stickers persist recent activity without losing favorites', as
   assert.equal(rows[0].favorite, true);
   assert.equal((await api.loadImportedStickers(2)).length, 0);
 });
+
+test('root sticker collection paths and deletion stay within their own account',async()=>{const {api,files}=fixture(),a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64);const [one]=await api.importSticker(a,'file:///input','Root A'),[two]=await api.importSticker(b,'file:///input','Root B');const first=api.importedStickerUri(a,one),second=api.importedStickerUri(b,two);assert.notEqual(first,second);assert(first.includes('/root-'+ 'a'.repeat(64)+'/'));assert.equal((await api.loadImportedStickers(1)).length,0);await api.removeImportedSticker(a,one);assert(!files.has(first));assert(files.has(second));assert.throws(()=>api.importedStickerUri('../escape',one),/Invalid sticker account/);});

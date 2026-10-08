@@ -7,7 +7,7 @@ import type { Sticker } from '../../services/stickers';
 import { loadStickerPreferences, updateStickerPreferences } from '../../services/stickers';
 import { importSticker, isImportedStickerFavorite } from '../../services/imported-stickers';
 
-export default function StickerPreview({ sticker, uri, userId, onClose }: { sticker?: Sticker; uri?: string; userId?: number; onClose: () => void }) {
+export default function StickerPreview({ sticker, uri, userId, onClose }: { sticker?: Sticker; uri?: string; userId?: number | string; onClose: () => void }) {
   const { colors: c } = useTheme();
   const { width, height } = useWindowDimensions();
   const size = Math.min(240, width - 80, height * 0.45);

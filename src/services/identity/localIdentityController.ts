@@ -1,4 +1,5 @@
 import { sealCustody, openCustody, verifyCustody, signCustodyReceipt, type CustodyEnvelope } from './custodyProtocol';
+import {signAttachmentManifest,signAttachmentReceipt,type AttachmentManifest} from './attachmentProtocol';
 import { signAxonSignal, type AxonSignal } from './axonSignaling';
 import { signCallControl, type CallControl } from './callControlProtocol';
 import { signCallControlReceipt } from './callControlDelivery';
@@ -56,6 +57,19 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       try { assertCurrent(e); draft = created.identity; state = 'backup'; return created.recoveryPhrase; }
       catch (error) { destroyIdentity(created.identity); throw error; }
     }); },
+    /** Stage this installation's existing identity for a new local password and verified backup.
+     * Source storage is read-only; no replacement root/device or recovery revision is minted. */
+    beginImport(raw: string, password: string, secretHex: string) { return exclusive(async e => {
+      if(identity||draft||await storage.readVault())throw Error('A local identity already exists');
+      assertCurrent(e);
+      if(raw.length>12000||!/^[0-9a-f]{64}$/.test(secretHex))throw Error('Existing identity protection is unavailable');
+      const secret=hexToBytes(secretHex);let opened:UnlockedIdentity|undefined;
+      try{
+        opened=await unlockIdentity(raw,password,secret,now(),derive);assertCurrent(e);
+        const words=entropyToMnemonic(opened.entropy,wordlist);
+        draft=opened;opened=undefined;state='backup';return words;
+      }finally{secret.fill(0);if(opened)destroyIdentity(opened);}
+    }); },
     confirmBackup(phrase: string, password: string) { return exclusive(async e => {
       const source = draft;
       if (!source || phrase.trim().toLowerCase().replace(/\s+/g, ' ') !== entropyToMnemonic(source.entropy, wordlist)) {
@@ -65,7 +79,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       assertCurrent(e);
       // Copy secrets so locking during an async KDF cannot mutate the operation's input.
       const copy: UnlockedIdentity = { entropy: source.entropy.slice(), signingSeed: source.signingSeed.slice(),
-        encryptionSeed: source.encryptionSeed.slice(), record: source.record };
+        encryptionSeed: source.encryptionSeed.slice(), record: source.record, history:source.history };
       let secret: Uint8Array | undefined;
       try {
         secret = await random(32);
@@ -127,9 +141,25 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         identity = opened; opened = undefined; account = identity.record.account; state = 'unlocked';
       } finally { secret.fill(0); if (opened) destroyIdentity(opened); }
     }); },
+
+    changePassword(currentPassword:string,newPassword:string){return exclusive(async e=>{
+      if(!identity)throw Error('Unlock the local account first');
+      const raw=await storage.readVault(),secretHex=await storage.readDeviceSecret();assertCurrent(e);
+      if(!raw||!secretHex||!/^[0-9a-f]{64}$/.test(secretHex))throw Error('Account protection unavailable');
+      const secret=hexToBytes(secretHex);let verified:UnlockedIdentity|undefined;
+      try{
+        verified=await unlockIdentity(raw,currentPassword,secret,now(),derive);assertCurrent(e);
+        if(verified.record.account!==account)throw Error('Account changed');
+        const sealed=await sealIdentity(verified,newPassword,secret,random,now(),derive);assertCurrent(e);
+        await storage.writeVault(JSON.stringify(sealed));
+        // A lock racing the completed write leaves a cold-unlockable vault under the new password.
+      }finally{secret.fill(0);if(verified)destroyIdentity(verified);}
+    });},
     async sealCustody(recipient: IdentityRecord, recipientDevice: string, id: string, text: string) {
       const e = epoch, source = identity; if (!source || busy) throw Error('Unlock the local account first');
       const result = await sealCustody({ ...source, recipient, recipientDevice, id, text, now: now(), random });
+      // Silent history updates synchronize at unlock; they must not create message notifications.
+      try { if (JSON.parse(text)?.[0] === 'axonic-root-action-v1') delete result.wakeSignature; } catch { /* Ordinary text retains its wake. */ }
       assertCurrent(e); if (source !== identity) throw Error('Account operation interrupted'); return result;
     },
     async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>) {
@@ -143,6 +173,14 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
     },
     publicRecord(): IdentityRecord | null { return identity ? JSON.parse(JSON.stringify(identity.record)) : null; },
     callDevice(): string | null { return identity && !busy ? publicDevice(identity.signingSeed,identity.encryptionSeed).id : null; },
+    signAttachment(input:Omit<AttachmentManifest,'signature'>){
+      if(!identity||busy)throw Error('Unlock the local account first');
+      return signAttachmentManifest(input,identity.signingSeed,identity.record,now());
+    },
+    signAttachmentReceipt(manifest:AttachmentManifest){
+      if(!identity||busy)throw Error('Unlock the local account first');
+      return signAttachmentReceipt(manifest,identity.signingSeed,identity.record,now());
+    },
     signCall(input: Omit<CallControl,'version'|'record'|'device'|'signature'>) {
       if (!identity || busy) throw Error('Unlock the local account first');
       return signCallControl({...input,record:identity.record},identity.signingSeed,now());
@@ -173,7 +211,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       return signAxonSignal(identity.record, identity.signingSeed, identity.history ?? [], target, session, kind, sdp, now());
     },
     /** Keys stay inside the controller. Pending sockets are owned before the first await. */
-    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler, onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'], onPush?: Parameters<typeof createPersistentAxon>[0]['onPush'], onCallControl?: Parameters<typeof createPersistentAxon>[0]['onCallControl'], onCallMedia?: Parameters<typeof createPersistentAxon>[0]['onCallMedia'], onCallRelay?: Parameters<typeof createPersistentAxon>[0]['onCallRelay'], onCallMediaRelay?: Parameters<typeof createPersistentAxon>[0]['onCallMediaRelay'], onRelayedCallMedia?: Parameters<typeof createPersistentAxon>[0]['onRelayedCallMedia']) {
+    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler, onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'], onPush?: Parameters<typeof createPersistentAxon>[0]['onPush'], onCallControl?: Parameters<typeof createPersistentAxon>[0]['onCallControl'], onCallMedia?: Parameters<typeof createPersistentAxon>[0]['onCallMedia'], onCallRelay?: Parameters<typeof createPersistentAxon>[0]['onCallRelay'], onCallMediaRelay?: Parameters<typeof createPersistentAxon>[0]['onCallMediaRelay'], onRelayedCallMedia?: Parameters<typeof createPersistentAxon>[0]['onRelayedCallMedia'], onAttachment?:Parameters<typeof createPersistentAxon>[0]['onAttachment']) {
       const e = epoch, source = identity;
       let session: ReturnType<typeof createPersistentAxon> | undefined, closed = false;
       const close = () => {
@@ -189,7 +227,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         const instance = await random(32); assertCurrent(e);
         if (closed || source !== identity || busy) throw Error('Account operation interrupted');
         session = createPersistentAxon({ record: source.record, history: source.history, signingSeed: source.signingSeed, instance, store,
-          expectedAccount, introductions, onSignal, onCustody, onDirectory, onPush, onCallControl, onCallMedia, onCallRelay, onCallMediaRelay, onRelayedCallMedia,
+          expectedAccount, introductions, onSignal, onCustody, onDirectory, onPush, onCallControl, onCallMedia, onCallRelay, onCallMediaRelay, onRelayedCallMedia, onAttachment,
           testMessages: onTestMessage ? { encryptionSeed: source.encryptionSeed, received: onTestMessage } : undefined,
           chatMessages: onChatMessage ? { encryptionSeed: source.encryptionSeed, received: onChatMessage } : undefined,
           wire, now, random, current: () => !closed && epoch === e && source === identity, onClosed: close });
