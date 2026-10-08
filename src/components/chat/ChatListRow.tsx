@@ -16,7 +16,7 @@ interface ChatListRowProps {
   lastMsgContent: string | null;
   lastMsgTime: string | null;
   lastMsgFromMe: boolean;
-  lastMsgStatus?: 'pending' | 'delivered' | 'read';
+  lastMsgStatus?: 'pending' | 'stored' | 'delivered' | 'read';
   unread: number;
   typingLabel: string | null;
   isMuted: boolean;
@@ -161,14 +161,14 @@ function ChatListRowBase({
                     {lastMsgFromMe && (
                       <Text
                         style={{
-                          color: lastMsgStatus === 'read'
+                          color: lastMsgStatus === 'read' || lastMsgStatus === 'delivered'
                             ? Colors.checkBlue
                             : Colors.textTertiary,
                         }}
                       >
                         {lastMsgStatus === 'pending'
                           ? '⏱ '
-                          : lastMsgStatus === 'read'
+                          : lastMsgStatus === 'read' || lastMsgStatus === 'delivered'
                             ? '✓✓ '
                             : '✓ '}
                       </Text>

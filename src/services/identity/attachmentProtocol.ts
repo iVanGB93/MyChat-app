@@ -3,7 +3,7 @@ import {ed25519} from '@noble/curves/ed25519.js';
 import {xchacha20poly1305} from '@noble/ciphers/chacha.js';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes,utf8ToBytes} from '@noble/hashes/utils.js';
-import {validAccountId,verifyRecord,type IdentityRecord} from './identityProtocol.ts';
+import {validAccountId,verifyRecord,verifyPublicSignature,type IdentityRecord} from './identityProtocol.ts';
 
 export const ATTACHMENT_CHUNK_BYTES=4096;
 export const ATTACHMENT_MAX_BYTES=250*1024*1024;
@@ -36,7 +36,9 @@ export function signAttachmentManifest(fields:Omit<AttachmentManifest,'signature
 }
 export function verifyAttachmentManifest(m:unknown,record:IdentityRecord,now:number):m is AttachmentManifest {
  try{if(!validAttachmentManifest(m,now)||!verifyRecord(record,now)||record.account!==m.sender)return false;
-  const d=record.devices.find(d=>d.id===m.senderDevice);return !!d&&ed25519.verify(hexToBytes(m.signature),body(m),hexToBytes(d.signing),{zip215:false});
+  // Cache only the exact public signature result. Expiry, identity and current
+  // device membership above are still checked for every chunk/request.
+  const d=record.devices.find(d=>d.id===m.senderDevice);return !!d&&verifyPublicSignature(hexToBytes(m.signature),body(m),hexToBytes(d.signing),{zip215:false});
  }catch{return false;}
 }
 type ChunkContext=Pick<AttachmentManifest,'id'|'sender'|'recipient'|'recipientDevice'|'bytes'>;
@@ -88,6 +90,6 @@ export function signAttachmentReceipt(m:AttachmentManifest,seed:Uint8Array,recor
 export function verifyAttachmentReceipt(r:AttachmentReceipt,m:AttachmentManifest,record:IdentityRecord,now:number){
  try{if(!validAttachmentManifest(m,now)||!verifyRecord(record,now)||record.account!==m.recipient||r.version!==1||r.id!==m.id||r.digest!==attachmentDigest(m)
   ||r.recipient!==m.recipient||r.device!==m.recipientDevice||r.expires!==m.expires||!hex(r.signature,64))return false;
-  const d=record.devices.find(d=>d.id===r.device);return !!d&&ed25519.verify(hexToBytes(r.signature),receiptBody(r),hexToBytes(d.signing),{zip215:false});
+  const d=record.devices.find(d=>d.id===r.device);return !!d&&verifyPublicSignature(hexToBytes(r.signature),receiptBody(r),hexToBytes(d.signing),{zip215:false});
  }catch{return false;}
 }

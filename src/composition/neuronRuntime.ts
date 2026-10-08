@@ -12,7 +12,7 @@ import { allowedAxons, loadAllowedAxons, subscribeAllowedAxons } from '../servic
 import { localAccount } from '../services/identity/localAccount';
 import { createLanIdentityRuntime, type NativeAxonLan } from '../services/identity/lanIdentityRuntime';
 import { createMobileIdentityRecordStore } from '../services/identity/identityRecordStore';
-import { createInternetAxonConnector, FIRST_NEURON } from '../services/identity/internetAxonTransport';
+import { createInternetAxonConnector, FIRST_NEURON, BOOTSTRAP_NEURONS } from '../services/identity/internetAxonTransport';
 import { createCustodyService } from '../services/identity/custodyService';
 import {createCustodyWakeForwarder} from '../services/identity/custodyWakeForwarder';
 import { createMobileCustodyStore } from '../services/identity/mobileCustodyStore';
@@ -153,11 +153,12 @@ function createLocalAccountNetwork() {
     }:undefined,
     onDirectory: (raw, peer) => directory.receive(peer.account, raw),
     onCustody: (raw, peer) => service()?.receive(peer.account, raw) ?? Promise.resolve(JSON.stringify({ status: 'rejected' })),
-    internet: { peers: [FIRST_NEURON], connect: createInternetAxonConnector(native, owner) } });
+    internet: { peers: [...BOOTSTRAP_NEURONS], connect: createInternetAxonConnector(native, owner) } });
   const blocked=new Set<string>();
   const courier=createCustodyCourier({owner,allowed:peer=>!blocked.has(peer),now:Date.now,records:operationalRecords,own:createOwnCustodyStore(),
     relays:runtime.custodians,request:runtime.custodyRequest,seal:(...args)=>localAccount.sealCustody(...args),
-    receive:envelope=>localAccount.receiveCustody(envelope,records,receiveMessage),
+    receive:envelope=>localAccount.receiveCustody(envelope,operationalRecords,receiveMessage),
+    held:envelope=>localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires),
     confirmReceipt:async(receipt,current)=>{
       if(!current())return false;const ledger=localRootChat(),state=await ledger.snapshot();
       if(!current()||![...state.messages,...(state.actions??[]),...(state.groupActions??[])].some(m=>m.id===receipt.id&&m.peer===receipt.recipient&&m.direction==='outgoing')&&!state.groupPackets?.some(m=>m.id===receipt.id&&m.peer===receipt.recipient))return false;

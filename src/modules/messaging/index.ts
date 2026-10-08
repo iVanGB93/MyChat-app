@@ -31,3 +31,5 @@ export {queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttach
 export {attachmentDigest} from '../../services/identity/attachmentProtocol';
 export {createRootVoiceRecorder,rootVoiceRecordingActive} from '../../services/identity/rootVoiceRecorder';
 export {startRootCallLease,stopRootCallLease,markRootCallConnected,rootCallMayRunBackground} from '../../services/identity/rootCallLifetime';
+
+export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';

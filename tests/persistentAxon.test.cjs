@@ -798,7 +798,7 @@ test('call relay refuses old peers and a session locked while awaiting a respons
 test('authenticated negotiated attachments have a separate bounded budget and keep normal control alive',async t=>{
  const f=pair(t,{0:{onAttachment:async()=>'{"status":"ok"}'},1:{onAttachment:async raw=>raw}});await Promise.all(f.sessions.map(s=>s.ready));
  assert(f.sessions[0].supportsAttachments());
- for(let i=0;i<80;i++){f.advance(25);assert.equal(await f.sessions[0].attachmentRequest(JSON.stringify({version:1,index:i})),JSON.stringify({version:1,index:i}));}
+ for(let i=0;i<80;i++){f.advance(50);assert.equal(await f.sessions[0].attachmentRequest(JSON.stringify({version:1,index:i})),JSON.stringify({version:1,index:i}));}
  assert.equal(f.sessions[0].snapshot().state,'connected');f.advance(20000);f.sessions.forEach(s=>s.tick());await settle(()=>f.transport.history[0].filter(s=>s.includes('authenticate')).length>=2);
  assert.equal(f.sessions[0].snapshot().state,'connected');
 });
@@ -806,6 +806,18 @@ test('an old peer cannot be sent attachment frames',async t=>{
  const f=pair(t,{0:{onAttachment:async()=>'{"status":"ok"}'}});await Promise.all(f.sessions.map(s=>s.ready));
  assert.equal(f.sessions[0].supportsAttachments(),false);assert.equal(await f.sessions[0].attachmentRequest('{}'),null);
  assert.equal(f.sessions[0].snapshot().state,'connected');
+});
+test('paced bidirectional attachment bursts stay connected across minute windows',async t=>{
+ const hooks={onAttachment:async()=> 'ok',onCustody:async()=> 'control-ok'};
+ const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ for(let i=0;i<1300;i++){
+  f.advance(50);f.sessions.forEach(s=>s.tick());
+  for(const s of f.sessions)assert.equal(await s.attachmentRequest('{}'),'ok');
+ }
+ for(const s of f.sessions){assert.equal(s.snapshot().state,'connected');assert.equal(await s.custodyRequest('poll'),'control-ok');}
+ // At 25 ms, the second request must wait until the safe pacing interval ends.
+ f.advance(25);let sent=false;const waiting=f.sessions[0].attachmentRequest('{}').then(r=>{sent=true;return r;});
+ await new Promise(r=>setTimeout(r,5));assert.equal(sent,false);f.advance(25);assert.equal(await waiting,'ok');
 });
 
 test('remembered locator callback follows mutual authentication and excludes inbound source addresses',async t=>{
@@ -841,4 +853,21 @@ test('RTC candidate gathering progresses with a native clock while JS timers are
  try {await transport.connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
   for(let i=0;i<12;i++)await Promise.resolve();assert.equal(waits,1);assert.equal(sent,1);
  } finally {transport.stop();global.setTimeout=original;}
+});
+
+test('first-contact custody resolves a signed sender record before decrypting and acknowledging',async t=>{
+ const a=await controller(),b=await controller();t.after(()=>{a.lock();b.lock();});
+ const records=store();await records.compareAndSet(b.status().account,null,b.publicRecord());
+ const envelope=await a.sealCustody(b.publicRecord(),b.publicRecord().devices[0].id,'ce'.repeat(32),'first contact from a new neuron');
+ let commits=0,lookups=0;
+ assert.equal(await b.receiveCustody(envelope,records,async()=>{commits++;return true;}),null);
+ const resolver=load('peerIdentityResolver').createPeerIdentityResolver({records,now:()=>now,current:()=>true,
+  lookup:async account=>{lookups++;assert.equal(account,a.status().account);return {status:'found',queried:1,answered:1,rejected:0,sources:[],packet:{record:a.publicRecord(),history:[]}};}});
+ t.after(()=>resolver.stop());
+ const operational={...records,read:async account=>{const result=await resolver.resolve(account);return result.status==='found'?result.record:null;}};
+ const receipt=await b.receiveCustody(envelope,operational,async m=>{commits++;assert.equal(m.text,'first contact from a new neuron');return true;});
+ assert.equal(lookups,1);assert.equal(commits,1);assert.ok(await records.read(a.status().account));
+ assert.equal(await load('custodyProtocol').verifyCustody(receipt,records,now),true);
+ const composition=require('node:fs').readFileSync('src/composition/neuronRuntime.ts','utf8');
+ assert.match(composition,/receiveCustody\(envelope,operationalRecords,receiveMessage\)/);
 });

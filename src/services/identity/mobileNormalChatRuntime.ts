@@ -34,7 +34,7 @@ import { createNormalChatOutboxStore } from './normalChatOutboxStore';
 import { createMobileCustodyStore } from './mobileCustodyStore';
 import { createNormalChatRuntime } from './normalChatRuntime';
 import { createLanIdentityRuntime, type NativeAxonLan } from './lanIdentityRuntime';
-import { createInternetAxonConnector, FIRST_NEURON } from './internetAxonTransport';
+import { createInternetAxonConnector, FIRST_NEURON, BOOTSTRAP_NEURONS } from './internetAxonTransport';
 import { mobileAxonTransportSupported } from './mobileAxonTransport';
 import type { AxonPeerConnection } from './rtcAxonTransport';
 import type { createLocalIdentityController } from './localIdentityController';
@@ -223,7 +223,7 @@ export function startMobileNormalChatRuntime(owner: number, identity: ReturnType
           return new RTCPeerConnection(configuration) as unknown as AxonPeerConnection;
         },
       } : undefined,
-      internet: Native?.axonWssConnect ? { peers: [FIRST_NEURON], connect: createInternetAxonConnector(
+      internet: Native?.axonWssConnect ? { peers: [...BOOTSTRAP_NEURONS], connect: createInternetAxonConnector(
         Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> }, () => current() ? account : null) } : undefined }),
   });
   const inspect = () => current() ? network?.snapshot() ?? null : null;

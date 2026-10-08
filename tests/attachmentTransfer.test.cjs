@@ -1,5 +1,41 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),{DatabaseSync}=require('node:sqlite');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer}=load('attachmentTransfer');
+test('bounded bursts transfer multiple chunks without timer sleeps and preserve verified delivery',async t=>{
+ const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ for(let n=0;n<5&&(await f.job(0)).cursor<3;n++)assert.equal(await sender.tick({maxSteps:32,maxMilliseconds:100}),true);
+ assert.equal((await f.job(0)).cursor,3);assert.equal(f.complete.length,0);
+ sender.stop();const resumed=createAttachmentTransfer(f.deps(0));
+ const receiver=createAttachmentTransfer(f.deps(1));await receiver.enqueue(f.descriptor,'incoming');
+ for(let n=0;n<8&&(await f.job(1)).phase!=='complete';n++)await receiver.tick({maxSteps:32,maxMilliseconds:100});
+ assert.equal((await f.job(1)).phase,'complete');assert.equal(f.written.length,3);assert.equal(f.chunks.size,0);
+ f.advance(3000);await resumed.tick({maxSteps:32,maxMilliseconds:100});assert.equal((await f.job(0)).phase,'complete');
+ assert.equal(await receiver.tick({maxSteps:32}),false);
+});
+test('burst respects its step budget and stops on cancellation while a chunk is in flight',async t=>{
+ const f=context(t),base=f.deps(0);let release,waiting=false;
+ const gate=new Promise(r=>release=r),worker=createAttachmentTransfer({...base,readChunk:async(j,i)=>{waiting=true;await gate;return base.readChunk(j,i);}});
+ await worker.enqueue(f.descriptor,'outgoing');await worker.tick({maxSteps:1});assert.equal(f.chunks.size,0);
+ const pending=worker.tick({maxSteps:32,maxMilliseconds:100});while(!waiting)await new Promise(setImmediate);
+ assert.equal(await worker.tick({maxSteps:32}),false);await worker.cancel(a.attachmentDigest(f.manifest));release();
+ assert.equal(await pending,false);assert.equal(f.chunks.size,0);assert.equal((await f.job(0)).phase,'cancelled');
+ for(const maxSteps of [0,33,NaN])await assert.rejects(worker.tick({maxSteps}),/budget/);
+});
+test('burst does not spin on unavailable records or retry a failed route without backoff',async t=>{
+ const f=context(t),base=f.deps(0);let reads=0,requests=0;
+ await createAttachmentTransfer(base).enqueue(f.descriptor,'outgoing');
+ const unavailable=createAttachmentTransfer({...base,record:async()=>{reads++;return null;}});
+ assert.equal(await unavailable.tick({maxSteps:32}),false);assert.equal(reads,1);
+ const failed=createAttachmentTransfer({...base,request:async()=>{requests++;return null;}});
+ assert.equal(await failed.tick({maxSteps:32}),false);assert.equal(requests,1);
+ assert.equal(await failed.tick({maxSteps:32}),false);assert.equal(requests,1);
+});
+test('slow requests exhaust the burst time budget without starting another request',async t=>{
+ const f=context(t),base=f.deps(0);let requests=0;
+ const worker=createAttachmentTransfer({...base,request:async(p,raw)=>{requests++;await new Promise(r=>setTimeout(r,10));return base.request(p,raw);}});
+ await worker.enqueue(f.descriptor,'outgoing');
+ await worker.tick({maxSteps:32,maxMilliseconds:1});assert.equal(requests,1);assert.equal((await f.job(0)).cursor,0);
+ await worker.tick({maxSteps:32,maxMilliseconds:1});assert.equal(requests,2);assert.equal((await f.job(0)).cursor,1);
+});
 test('per-job membership policy rejects direct media and stops in-flight upload after removal',async t=>{
  const f=context(t);let allowed=true,reads=0;const deps=f.deps(0),sender=createAttachmentTransfer({...deps,allowedJob:()=>allowed,readChunk:async(...args)=>{reads++;allowed=false;return deps.readChunk(...args);}});
  await sender.enqueue(f.descriptor,'outgoing');allowed=false;await sender.tick();assert.equal(f.chunks.size,0);
@@ -137,3 +173,11 @@ test('paused jobs retire after expiration so abandoned transfers cannot permanen
  assert.equal(await store.save({...paused,phase:'queued',revision:paused.revision+1},paused.revision,()=>true),false);
 });
 
+
+test('network-stored callback waits for every encrypted chunk and never implies recipient delivery',async t=>{
+ const f=context(t);let held=0;const worker=createAttachmentTransfer({...f.deps(0),stored:async(job,current)=>{assert(current());held++;assert.equal(f.chunks.size,Math.ceil(f.manifest.bytes/a.ATTACHMENT_CHUNK_BYTES));}});
+ await worker.enqueue(f.descriptor,'outgoing');await worker.tick();assert.equal(held,0);
+ const count=Math.ceil(f.manifest.bytes/a.ATTACHMENT_CHUNK_BYTES);
+ for(let n=0;n<count;n++){await worker.tick();if(n<count-1)assert.equal(held,0);}
+ assert.equal(held,1);assert.equal(f.complete.length,0);assert.equal((await f.job(0)).phase,'confirming');
+});

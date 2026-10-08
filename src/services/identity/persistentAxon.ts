@@ -350,7 +350,9 @@ export function createPersistentAxon(d: {
       try{
         for(let waits=0;permitted()&&(authenticating||introducing||pending||d.now()<attachmentNext)&&waits<80;waits++)await wait(25);
         if(!permitted()||authenticating||introducing||pending||d.now()<attachmentNext)return null;
-        attachmentNext=d.now()+25;const result=await exchange('attachment',raw);return permitted()?result:null;
+        // Both endpoints can transfer at once. Reserve headroom within the shared
+        // 3,600 incoming attachment frames/minute budget (requests plus responses).
+        attachmentNext=d.now()+50;const result=await exchange('attachment',raw);return permitted()?result:null;
       }catch{return null;}finally{custodyWaiting--;}
     },
     supportsCustody: () => peerCustody && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),

@@ -12,6 +12,7 @@ export function createCustodyCourier(d: {
   owner(): string | null; allowed(peer: string): boolean; now(): number; records: IdentityRecordStore;
   own: OwnCustodyStore; messages?: TestMessageStore; relays(): string[];
   /** Normal-chat adapter must durably apply the verified receipt before relay consumption. */
+  held?(envelope:CustodyEnvelope):Promise<void>;
   confirmReceipt?(receipt: CustodyReceipt, current: () => boolean): Promise<boolean>;
   request(relay: string, raw: string): Promise<string | null>;
   seal(record: IdentityRecord, device: string, id: string, text: string): Promise<CustodyEnvelope>;
@@ -52,6 +53,7 @@ export function createCustodyCourier(d: {
         catch { /* Treat transport failure like an unanswered request. */ }
         if (l.current() && response?.status === 'held') {
           await d.own.held(l.owner!, id, relay, l.current);
+          if(l.current())await d.held?.(saved.envelope);
           return l.current();
         }
         else if (l.current() && response?.status !== 'completed') {

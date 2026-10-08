@@ -56,6 +56,7 @@ export function createAttachmentTransfer(d:{
  commitFile(job:AttachmentJob,current:()=>boolean):Promise<void>;
  signReceipt(manifest:AttachmentManifest):Promise<AttachmentReceipt>;
  /** Idempotently update the own-chat row; called only for a verified complete file/recipient receipt. */
+ stored?(job:AttachmentJob,current:()=>boolean):Promise<void>;
  completed(job:AttachmentJob,current:()=>boolean):Promise<void>;
 }){
  let stopped=false,busy=false,generation=0,cursor=0,requests=0;
@@ -127,10 +128,10 @@ export function createAttachmentTransfer(d:{
      if(chunk.index!==job.cursor||!verifyAttachmentChunk(manifest,chunk))throw Error('Own attachment chunk invalid');
      const r=await request(relay,'put',job,{chunk});if(!await live())return;
      if(!['held','completed'].includes(r.status))throw Error('Attachment chunk refused');
-     const next=job.cursor+1;await save({cursor:next,phase:r.status==='completed'||next===total(job)?'confirming':'uploading',failures:0,next:0});return;
+     const next=job.cursor+1;if(next===total(job)&&r.status==='held'){await d.stored?.(job,current);if(!await live())return;}await save({cursor:next,phase:r.status==='completed'||next===total(job)?'confirming':'uploading',failures:0,next:0});return;
     }
     const r=await request(relay,'status',job);if(!await live())return;
-    if(r.status==='held'){await save({next:d.now()+2000});return;}
+    if(r.status==='held'){if(job.cursor===total(job))await d.stored?.(job,current);if(!await live())return;await save({next:d.now()+2000});return;}
     const recipient=await d.record(manifest.recipient);
     if(r.status!=='completed'||!recipient||!verifyAttachmentReceipt(r.receipt,manifest,recipient,d.now()))throw Error('No verified attachment receipt');
     if(!await live())return;
@@ -198,10 +199,25 @@ export function createAttachmentTransfer(d:{
    if(existing){if(attachmentDescriptorFingerprint(existing.descriptor)!==attachmentDescriptorFingerprint(job.descriptor)||existing.direction!==direction)throw Error('Attachment ID conflict');return existing;}
    if(!await d.store.save(job,null,current))throw Error('Attachment could not be saved');return job;
   },
-  async tick(){
-   const owner=d.owner(),epoch=generation;if(!owner||busy||stopped)return;busy=true;
-   try{await d.store.retire?.(owner,()=>!stopped&&generation===epoch&&d.owner()===owner);const jobs=await d.store.list(owner);if(!jobs.every(validAttachmentJob))throw Error('Invalid own attachment jobs');
-    const pending=jobs.filter(j=>!terminal(j.phase)&&j.next<=d.now());if(pending.length)await run(pending[cursor++%pending.length],epoch);
+  async tick(options:{maxSteps?:number;maxMilliseconds?:number}={}){
+   const steps=options.maxSteps??1,milliseconds=options.maxMilliseconds??50;
+   if(!Number.isSafeInteger(steps)||steps<1||steps>32||!Number.isFinite(milliseconds)||milliseconds<1||milliseconds>100)throw Error('Invalid attachment work budget');
+   const owner=d.owner(),epoch=generation;if(!owner||busy||stopped)return false;busy=true;
+   const active=()=>!stopped&&generation===epoch&&d.owner()===owner;
+   let progressed=false;const started=Date.now(),idle=new Set<string>();
+   try{await d.store.retire?.(owner,active);
+    // Re-read durable checkpoints between steps; never race pause, lock or receipt updates.
+    // Rotate jobs within a bounded burst so a large file cannot monopolize the worker.
+    for(let step=0;step<steps&&active();step++){
+     const jobs=await d.store.list(owner);if(!jobs.every(validAttachmentJob))throw Error('Invalid own attachment jobs');
+     const pending=jobs.filter(j=>!terminal(j.phase)&&j.next<=d.now()&&!idle.has(j.digest));if(!pending.length)break;
+     const job=pending[cursor++%pending.length];await run(job,epoch);if(!active())break;
+     const saved=await d.store.get(owner,job.digest);
+     if(!saved||saved.revision===job.revision)idle.add(job.digest);
+     else if(saved.failures===0&&(saved.cursor>job.cursor||saved.phase!==job.phase))progressed=true;
+     if(Date.now()-started>=milliseconds)break;
+    }
+    return active()&&progressed;
    }finally{busy=false;}
   },
   async cancel(digest:string){const owner=d.owner();if(!owner||stopped)throw Error('Unlock your account first');generation++;const epoch=generation;const job=await d.store.get(owner,digest);

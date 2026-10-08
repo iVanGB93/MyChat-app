@@ -15,3 +15,15 @@ test('only the intended device can issue the receipt authorizing ciphertext clea
  assert(a.verifyAttachmentReceipt(receipt,f.manifest,f.ids[1].record,now));assert(!a.verifyAttachmentReceipt({...receipt,digest:'00'.repeat(32)},f.manifest,f.ids[1].record,now));
  assert.throws(()=>a.signAttachmentReceipt(f.manifest,f.ids[2].signingSeed,f.ids[2].record,now));assert(!a.verifyAttachmentReceipt(receipt,{...f.manifest,id:'00'.repeat(32)},f.ids[1].record,now));
 });
+test('warm signature cache never bypasses expiry, current identity/device checks or changed signed bytes',()=>{
+ const f=fixture(),m=f.manifest,sender=f.ids[0].record,recipient=f.ids[1].record;
+ const receipt=a.signAttachmentReceipt(m,f.ids[1].signingSeed,recipient,now);
+ for(let i=0;i<3;i++){assert(a.verifyAttachmentManifest(m,sender,now));assert(a.verifyAttachmentReceipt(receipt,m,recipient,now));}
+ assert(!a.verifyAttachmentManifest(m,sender,m.expires));assert(!a.verifyAttachmentReceipt(receipt,m,recipient,m.expires));
+ assert(!a.verifyAttachmentManifest(m,{...sender,devices:[]},now));assert(!a.verifyAttachmentReceipt(receipt,m,{...recipient,devices:[]},now));
+ assert(!a.verifyAttachmentManifest({...m,root:'01'.repeat(32)},sender,now));
+ assert(!a.verifyAttachmentManifest({...m,signature:'00'.repeat(64)},sender,now));
+ assert(!a.verifyAttachmentReceipt({...receipt,signature:'00'.repeat(64)},m,recipient,now));
+ assert(!a.verifyAttachmentReceipt({...receipt,device:f.ids[2].device.id},m,recipient,now));
+ assert(a.verifyAttachmentManifest(m,sender,now));assert(a.verifyAttachmentReceipt(receipt,m,recipient,now));
+});

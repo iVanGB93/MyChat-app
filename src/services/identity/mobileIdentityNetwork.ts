@@ -11,7 +11,7 @@ import { localIdentity } from './localIdentity';
 import { createMobileIdentityRecordStore } from './identityRecordStore';
 import { createLanIdentityRuntime, type NativeAxonLan } from './lanIdentityRuntime';
 import { mobileAxonTransportSupported } from './mobileAxonTransport';
-import { createInternetAxonConnector, FIRST_NEURON } from './internetAxonTransport';
+import { createInternetAxonConnector, FIRST_NEURON, BOOTSTRAP_NEURONS } from './internetAxonTransport';
 import { observeIdentityForeground } from './identityForeground';
 import { validAccountId } from './identityProtocol';
 import { createTestMessageStore } from './testMessageStore';
@@ -82,7 +82,7 @@ function createMobileIdentityNetwork() {
       },
     } : undefined,
     internet: Native?.axonWssConnect ? {
-      peers: [FIRST_NEURON], connect: createInternetAxonConnector(
+      peers: [...BOOTSTRAP_NEURONS], connect: createInternetAxonConnector(
         Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> },
         () => localIdentity.status().account ?? null),
     } : undefined });

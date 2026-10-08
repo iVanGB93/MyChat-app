@@ -54,6 +54,7 @@ export function startRootAttachmentRuntime(network:{peers():string[];request(pee
   allowedJob:job=>{const m=policy?.messages.find(m=>m.attachment&&attachmentDigest(m.attachment.manifest)===job.digest);return !!m&&(!m.group||!!policy&&rootGroupAllowed(policy,job.owner,m.peer,m.group)&&!!policy.groups?.find(g=>g.id===m.group!.id)?.accepted);},
   readChunk:readRootAttachmentChunk,writeChunk:writeRootAttachmentChunk,commitFile:commitRootAttachmentFile,
   signReceipt:async manifest=>localAccount.signAttachmentReceipt(manifest),
+  stored:async(job,current)=>{if(current())await localRootChat().networkStored(job.descriptor.manifest.recipient,job.descriptor.manifest.id,job.descriptor.manifest.expires,true);},
   completed:async(job:AttachmentJob,current)=>{if(!current())throw Error('Account locked');
    if(!rootAttachmentFile(job.owner,job.digest).exists)throw Error('Own attachment unavailable');
    const peer=job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient;
@@ -81,9 +82,13 @@ export function startRootAttachmentRuntime(network:{peers():string[];request(pee
    for(const message of snapshot.messages){if(!current())return;if(message.attachment&&message.status==='pending'&&accepted.has(message.peer)&&(!message.group||rootGroupAllowed(snapshot,account,message.peer,message.group))){
     const m=message.attachment.manifest;if(m.expires>Date.now())await worker.enqueue(message.attachment,message.direction);
    }}
-   if(current())await worker.tick();
+   if(current())return await worker.tick({maxSteps:32,maxMilliseconds:50});
   }catch{/* Retain selections and job checkpoints on unavailable storage or a locked account. */}finally{busy=false;}
  }
- const timer=setInterval(()=>void tick(),200);
- return {receive:worker.receive,stop(){if(activeControls===worker)activeControls=null;stopped=true;epoch++;clearInterval(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
+ // Yield to React/native events between bursts, but do not throttle every 4-KiB chunk
+ // behind a 200-ms polling interval. Idle/error paths retain the low-frequency poll.
+ let timer:ReturnType<typeof setTimeout>;
+ async function pump(){let progressed=false;try{progressed=!!await tick();}finally{if(!stopped)timer=setTimeout(()=>void pump(),progressed?0:200);}}
+ timer=setTimeout(()=>void pump(),0);
+ return {receive:worker.receive,stop(){if(activeControls===worker)activeControls=null;stopped=true;epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
 }

@@ -30,7 +30,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    ||s.hiddenChats!==undefined&&(!Array.isArray(s.hiddenChats)||s.hiddenChats.length>564||s.hiddenChats.some(k=>!validChat(k)))
    ||s.removedMessages!==undefined&&(!Array.isArray(s.removedMessages)||s.removedMessages.length>20000||s.removedMessages.some(m=>!validPeer(m.peer)||!idValid(m.id)||!['incoming','outgoing'].includes(m.direction)))
    ||(s.imports!==undefined&&(!Array.isArray(s.imports)||s.imports.length>10||s.imports.some(v=>typeof v!=='string'||v.length>100)))
-   ||s.messages.some(m=>!idValid(m.id)||!validPeer(m.peer)||!['incoming','outgoing'].includes(m.direction)||typeof m.text!=='string'||!m.text||byteLength(m.text)>1600||!Number.isSafeInteger(m.at)||!['pending','delivered'].includes(m.status)
+   ||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||!idValid(m.id)||!validPeer(m.peer)||!['incoming','outgoing'].includes(m.direction)||typeof m.text!=='string'||!m.text||byteLength(m.text)>1600||!Number.isSafeInteger(m.at)||!['pending','delivered'].includes(m.status)
     ||m.reply!==undefined&&(!(m.group?validGroupReply(m.reply):validRootReply(m.reply,d.owner,m.peer)))
     ||m.descriptorDelivered!==undefined&&typeof m.descriptorDelivered!=='boolean'
     ||m.attachment!==undefined&&(!validAttachmentDescriptor(m.attachment)||m.attachment.manifest.id!==m.id||m.text!==m.attachment.name
@@ -38,7 +38,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    ||(s.actions!==undefined&&(!Array.isArray(s.actions)||s.actions.length>10000||s.actions.some(a=>!validPeer(a.peer)||!validRootAction(a,d.owner,a.peer))))
    ||s.contacts.some(c=>!validPeer(c.account)||typeof c.alias!=='string'||c.alias.length>80||typeof c.blocked!=='boolean'||typeof c.accepted!=='boolean'||c.muted!==undefined&&typeof c.muted!=='boolean')
    ||(s.groups!==undefined||s.groupPackets!==undefined)&&!validGroupStorage(s,d.owner)
-   ||s.messages.some(m=>m.group!==undefined&&(!validGroupContext(m.group)||!s.groups?.some(g=>g.id===m.group!.id)))
+   ||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.group!==undefined&&(!validGroupContext(m.group)||!s.groups?.some(g=>g.id===m.group!.id)))
    ||s.groupActions!==undefined&&(!Array.isArray(s.groupActions)||s.groupActions.length>10000||s.groupActions.some(a=>!validGroupAction(a,d.owner)||!s.groups?.some(g=>g.id===a.group.id)))
    ||s.groupSeen!==undefined&&(!Array.isArray(s.groupSeen)||s.groupSeen.length>2000||s.groupSeen.some(v=>!validPeer(v.peer)||!idValid(v.id)||typeof v.raw!=='string'||byteLength(v.raw)>2048)))throw Error('Chat storage needs recovery; it was not replaced');
   return s;
@@ -110,7 +110,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    const event:RootChatAction={id,peer,direction:'outgoing',target:{...target},kind,text,revision:kind==='read'?1:Math.max(0,...previous.map(a=>a.revision))+1,at:d.now(),status:'pending'};
    if(!validRootAction(event,d.owner,peer)||byteLength(encodeRootAction(event))>2048)throw Error('Invalid action or text too long');
    if(kind==='edit'&&m.attachment)throw Error('Only text messages can be edited');
-   if(s.groupActions?.some(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id)||s.messages.some(m=>m.peer===peer&&m.direction==='outgoing'&&m.id===id))throw Error('Message ID conflict');
+   if(s.groupActions?.some(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id)||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.peer===peer&&m.direction==='outgoing'&&m.id===id))throw Error('Message ID conflict');
    const retry=s.actions?.find(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id);
    if(retry){if(retry.kind!==kind||retry.text!==text||!sameTarget(retry.target,target))throw Error('Action ID conflict');return;}
    if(s.actions?.some(a=>a.peer===peer&&sameTarget(a.target,target)&&a.kind==='delete'))throw Error('Message was deleted');
@@ -153,7 +153,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
     if(!body||!(isAttachment?Object.keys(body).sort().join(',')==='descriptor,group':['group,text','group,reply,text'].includes(Object.keys(body).sort().join(',')))||!validGroupContext(body.group))return false;
     if(body.reply!==undefined&&!validGroupReply(body.reply))return false;groupReply=body.reply?{...body.reply}:undefined;
     const s=await read();if(!rootGroupAllowed(s,d.owner,from,body.group))return false;
-    if(!isAttachment&&rootGroupDeliveryId(body.group.messageId,d.owner)!==id||s.messages.some(m=>m.direction==='incoming'&&m.peer===from&&m.group?.id===body.group.id&&m.group?.messageId===body.group.messageId&&m.id!==id))return false;
+    if(!isAttachment&&rootGroupDeliveryId(body.group.messageId,d.owner)!==id||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.direction==='incoming'&&m.peer===from&&m.group?.id===body.group.id&&m.group?.messageId===body.group.messageId&&m.id!==id))return false;
     group={...body.group};a[0]=isAttachment?'axonic-root-attachment-v1':'axonic-root-text-v1';a[3]=isAttachment?body.descriptor:body.text;
    }
 
@@ -162,7 +162,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
     const event:RootChatAction={...body,id,peer:from,direction:'incoming',at:d.now(),status:'delivered'};
     if(!validRootAction(event,d.owner,from))return false;
     const s=await read(),c=contact(s,from);if(c.blocked)return false;
-    if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming')||s.messages.some(m=>m.peer===from&&m.direction==='incoming'&&m.id===id))return false;
+    if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming')||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.peer===from&&m.direction==='incoming'&&m.id===id))return false;
     const old=s.actions?.find(a=>a.peer===from&&a.direction==='incoming'&&a.id===id);
     if(old)return sameAction(old,event);
     const conflict=s.actions?.find(a=>a.peer===from&&a.direction==='incoming'&&sameTarget(a.target,event.target)&&actionFamily(a.kind)===actionFamily(event.kind)&&a.revision===event.revision);
@@ -190,6 +190,13 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if(s.groupSeen?.some(v=>v.peer===from&&v.id===id)||s.actions?.some(a=>a.peer===from&&a.direction==='incoming'&&a.id===id))return false;
    const old=s.messages.find(m=>m.id===id&&m.peer===from&&m.direction==='incoming');if(old)return JSON.stringify(old.group)===JSON.stringify(group)&&old.text===text&&sameReply(old.reply,reply)&&(!old.attachment&&!attachment||!!old.attachment&&!!attachment&&attachmentDescriptorFingerprint(old.attachment)===attachmentDescriptorFingerprint(attachment));
    if(s.messages.length>=5000)return false;s.messages.push({id,peer:from,direction:'incoming',text,at:d.now(),status:attachment?'pending':'delivered',...(attachment?{attachment}: {}),...(reply?{reply}: {}),...(group?{group}: {})});s.hiddenChats=s.hiddenChats?.filter(k=>k!==(group?'group:'+group.id:from));await save(s);return true;
+  }),
+  networkStored:(peer:string,id:string,until:number,attachment=false)=>run(async()=>{
+   if(!Number.isSafeInteger(until)||until<=d.now())return;
+   const s=await read(),m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');
+   if(!m||m.status==='delivered'||attachment&&!m.attachment)return;
+   const field=attachment?'attachmentStoredUntil':'networkStoredUntil';
+   if((m[field]??0)>=until)return;m[field]=until;await save(s);
   }),
   delivered:(peer:string,id:string)=>run(async()=>{const s=await read(),groupAction=s.groupActions?.find(a=>a.id===id&&a.peer===peer&&a.direction==='outgoing');if(groupAction){groupAction.status='delivered';await save(s);return;}const packet=s.groupPackets?.find(v=>v.peer===peer&&v.id===id);if(packet){packet.status='delivered';await save(s);return;}const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(m){if(m.attachment)m.descriptorDelivered=true;else m.status='delivered';await save(s);}else{const a=s.actions?.find(a=>a.peer===peer&&a.id===id&&a.direction==='outgoing');if(a){a.status='delivered';await save(s);}}}),
   attachmentComplete:(peer:string,id:string,direction:RootChatMessage['direction'],receipt:AttachmentReceipt)=>run(async()=>{

@@ -127,3 +127,18 @@ test('private mute preference persists without blocking delivery or entering the
  await f.ledger.configure(b,{muted:false});assert.equal((await f.ledger.snapshot()).contacts[0].muted,false);
  await assert.rejects(f.ledger.configure(b,{muted:'yes'}),/Invalid notification/);
 });
+
+test('network storage persists without claiming delivery or leaving the retry queue',async()=>{
+ const f=fixture();await f.ledger.enqueue(b,id,'hello');await f.ledger.networkStored(b,id,200000);
+ let s=await f.ledger.snapshot();assert.equal(s.messages[0].status,'pending');assert.equal(s.messages[0].networkStoredUntil,200000);assert.equal(out.pendingRootChat(s,a).length,1);
+ await f.ledger.networkStored(b,id,90000);assert.equal((await f.ledger.snapshot()).messages[0].networkStoredUntil,200000);
+ await f.ledger.delivered(b,id);await f.ledger.networkStored(b,id,300000);assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');
+});
+
+test('status icons distinguish custody, complete media, read and expired custody',()=>{
+ const status={};new Function('exports',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageStatus.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(status);
+ const m={status:'pending',networkStoredUntil:200};assert.equal(status.rootMessageStatus(m,100),'stored');assert.equal(status.rootMessageStatus(m,200),'pending');
+ assert.equal(status.rootMessageStatus({...m,attachment:{}},100),'pending');assert.equal(status.rootMessageStatus({...m,attachment:{},attachmentStoredUntil:200},100),'stored');
+ assert.equal(status.rootMessageStatus({...m,attachment:{},read:true},100),'pending');assert.equal(status.rootMessageStatus({...m,status:'delivered'},100),'delivered');assert.equal(status.rootMessageStatus({...m,status:'delivered',read:true},100),'read');
+ assert.deepEqual(['pending','stored','delivered','read'].map(status.deliveryStatusIcon),['time-outline','checkmark','checkmark-done','checkmark-done']);
+});
