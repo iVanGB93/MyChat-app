@@ -14,7 +14,7 @@ import {controlRootAttachment} from '../modules/messaging';
 import FullscreenImageViewer from './chat/fullscreen-image-viewer';
 import {messageBubbleStyles as styles} from './chat/message-bubble-styles';
 import {Ionicons} from '@expo/vector-icons';
-export default function RootAttachmentBubble({message,progress,onError}:{message:RootChatMessage;progress?:{phase:string;cursor:number;bytes:number;failures:number;canPause:boolean};onError(error:string):void}){
+export default function RootAttachmentBubble({message,progress,showSize=false,onError}:{message:RootChatMessage;progress?:{phase:string;cursor:number;bytes:number;failures:number;canPause:boolean};showSize?:boolean;onError(error:string):void}){
  const [changing,setChanging]=useState(false),[preview,setPreview]=useState(false),[imagePreview,setImagePreview]=useState(false);
  const {colors}=useTheme(),descriptor=message.attachment!,owner=localAccount.status().account;
  const file=owner?rootAttachmentFile(owner,attachmentDigest(descriptor.manifest)):null;
@@ -31,7 +31,7 @@ export default function RootAttachmentBubble({message,progress,onError}:{message
  return <View style={{gap:8}}>
   {ready&&sticker?<Pressable accessibilityLabel="Preview sticker" onPress={()=>setPreview(true)}><StickerImage source={{uri:file!.uri}} style={{width:200,height:200}} contentFit="contain"/></Pressable>:ready&&image?<Pressable accessibilityLabel="View photo" onPress={()=>setImagePreview(true)}><Image source={{uri:file!.uri}} accessibilityLabel={descriptor.name} style={styles.imageBubble} resizeMode="cover"/></Pressable>:!audio&&!sticker&&<Pressable accessibilityLabel="Open attachment" onPress={()=>void open()} style={[styles.sharedFile,{backgroundColor:colors.surface,borderColor:colors.neonBorder}]}><View style={[styles.sharedFileIcon,{backgroundColor:colors.highlight}]}><Ionicons name={descriptor.mime.startsWith('video/')?'videocam-outline':'document-outline'} size={24} color={colors.primary}/></View><View style={styles.sharedFileInfo}><Text numberOfLines={2} style={[styles.sharedFileTitle,{color:colors.text}]}>{descriptor.name}</Text><Text style={[styles.sharedFileHint,{color:colors.textSecondary}]}>{ready?'Tap to open':label}</Text></View></Pressable>}
   {ready&&descriptor.mime.startsWith('audio/')&&<RootAudioPlayer uri={file!.uri} onError={onError}/>}
-  {!sticker&&(!ready||!image&&!audio)&&<Text style={[styles.sharedFileHint,{color:colors.textSecondary}]}>{(descriptor.manifest.bytes/1024).toFixed(1)} KB{!ready?' · '+label:''}</Text>}
+  {(showSize||!sticker&&(!ready||!image&&!audio))&&<Text style={[styles.sharedFileHint,{color:colors.textSecondary}]}>{descriptor.manifest.bytes>=1048576?(descriptor.manifest.bytes/1048576).toFixed(1)+' MB':(descriptor.manifest.bytes/1024).toFixed(1)+' KB'}{!ready?' · '+label:''}</Text>}
   {message.status!=='delivered'&&!expired&&progress?.canPause&&<Pressable accessibilityRole="button" disabled={changing} onPress={()=>void control('pause')}><Text style={{color:colors.text}}>Pause transfer</Text></Pressable>}
   {message.status!=='delivered'&&!expired&&(paused||!!progress?.failures)&&<Pressable accessibilityRole="button" disabled={changing} onPress={()=>void control('retry')}><Text style={{color:colors.text}}>{paused?'Resume transfer':'Retry now'}</Text></Pressable>}
   {paused&&!expired&&<Text style={{color:colors.textSecondary}}>Pauses this device only. Copies already sent may still arrive.</Text>}

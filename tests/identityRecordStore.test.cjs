@@ -3,7 +3,7 @@ const fs = require('node:fs'), ts = require('typescript'), crypto = require('nod
 const { DatabaseSync } = require('node:sqlite');
 function fixture() {
   const database = new DatabaseSync(':memory:'), cache = new Map(); let writing = false;
-  const tx = { getFirstAsync: async (sql, ...args) => database.prepare(sql).get(...args) ?? null,
+  const tx = { getFirstSync: (sql, ...args) => database.prepare(sql).get(...args) ?? null, getFirstAsync: async (sql, ...args) => database.prepare(sql).get(...args) ?? null,
     runAsync: async (sql, ...args) => database.prepare(sql).run(...args) };
   const sqlite = { openDatabaseAsync: async () => ({ ...tx, execAsync: async sql => database.exec(sql),
     withExclusiveTransactionAsync: async work => {

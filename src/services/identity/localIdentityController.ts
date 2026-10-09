@@ -28,6 +28,9 @@ export interface LocalIdentityStatus { state: 'empty' | 'locked' | 'unlocked' | 
 export function createLocalIdentityController(storage: IdentityStorage, random: SecureRandom, now: () => number,
   derive?: PasswordDerivation) {
   let identity: UnlockedIdentity | null = null, draft: UnlockedIdentity | null = null;
+  // Public, deterministic metadata only; never retain a seed or unlocked identity here.
+  // Re-derive once per unlock, rather than doing two curve operations for every chunk.
+  let cachedDeviceId: string | null = null;
   let account: string | null = null, state: LocalIdentityStatus['state'] = 'empty', busy = false, epoch = 0;
   const axons = new Set<() => void>();
   const closeAxons = () => { for (const close of [...axons]) close(); };
@@ -90,7 +93,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         // A completed disk write remains recoverable if background locking raced with it.
         account = sealed.record.account;
         if (epoch !== e) { state = 'locked'; return; }
-        identity = source; draft = null; state = 'unlocked';
+        identity = source; cachedDeviceId = null; draft = null; state = 'unlocked';
       } finally { secret?.fill(0); destroyIdentity(copy); }
     }); },
     /** Public metadata only. Recovery still requires the separately saved words. */
@@ -138,7 +141,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
           await storage.writeVault(JSON.stringify(sealed)); assertCurrent(e);
         }
         closeAxons(); if (identity) destroyIdentity(identity);
-        identity = opened; opened = undefined; account = identity.record.account; state = 'unlocked';
+        identity = opened; cachedDeviceId = null; opened = undefined; account = identity.record.account; state = 'unlocked';
       } finally { secret.fill(0); if (opened) destroyIdentity(opened); }
     }); },
 
@@ -172,7 +175,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       return signCustodyReceipt(envelope, source.signingSeed, source.encryptionSeed);
     },
     publicRecord(): IdentityRecord | null { return identity ? JSON.parse(JSON.stringify(identity.record)) : null; },
-    callDevice(): string | null { return identity && !busy ? publicDevice(identity.signingSeed,identity.encryptionSeed).id : null; },
+    callDevice(): string | null { return identity && !busy ? cachedDeviceId ??= publicDevice(identity.signingSeed,identity.encryptionSeed).id : null; },
     signAttachment(input:Omit<AttachmentManifest,'signature'>){
       if(!identity||busy)throw Error('Unlock the local account first');
       return signAttachmentManifest(input,identity.signingSeed,identity.record,now());
@@ -237,7 +240,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
     },
     lock() {
       epoch++; closeAxons(); if (identity) destroyIdentity(identity); if (draft) destroyIdentity(draft);
-      identity = null; draft = null; state = account ? 'locked' : 'empty'; emit();
+      identity = null; cachedDeviceId = null; draft = null; state = account ? 'locked' : 'empty'; emit();
     },
   };
 }

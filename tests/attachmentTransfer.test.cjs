@@ -1,5 +1,34 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),{DatabaseSync}=require('node:sqlite');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer}=load('attachmentTransfer');
+test('reused journal writer hides uncommitted checkpoints, rolls back on lock, and preserves compare-and-set',async t=>{
+ const path=require('node:path'),os=require('node:os'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'axonic-journal-'));
+ const connections=[];let gate=null,entered=false;
+ t.after(()=>{for(const c of connections)c.close();for(const name of fs.readdirSync(dir))fs.unlinkSync(path.join(dir,name));fs.rmdirSync(dir);});
+ const openDatabaseAsync=async()=>{
+  const c=new DatabaseSync(path.join(dir,'jobs.db'));connections.push(c);
+  return {execAsync:async sql=>c.exec(sql),
+   getFirstAsync:async(sql,...args)=>c.prepare(sql).get(...args)??null,
+   getFirstSync:(sql,...args)=>c.prepare(sql).get(...args)??null,
+   getAllAsync:async(sql,...args)=>c.prepare(sql).all(...args),
+   runAsync:async(sql,...args)=>{const result=c.prepare(sql).run(...args);if(gate&&sql.startsWith('INSERT INTO jobs')){entered=true;await gate;}return result;},
+   withTransactionAsync:async work=>{c.exec('BEGIN');try{await work();c.exec('COMMIT');}catch(e){c.exec('ROLLBACK');throw e;}}
+  };
+ };
+ const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/mobileAttachmentJobs.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?{openDatabaseAsync}:load(n.slice(2)),out);
+ const f=context(t),store=out.createMobileAttachmentJobs(),worker=createAttachmentTransfer({...f.deps(0),store});
+ const original=await worker.enqueue(f.descriptor,'outgoing'),changed={...original,revision:1,cursor:1,phase:'uploading'};
+ let release,active=true;gate=new Promise(r=>release=r);
+ const pending=store.save(changed,0,()=>active);
+ while(!entered)await new Promise(setImmediate);
+ assert.equal((await store.get(original.owner,original.digest)).revision,0);
+ active=false;release();await assert.rejects(pending,/locked/);gate=null;
+ assert.equal((await store.get(original.owner,original.digest)).cursor,0);
+ const other=out.createMobileAttachmentJobs();
+ assert.deepEqual(await Promise.all([store.save(changed,0,()=>true),other.save({...changed,cursor:2},0,()=>true)]),[true,false]);
+ assert.equal((await other.get(original.owner,original.digest)).cursor,1);
+ assert.equal(connections.length,2,'one reader and one writer are reused across store factories');
+});
+
 test('bounded bursts transfer multiple chunks without timer sleeps and preserve verified delivery',async t=>{
  const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
  for(let n=0;n<5&&(await f.job(0)).cursor<3;n++)assert.equal(await sender.tick({maxSteps:32,maxMilliseconds:100}),true);
@@ -44,7 +73,7 @@ test('per-job membership policy rejects direct media and stops in-flight upload 
  allowed=true;await sender.tick();await sender.tick();assert.equal(f.chunks.size,0);assert.equal((await f.job(0)).cursor,0);sender.stop();
 });
 function jobs(t,capture){const database=new DatabaseSync(':memory:');if(capture)capture.database=database;t.after(()=>database.close());const tx={runAsync:async(s,...p)=>database.prepare(s).run(...p),getAllAsync:async(s,...p)=>database.prepare(s).all(...p),getFirstAsync:async(s,...p)=>database.prepare(s).get(...p)??null};
- const db={...tx,execAsync:async s=>database.exec(s),withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(tx);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
+ const db={...tx,getFirstSync:(s,...p)=>database.prepare(s).get(...p)??null,execAsync:async s=>database.exec(s),withTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(tx);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/mobileAttachmentJobs.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?{openDatabaseAsync:async()=>db}:load(n.slice(2)),out);return out.createMobileAttachmentJobs(capture?.now);}
 function context(t){const f=fixture(),store=jobs(t),rows=[],chunks=new Map(),complete=[],written=[],descriptor={manifest:f.manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'photo.png',mime:'image/png'};let clock=now,active=true;
  const custodyStore={transaction:async work=>{const saved=structuredClone(rows),savedChunks=new Map([...chunks].map(([k,v])=>[k,structuredClone(v)]));const result=await work({rows:async()=>saved,save:async row=>{const i=saved.findIndex(r=>r.digest===row.digest);if(i<0)saved.push(structuredClone(row));else saved[i]=structuredClone(row);},chunk:async(d,i)=>savedChunks.get(d+':'+i)??null,saveChunk:async(d,c)=>savedChunks.set(d+':'+c.index,structuredClone(c)),eraseChunks:async d=>{for(const k of savedChunks.keys())if(k.startsWith(d+':'))savedChunks.delete(k);},erase:async d=>{const i=saved.findIndex(r=>r.digest===d);if(i>=0)saved.splice(i,1);for(const k of savedChunks.keys())if(k.startsWith(d+':'))savedChunks.delete(k);}});rows.splice(0,rows.length,...saved);chunks.clear();for(const [k,v] of savedChunks)chunks.set(k,v);return result;}};

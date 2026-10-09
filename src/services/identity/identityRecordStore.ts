@@ -31,7 +31,9 @@ export function createMobileIdentityRecordStore(now: () => number, capacity = 25
   return {
     async read(account) {
       if (!validAccountId(account)) throw Error('Invalid account identifier');
-      return parse(await (await db()).getFirstAsync<Row>('SELECT account, record, digest FROM identity_records WHERE account = ?', account));
+      // Bounded primary-key read (one public record, <=12 KiB). Keep the same
+      // signature/digest checks while avoiding per-chunk async bridge overhead.
+      return parse((await db()).getFirstSync<Row>('SELECT account, record, digest FROM identity_records WHERE account = ?', account));
     },
     async compareAndSet(account, expectedDigest, next, history = []) {
       const snapshot = JSON.parse(JSON.stringify(next)) as IdentityRecord;

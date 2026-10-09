@@ -11,6 +11,24 @@ function fixture(overrides={}){const data={vault:null,secret:null};const storage
 async function created(){const f=fixture();f.words=await f.id.beginCreate();await f.id.confirmBackup(f.words,password);return f;}
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
 
+test('device identity lookup avoids repeated curve work without surviving lock or bypassing busy state',async()=>{
+ const f=await created(),protocol=load('identityProtocol'),original=protocol.publicDevice;
+ let derivations=0;protocol.publicDevice=(...args)=>{derivations++;return original(...args);};
+ try{
+  const id=f.id.callDevice();assert.equal(id,f.id.publicRecord().devices[0].id);
+  for(let i=0;i<100;i++)assert.equal(f.id.callDevice(),id);
+  assert.equal(derivations,1);
+  const inspecting=f.id.inspect();assert.equal(f.id.callDevice(),null);await inspecting;
+  assert.equal(f.id.callDevice(),id);assert.equal(derivations,1);
+  f.id.lock();assert.equal(f.id.callDevice(),null);
+  await f.id.unlock(password);const before=derivations;
+  assert.equal(f.id.callDevice(),id);assert.equal(derivations,before+1);
+  const recovered=fixture();await recovered.id.restore(f.words,f.id.recoveryRecord(),password);
+  assert.equal(recovered.id.callDevice(),null);await recovered.id.unlock(password);
+  assert.notEqual(recovered.id.callDevice(),id);recovered.id.lock();
+ }finally{protocol.publicDevice=original;f.id.lock();}
+});
+
 test('creation requires the exact backup, rejects a weak password, and survives cold unlock',async()=>{
  const f=fixture(),words=await f.id.beginCreate();assert.equal(f.data.vault,null);
  await assert.rejects(f.id.confirmBackup('wrong words',password),/do not match/);
