@@ -1,5 +1,5 @@
 /** Public identity/account boundary. Cryptographic implementations remain private adapters. */
-export {localAccount, localAccountSession, localAccountUsername, localAccountBiometrics} from '../../services/identity/localAccount';
+export {localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountSession, localAccountUsername, localAccountBiometrics} from '../../services/identity/localAccount';
 export {displayIdentity, shortIdentity, parseIdentityCode} from '../../services/identity/identityPresentation';
 export {validAccountId} from '../../services/identity/identityProtocol';
 export {checkBackupWords} from '../../services/identity/identityPresentation';
@@ -8,3 +8,5 @@ export {createMobileRecoveryDiscovery} from '../../services/identity/mobileRecov
 export {checkRecoveryRecord,findRecoveryRecord} from '../../services/identity/recoveryDiscovery';
 export {accountFromRecoveryPhrase} from '../../services/identity/identityVault';
 export type {DirectoryLookupResult} from '../../services/identity/identityDirectoryLookup';
+
+export {identityLink,parseIdentityLink,queueIdentityLink,takeIdentityLink} from '../../services/identity/identityLinks';

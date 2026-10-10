@@ -1,0 +1,78 @@
+DEVICE REMOVAL FOLLOW-UP — 10 OCTOBER 2026
+User selected device-only removal. Profile confirmation + password verification, persistent removal journal, cold-start scoped cleanup and native process close are implemented. Device and network deletion are explicitly distinguished. Native debug module compilation passed; real user accounts were not deleted. See production-release-current.txt for evidence and remaining release gates. Earlier pending-choice entries below are historical.
+
+IMPLEMENTATION STATUS UPDATE — 10 OCTOBER 2026
+Supersedes the missing-service findings in the original audit below.
+Implemented: Play-only foreground update coordination, privacy-filtered crash startup, group mute, per-recipient group read acknowledgments, shared group-photo attachment references, public identity link handling, and privacy/website/store destination APIs. UI controls remain in the separate UI workstream.
+Validation: full check passed with 724 tests and 3 skips, including the final startup regression tests; type, cycle, module-boundary and consolidation checks passed. Live Phone Dev -> two-emulator group delivery and both remote read receipts passed. See production-release-current.txt for the latest gate status and limits.
+Not completed: account removal/retirement semantics (user choice pending), UI integration/parity, real Play-installed update eligibility, complete physical release matrix, and release build/submission. New group protocol features require updated clients; older clients reject unknown read actions/photo fields. Do not downgrade installations after new-schema data has been stored.
+
+--- ORIGINAL AUDIT SNAPSHOT ---
+
+AXONIC PRODUCTION READINESS — 10 OCTOBER 2026
+
+Scope and conclusion
+This is a source/integration audit of the current mobile working tree, compared with the prior tracked app entry, navigation, update flow and group/profile implementations. It is not a claim that every screen or device scenario was exercised. No release build, install, upload, deployment, commit or data deletion was performed for this audit. Existing unrelated work was preserved.
+The migration has a working neuron-based core, but original-feature parity is incomplete. Do not label the next release fully restored until the confirmed gaps below are addressed or explicitly accepted.
+UI changes belong to the separate UI chat. See ui-handoff-2026-10-10.txt. This chat owns services, persistence, networking, notifications, update integration and release validation.
+
+CONFIRMED GAPS / PRIORITY
+
+P1 — Play Store update flow is disconnected.
+Evidence: modules/axonic-app-update/src/index.ts exposes check/start/complete/install-state APIs and the Kotlin module remains. No active src caller invokes these APIs. The former AppUpdateGate, versionCheckService and versionPolicy are deleted; index.ts starts LocalAccountApp without an update observer.
+Impact: Axonic itself no longer checks/prompts/resumes the original in-app update flow. This says nothing about Google Play's independently configured automatic updates.
+Next: reconnect a Play-only update service to foreground lifecycle, with deduplication, cancellation cooldown, downloaded-update state, and safe restart coordination with active calls/transfers. Keep missing-store/offline/error states nonblocking; do not reintroduce the Django version endpoint. Expose state/actions for the UI chat. Verify actual store eligibility later on a Play-installed build; Dev/sideloaded tests cannot establish that.
+
+P1 — Crash-reporting initialization is disconnected.
+Evidence: crashReporting.ts defines configureCrashReporting, but no caller exists in the active entry graph; app.config.js retains Sentry build integration with useNativeInit:false. Privacy filters and tests remain as intentional support roots.
+Impact: build-time symbol configuration is not evidence of active runtime crash reporting.
+Next: restore deliberate privacy-filtered startup integration and test lifecycle/error handling. Preserve exclusion of messages, identity secrets, screenshots and breadcrumbs. Review current reporting intent before enabling additional telemetry; do not send a test event automatically.
+
+P1 — Group mute is missing at the model/service level.
+Evidence: original GroupInfoScreen used mutedRooms/toggleRoomMuted. RootGroupTypes contains accepted/blocked but no muted preference. rootMessageWake checks contact muting by sender; it has no group-scoped mute decision.
+Impact: blocking a group is not equivalent to muting it; muting a contact also differs from muting one group.
+Next: add backward-compatible local group notification preferences, enforce them in foreground and background delivery, and expose a module API. UI chat adds the control using that API.
+
+P1 — Group read receipts are local-only.
+Evidence: rootChatLedger.markGroupRead changes incoming messages' read flags and saves locally; it enqueues no receipt. RootGroupAction supports edit/delete/reaction, not read. rootGroups aggregates outgoing read flags, but the group read operation does not send the state back to authors.
+Impact: marking a group read clears the local unread state; it does not establish remote blue-check/per-member read status. Delivery receipts are implemented separately and must not be presented as read receipts.
+Next: implement authenticated per-recipient read acknowledgments, persistent retry/deduplication and aggregation tests before wiring the original group message-info/read presentation.
+
+P2 — Group photo parity is missing beyond styling.
+Evidence: original group info called uploadGroupAvatar; current membership consists of id/admin/name/revision/members and no image reference. RootGroupInfo renders a placeholder Avatar without a group URI.
+Next: define local/shared group-photo behavior, ownership, encrypted attachment delivery, persistence and cleanup before UI wires a picker. Do not restore the old Django upload endpoint.
+
+P2 — Incoming identity links have no active handler.
+Evidence: app.json declares scheme axonic; current NavigationContainer has no linking configuration, and src has no getInitialURL or URL-event listener. QR scanning and pasted identity codes are separate active paths.
+Next: define new identity-link parsing and cold/warm-start routing, including locked-account deferral and malformed-link rejection. Legacy numeric room/tag links should not be silently trusted or mapped to new identities.
+
+P2 — Account lifecycle parity needs an explicit replacement.
+Evidence: current account controls include local username/password, biometrics, lock and public recovery-record export; the previous server Delete Account / Logout All flows are absent.
+Next: distinguish local data removal from cryptographic device revocation and identity retirement. A server-wide delete/logout cannot simply be retained under the new model. No destructive implementation or test is authorized by this audit alone.
+
+P2 — Production instructions are stale.
+docs/production-neuron-release.md describes manual FirstNeuron registration, legacy flags and Django calls/media. It is historical evidence, not current release instructions. Current index.ts has one local-account entry; eas.json production is an AAB with remote auto-increment, and submission still defaults to internal track. app.json/package version is 1.1.6; the next remote version code and intended store track still need checking before build/submission. No remote configuration was changed.
+
+FEATURE COVERAGE / CURRENT CODE PATHS
+Identity creation/recovery: LocalAccountApp -> modules/identity -> localAccount/localIdentityController; 12 words, two-word creation confirmation, local credentials, biometrics and remembered session are wired. Recovery is identity recovery, not a backup of all local chat/media history.
+Network: composition/neuronRuntime -> lanIdentityRuntime/identityNetwork; local discovery, configured AoNs, authenticated RTC, custody fallback and directory replicas are wired. Native release-bridge tests exist. External FCM/STUN/hosted bootstrap dependencies remain; Django-free does not mean infrastructure-free.
+Direct text: modules/messaging/commands -> rootChatLedger/localRootChat -> direct/custody delivery. Pending/network/delivered/read states, replies, edits, reactions, delete, forward, accept/block, nickname and direct mute paths exist.
+Groups: rootGroups/rootChatLedger paths and RootGroupScreens wire create, rename, add/remove, invitation acceptance, block, leave/close, text, media, voice, stickers, replies/actions and per-recipient delivery. Group read state is local-only as noted above. Current limit is 10 including creator; one creator owns membership. Leaving as creator closes the group, not admin transfer. These are current behavioral constraints, not visual styling.
+Notifications: rootBackgroundEntry registers Firebase foreground/headless handlers and Notifee actions; rootMessageWake/recovery/routes/actions handle retrieval, previews, grouping, reply and mark-read. These are wired, but this audit did not rerun the complete locked/background/Doze/boot and AoN-to-phone matrix.
+Calls: calling commands -> neuron coordinator/media adapter -> useWebRTCCore, native notification/audio/background lease and local history. Live physical voice/video, background ringing, cancel/reject/busy and separate-network tests are still release gates.
+Attachments: picker/preview -> attachment runtime/jobs -> direct/custody transport -> verified files and MediaStore export. Camera/gallery/file/share-in, voice, stickers, image tools, retries and storage sizing/cleanup have active paths/tests. Transfer speed remains unresolved: recent 3 MB Dev tests take tens of seconds; passing checksums do not establish acceptable performance.
+External sharing: RootShareProvider/RootSharePicker and sharedContent replace old ShareTarget/ShareIntentBridge. Platform share intents are distinct from app identity deep links.
+Profile/storage: local avatar, QR/share, notification preferences, theme, network, blocked contacts and storage screens are wired. Removed global display name/about/email are intentional user decisions; do not reintroduce them as missing features. Local-only avatars are not evidence of shared avatar synchronization.
+Privacy/about/store access: no active in-app privacy-policy or store-update entry was found in current profile/account routes. Website and Play listing privacy URLs must be checked separately; this audit did not evaluate their contents or legal adequacy.
+
+VALIDATION AND LIMITS
+Fresh npm run check: 710 passed, 3 existing skips; TypeScript, service cycles, UI/module boundaries and consolidation passed. Consolidation reports one entry and 206 reachable source modules. Log: D:/Proyects/Axonic/builds/production-readiness-audit-check.log.
+Reachability is not feature parity: the deleted update gate demonstrates why passing consolidation checks cannot establish restoration of historical behavior.
+No exhaustive physical/device or store verification in this audit. Tests and code wiring are evidence of implementation, not end-to-end release certification. The working tree contains substantial earlier uncommitted modifications/deletions; review the final release diff before committing/building.
+
+ORDER OF WORK IN THIS CHAT
+1. Restore Play update service/lifecycle and its UI-facing API without Django.
+2. Restore intended crash-reporting startup and verify sanitization without sending private data.
+3. Implement group read receipts and mute service/storage; coordinate group image/link/account-lifecycle contracts with UI work.
+4. Complete the real-device regression matrix: create/recover/unlock, online/offline direct and group delivery, media, background notifications, calls, reconnect/failover and process restart. Include one genuine Play-installed update test.
+5. Check final native permissions/configuration, signing continuity, Firebase wiring, version code and track; reconcile mobile/AoN compatibility. Then build only when explicitly requested. APKs are local Gradle builds; the user's AAB workflow is unchanged.

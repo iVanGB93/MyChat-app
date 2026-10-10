@@ -51,3 +51,12 @@ test('conflicting revision, blocked peer, disk failure, locked account and overs
  right.lock();await assert.rejects(right.api.act(a,fresh(),{id,author:a},'read'),/Unlock/);
  const f=fixture(a);await f.api.enqueue(b,id,'Hello');await assert.rejects(f.api.act(b,fresh(),{id,author:a},'edit','🙂'.repeat(401)));
 });
+
+test('presentation index keeps direct and group targets isolated even with matching message IDs',()=>{
+ const message=(peer,extra={})=>({id,peer,direction:'outgoing',text:'Original',at:1,status:'delivered',...extra});
+ const event=(peer,text,targetId=id)=>({id:fresh(),peer,direction:'outgoing',target:{id:targetId,author:a},kind:'edit',text,revision:1,at:2,status:'delivered'});
+ const groupId='e'.repeat(64),groupMessage='f'.repeat(64),group={id:groupId,revision:1,messageId:groupMessage};
+ const state={version:1,contacts:[],messages:[message(b),message(c),message(b,{group})],actions:[event(b,'Direct B'),event(c,'Direct C')],groupActions:[{...event(b,'Group',groupMessage),group}]};
+ assert.deepEqual(actions.rootChatView(a,state).messages.map(m=>m.text),['Direct B','Direct C','Group']);
+ assert.deepEqual(state.messages.map(m=>m.text),['Original','Original','Original']);
+});

@@ -109,3 +109,17 @@ test('enabling automatic locking still deletes the credential when preference st
   await f.session.remember(password); await assert.rejects(f.session.setAutoLock(true), /Preference storage/);
   assert.equal(f.storage.credential, null); assert.equal(f.session.autoLock(), true);
 });
+
+test('foreground and notification startup share inspection and resume, then permit retry',async()=>{
+ const {createLocalAccountStartup}=load('localAccountSession');let release,reads=0,resumes=0;
+ const gate=new Promise(r=>{release=r;});
+ const start=createLocalAccountStartup({inspect:async()=>{reads++;await gate;},initialize:async()=>{resumes++;}});
+ const a=start(),b=start();assert.equal(a,b);release();await Promise.all([a,b]);
+ assert.equal(reads,1);assert.equal(resumes,1);await start();assert.equal(reads,2);
+});
+test('failed startup can retry without running resume against unreadable storage',async()=>{
+ const {createLocalAccountStartup}=load('localAccountSession');let reads=0,resumes=0;
+ const start=createLocalAccountStartup({inspect:async()=>{if(++reads===1)throw Error('storage unavailable');},initialize:async()=>{resumes++;}});
+ await assert.rejects(start(),/storage unavailable/);assert.equal(resumes,0);
+ await start();assert.equal(resumes,1);
+});

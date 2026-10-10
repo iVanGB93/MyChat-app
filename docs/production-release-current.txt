@@ -1,0 +1,38 @@
+AXONIC CURRENT RELEASE GATES — 10 OCTOBER 2026
+
+Current status
+Non-UI readiness fixes are implemented in the mobile working tree. This is not a release approval or a production-build result. No official phone install, release build, store submission, deployment, commit, account wipe or retirement was performed in this pass. Existing unrelated changes remain.
+The prior production-neuron-release.md is historical and must not be used for current registration, feature flags or Django dependencies.
+
+Implemented and available to the UI workstream
+1. App-root Play update checks and resumed downloads, with persisted prompt cooldown and timeout. Missing Play/native support or errors do not block app startup. Active calls, voice recording and unfinished transfers prevent prompting/restart. Downloaded updates require appUpdates.install() from an explicit UI action. Dev never prompts for Play updates.
+2. Existing privacy-filtered Sentry startup restored before background handler registration. No test telemetry was sent. Debug reporting remains opt-in; empty public DSN disables it.
+3. Group-specific mute preferences and notification enforcement, separate from blocking or direct-contact mute.
+4. Group read acknowledgments travel only to the original author, persist/retry/deduplicate and aggregate all-recipient read state separately from delivery.
+5. Shared group-avatar references point to creator-authored encrypted group image attachments. No Django/media bucket upload was introduced. The creator must share the image through normal group media first. New members or locally deleted images show a placeholder until an image is shared again. Removing an avatar reference preserves the chat attachment.
+6. Strict public identity URLs, cold/warm capture and unlock deferral, opening only a prefilled NewChat confirmation. No automatic contact acceptance, identity validation claim or send occurs on URL open.
+7. Fixed public privacy/website/Play Store destination APIs, ready for original UI controls.
+
+Evidence
+- npm run check: typecheck, all unit tests, service cycles, module boundaries and entry/consolidation checks. Latest check: 738 passed, 3 skipped, zero failures, including pending-removal wake suppression. Exact output recorded in D:\Proyects\Axonic\builds\device-removal-check.log.
+- Live Phone Dev + emulator-5554 + emulator-5556: isolated DEV readiness group, membership fan-out, labeled text delivered to both recipients, persistent read acknowledgments delivered back and sender aggregate read=true.
+- Follow-up emulator checks: voice and video rang, native media counters proved traffic in both directions (video frames decoded), and both clients ended cleanly. A cancelled outgoing call cleared on the ringing recipient. Evidence: readiness-call-voice.json, readiness-call-video.json, readiness-call-cancel.json in the backend builds directory.
+- Background emulator text test: recipient stayed in background, message entered its own inbox and its matching OS notification appeared. This is a running Dev process test, not a killed-process, locked-phone, Doze or AoN-origin test. Evidence: readiness-background-notice.json.
+- Native Android cryptography fixture: 12-word creation, recovery preserving identity/replacing device, incremented revision, locked recovery, wrong-password rejection and cold unlock passed using isolated in-memory storage. Existing account remained unchanged. Evidence: readiness-native-account.json.
+- Update follow-up: cancelled prompts retain cooldown even if storage fails; aborted/failed prompts do not consume the daily allowance. Call/recording state is rechecked after transfer lookup. Root cleanup prevents late prompts; transient errors can retry.
+- Official Play Store app on the phone was not modified. Metro and all three test clients were reachable.
+- Synthetic fixtures exercise malformed identity links, wrong-author/revision group receipts, deduplication, mute versus direct previews, group-photo ownership, update cooldown/concurrency/timeouts and reporter startup failure.
+
+Open gates
+- Device-only removal is implemented and exposed in Profile using the existing button/confirmation style. It requires the current password and explicit confirmation, locks immediately, and finishes cleanup on the next cold launch. CLOSE AXONIC uses a newly compiled native close action to end this process; older Dev clients show Android Force stop instructions. Interrupted cleanup keeps its journal and blocks login/replacement until cleanup succeeds. Recovery words restore identity, not deleted chats. Gallery exports and other people's copies remain. No retirement or network-wide deletion is performed.
+- The native close action compiled successfully; no removal was run on installed phone/emulator accounts. This pass has not built/installed a new full development client or production build. Tests use isolated fixtures and in-memory SQLite databases.
+- Separate UI work: original group/profile parity, mute/photo controls, sharing identity URL if desired, privacy/store controls and downloaded-update install prompt. See ui-handoff-2026-10-10.txt. No claim of full visual parity.
+- Mixed versions: old clients reject unknown group read actions and photo membership fields. Coordinate client updates for groups. Avoid downgrading installations after new-schema data is stored. Relay transport remains the existing encrypted protocol; no claim that AoN's own chat implementation renders these new group features.
+- Real Play update check requires a Play-installed build eligible for a higher version in its account's track. Dev/sideloaded success cannot prove eligibility.
+- Repeat release-device foreground/background/locked/Doze/reboot notifications; phone-to-phone and AoN delivery; voice/video accept/reject/cancel/busy; Wi-Fi and mobile-data transitions; direct failure -> custody fallback; loss/retry media integrity; storage/gallery export. This pass did not rerun this entire matrix or establish improved transfer speed.
+- Confirm intended Play track and version before building/submitting. eas.json production is an AAB with remote autoIncrement; submit.production.android.track is currently internal. app/package version is currently 1.1.6. Do not infer the next remote version code from local APK history.
+
+Build execution when requested
+AAB: preserve the existing production AAB workflow, native modules, flags and signing. Check remote version and intended track first. Do not submit automatically.
+APK: compile locally with Android/Gradle, preserve production flags and signing compatibility, and verify the result before any authorized installation. Do not use EAS cloud APK builds.
+No production command should be run merely because this checklist exists.

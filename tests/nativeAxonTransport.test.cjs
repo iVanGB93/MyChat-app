@@ -4,7 +4,7 @@ const code = ts.transpileModule(fs.readFileSync('src/services/identity/nativeAxo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const api = {};
-new Function('require', 'exports', code)(() => ({ AXON_FRAME_BYTES: 20000 }), api);
+new Function('require', 'exports', code)(() => ({ AXON_FRAME_BYTES: 20000,ATTACHMENT_BULK_FRAME_BYTES:850000 }), api);
 const candidate = { account: 'axonic:1:' + 'ab'.repeat(32), endpoint: 'axon-lan://192.168.1.9:9000', route: 'lan', expiresAt: Date.now() + 60000 };
 function fixture(overrides = {}) {
   const calls = { reads: 0, closed: [], writes: [] }, controller = new AbortController();
@@ -13,6 +13,14 @@ function fixture(overrides = {}) {
   return { calls, controller, connect: c => api.createNativeAxonConnector(native)(c ?? candidate, { signal: controller.signal, onClosed() {} }) };
 }
 const flush = () => new Promise(r => setImmediate(r));
+
+test('bulk LAN adapter gates larger frames on explicit admission and retains a bounded queue',async()=>{
+ const f=fixture({axonEnableMediaLane(){},axonEnableBulkAttachments(){}}),wire=await f.connect();assert.equal(wire.bulkAttachments,true);
+ assert.throws(()=>wire.send('x'.repeat(20001)),/capacity/);
+ let finish;const g=fixture({axonEnableMediaLane(){},axonEnableBulkAttachments(){},axonWrite:()=>new Promise(r=>finish=r)}),ready=await g.connect();
+ ready.enableMediaLane();ready.enableBulkAttachments();ready.send('x'.repeat(850000));ready.send('x'.repeat(850000));
+ assert.throws(()=>ready.send('x'.repeat(120001)),/capacity/);finish(true);await flush();assert.equal(g.calls.closed.length,1);
+});
 test('native reads wait for listener attachment and abort closes exactly once', async () => {
   const f = fixture(), wire = await f.connect(); let closed = 0;
   assert.equal(f.calls.reads, 0);
@@ -59,4 +67,13 @@ test('adopted sockets replay the consumed hello before reading more native frame
   wire.listen(raw => received.push(raw), () => {});
   assert.deepEqual(received, ['{"kind":"hello"}']); assert.equal(reads, 1);
   controller.abort(); assert.equal(closed, 1);
+});
+
+test('updated native media lane keeps a bounded larger queue and old binaries do not advertise it',async()=>{
+ const old=await fixture().connect();assert.equal(old.mediaLane,false);old.close();
+ let enabled=false,finish;
+ const f=fixture({axonEnableMediaLane:()=>{enabled=true;},axonWrite:()=>new Promise(r=>finish=r)}),wire=await f.connect();
+ assert.equal(wire.mediaLane,true);wire.enableMediaLane();assert(enabled);
+ for(let i=0;i<6;i++)wire.send('x'.repeat(20000));
+ assert.throws(()=>wire.send('x'),/capacity/);finish(true);await flush();assert.equal(f.calls.closed.length,1);
 });

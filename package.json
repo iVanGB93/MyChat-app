@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.1.6",
+  "version": "1.1.8",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -9,15 +9,17 @@
     "web": "expo start --web",
     "fix:gradle9": "node scripts/patch-react-native-gradle-plugin.cjs",
     "fix:rtc-identity": "node scripts/patch-webrtc-identity.cjs",
-    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder",
-    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder",
+    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent",
+    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --test tests/*.test.cjs",
     "test:rtc-native": "node scripts/test-native-identity-guard.cjs",
     "check:cycles": "node scripts/check-service-cycles.cjs",
-    "check": "npm run typecheck && npm run test:unit && npm run check:cycles && npm run check:modules",
+    "check": "npm run typecheck && npm run test:unit && npm run check:cycles && npm run check:modules && npm run check:consolidation",
     "check:modules": "node scripts/check-module-boundaries.cjs",
-    "fix:audio-recorder": "node scripts/patch-audio-recorder.cjs"
+    "fix:audio-recorder": "node scripts/patch-audio-recorder.cjs",
+    "check:consolidation": "node scripts/check-consolidation.cjs",
+    "fix:share-intent": "node scripts/patch-share-intent.cjs"
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^14.0.0",
@@ -27,28 +29,21 @@
     "@noble/hashes": "2.4.0",
     "@notifee/react-native": "^9.1.8",
     "@react-native-async-storage/async-storage": "^2.2.0",
-    "@react-native-community/netinfo": "11.5.2",
     "@react-native-firebase/app": "^24.1.1",
     "@react-native-firebase/messaging": "^24.1.1",
-    "@react-native-google-signin/google-signin": "^16.1.5",
     "@react-navigation/bottom-tabs": "^7.14.0",
     "@react-navigation/native": "^7.1.28",
     "@react-navigation/native-stack": "^7.13.0",
     "@scure/bip39": "2.4.0",
     "@sentry/react-native": "~7.11.0",
-    "@supersami/rn-foreground-service": "^2.2.5",
-    "axios": "^1.13.5",
     "dayjs": "^1.11.19",
     "expo": "~55.0.31",
-    "expo-application": "~55.0.19",
     "expo-asset": "~55.0.20",
     "expo-audio": "~55.0.18",
-    "expo-background-task": "~55.0.22",
     "expo-camera": "~55.0.23",
     "expo-clipboard": "~55.0.17",
     "expo-constants": "~55.0.17",
     "expo-dev-client": "~55.0.40",
-    "expo-device": "~55.0.21",
     "expo-document-picker": "~55.0.17",
     "expo-file-system": "~55.0.26",
     "expo-font": "~55.0.8",
@@ -58,17 +53,12 @@
     "expo-intent-launcher": "~55.0.16",
     "expo-keep-awake": "~55.0.8",
     "expo-linking": "~55.0.17",
-    "expo-media-library": "~55.0.21",
-    "expo-notifications": "~55.0.27",
-    "expo-observe": "~0.2.6",
     "expo-secure-store": "~55.0.18",
     "expo-share-intent": "^6.1.1",
     "expo-splash-screen": "~55.0.25",
     "expo-sqlite": "~55.0.20",
     "expo-status-bar": "~55.0.6",
     "expo-system-ui": "~55.0.22",
-    "expo-task-manager": "~55.0.20",
-    "qrcode": "^1.5.4",
     "react": "19.2.0",
     "react-native": "0.83.10",
     "react-native-gesture-handler": "~2.30.0",
@@ -78,17 +68,17 @@
     "react-native-svg": "15.15.3",
     "react-native-volume-manager": "^2.0.8",
     "react-native-webrtc": "^124.0.7",
-    "zustand": "^5.0.14"
+    "base64-js": "1.5.1"
   },
   "devDependencies": {
     "@types/react": "~19.2.10",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "@expo/image-utils": "0.8.17"
   },
   "expo": {
     "doctor": {
       "reactNativeDirectoryCheck": {
         "exclude": [
-          "@supersami/rn-foreground-service",
           "react-native-webrtc",
           "@notifee/react-native"
         ]

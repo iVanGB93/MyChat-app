@@ -3,7 +3,7 @@ import {localAccount} from '../../modules/identity';
 import {shortIdentity} from '../../modules/identity';
 import {startRootCallLease,stopRootCallLease,markRootCallConnected} from '../../modules/messaging';
 import React,{useCallback,useEffect,useRef,useState} from 'react';
-import {AppState,Modal,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
+import {AppState,Modal,Switch,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {StatusBar} from 'expo-status-bar';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -21,7 +21,6 @@ import type {NeuronCallView} from '../../modules/messaging';
 import useWebRTCCore from '../../hooks/useWebRTCCore';
 import {useTheme} from '../../contexts/ThemeContext';
 import {ActionButton,makeStyles} from './CallAppearance';
-import Avatar from '../../components/ui/Avatar';
 import {setCallSpeaker,restoreCallAudio} from '../../services/call-audio-route';
 
 export async function ensureRootCallPermissions(kind:'voice'|'video'){
@@ -34,6 +33,12 @@ export default function RootAccountCallScreen(){
  useEffect(()=>{let alive=true;const peer=call?.peerUser;if(!peer)return;setName(shortIdentity(peer));const refresh=async()=>{try{const s=await conversations().snapshot();if(alive)setName(s.contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer));}catch{if(alive)setName(shortIdentity(peer));}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{alive=false;clearInterval(timer);};},[call?.peerUser]);
  useEffect(()=>{if(call?.status!=='ringing')return;let active=true;const owner=localAccount.status().account;if(owner)void readRootNotificationPreferences(owner).then(p=>{if(active&&p.sound)playLooping(call.outgoing?'caller_ringback':'ringtone');}).catch(()=>{});return()=>{active=false;stopLooping();};},[call?.status,call?.outgoing]);
  useEffect(()=>subscribeLocalAccountCalls(v=>{setCall(v);setError('');}),[]);
+ useEffect(()=>{
+  if(call?.status!=='ended')return;
+  const id=call.id;
+  const timer=setTimeout(()=>setCall(current=>current?.id===id&&current.status==='ended'?null:current),3000);
+  return()=>clearTimeout(timer);
+ },[call?.id,call?.status]);
  const end=()=>{if(call)void localAccountCalls()?.end(call.id).catch(()=>setError('Call ended locally; peer notification is pending.'));};
  const answer=async()=>{
   if(!call||running.current)return;running.current=true;setBusy(true);setError('');
@@ -67,15 +72,15 @@ function RootMedia({call,name,end}:{call:NeuronCallView<string>;name:string;end:
  useEffect(()=>{if(connected)return;const timer=setTimeout(end,45000);return()=>clearTimeout(timer);},[connected,call.id]);
  useEffect(()=>{void startRootCallLease(call.id,call.media);return()=>{stopRootCallLease(call.id);restoreCallAudio();};},[call.id,call.media]);
  const routeAudio=async()=>{if(audioBusy.current)return;audioBusy.current=true;try{setSpeaker(await setCallSpeaker(!speaker));}catch{setError('Unable to change speaker.');}finally{audioBusy.current=false;}};
- const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video';
+ const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video',localVisible=rtc.isCameraOff?undefined:local;
  const background=video&&<>
-  {(remote||local)&&<RTCView streamURL={(remote||local)!} objectFit="cover" mirror={!remote} style={styles.fullVideo} zOrder={0}/>}
+  {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit="cover" mirror={!remote} style={styles.fullVideo} zOrder={0}/>}
   <Pressable accessibilityRole="button" accessibilityLabel={controls?'Hide call controls':'Show call controls'} onPress={()=>setControls(v=>!v)} style={StyleSheet.absoluteFill}/>
-  {remote&&local&&foreground&&<View pointerEvents="none" style={styles.pipWrap}><RTCView streamURL={local} objectFit="cover" mirror style={styles.pip} zOrder={1}/></View>}
+  {remote&&local&&foreground&&<View pointerEvents="none" style={[styles.pipWrap,{top:insets.top+16,right:insets.right+16}]}>{rtc.isCameraOff?<View style={[styles.pip,{alignItems:'center',justifyContent:'center',gap:8}]}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>Camera off</Text></View>:<RTCView streamURL={local} objectFit="cover" mirror style={styles.pip} zOrder={1}/>}</View>}
  </>;
  const quality=rtc.callQuality;
  return <>
- <CallLayout name={name} video={video} status={connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…'} background={background} show={!video||controls} avatar={!video||(!remote&&!local)}>
+ <CallLayout name={name} video={video} status={connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…'} background={background} show={!video||controls} avatar={!video||(!remote&&!localVisible)}>
   {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
   {video&&quality.level!=='unknown'&&<Text style={[styles.quality,{textAlign:'center',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}]}>{quality.level.toUpperCase()}{quality.roundTripTimeMs!=null?` • ${quality.roundTripTimeMs} ms`:''}{quality.packetLossPercent!=null?` • ${quality.packetLossPercent}% loss`:''}</Text>}
   <View style={[styles.actions,video&&{paddingHorizontal:8}]}>
@@ -88,12 +93,17 @@ function RootMedia({call,name,end}:{call:NeuronCallView<string>;name:string;end:
  </CallLayout>
  <Modal visible={options&&video} transparent animationType="slide" onRequestClose={()=>setOptions(false)}>
   <View style={{flex:1,justifyContent:'flex-end',backgroundColor:'rgba(0,0,0,0.55)'}}><Pressable accessibilityLabel="Close call options" onPress={()=>setOptions(false)} style={StyleSheet.absoluteFill}/>
-   <ScrollView style={{flexGrow:0,backgroundColor:colors.background,borderTopLeftRadius:24,borderTopRightRadius:24,maxHeight:'85%'}} contentContainerStyle={{padding:24,paddingBottom:Math.max(insets.bottom,16)+12}}>
-    <Text style={{color:colors.text,fontSize:22}}>Video quality</Text><Text style={{color:colors.textSecondary,marginVertical:12}}>Controls video sent by this phone. Automatic adapts to your connection.</Text>
-    {(['automatic','low','medium','high'] as VideoQualityMode[]).map(mode=><TouchableOpacity key={mode} accessibilityRole="radio" accessibilityState={{checked:rtc.videoQualityMode===mode}} onPress={()=>rtc.selectVideoQuality(mode)} style={{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:14}}><Ionicons name={rtc.videoQualityMode===mode?'radio-button-on':'radio-button-off'} size={24} color={colors.primary}/><Text style={{color:colors.text,fontSize:17}}>{mode.charAt(0).toUpperCase()+mode.slice(1)}</Text></TouchableOpacity>)}
+   <ScrollView style={{flexGrow:0,backgroundColor:colors.background,borderTopLeftRadius:24,borderTopRightRadius:24,maxHeight:'85%'}} contentContainerStyle={{padding:24,paddingLeft:insets.left+24,paddingRight:insets.right+24,paddingBottom:Math.max(insets.bottom,16)+12}}>
+    <Text accessibilityRole="header" style={{color:colors.text,fontSize:22}}>Video quality</Text><Text style={{color:colors.textSecondary,marginVertical:12}}>Controls video sent by this phone. Automatic adapts to your connection.</Text>
+    {([
+      ['automatic','Automatic','Adjusts to your connection · Default'],
+      ['low','Low','Uses less data · Lower detail and frame rate'],
+      ['medium','Medium','Balances detail and data use'],
+      ['high','High','Best detail · Uses more data'],
+    ] as [VideoQualityMode,string,string][]).map(([mode,label,detail])=><TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} accessibilityRole="radio" accessibilityState={{checked:rtc.videoQualityMode===mode}} onPress={()=>rtc.selectVideoQuality(mode)} style={{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:14}}><Ionicons name={rtc.videoQualityMode===mode?'radio-button-on':'radio-button-off'} size={24} color={colors.primary}/><View style={{flex:1}}><Text style={{color:colors.text,fontSize:17}}>{label}</Text><Text style={{color:colors.textSecondary,marginTop:4}}>{detail}</Text></View></TouchableOpacity>)}
     {!!rtc.videoQualityError&&<Text accessibilityRole="alert" style={{color:colors.error}}>{rtc.videoQualityError}</Text>}
-    <TouchableOpacity accessibilityRole="switch" accessibilityState={{checked:speaker}} onPress={()=>void routeAudio()} style={{paddingVertical:14}}><Text style={{color:colors.primary}}>Speaker {speaker?'on':'off'}</Text></TouchableOpacity>
-    <TouchableOpacity onPress={()=>setOptions(false)} style={{alignItems:'center',padding:14,backgroundColor:colors.primary,borderRadius:16,marginTop:12}}><Text style={{color:'#020413'}}>Done</Text></TouchableOpacity>
+    <View style={{paddingVertical:14,flexDirection:'row',alignItems:'center',justifyContent:'space-between',gap:12}}><Text style={{color:colors.text,fontSize:17}}>Speaker</Text><Switch accessibilityLabel="Speaker" value={speaker} onValueChange={()=>void routeAudio()} trackColor={{false:colors.border,true:colors.primary}}/></View>
+    <TouchableOpacity accessibilityRole="button" onPress={()=>setOptions(false)} style={{alignItems:'center',padding:14,backgroundColor:colors.primary,borderRadius:16,marginTop:12}}><Text style={{color:colors.textInverse}}>Done</Text></TouchableOpacity>
    </ScrollView>
   </View>
  </Modal>

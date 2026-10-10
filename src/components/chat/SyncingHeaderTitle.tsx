@@ -1,5 +1,5 @@
 import React,{useEffect,useMemo} from 'react';
-import {Animated,View} from 'react-native';
+import {Animated,Text,View} from 'react-native';
 import {chatRoomStyles as styles} from './chat-room-styles';
 export default function SyncingHeaderTitle({ title, syncing, color }: { title: string; syncing: boolean; color: string }) {
   const letters = useMemo(() => Array.from(title).slice(0, 24), [title]);
@@ -30,7 +30,7 @@ export default function SyncingHeaderTitle({ title, syncing, color }: { title: s
 
   return (
     <View style={styles.syncHeaderTitle} accessibilityLabel={syncing ? `${title}, syncing` : title}>
-      <View style={styles.syncLetters}>
+      {!syncing ? <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.syncHeaderLetter,{color,flexShrink:1}]}>{title}</Text> : <View style={styles.syncLetters}>
         {letters.map((letter, index) => (
           <Animated.Text
             key={`${letter}-${index}`}
@@ -43,7 +43,7 @@ export default function SyncingHeaderTitle({ title, syncing, color }: { title: s
             {letter}
           </Animated.Text>
         ))}
-      </View>
+      </View>}
     </View>
   );
 }

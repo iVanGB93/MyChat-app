@@ -94,6 +94,38 @@ test('a preferred route authenticates in a spare slot before replacing the worki
   f.pool.offer(f.candidate(1, 'internet')); f.pool.tick(); assert.equal(f.opens.length, 2);
 });
 
+for (const incoming of [false,true]) test(`full pool promotes LAN while retaining the original and a wider route (incoming=${incoming})`,async()=>{
+ const f=fixture(3);for(let n=1;n<=3;n++)f.pool.offer(f.candidate(n,'internet'));
+ f.pool.tick();for(let i=0;i<3;i++)f.finish(i);await drain();
+ if(incoming)assert.equal(f.pool.accept(f.candidate(1,'lan'),f.open),true);
+ else {f.pool.offer(f.candidate(1,'lan'));f.pool.tick();}
+ assert.equal(f.opens.length,4);assert.equal(f.closed.length,1);assert.ok(!f.closed.includes(0));
+ assert.equal(f.pool.snapshot().connections.length,3);
+ assert.equal(f.pool.snapshot().connections.filter(c=>c.route==='internet'&&c.state==='connected').length,2);
+ f.finish(3);await drain();
+ assert.ok(f.pool.snapshot().connections.some(c=>c.account===account(1)&&c.route==='lan'&&c.state==='connected'));
+ assert.ok(f.pool.snapshot().connections.some(c=>c.route==='internet'&&c.state==='connected'));
+ f.pool.tick();assert.ok(f.pool.snapshot().connections.length<=3);
+});
+
+test('failed full-pool promotion keeps original route and does not evict again during backoff',async()=>{
+ const f=fixture(3);for(let n=1;n<=3;n++)f.pool.offer(f.candidate(n,'internet'));
+ f.pool.tick();for(let i=0;i<3;i++)f.finish(i);await drain();
+ f.pool.offer(f.candidate(1,'lan'));f.pool.tick();assert.equal(f.opens.length,4);
+ f.opens[3].resolve(null);await drain();f.pool.tick();
+ assert.equal(f.closed.length,1);assert.ok(f.pool.snapshot().connections.some(c=>c.account===account(1)&&c.route==='internet'));
+});
+
+test('inbound-only peer can promote in a full pool and failed authentication cannot churn its other connections',async()=>{
+ const f=fixture(3);for(let n=1;n<=3;n++)assert.equal(f.pool.accept(f.candidate(n,'internet'),f.open),true);
+ for(let i=0;i<3;i++)f.finish(i);await drain();
+ assert.equal(f.pool.accept(f.candidate(1,'lan'),f.open),true);assert.equal(f.closed.length,1);
+ f.finish(3,9);await drain();
+ assert.equal(f.pool.accept(f.candidate(1,'lan'),f.open),false);
+ assert.ok(f.pool.snapshot().connections.some(c=>c.account===account(1)&&c.route==='internet'));
+ assert.equal(f.closed.length,2); // Evicted wider peer plus rejected identity; original remains.
+});
+
 test('failed or wrong-identity promotions preserve the working link and honor backoff', async () => {
   const f = fixture(2); f.pool.offer(f.candidate(1, 'internet')); f.pool.tick(); f.finish(0); await drain();
   f.pool.offer(f.candidate(1)); f.pool.tick(); f.finish(1,9); await drain();

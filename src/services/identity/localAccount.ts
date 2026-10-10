@@ -4,14 +4,28 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import Native from '../../../modules/axonic-nearby';
 import { createLocalIdentityController } from './localIdentityController';
 import { createLocalAccountBiometrics } from './localAccountBiometrics';
-import { createLocalAccountSession } from './localAccountSession';
+import { createLocalAccountSession, createLocalAccountStartup } from './localAccountSession';
+import {createDeviceRemoval,DEVICE_REMOVAL_KEY} from './deviceRemoval';
+import {purgeDeviceAccountData} from './deviceRemovalStorage';
 const VAULT = '@axonic_local_account_v1';
 const DEVICE = 'axonic_local_account_device_v1';
 const BIOMETRIC = 'axonic_local_account_biometric_v1';
 const biometricOptions = { keychainService: 'axonic-local-biometric-v1', requireAuthentication: true,
   authenticationPrompt: 'Unlock your Axonic account', keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
+const removal=createDeviceRemoval({
+ read:()=>AsyncStorage.getItem(DEVICE_REMOVAL_KEY),write:raw=>AsyncStorage.setItem(DEVICE_REMOVAL_KEY,raw),clear:()=>AsyncStorage.removeItem(DEVICE_REMOVAL_KEY),
+ vaultAccount:async()=>{const raw=await AsyncStorage.getItem(VAULT);if(!raw)return null;const account=JSON.parse(raw)?.record?.account;if(typeof account!=='string')throw Error('Account storage unavailable');return account;},
+ purge:async account=>{
+  await purgeDeviceAccountData(account);
+  await SecureStore.deleteItemAsync(SESSION,sessionOptions);
+  await SecureStore.deleteItemAsync(BIOMETRIC,{keychainService:biometricOptions.keychainService});
+  await SecureStore.deleteItemAsync(DEVICE);
+  await AsyncStorage.removeItem(VAULT);
+ },
+});
 export const localAccount = createLocalIdentityController({
-  readVault: () => AsyncStorage.getItem(VAULT), writeVault: value => AsyncStorage.setItem(VAULT, value),
+  beginRemoval:removal.request,
+  readVault: async()=>{await removal.assertAvailable();return AsyncStorage.getItem(VAULT);}, writeVault: async value=>{await removal.assertAvailable();await AsyncStorage.setItem(VAULT,value);},
   readDeviceSecret: () => SecureStore.getItemAsync(DEVICE),
   writeDeviceSecret: value => SecureStore.setItemAsync(DEVICE, value, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
 }, async size => {
@@ -55,3 +69,23 @@ export const localAccountUsername = {
     return AsyncStorage.setItem('@axonic_local_username_v1:' + account, value);
   },
 };
+
+export const startLocalAccount = createLocalAccountStartup({
+ inspect:async()=>{await removal.beforeStartup();if(!localAccount.status().account)await localAccount.inspect();},
+ initialize:()=>localAccountSession.initialize(),
+});
+
+/** UI must show the scope and require explicit confirmation plus the current password.
+ * Recovery words restore identity, not these deleted chats. Gallery exports are preserved.
+ */
+export async function removeAccountFromDevice(input:{account:string;password:string;confirmed:true}){
+ if(input.confirmed!==true)throw Error('Confirm device-only removal first');
+ await localAccount.prepareDeviceRemoval(input.password,input.account);
+ return {restartRequired:true as const};
+}
+
+export async function closeForDeviceRemoval(){
+ if(!localAccount.status().removalPending)throw Error('No confirmed removal is pending');
+ if(!Native?.closeForDeviceRemoval)throw Error('Close Axonic using Force stop in Android app settings, then reopen it to finish removal.');
+ Native.closeForDeviceRemoval();
+}

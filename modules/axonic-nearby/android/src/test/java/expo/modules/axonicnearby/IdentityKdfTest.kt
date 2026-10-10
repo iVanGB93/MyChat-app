@@ -8,6 +8,8 @@ class IdentityKdfTest {
   // Independent Node/OpenSSL scrypt vectors at the production vault parameters.
   @Test fun matchesPortableVaultDerivation() {
     val salt = "07".repeat(32)
+    assertEquals("c201212bdb34feca299c22e888fd91585560066df5f1ae8ce4cba12f52481ed7",
+      IdentityKdf.derive("six123", salt))
     assertEquals("7a2b1c84064fd05e768fe2120bca10ef86196b88482dbfe24dec67dcedcee60b",
       IdentityKdf.derive("Axonic test password 2026", salt))
     assertEquals("9a1dc7d36c3464862dc5cc4777acfb9a70db20f68701cb79b40e3ad1ebdfa82d",

@@ -12,7 +12,7 @@ export interface NativeAxonLan extends NativeAxonTransport {
 type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'> & {
   remembered?():import('./neuronConnections').NeuronCandidate[];
   native: NativeAxonLan;
-  rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait'>;
+  rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait' | 'mediaLane'>;
   internet?: { connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
     peers: { account: string; endpoint: string }[] };
 };
@@ -124,11 +124,15 @@ export function createLanIdentityRuntime(d: Dependencies) {
       } catch { error = 'LAN discovery unavailable'; retryAt = d.now() + 5000; stopLan(); }
     },
     setLimit: network.setLimit,
-    resume() { retryAt = 0; network.resume(); },
+    // A real local foreground transition permits a fresh LAN attempt. Periodic
+    // discovery refreshes still preserve the stale-peer backoff.
+    resume() { retryAt = 0; failedLan.clear(); network.resume(); },
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,
     custodyRequest: network.custodyRequest,
     attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
+    attachmentBulkPeers:network.attachmentBulkPeers,attachmentBulkRequest:network.attachmentBulkRequest,
+    attachmentBatchChunks:network.attachmentBatchChunks,
     pushRequest: network.pushRequest,
     pushPeers: network.pushPeers,
     mediaRelayPeers:network.mediaRelayPeers,

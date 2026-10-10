@@ -19,6 +19,7 @@ export interface PlayUpdateInfo {
 }
 
 interface AxonicAppUpdateNativeModule {
+  getKeyboardOverlap?: (viewTag:number)=>Promise<{visible:boolean;overlap:number}|null>;
   addListener?: (event: string, listener: (state: { installStatus: number }) => void) => { remove(): void };
   getUpdateInfoAsync(): Promise<PlayUpdateInfo>;
   startUpdateAsync?: (immediate: boolean) => Promise<PlayUpdateStartResult>;
@@ -26,6 +27,10 @@ interface AxonicAppUpdateNativeModule {
 }
 
 const nativeModule = requireOptionalNativeModule<AxonicAppUpdateNativeModule>('AxonicAppUpdate');
+export const supportsKeyboardOverlap=()=>typeof nativeModule?.getKeyboardOverlap==='function';
+export async function getKeyboardOverlap(viewTag:number){
+  try{return await nativeModule?.getKeyboardOverlap?.(viewTag)??null;}catch{return null;}
+}
 export function observePlayInstallStatus(listener: (status: number) => void): { remove(): void } | undefined {
   try {
     return nativeModule?.addListener?.('onInstallState', (event) => listener(event.installStatus));

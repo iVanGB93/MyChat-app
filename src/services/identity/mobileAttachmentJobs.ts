@@ -42,6 +42,15 @@ export function createMobileAttachmentJobs(now:()=>number=Date.now):AttachmentJo
    const job=parse((await db()).getFirstSync<{raw:string;revision:number}>('SELECT raw,revision FROM jobs WHERE owner=? AND digest=? UNION ALL SELECT raw,revision FROM finished_jobs WHERE owner=? AND digest=?',owner,digest,owner,digest));
    if(job&&(job.owner!==owner||job.digest!==digest))throw Error('Attachment owner mismatch');return job;
   },
+  async isCurrent(owner,digest,revision){
+   if(!validAccountId(owner)||!/^[a-f0-9]{64}$/.test(digest)||!Number.isSafeInteger(revision)||revision<0)return false;
+   // The worker already validated the descriptor. All journal writes are CAS
+   // updates with a new revision, including pause/receipt/expiry. Read the WAL
+   // on every check, but avoid copying, parsing and hashing the whole descriptor.
+   // Archived rows cannot be active; no second lookup is needed.
+   const row=(await db()).getFirstSync<{revision:number;phase:string}>("SELECT revision,json_extract(raw,'$.phase') AS phase FROM jobs WHERE owner=? AND digest=?",owner,digest);
+   return !!row&&row.revision===revision&&['queued','uploading','downloading','confirming'].includes(row.phase);
+  },
   async list(owner){if(!validAccountId(owner))throw Error('Invalid attachment owner');
    const rows=await(await db()).getAllAsync<{raw:string;revision:number}>('SELECT raw,revision FROM jobs WHERE owner=? LIMIT 129',owner);
    const jobs=rows.map(r=>parse(r)!);if(jobs.length>128||jobs.some(j=>j.owner!==owner))throw Error('Invalid attachment jobs');return jobs;

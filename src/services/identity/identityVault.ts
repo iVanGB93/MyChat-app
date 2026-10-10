@@ -30,7 +30,7 @@ export function destroyIdentity(identity: UnlockedIdentity): void {
   identity.entropy.fill(0); identity.signingSeed.fill(0); identity.encryptionSeed.fill(0);
 }
 function checkPassword(password: string): void {
-  if (typeof password !== 'string' || password.length < 12 || password.length > 256) throw Error('Use a password between 12 and 256 characters');
+  if (typeof password !== 'string' || password.length < 6 || password.length > 256) throw Error('Use a password between 6 and 256 characters');
 }
 async function randomBytes(random: SecureRandom, size: number): Promise<Uint8Array> {
   const bytes = await random(size);

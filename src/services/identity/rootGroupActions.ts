@@ -5,10 +5,10 @@ import type {RootGroupAction} from './rootGroupTypes.ts';
 export type {RootGroupAction} from './rootGroupTypes.ts';
 const reactions=['👍','❤️','😂','😮','😢','🙏'];
 export const validGroupReply=(v:unknown):v is RootChatReply=>{const r=v as RootChatReply;return !!r&&Object.keys(r).sort().join(',')==='author,id'&&/^[a-f0-9]{64}$/.test(r.id)&&validAccountId(r.author);};
-const family=(kind:string)=>kind==='reaction'?'reaction':'content';
+const family=(kind:string)=>kind==='reaction'?'reaction':kind==='read'?'read':'content';
 export const groupActionBody=(a:RootGroupAction)=>({group:a.group,target:a.target,kind:a.kind,revision:a.revision,text:a.text});
 export const sameGroupAction=(a:RootGroupAction,b:RootGroupAction)=>JSON.stringify(groupActionBody(a))===JSON.stringify(groupActionBody(b));
-export function validGroupAction(a:RootGroupAction,owner:string){const actor=a?.direction==='outgoing'?owner:a?.peer;return !!a&&/^[a-f0-9]{64}$/.test(a.id)&&validAccountId(a.peer)&&a.peer!==owner&&['incoming','outgoing'].includes(a.direction)&&validGroupContext(a.group)&&a.id===rootGroupDeliveryId(a.group.messageId,a.direction==='outgoing'?a.peer:owner,'action')&&validGroupReply(a.target)&&['edit','delete','reaction'].includes(a.kind)&&Number.isSafeInteger(a.revision)&&a.revision>=1&&a.revision<=1000000&&typeof a.text==='string'&&Number.isSafeInteger(a.at)&&['pending','delivered'].includes(a.status)&&(a.kind==='edit'?a.target.author===actor&&!!a.text.trim()&&new TextEncoder().encode(a.text).length<=1600:a.kind==='delete'?a.target.author===actor&&a.text==='':a.text===''||reactions.includes(a.text));}
+export function validGroupAction(a:RootGroupAction,owner:string){const actor=a?.direction==='outgoing'?owner:a?.peer;return !!a&&/^[a-f0-9]{64}$/.test(a.id)&&validAccountId(a.peer)&&a.peer!==owner&&['incoming','outgoing'].includes(a.direction)&&validGroupContext(a.group)&&a.id===rootGroupDeliveryId(a.group.messageId,a.direction==='outgoing'?a.peer:owner,'action')&&validGroupReply(a.target)&&['edit','delete','reaction','read'].includes(a.kind)&&Number.isSafeInteger(a.revision)&&a.revision>=1&&a.revision<=1000000&&typeof a.text==='string'&&Number.isSafeInteger(a.at)&&['pending','delivered'].includes(a.status)&&(a.kind==='edit'?a.target.author===actor&&!!a.text.trim()&&new TextEncoder().encode(a.text).length<=1600:a.kind==='delete'?a.target.author===actor&&a.text==='':a.kind==='read'?a.text===''&&a.revision===1&&a.target.author===(a.direction==='outgoing'?a.peer:owner):a.text===''||reactions.includes(a.text));}
 export const encodeGroupAction=(a:RootGroupAction)=>JSON.stringify(['axonic-root-group-action-v1',a.peer,a.id,groupActionBody(a)]);
 const targets=(a:RootGroupAction,group:string,target:RootChatReply)=>a.group.id===group&&a.target.id===target.id&&a.target.author===target.author;
 export function enqueueGroupAction(s:RootChatState,owner:string,groupId:string,logicalId:string,target:RootChatReply,kind:RootGroupAction['kind'],text:string,now:number){
@@ -18,8 +18,9 @@ export function enqueueGroupAction(s:RootChatState,owner:string,groupId:string,l
  const retry=(s.groupActions??[]).filter(a=>a.direction==='outgoing'&&a.group.messageId===logicalId);
  if(retry.length){if(retry.some(a=>!targets(a,groupId,target)||a.kind!==kind||a.text!==text))throw Error('Group action ID conflict');return;}
  if((s.groupActions??[]).some(a=>targets(a,groupId,target)&&a.kind==='delete'))throw Error('Message was deleted');
- const peers=g.members.filter(p=>p!==owner);if(!peers.length)throw Error('Add another member first');
- const revision=Math.max(0,...prior.map(a=>a.revision))+1;
+ if(kind==='read'&&prior.length)return;
+ const peers=g.members.filter(p=>p!==owner&&(kind!=='read'||p===target.author));if(!peers.length)throw Error('Add another member first');
+ const revision=kind==='read'?1:Math.max(0,...prior.map(a=>a.revision))+1;
  const rows:RootGroupAction[]=peers.map(peer=>({id:rootGroupDeliveryId(logicalId,peer,'action'),peer,direction:'outgoing',group:{id:groupId,revision:g.revision,messageId:logicalId},target:{...target},kind,text,revision,at:now,status:'pending'}));
  if(rows.some(a=>!validGroupAction(a,owner)||!rootGroupAllowed(s,owner,a.peer,a.group)||new TextEncoder().encode(encodeGroupAction(a)).length>2048)||kind==='edit'&&m.attachment)throw Error('Invalid group action');
  if((s.groupActions?.length??0)+rows.length>10000)throw Error('Group action storage is full');

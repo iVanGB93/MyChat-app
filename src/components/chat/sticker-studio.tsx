@@ -1,6 +1,8 @@
+import {KeyboardFormScrollView} from '../ui/KeyboardForm';
+import {KeyboardAwareTextInput as TextInput} from '../ui/KeyboardForm';
 import type {StickerDraftStorage} from '../../services/sticker-draft-store';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -42,7 +44,7 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
     }
   }, []);
   const [name, setName] = useState('');
-  useEffect(()=>{let active=true;if(draftStorage)void draftStorage.load().then(saved=>{if(active){draftId.current=saved?.id;setDraft(saved?.uri);setName(saved?.name??'');}}).catch(()=>{if(active)setDraftError('Could not restore your draft. Close and reopen the editor to retry.');}).finally(()=>{if(active)setLoadingDraft(false);});return()=>{active=false;};},[draftStorage]);
+  useEffect(()=>{let active=true;if(draftStorage)void (initialUri?draftStorage.replace(initialUri):draftStorage.load()).then(saved=>{if(active){draftId.current=saved?.id;setDraft(saved?.uri);setName(saved?.name??'');}}).catch(()=>{if(active)setDraftError('Could not restore your draft. Close and reopen the editor to retry.');}).finally(()=>{if(active)setLoadingDraft(false);});return()=>{active=false;};},[draftStorage,initialUri]);
   async function persist(uri:string,nextName=''){if(draftStorage){const saved=await draftStorage.replace(uri,nextName);draftId.current=saved.id;setDraft(saved.uri);}else setDraft(uri);}
   async function clearDraft(){if(draftStorage&&draftId.current)await draftStorage.clear(draftId.current);draftId.current=undefined;setDraft(undefined);}
 
@@ -59,7 +61,7 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
   const choose = async (uri: string) => { await persist(uri); setName(''); setPendingEdits(false); setReset((value) => value + 1); };
   if(loadingDraft)return <ActivityIndicator accessibilityLabel="Restoring sticker draft" color={c.primary}/>;
   if(draftError)return <Text accessibilityRole="alert" style={{color:c.text,padding:16}}>{draftError}</Text>;
-  return <ScrollView scrollEnabled={!isDragging} keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets contentContainerStyle={{ padding: 16, gap: 16 }}>
+  return <KeyboardFormScrollView scrollEnabled={!isDragging} contentContainerStyle={{ padding: 16, gap: 16 }}>
     {!draft && <>
     <Text style={{ color: c.text, fontSize: 24, fontWeight: '700' }}>Little moments. Big feelings.</Text>
     <Text style={{ color: c.textSecondary }}>Turn a funny photo into your next favorite sticker. Crop, preview, then save — nothing sends automatically.</Text>
@@ -101,5 +103,5 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
       {button('Cancel creation', () => { void run(async()=>{await clearDraft();setPendingEdits(false);}); })}
     </View>}
     {busy && <ActivityIndicator color={c.primary} />}
-  </ScrollView>;
+  </KeyboardFormScrollView>;
 }

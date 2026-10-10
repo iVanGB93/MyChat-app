@@ -60,9 +60,11 @@ class AxonicAppUpdateModule : Module() {
       } else activity.runOnUiThread {
         try {
           val context = requireNotNull(appContext.reactContext)
-          val decor = activity.window.decorView
-          val view = decor.findViewById<View>(viewTag)
-          val insets = decor.rootWindowInsets
+          // React Native Modal views live in a Dialog window, outside the
+          // activity decor. Resolve the React tag and read that view's insets.
+          val view = appContext.findView<View>(viewTag)
+            ?: activity.window.decorView.findViewById<View>(viewTag)
+          val insets = view?.rootWindowInsets
           if (view == null || !view.isAttachedToWindow || insets == null) {
             promise.resolve(null)
           } else {

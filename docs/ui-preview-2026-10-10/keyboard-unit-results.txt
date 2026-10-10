@@ -1,0 +1,1082 @@
+
+> mychat-app@1.1.7 test:unit
+> node --test tests/*.test.cjs
+
+✔ short recovery password stays on setup with entered values and a specific error (43.6986ms)
+✔ mismatched passwords produce a different error; six matching characters pass (10.398ms)
+✔ phone axon preference defaults to five, persists only integers 3–10 and reloads (75.4665ms)
+✔ animated WebP configuration is registered and survives repeated prebuilds (1.5ms)
+✔ maintenance prevents update prompts after root cleanup and handles repeated cleanup (64.7075ms)
+✔ a call or recording starting during the transfer query prevents restarting (14.318ms)
+✔ completed transfers allow updates while pending transfers remain protected (9.526ms)
+✔ UI text command persists a pending message without a network dependency (11.3723ms)
+✔ failed local persistence rejects the send instead of reporting success (0.4573ms)
+✔ lock or account switch during ID allocation cannot enqueue (0.2195ms)
+✔ stale UI owner rejects a send before allocating an ID (0.1182ms)
+✔ group creation and group sending use the same durable ledger commands (1.4544ms)
+✔ editing through a command retains the original message and queues an action (5.2504ms)
+✔ direct acknowledgement marks delivery without custody or key lookup (11.56ms)
+✔ outbox wake notification follows successful durable enqueue only (1.0434ms)
+✔ wake sends the newly queued message without a periodic tick and preserves older outbox work (5.7258ms)
+✔ wake during an active send is retained without concurrent duplicate sends (6.2919ms)
+✔ a thrown direct disconnect falls back during the same attempt (3.9331ms)
+✔ stopping before a scheduled wake prevents sending (11.7495ms)
+✔ custody deposit preserves pending status and the same wire ID (0.4497ms)
+✔ overlapping delivery ticks send a message only once (0.9471ms)
+✔ invalidated delivery cannot acknowledge even after the same account unlocks (1.0362ms)
+✔ stopping during key discovery prevents a late custody deposit (0.3724ms)
+✔ network errors preserve the outbox and release the tick for retry (0.2656ms)
+✔ blocked peers do not enter the transport or custody queue (0.2863ms)
+✔ call startup waits for the permission-induced reconnect before starting once (0.1888ms)
+✔ switching accounts while waiting for a connection cancels call startup (0.0977ms)
+✔ call permission remains UI supplied while readiness belongs to messaging (0.1079ms)
+✔ denied permission and missing axon cannot start a call (100.6764ms)
+✔ account or call runtime changes while resolving keys cancel initiation (1.9439ms)
+✔ invalid signed peer identity never starts a call (0.1902ms)
+✔ inbox polling continues while an unrelated outgoing custody deposit is stalled (0.9916ms)
+✔ a stalled inbox poll does not duplicate polls or block direct outgoing delivery (0.4791ms)
+✔ failed inbox polling retries independently and stop prevents further polls (0.1661ms)
+✔ 512 KiB batch and final tail preserve exact encrypted chunks and proofs (338.8642ms)
+✔ batch framing rejects oversized ranges, truncated bytes, noncanonical encoding and invalid source proofs (23.2219ms)
+✔ decoded tampering remains untrusted and fails independent chunk verification (8.1509ms)
+✔ optional captions are bounded and included in replay identity without changing old descriptors (47.8975ms)
+(node:27740) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ attachment custody resumes, rejects unauthorized peers and deletes all chunks only on recipient receipt (63.9363ms)
+✔ attachment capacity reservations, failed commits and stopped sessions cannot acknowledge custody (29.7516ms)
+✔ signed attachment streams decrypt in arbitrary order with bounded ciphertext proofs (121.6059ms)
+✔ accelerated leaf hashes preserve canonical bytes, proofs, AEAD and rejection behavior (290.8245ms)
+✔ chunk tampering, swapped positions, wrong keys and unauthorized manifest mutations fail closed (19.3722ms)
+✔ public branch reuse preserves reference hashes through eviction and never admits changed proofs (133.1579ms)
+✔ only the intended device can issue the receipt authorizing ciphertext cleanup (22.1041ms)
+✔ warm signature cache never bypasses expiry, current identity/device checks or changed signed bytes (25.679ms)
+(node:17760) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ reused journal writer hides uncommitted checkpoints, rolls back on lock, and preserves compare-and-set (117.0533ms)
+✔ indexed liveness rejects absent, cancelled and archived jobs and invalid arguments (27.1129ms)
+✔ external journal revision changes revoke a downloaded window before writing bytes (30.5983ms)
+✔ journal liveness fallback still delivers for adapters without indexed checks (38.6217ms)
+✔ negotiated three-chunk batches preserve final bytes and receipt (53.6341ms)
+✔ small batch window drains both requests and checkpoints only the verified prefix on failure (41.0025ms)
+✔ direct 512 KiB batches deliver a larger file with two requests and a verified receipt (404.983ms)
+✔ tampered bulk tail preserves only verified prefix and resumes after worker recreation (183.7153ms)
+✔ bulk serving stops when the owner locks and cannot leak a partial batch (47.0777ms)
+﹣ optional indexed journal benchmark uses identical committed rows (0.1163ms) # SKIP
+✔ bounded bursts transfer multiple chunks without timer sleeps and preserve verified delivery (39.1999ms)
+✔ burst respects its step budget and stops on cancellation while a chunk is in flight (17.8034ms)
+✔ burst does not spin on unavailable records or retry a failed route without backoff (14.8286ms)
+✔ slow requests exhaust the burst time budget without starting another request (49.2877ms)
+✔ per-job membership policy rejects direct media and stops in-flight upload after removal (20.9262ms)
+✔ durable attachment jobs survive worker recreation and only complete after file verification and a signed receipt (44.8724ms)
+✔ last download window publishes only after file verification and durable receipt in the same turn (27.7973ms)
+✔ locking during final verification prevents receipt signing and immediate publication (23.0397ms)
+✔ failed immediate publication resumes from its durable receipt after worker recreation (40.4867ms)
+✔ lost chunk reply retries the same ciphertext without inflating remote progress (23.4302ms)
+✔ failed final file verification never signs a receipt or deletes custodian bytes (32.6524ms)
+✔ lock and cancellation revoke in-flight work without advancing progress (34.0243ms)
+✔ expired jobs stop sending, and counterfeit completed status cannot deliver an attachment (17.4961ms)
+✔ job journal rejects stale concurrent updates, changed descriptors and cross-owner reads (10.7904ms)
+✔ two endpoints deliver directly with no third-party custody and retain signed delivery semantics (18.6303ms)
+✔ direct receipt retries a concurrent outgoing checkpoint without losing progress (38.9548ms)
+✔ direct receipt race never overwrites concurrent cancellation (24.4151ms)
+✔ direct receipt retries are bounded and stop when the account locks (44.2748ms)
+✔ direct own-file endpoint rejects other accounts, wrong devices, counterfeit receipts and locked reads (21.5112ms)
+✔ unavailable direct endpoint falls back to a custodian (34.9049ms)
+✔ switching from a partial custody upload to direct download also clears the partial custodian (48.5058ms)
+✔ paused download retains its checkpoint across worker recreation and resumes without duplicate writes (64.5595ms)
+✔ retry rejects expired, locked or blocked transfers and pause cannot interrupt signed-receipt cleanup (51.1796ms)
+✔ finished jobs leave the active queue but retain receipt lookups beyond 128 lifetime transfers (378.7093ms)
+✔ legacy completed-job retirement rolls back on lock and preserves active work and receipts (29.4804ms)
+✔ paused jobs retire after expiration so abandoned transfers cannot permanently fill the queue (15.7712ms)
+✔ network-stored callback waits for every encrypted chunk and never implies recipient delivery (16.0479ms)
+✔ download read-ahead overlaps requests but persists only an ordered verified prefix (42.3732ms)
+✔ failed prefetched chunk keeps durable prefix and retries without skipping or duplicating bytes (30.7578ms)
+✔ cancelling a prefetched window drains requests and never publishes their bytes (23.4146ms)
+✔ verified download window uses one checkpoint and replays safely after checkpoint failure (24.7443ms)
+✔ cancelling during a window write cannot checkpoint or publish the partial file (32.9667ms)
+✔ attachment timings aggregate fixed stages and preserve failures without retaining content (18.1797ms)
+✔ offline custody cleanup does not republish a delivered attachment every tick (47.0669ms)
+✔ indexed attachment policy matches first-reference group rules and is isolated to its snapshot owner (53.5454ms)
+✔ upload window drains all replies, preserves exact encrypted chunks and batches its checkpoint (55.3036ms)
+✔ upload window failure waits for all work and resumes without inventing a received prefix (52.8793ms)
+✔ encrypted file resumes byte-for-byte through real negotiated media sessions after reconnect (549.3313ms)
+✔ negotiated bulk sessions resume after a 512 KiB checkpoint and verify the final receipt (255.5042ms)
+✔ audio lifecycle patch is repeatable and rejects dependency drift (2.7532ms)
+✔ audio source guard is applied at install and Android cannot substitute its unpatched prebuilt artifact (1.2539ms)
+✔ tapping the voice track seeks to the matching second (0.9593ms)
+✔ dragging outside the voice track stays inside the recording (0.1421ms)
+✔ unknown dimensions and durations safely seek to the beginning (0.083ms)
+✔ voice playback speed cycles through every supported rate (0.1216ms)
+✔ speaker requests and restoration stay ordered across delayed native calls (73.1358ms)
+✔ old development clients get an explanatory error instead of a fake toggle (10.3156ms)
+✔ signatures bind participants, media, identity, sequence and call ID (76.7096ms)
+✔ runtime retries a lost acknowledgment after restart then remembers it durably (16.8511ms)
+✔ runtime suppresses cancelled unsent invitation and persists unknown-call cancellation (34.0966ms)
+✔ runtime completes invitation, acceptance and selected-device receipt without Django (35.8107ms)
+✔ direct delivery receipts follow durable admission; retransmission does not replay lifecycle (28.14ms)
+✔ delivery rejects blocked, expired, impersonated and relayed peers before persistence (7.271ms)
+✔ no receipt on disk failure, unknown cancellation or session teardown during save (9.1185ms)
+✔ receipt binds exact event, signer device, destination and current identity (12.7122ms)
+✔ recipient cancellation before selection survives restart and prevents activation (17.7766ms)
+✔ recipient confirms only its own saved acceptance; another device selection is terminal (18.8318ms)
+✔ saved selection outbox replays identical bytes after reopening and stops at cancel or expiry (17.4754ms)
+✔ decline is durable on the receiving device and unconfirmed acceptance expires (11.6236ms)
+✔ signed selection binds the exact accepting device and acceptance (20.6831ms)
+✔ concurrent acceptance chooses one durable winner and survives reopening (22.1063ms)
+✔ cancelled state and observed expiry remain terminal after reopening (20.4704ms)
+✔ disk failure never reports an accepted selection and corruption fails closed (13.8878ms)
+✔ latest pinned identity blocks revoked signing devices (22.2181ms)
+✔ first accepting device wins; duplicates and another device cannot end it (15.5914ms)
+✔ cancellation and expiry cannot be revived by delayed acceptance (13.9875ms)
+✔ one device declining does not reject other devices; same device cannot revive (14.7317ms)
+✔ invitation binding, increasing sequences and role checks prevent cross-call actions (13.5798ms)
+✔ blocking a peer still saves our hangup locally and prevents network delivery (4.7298ms)
+✔ expired selection outbox cannot be mistaken for a recipient acknowledgment (20.3471ms)
+✔ relayed invitation authenticates original sender and persists before signing acknowledgment (13.9612ms)
+✔ relayed admission rejects forged sender, unknown or revoked courier and blocked caller (12.1744ms)
+✔ relayed admission does not acknowledge after courier revocation during persistence (8.446ms)
+✔ ordinary courier forwards exact signed events and deletes delivered payload, retaining only receipt (12.6509ms)
+✔ courier rejects impersonation, wrong-device acknowledgments and selected-device misrouting (14.9612ms)
+✔ courier capacity is bounded per sender and released on expiry; stopped relay cannot accept work (60.3877ms)
+✔ relay endpoint isolates devices, bounds responses, and lets sender retire received receipts (8.7286ms)
+✔ relay pumps persist recipient receipt before retiring courier proof and survive endpoint reopening (20.2028ms)
+✔ a courier deposit is never counted as recipient delivery (6.3975ms)
+✔ courier eligibility is independent of caller contact permissions (5.6915ms)
+✔ relay pump prevents overlap and discards an in-flight response after locking (21.864ms)
+✔ compact call wake verifies with pinned public identity without unlocking signing keys (6.2758ms)
+✔ journal samples its live clock after queued reads without accepting a real clock rollback (3.8422ms)
+✔ history retirement waits for terminal state and every signed delivery deadline (6.444ms)
+✔ media signature binds call, acceptance, target device and both axon instances (91.1824ms)
+✔ confirmed devices exchange offer, answer and bounded ICE; replay is rejected (32.4294ms)
+✔ no media before durable selection or after terminal cancellation (19.44ms)
+✔ signed wrong call, selection, role, session or target never reaches media (30.56ms)
+✔ block, expired signal, lock and stop reject pending delivery (32.1993ms)
+✔ bounded queue serializes simultaneous duplicate signals (14.5697ms)
+✔ coordinator waits for selected receipt, exchanges media and ends both sides without Django (143.4308ms)
+✔ restart cancels old calls and changed axon instances cannot reuse an active media session (64.7371ms)
+✔ selection waits for a recovering route before opening media (24.6189ms)
+✔ decline ends ringing only when no other connected recipient device remains (52.3045ms)
+✔ call-bound routed signaling works without a direct axon and remains terminal after hangup (44.6193ms)
+✔ media courier forwards only sender-owned signed signals and rejects expired or blocked traffic (46.9828ms)
+✔ a relayed decline leaves another authorized recipient device ringing (37.7929ms)
+✔ cached cryptographic success cannot authorize changed bytes, devices or expired records (11.1364ms)
+✔ permission reattachment restores only a held incoming ringing invitation (54.236ms)
+✔ a cancelled invitation cannot be restored after a permission interruption (25.3883ms)
+✔ call-bound media survives a transient relay route gap (59.9107ms)
+✔ fresh root-account runtime rings, accepts, signals media and blocks without numeric accounts (169.1905ms)
+✔ scheduler fairly rotates bounded batches and resumes on a newly connected peer (1.0613ms)
+✔ scheduler prevents overlap and stops queued work after a session ends (0.2332ms)
+✔ scheduler releases busy state after storage failure and retries after backoff (0.4887ms)
+✔ call scope survives the deployed relay and is removed before native WebRTC (0.8003ms)
+✔ delayed SDP and ICE from a previous call are rejected (0.4782ms)
+✔ older clients remain compatible; malformed payloads are ignored (0.1959ms)
+✔ ephemeral typing is scoped to recipient, expires, and never consumes normal chat (1.9188ms)
+✔ typing is rate limited, stop is immediate, and block/lock prevents transmission (0.3309ms)
+✔ future, stale, malformed and blocked activity frames are rejected (0.1493ms)
+✔ concurrent typing notifications coalesce after asynchronous permission checks (0.132ms)
+✔ group activity never leaks into direct chats or another group (0.1992ms)
+✔ authenticated challenge/proof round trip binds only the proven contact, never the requester claim (51.2126ms)
+✔ tampered authenticated sender, room, oversized frames and unsolicited proofs fail closed (5.0868ms)
+✔ repeated challenge does not repeatedly sign; blocked and logged-out sessions stop responding (9.0191ms)
+✔ stop during async challenge creation prevents transmission (3.712ms)
+✔ connection bar distinguishes the recipient from other neurons and expired sessions (0.6382ms)
+✔ drafts persist across restarts and stay scoped to account and chat (127.5704ms)
+✔ sending/clearing removes the stored draft and ordered writes cannot restore it (13.7912ms)
+✔ typing wins over a concurrent initial read (35.3373ms)
+✔ a fresh proof on the authenticated sender channel pins once and concurrent replay is rejected (39.0807ms)
+✔ issued challenges allow modest clock skew without weakening the expiry cap (8.1167ms)
+✔ a signature alone cannot substitute for authenticated numeric identity, room or fresh challenge (9.1578ms)
+✔ expired and unsolicited proofs cannot create contact bindings (9.0426ms)
+✔ an authenticated replacement identity cannot silently overwrite a saved contact pin (16.9998ms)
+✔ block during pin storage invalidates the write (8.7204ms)
+✔ logout during pin storage invalidates the write (8.6409ms)
+✔ expire during pin storage invalidates the write (5.1855ms)
+✔ request state is bounded and stop removes pending permission (8.6084ms)
+✔ Axonic stickers retain only the readable first part (2.8295ms)
+✔ custom and imported sticker previews use a simple label (0.1493ms)
+✔ ordinary text and media labels stay unchanged (0.1502ms)
+✔ simultaneous confirmations preserve order and stale close cannot skip a dialog (86.0798ms)
+✔ rapid confirmation taps run the action and close only once (32.5735ms)
+✔ safe diagnostic reasons and source-map matching survive sanitization (1.3643ms)
+✔ crash reports remove private payloads while preserving stack coordinates (2.6106ms)
+✔ arbitrary exception messages and unknown state tags are not transmitted (0.4032ms)
+✔ minimal and native-style events do not crash the JavaScript sanitizer (0.2316ms)
+✔ release initializes privacy-filtered reporting once; debug and empty DSN remain disabled (88.4324ms)
+✔ reporter startup failure cannot stop app or background-handler registration (6.2918ms)
+(node:46808) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ offline ciphertext survives custody reopen; recipient receipt deletes payload, sender consumption leaves only bounded tombstone (300.6241ms)
+✔ forged sender/receipt, wrong recipient and relay-to-relay deposit cannot mutate custody (76.5184ms)
+✔ immutable deposits, sender quotas, expiry and shutdown remain bounded (212.5548ms)
+✔ completed deliveries free live mailbox quota without losing replay protection (390.7603ms)
+✔ custody exchanges use mutually authenticated Axons and preserve optional-feature compatibility (216.7824ms)
+✔ revoked/expired signing identity, malformed packet and wrong signer lookup fail closed (57.5703ms)
+✔ new custody envelopes tolerate a slower peer without extending expiry or accepting expired packets (41.1087ms)
+✔ no held confirmation escapes a failing storage transaction (51.1646ms)
+✔ automatic courier reuses durable envelope, survives recreation, and only recipient receipt delivers (98.998ms)
+✔ courier cannot mark held/completed response delivered, reseal expired envelopes, or persist after locking (148.5228ms)
+✔ a full preferred relay yields to another connected custodian without resealing (112.2156ms)
+✔ an unresponsive preferred custodian yields after timeout (90.6544ms)
+✔ an unresponsive preferred custodian yields after throw (73.5135ms)
+✔ an unresponsive preferred custodian yields after malformed (83.1073ms)
+✔ custodian loss reuses ciphertext and a returning duplicate is receipted without a second inbox row (136.4309ms)
+✔ store factories retain one uncached native connection per database and isolate custody owners (84.9035ms)
+✔ normal outbox survives recreation, reuses ciphertext and consumes receipt only after the original row confirms delivery (83.4715ms)
+✔ normal receipt rejects tampering, stale content and stopped sessions without discarding relay evidence (73.3071ms)
+✔ normal direct receipt confirms the original row and late direct completion after stop cannot deliver (79.3357ms)
+✔ normal outbox bindings reject changed payload digests and isolate cryptographic owners (76.4331ms)
+✔ composed normal runtimes retry via an ordinary custodian and consume only verified delivery (72.0583ms)
+✔ runtime shutdown cancels an asynchronous pending-row scan before any network send (43.0123ms)
+✔ normal background retry waits for the custody poll slot and cancels cleanly during polling (125.0194ms)
+✔ compact custody wake authenticates its recipient, device, digest and expiry without including content (32.3064ms)
+✔ custody notification hook runs only after successful new durable deposits (37.6956ms)
+✔ ordinary custody forwards only signed wake metadata and retries other peers (40.3968ms)
+✔ custody wake retry survives forwarder restart and stops on owner change (40.9955ms)
+✔ custody wake suppresses legacy packets and expired or forged stored envelopes (34.4634ms)
+✔ a stalled custodian cannot block another relay from draining a background batch (58.984ms)
+✔ lost receipt acknowledgement retries in five seconds without duplicating durable inbox content (33.0652ms)
+✔ custody polling cannot send a receipt after its account lease changes (30.3032ms)
+✔ confirmed intent blocks this process; a fresh startup purges before clearing the journal (1.5733ms)
+✔ partial cleanup and final-journal failures retry while the account stays unavailable (0.382ms)
+✔ malformed intent or mismatched vault cannot delete any data (0.2748ms)
+✔ key cleanup is owner scoped and excludes vault, journal, another account and global settings (0.1681ms)
+(node:41388) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ device cleanup removes only owner rows/files/notices and preserves other accounts, journal and gallery (10.6933ms)
+✔ invalid path/account inputs cannot reach a database or filesystem deletion (5.693ms)
+✔ fresh-account runtime cannot load legacy login, history or migration adapters (699.5155ms)
+✔ reconnect sync is bounded, retries failures and resets for a new owner (2.4329ms)
+✔ locking during random generation does not queue metadata under another account (0.8608ms)
+✔ wallet-style address preserves every identity bit and matches independent Base58Check encoding (13.3606ms)
+✔ short labels cannot be used as identity addresses; checksum rejects changes and noncanonical forms (0.8579ms)
+✔ only the signed owner can publish; public lookup and identical republication survive service restart (42.4232ms)
+✔ stale records and competing branches cannot replace the stored revision, even after lease expiry (21.2763ms)
+✔ skipped revisions need authenticated ancestry; duplicate publication cannot strip retained history (7.698ms)
+✔ storage confirmations wait for commit; failure or lock during commit never confirms a copy (4.4828ms)
+✔ oversized requests and bounded concurrency cannot cause unbounded queued work (1.78ms)
+✔ full directories retain prior revision anchors and still allow existing owners to renew (1141.195ms)
+✔ three distinct replicas persist the owner record and an ordinary replacement takes over after disconnection (14.3911ms)
+✔ fewer replicas do not block publication; failed storage does not count and another peer is tried (16.9198ms)
+✔ forged confirmations, wrong digests, and late replies after locking never count (6.3992ms)
+✔ a new identity revision invalidates old confirmations and is replicated independently (14.6394ms)
+✔ SQLite adapter serializes instances and rolls back failures before acknowledging commit (69.8245ms)
+✔ unsigned extra fields cannot turn public identity storage into arbitrary payload storage (3.0056ms)
+✔ replica clock skew is tolerated without counting the final uncertainty window (3.4931ms)
+✔ multiple signed copies yield a read-only result without requiring three or writing a trust pin (59.7563ms)
+✔ one conflicting valid signature defeats an arbitrary majority of matching replicas (17.5659ms)
+✔ valid signed records with a history gap remain unresolved (14.4312ms)
+✔ individually signed intermediate records can fill bounded ancestry across replicas (16.1127ms)
+✔ a newer local pin prevents accepting older network data (15.2588ms)
+✔ a contradictory signed ancestor is a conflict even when the highest revisions differ (17.6522ms)
+✔ wrong identities, tampered signatures, expired leases and oversized replies are rejected (24.8022ms)
+✔ lock followed by unlock cannot revive an old lookup; concurrent calls are bounded (6.4873ms)
+✔ the local pin is reread after network replies, rather than retaining an earlier revision (10.3508ms)
+✔ duplicate peers count once, at most ten peers are queried, and invalid input does no work (32.6141ms)
+✔ failed local storage cannot be bypassed by otherwise valid network responses (2.5886ms)
+✔ HTTP admission caps concurrent work, charges failed requests, and release is idempotent (1.155ms)
+✔ wire dispatcher rejects invalid routes and oversized UTF-8 before cryptographic work (0.5256ms)
+✔ remote origins require HTTPS and requests never carry cookies or follow redirects (17.6889ms)
+✔ streamed bodies stop at the byte cap even without Content-Length, and close listeners run once (0.734ms)
+✔ missing streams, redirects, oversized declared responses and invalid UTF-8 fail closed (1.1988ms)
+✔ a stalled native fetch is aborted at the exchange deadline (4000.4286ms)
+✔ identity links roundtrip full checked addresses and reject foreign or malformed routes (1.1925ms)
+✔ pending identity links retain only the latest valid address until explicitly consumed (0.4981ms)
+✔ chat binding signatures stay inside the unlocked identity controller (46.1866ms)
+✔ fresh self-owned identities authenticate without a registry and proofs are one-time (11.1098ms)
+✔ native Node Ed25519 verifies portable account authority signatures (5.2145ms)
+✔ tampering with account, device, encryption key, record lifetime, or signature is rejected (8.4121ms)
+✔ proofs bind verifier, issued nonce, device keys, and expiry (46.9277ms)
+✔ revocation updates are monotonic, forks fail closed, and missing history is explicit (16.5833ms)
+✔ pending challenges are bounded, expired entries are reclaimed, and no predictable RNG fallback exists (7.8637ms)
+✔ recovery retains account identity, replaces device keys, and requires the prior signed record (11.2185ms)
+✔ password vault requires password AND device secret; authenticates public metadata and survives serialization (2820.3718ms)
+✔ native password adapter interoperates with portable vaults and rejects invalid derived keys (1000.6081ms)
+✔ local creation requires recovery confirmation, survives cold start, and locks without touching legacy storage (982.2537ms)
+✔ locking during creation cancels the draft; concurrent operations cannot overwrite it (1.4354ms)
+✔ background locking during a completed vault write persists a locked account, never unlocks late (574.4055ms)
+✔ failed storage write leaves no falsely created account and remains retryable (569.1023ms)
+✔ ordinary participants mutually admit new identities with identical rules and no FirstNeuron (17.6363ms)
+✔ signed requests bind their action, content, target, and runtime; replay fails concurrently and after restart (14.118ms)
+✔ admission grants nothing if durable storage fails, fills up, or runtime locks during storage (6.2743ms)
+✔ concurrent conflicting updates cannot replace the first accepted identity record (12.4101ms)
+✔ connection pool admits a real cryptographic peer and releases it when its transport closes (10.7023ms)
+✔ connection adapter rejects impersonation and closes a transport arriving after cancellation (4.6304ms)
+✔ identity client completes mutual authentication and records both public identities automatically (9.2937ms)
+✔ client refuses substituted peers, forged acknowledgments, storage failures and late replies after lock (23.9676ms)
+✔ renewals keep keys and account stable; bounded ancestry bridges expired pins without trusting gaps or forks (27.0515ms)
+✔ both directions authenticate after missing multiple renewals and persist the latest pins (23.2027ms)
+✔ unlock renews and saves the vault before admission; failed writes preserve the old vault (9.2609ms)
+✔ 12-word public lookup identifier matches creation; malformed words never derive an account (1.7623ms)
+✔ old 24-word vaults still unlock and recover; vault version cannot be substituted (8.0503ms)
+(node:8372) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ mobile record store uses real SQLite for immutable identity updates, capacity and rollback rejection (228.2682ms)
+✔ concurrent first pins across mobile store instances serialize and preserve CAS (29.9415ms)
+✔ SQLite atomically catches up through expired signed history and refuses missing ancestry (27.555ms)
+✔ pinch distance uses both touch points (3.1075ms)
+✔ fullscreen zoom stays between 1x and 4x (0.1992ms)
+✔ panning is disabled at 1x and bounded while zoomed (0.1142ms)
+✔ file validation checks actual PNG/WebP containers, not extensions (3.0751ms)
+✔ unsupported APNG, incomplete animations and oversized stickers are rejected (0.4178ms)
+✔ GIF and animated WebP are saved byte-for-byte and keep their MIME and extension (57.0671ms)
+✔ imports are durable, deduplicated, and account scoped (23.1009ms)
+✔ failed index write rolls back only the newly imported copy (13.8337ms)
+✔ failed removal index write leaves existing sticker intact (15.5806ms)
+✔ favoriting a received sticker is durable, idempotent, and account scoped (11.6273ms)
+✔ sent custom stickers persist recent activity without losing favorites (12.1657ms)
+✔ root sticker collection paths and deletion stay within their own account (28.1848ms)
+✔ internet connector limits destinations and passes local identity to native upgrade (2.3995ms)
+✔ cancellation closes late TLS connections before creating an identity session (0.7713ms)
+✔ second bootstrap is allowed only with its exact verified identity and HTTPS host (0.4087ms)
+✔ covered fields move above the keyboard with room for their nearby action (0.729ms)
+✔ already visible fields keep their scroll position (0.1271ms)
+✔ a resized form or fixed footer limits visibility before the keyboard edge (0.0739ms)
+✔ fields above the viewport scroll back into view (0.0748ms)
+✔ a tall multiline editor keeps its top visible instead of scrolling past it (0.0799ms)
+✔ live resized viewport remains authoritative when the cached keyboard event is missing (0.0656ms)
+✔ older clients without native keyboard measurement keep the fallback available (33.549ms)
+✔ native keyboard reads return live overlap and tolerate unavailable views (48.0005ms)
+✔ peer introductions cannot replace a configured Internet endpoint with an RTC route (95.6289ms)
+✔ six-character passwords support creation, cold unlock and recovery (48.2234ms)
+✔ device identity lookup avoids repeated curve work without surviving lock or bypassing busy state (32.0567ms)
+✔ creation requires the exact backup, rejects a weak password, and survives cold unlock (23.2955ms)
+✔ recovery retains the root identity, replaces device keys, and proves ancestry to peers (11.5694ms)
+✔ recovery rejects unrelated words, tampered records, and malformed ancestry without writing a vault (26.5023ms)
+✔ locking during recovery disk commit preserves a recoverable but locked vault (25.4009ms)
+✔ failed device-secret storage cannot create an unusable vault (8.3245ms)
+✔ biometric enrollment verifies the password; disabling leaves password unlock functional (20.3171ms)
+✔ cancelled or invalidated biometric credentials never unlock and permit password fallback (11.2222ms)
+✔ backgrounding while an OS biometric prompt is pending rejects its late result (3.5794ms)
+✔ backgrounding during biometric enrollment removes a late stored credential (5.4204ms)
+✔ biometrics cannot bypass an unavailable device capability (3.3302ms)
+✔ sole entry registers neuron background handlers regardless of obsolete feature flags (0.8503ms)
+✔ recovery checks the network before sealing and again before either storage write (6.778ms)
+✔ background lock invalidates a pending recovery network check (9.1383ms)
+✔ successful guarded recovery remains locked and checks twice (9.0859ms)
+✔ import retains the existing root and device while changing only local protection (16.7118ms)
+✔ import refuses wrong protection or an occupied target without replacing either identity (16.3754ms)
+✔ password change preserves identity/device/history and survives cold unlock; old password fails (10.7669ms)
+✔ failed password change storage write retains the previous password (7.6405ms)
+✔ device removal requires current password and exact account, then destroys access and blocks all reentry (4.3135ms)
+✔ ambiguous removal-journal failure locks without falsely deleting the vault (3.7766ms)
+✔ default device session resumes after cold start without weakening password verification (1.8494ms)
+✔ opt-in locking clears automatic login and remains enabled across cold start (1.5854ms)
+✔ manual lock prevents a pending remembered login from being stored afterwards (4.0661ms)
+✔ remembered login cannot unlock a different local identity (0.2364ms)
+✔ manual lock cancels a late cold-start credential read (0.807ms)
+✔ two backup challenges have distinct random positions and require the exact selected words (0.8274ms)
+✔ friendly identity sharing round trips to the signed account and accepts previous codes (2.1265ms)
+✔ a delayed startup policy read cannot override newly enabled locking (0.2812ms)
+✔ enabled lock policy is persisted even if deleting the remembered credential fails (0.294ms)
+✔ malformed lock preference does not authorize automatic login (0.2108ms)
+✔ manual lock blocks cold resume even when keystore deletion fails, without enabling auto-lock (0.2477ms)
+✔ manual lock still deletes the automatic credential when preference storage fails (0.1726ms)
+✔ enabling automatic locking still deletes the credential when preference storage fails (0.2034ms)
+✔ foreground and notification startup share inspection and resume, then permit retry (0.1768ms)
+✔ failed startup can retry without running resume against unreadable storage (0.1681ms)
+(node:37380) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ unpaired historical receipts cannot block current paired receipts (2.4019ms)
+✔ current receipt can reply while a historical flush is blocked (0.5347ms)
+✔ offline recipient retrieves ciphertext from a restarted custodian and sender requires recipient signature (73.6952ms)
+✔ forged receipt and modified routing, body, expiry or recipient are rejected (51.5231ms)
+✔ fourth device cannot read recipient ciphertext or route it through another custodian (39.9911ms)
+✔ duplicate delivery is idempotent; expired messages are removed; collisions cannot overwrite (41.7274ms)
+✔ no receipt after chat persistence failure, full storage or account teardown (94.4545ms)
+✔ SQLite quota reserves receipt space, isolates accounts and immutable pins reject replacement (34.41ms)
+✔ malformed, excessive and expired packets fail before cryptography or storage (0.2147ms)
+✔ ciphertext survives closing and reopening an on-disk SQLite mailbox (63.7454ms)
+✔ even a valid recipient signature cannot confirm a different envelope (22.4046ms)
+✔ outgoing bindings retain custody, isolate accounts and reject changed message digests (4.3207ms)
+✔ cancel during camera acquisition releases the late stream (1.5557ms)
+✔ simultaneous preview and accept share one acquisition and transfer ownership (0.2551ms)
+✔ Metro excludes generated native build trees but keeps native module JS sources (1.3886ms)
+(node:32328) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ mobile journal SQL preserves CAS, ownership and state across database reopen (136.5647ms)
+✔ bulk LAN adapter gates larger frames on explicit admission and retains a bounded queue (5.4226ms)
+✔ native reads wait for listener attachment and abort closes exactly once (0.7036ms)
+✔ late native connect results are closed after cancellation (0.2378ms)
+✔ native sends serialize, bound queued bytes and close on write failure (0.9762ms)
+✔ non-LAN routes, hostnames, normalized alternatives and malformed endpoints never dial (0.3287ms)
+✔ native read errors and oversized replies close the wire without delivery (2.4253ms)
+✔ adopted sockets replay the consumed hello before reading more native frames (0.3316ms)
+✔ updated native media lane keeps a bounded larger queue and old binaries do not advertise it (0.916ms)
+✔ native release bridge exposes mailbox crypto but keeps unsigned LAN debug-only (0.7668ms)
+✔ production axon entry points allow non-debug apps while retaining foreground or bounded wake checks (0.8663ms)
+✔ local wake bypasses failed-dial backoff once without duplicating active slots or reviving a stopped pool (3.8631ms)
+✔ five slots bound concurrent outgoing and incoming authentication, with no self or duplicate peers (6.7486ms)
+✔ local routes are preferred while one slot remains available for wider connectivity (1.2854ms)
+✔ timeouts retain a slot until the adapter settles and late successful sockets are closed (0.5747ms)
+✔ failures back off despite rediscovery; closed peers are replaced and stale callbacks cannot close replacements (0.4807ms)
+✔ identity mismatches never become connections; stopping cancels pending and prevents late resurrection (0.478ms)
+✔ candidate memory, configurable limits, and authentication expiration are bounded (0.9267ms)
+✔ a preferred route authenticates in a spare slot before replacing the working connection (0.4036ms)
+✔ full pool promotes LAN while retaining the original and a wider route (incoming=false) (0.5554ms)
+✔ full pool promotes LAN while retaining the original and a wider route (incoming=true) (0.4071ms)
+✔ failed full-pool promotion keeps original route and does not evict again during backoff (0.4176ms)
+✔ inbound-only peer can promote in a full pool and failed authentication cannot churn its other connections (0.3245ms)
+✔ failed or wrong-identity promotions preserve the working link and honor backoff (0.295ms)
+✔ incoming promotions are bounded and a timed-out upgrade retains its reservation until settled (0.3944ms)
+✔ a full pool postpones upgrades and a lost original does not cancel a pending replacement (0.3054ms)
+✔ live axon limit shrinks established links and raises capacity up to twenty (0.7361ms)
+✔ lowering capacity cancels excess pending work without releasing reservations early (0.4071ms)
+✔ signed relay routes only to the recipient, retries until ack, and rejects replay (10.3297ms)
+✔ relay rejects forged sender proof, expired data, unknown recipients and bounds its queue (38.6047ms)
+✔ clients authenticate and exchange offers without Axion, then suppress duplicate delivery (16.109ms)
+✔ client rejects modified relay replies and independently verifies device signatures (4.176ms)
+✔ blocked contacts and account teardown prevent receipt and outgoing signaling (4.3712ms)
+(node:33596) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ normal UUID, room and content survive direct/custody retries; durable duplicate receives once (18.1933ms)
+✔ wire budget includes multibyte content and metadata; unsupported features stay on existing path (1.2143ms)
+✔ numeric claims, wrong identity, room, transport ID and reversed recipient cannot enter the inbox (1.0842ms)
+✔ conflicting duplicate content cannot be acknowledged or replace the saved normal message (4.2488ms)
+✔ edited outbox rows, changed pins and unrelated receipts never mark delivery (1.1784ms)
+✔ block before persistence prevents writes and receipts (1.443ms)
+✔ logout before persistence prevents writes and receipts (0.5392ms)
+✔ stopping a session invalidates in-flight peer lookup before any handoff (0.3172ms)
+✔ caller mutation during lookup cannot change the message being authorized (0.3892ms)
+✔ persistence failure never produces a successful receipt boundary result (0.2925ms)
+✔ verified stored device keys remain usable with no online directory replicas (35.8441ms)
+✔ a routed directory result is validated and durably pinned before operational use (4.2547ms)
+✔ expired cached keys cannot authorize delivery and remain ancestry anchors for renewal (7.6803ms)
+✔ concurrent requests for one peer share acquisition and a single pin write (5.7116ms)
+✔ another directory lookup being busy is retried within a fixed bound (3.1399ms)
+✔ tampered signatures, wrong addresses and malformed directory packets never become pins (9.1421ms)
+✔ a lock/unlock cancellation cannot pin or return the result of the interrupted lookup (7.1563ms)
+✔ newer, conflicting or disconnected signed ancestry learned during lookup blocks old replies (8.7235ms)
+✔ storage failure or full capacity cannot be bypassed by a valid lookup response (2.7069ms)
+✔ network conflict statuses are preserved; stopping and invalid input do no acquisition (1.7479ms)
+✔ waiting media cannot flood directory requests and disconnect an otherwise healthy axon (3.4979ms)
+✔ a newly authenticated stored pin bypasses the temporary missing-directory backoff (2.7085ms)
+✔ early custody traffic waits for authentication with bounded lifetime (success) (65.227ms)
+✔ early custody traffic waits for authentication with bounded lifetime (lock) (34.7808ms)
+✔ early custody traffic waits for authentication with bounded lifetime (deadline) (20.3982ms)
+✔ early custody traffic waits for authentication with bounded lifetime (count-limit) (18.4522ms)
+✔ early custody traffic waits for authentication with bounded lifetime (byte-limit) (31.9586ms)
+✔ delayed peer discovery waits a full interval after completion before retrying (60.4899ms)
+✔ bidirectional background control traffic survives repeated minute windows (291.6998ms)
+✔ authenticated control flood still closes at the bounded budget (32.9404ms)
+✔ native-driven ticks release queued exchanges and enforce deadlines without waiting for JS timers (22.6774ms)
+✔ push registration waits for occupied request capacity without exceeding it (84.0116ms)
+✔ negotiated call control returns a verified durable receipt and tolerates safe rejection (48.5647ms)
+✔ legacy peers do not advertise or receive call-control requests (38.8887ms)
+✔ v2 call peers carry bounded signed media bound to the exact live axon instances (44.2212ms)
+✔ v1 call peers never receive v2 media frames (27.9648ms)
+✔ ordinary neurons mutually authenticate and renew the same open axon (42.7026ms)
+✔ custody waits for a busy request slot, bounds queued work and cancels when locked (114.9175ms)
+✔ locking or expiring a proof closes authenticated connections (58.5086ms)
+✔ wrong account and failed record persistence cannot establish an axon (27.5518ms)
+✔ duplicate hello, unsolicited response, oversized and malformed frames fail closed (107.1236ms)
+✔ unresponsive peers lose their axon after a renewal request times out (21.6919ms)
+✔ authenticated renewal survives a five-second transport pause without extending an expired proof (40.7486ms)
+✔ control traffic sharing a recently active media lane tolerates a bounded stall (18.1149ms)
+✔ adapter cleanup exceptions do not retain authentication or skip close notification (15.1692ms)
+✔ concurrent identity pins accept only the exact durably stored record (1.3948ms)
+✔ encrypted test messages cross authenticated axons and return a receipt without plaintext on the wire (32.7129ms)
+✔ tampered ciphertext and forged receipts fail closed without claiming delivery (42.9973ms)
+✔ test packets cannot be replayed on the same axon or another axon between the same identities (43.4176ms)
+✔ unconfirmed test messages are bounded to one pending send and cancel on lock (25.0471ms)
+✔ old peers without test capability cannot receive test payloads (18.7689ms)
+✔ controller-owned axons mutually authenticate and lock closes both immediately (16.567ms)
+✔ locking while socket randomness is pending closes the wire and prevents late startup (3.1338ms)
+✔ network lock and unlock retain canceled dial reservations until the transport settles (5.9607ms)
+✔ network participation and disposal prevent dialing and discard discovered candidates (0.2057ms)
+[Axonic connection] lan session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+[Axonic connection] lan transport-closed {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+✔ LAN discovery connects non-contact identities once, authenticates both directions and closes on lock (24.7358ms)
+[Axonic connection] lan session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+[Axonic connection] lan session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+✔ foreground resume retries deferred LAN without letting discovery refresh bypass backoff (22.613ms)
+✔ incoming sockets cannot exceed a pool occupied by an outgoing attempt (0.2332ms)
+[Axonic connection] lan session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"chat-message":1}
+[Axonic connection] lan transport-closed {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"chat-message":1}
+✔ normal chat traverses the composed LAN runtime without enabling experimental messages (23.3487ms)
+✔ internet participation survives unavailable Wi-Fi and shares the global pool (0.7361ms)
+✔ introductions are signed, connection bound, ephemeral reports with no third-party pins (11.3041ms)
+✔ introduction service rejects strangers, wrong sockets, floods, locks and pending lock races (27.6004ms)
+✔ introduction batches and directory remain bounded, replace rather than accumulate, and clear by source (34.3169ms)
+✔ negotiated introductions coexist with renewed authentication on the same axon (33.2938ms)
+✔ older peers without introduction capability continue authenticating without new operations (34.3977ms)
+✔ signed signaling binds sender, target, session, SDP and expiry; relay only forwards online sender-owned frames (10.6475ms)
+✔ signaling cannot queue for offline peers, survive locks, accept oversized SDP or establish a third hop (7.1842ms)
+✔ RTC path diagnostics expose only selected route metrics, never addresses or IDs (0.2569ms)
+[Axonic RTC lifecycle] {"connection":2,"event":"closed","initiator":true,"reason":"disconnect-timeout","opened":true,"mediaEnabled":false,"restarting":false,"state":"disconnected","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":3,"event":"closed","initiator":true,"reason":"connection-failed","opened":true,"mediaEnabled":false,"restarting":false,"state":"failed","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":4,"event":"closed","initiator":true,"reason":"invalid-frame","opened":false,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":5,"event":"closed","initiator":true,"reason":"invalid-frame","opened":false,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":6,"event":"closed","initiator":true,"reason":"invalid-frame","opened":false,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":7,"event":"closed","initiator":true,"reason":"invalid-frame","opened":false,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":8,"event":"closed","initiator":true,"reason":"inbound-queue-full","opened":false,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+✔ RTC diagnostics bound concurrent sampling and discard results after closure (3.7195ms)
+✔ RTC tolerates a transient ICE disconnection but bounds recovery and closes on failure (2.8911ms)
+✔ RTC rejects oversized, binary and empty frames and bounds the pre-listener queue (2.8201ms)
+[Axonic RTC lifecycle] {"connection":9,"event":"closed","initiator":true,"reason":"local-close","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":10,"event":"closed","initiator":false,"reason":"channel-closed","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+✔ RTC data channels carry independent mutual identity authentication and close together on lock (16.2479ms)
+[Axonic RTC lifecycle] {"connection":11,"event":"restart-started","initiator":true}
+[Axonic RTC lifecycle] {"connection":12,"event":"restart-started","initiator":false}
+[Axonic RTC lifecycle] {"connection":12,"event":"restart-negotiated","initiator":false}
+[Axonic RTC lifecycle] {"connection":11,"event":"restart-negotiated","initiator":true}
+[Axonic RTC lifecycle] {"connection":11,"event":"closed","initiator":true,"reason":"local-close","opened":true,"mediaEnabled":false,"restarting":false,"state":"disconnected","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":12,"event":"closed","initiator":false,"reason":"channel-closed","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+✔ RTC recovery binds fresh signed negotiation to the existing device, session and certificate (20.4116ms)
+[Axonic RTC lifecycle] {"connection":13,"event":"restart-started","initiator":true}
+[Axonic RTC lifecycle] {"connection":13,"event":"closed","initiator":true,"reason":"disconnect-timeout","opened":true,"mediaEnabled":false,"restarting":true,"state":"disconnected","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":14,"event":"closed","initiator":false,"reason":"local-close","opened":false,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+✔ RTC restart cannot outlive closure or extend the existing disconnect deadline (2.758ms)
+✔ RTC refuses media/relay SDP, rejects pool admission before answering, and cancels pending randomness (2.2178ms)
+[Axonic connection] internet transport-closed {"hello":1,"response:describe":1,"request:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet transport-closed {"hello":1,"response:describe":1,"request:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic RTC lifecycle] {"connection":16,"event":"closed","initiator":false,"reason":"session-stopped","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":15,"event":"closed","initiator":true,"reason":"channel-closed","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic connection] internet transport-closed {"hello":1,"request:describe":5,"response:describe":5,"request:authenticate":5,"response:authenticate":5}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":5,"response:describe":5,"request:authenticate":5,"response:authenticate":5}
+✔ three composed runtimes authenticate RTC and clear on lock (LAN: unavailable) (204.3734ms)
+[Axonic connection] internet transport-closed {"hello":1,"response:describe":1,"request:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet transport-closed {"hello":1,"response:describe":1,"request:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic RTC lifecycle] {"connection":17,"event":"closed","initiator":true,"reason":"session-stopped","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":18,"event":"closed","initiator":false,"reason":"channel-closed","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic connection] internet transport-closed {"hello":1,"request:describe":5,"response:describe":5,"request:authenticate":5,"response:authenticate":5}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":5,"response:describe":5,"request:authenticate":5,"response:authenticate":5}
+✔ three composed runtimes authenticate RTC and clear on lock (LAN: stale) (201.6514ms)
+[Axonic RTC lifecycle] {"connection":20,"event":"closed","initiator":false,"reason":"session-stopped","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic RTC lifecycle] {"connection":19,"event":"closed","initiator":true,"reason":"channel-closed","opened":true,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+[Axonic connection] internet transport-closed {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+[Axonic connection] internet transport-closed {"hello":1,"response:describe":1,"request:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet transport-closed {"hello":1,"response:describe":1,"request:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] internet session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1,"signal":1}
+[Axonic connection] lan session-stopped {"hello":1,"request:describe":5,"response:describe":5,"request:authenticate":5,"response:authenticate":5}
+[Axonic connection] lan transport-closed {"hello":1,"request:describe":5,"response:describe":5,"request:authenticate":5,"response:authenticate":5}
+✔ three composed runtimes authenticate RTC and clear on lock (LAN: promotion) (215.7689ms)
+✔ receipts wait for storage, duplicate logical IDs can be re-encrypted after reconnect, conflicting content fails (39.5868ms)
+✔ failed storage and lock during storage produce no successful receipt (47.0668ms)
+✔ v1 volatile receipt capability is not accepted as v2 persistence (17.5952ms)
+✔ normal chat negotiates independently and acknowledges only after durable storage (24.1933ms)
+✔ older test-only peers decline normal chat while retaining the experimental channel (20.6476ms)
+✔ normal message waiting for group metadata withholds ACK without closing the axon (5022.447ms)
+✔ relabeling experimental or normal ciphertext cannot cross message domains (36.5368ms)
+✔ normal storage failure or locking during persistence cannot acknowledge delivery (43.9281ms)
+✔ custody controller signs receipt only after own inbox commit and never after a lock race (19.9932ms)
+✔ call relay is negotiated independently without changing legacy feature slots (13.8869ms)
+✔ call relay refuses old peers and a session locked while awaiting a response (31.6091ms)
+✔ authenticated negotiated attachments have a separate bounded budget and keep normal control alive (23.8107ms)
+✔ four attachment reads queue without rejecting chunks or overlapping wire requests (96.052ms)
+✔ queued control traffic gets a turn before attachment read-ahead continues (44.5951ms)
+✔ closing an axon drains all locally queued attachment requests (14.1409ms)
+✔ an old peer cannot be sent attachment frames (13.2284ms)
+✔ paced bidirectional attachment bursts stay connected across minute windows (140.6746ms)
+[Axonic connection] lan transport-closed {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+[Axonic connection] lan session-stopped {"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}
+✔ remembered locator callback follows mutual authentication and excludes inbound source addresses (16.8555ms)
+[Axonic RTC lifecycle] {"connection":21,"event":"closed","initiator":true,"reason":"local-close","opened":false,"mediaEnabled":false,"restarting":false,"state":"new","bufferedBytes":0}
+✔ waiting push registration prevents new poll reservations from starving it (44.2973ms)
+✔ RTC candidate gathering progresses with a native clock while JS timers are suspended (2.3158ms)
+✔ first-contact custody resolves a signed sender record before decrypting and acknowledging (19.3387ms)
+✔ native ticks release queued custody polling when background JS timers are suspended (14.9076ms)
+✔ native ticks expire unanswered exchanges when background JS timers are suspended (13.4863ms)
+✔ small RTC batches negotiate independently, fit worst-case proofs, and retain control traffic (27.3356ms)
+✔ small batches reject oversized requests before serving and retain the 20KB receive bound (26.5193ms)
+✔ authenticated bulk response delivers a bounded batch while control remains usable (15.4436ms)
+✔ bulk capability requires both adapters and still rejects oversized control frames (26.3514ms)
+✔ bulk requests drain on close and oversized responses close the session (28.0554ms)
+✔ media bursts use at most four credits and refill at the original average rate (23.0108ms)
+✔ media lane pipelines replies out of order while control completes independently (46.3362ms)
+✔ new media peer falls back to serialized attachments with an old adapter (13.6027ms)
+✔ media lane timeout and close drain requests without retaining pending buffers (4014.5686ms)
+✔ media lane rejects unnegotiated frames and cannot bypass authentication (14.7413ms)
+✔ one expired media request preserves authentication and ignores only its matching late reply: bulk=false (18.7779ms)
+✔ one expired media request preserves authentication and ignores only its matching late reply: bulk=true (18.5789ms)
+✔ three consecutive media timeouts still close the axon (30.8267ms)
+✔ media lane shrinks its window when a receiver responds slowly (20.115ms)
+✔ media lane enforces four inbound operations even for an authenticated peer (13.674ms)
+✔ media lane remains authenticated during paced bidirectional traffic and renewal (67.0984ms)
+﹣ measured media window uses actual authenticated axon scheduling with identical payloads (0.0391ms) # SKIP
+﹣ media scheduler benchmark with coarse mobile-like timers (0.0171ms) # SKIP
+✔ drawing locks parent scrolling and releases it on finger-up, interruption, and unmount (82.9103ms)
+✔ sticker editor connects gesture locks to its scrolling container (1.3779ms)
+✔ rotation edits the working copy, not the gallery original (22.7166ms)
+✔ Done returns a new JPEG to the sharing preview (17.3206ms)
+✔ sticker editing preserves transparency using PNG output (25.1483ms)
+✔ selected sticker hides the picker and bounds both normal and crop previews (1.583ms)
+✔ missing native module preserves store fallback (61.3493ms)
+✔ existing check-only native builds remain compatible (36.0489ms)
+✔ flow preserves cancellation and selects flexible vs immediate (11.0114ms)
+✔ native failures reach caller for fallback and retry feedback (12.0672ms)
+✔ Play checks are foreground-only, protect calls and transfers, and persist prompt cooldown (1.2186ms)
+✔ a downloaded update installs only explicitly and once under concurrent taps (0.191ms)
+✔ in-progress immediate update resumes despite flexible prompt cooldown (0.1651ms)
+✔ missing native support and stopped controller remain harmless (0.1034ms)
+✔ Play query timeout fails nonblockingly and permits a later retry (5.3608ms)
+✔ an interrupted or failed prompt does not consume the daily prompt allowance (0.3451ms)
+✔ cancelled prompts keep an in-memory cooldown when storage is unavailable (0.3064ms)
+✔ rejected legacy binding does not disable authenticated crypto wake registration (0.6634ms)
+✔ token owned by an earlier identity is rotated rather than reassigned (0.633ms)
+✔ registration refreshes on rotation, backs off failures, and never sends while inactive (0.1794ms)
+✔ late token acquisition cannot register after logout and revocation contains no token (0.1923ms)
+✔ a failed request is bounded to one retry every thirty seconds (0.1676ms)
+✔ binding acquired after logout cannot be submitted (0.1351ms)
+✔ older backend keeps registration working and binding is retried until confirmed (0.2116ms)
+✔ received media exports once with stable identity and MIME extension (3.8861ms)
+✔ pending, sent, deleted, sticker and unaccepted media never exports (2.6843ms)
+✔ export failure retries separately, preference and locked account suppress exports (0.7521ms)
+✔ concurrent wakes cannot duplicate an export (0.4335ms)
+✔ explicit message removal cleans only recorded exports even when auto-save is off (0.3381ms)
+✔ cleanup needing consent remains pending and retries without another export (0.2228ms)
+✔ recovery accepts a signed descendant of the saved checkpoint but final check rejects changes (38.8594ms)
+✔ every unresolved lookup blocks recovery, even when a packet is included (3.3468ms)
+✔ untrusted lookup responses cannot bypass signatures, target identity, ancestry or expiry (16.8882ms)
+✔ invalid checkpoint is rejected before contacting a peer (0.3645ms)
+✔ word-only recovery sends only the derived account and refuses missing or mismatched records (14.7619ms)
+✔ a temporary visitor reads a record without account recovery, reuses one connection, and closes (124.2439ms)
+✔ cancel during native dial closes a late wire and concurrent lookup is bounded (18.7088ms)
+✔ cancel during random generation destroys generated secrets and never dials (15.451ms)
+✔ spaces create numbered boxes without adding numbers to the phrase; paste retains order (1.9398ms)
+✔ editing a completed word preserves the remaining words and their order (0.6118ms)
+✔ backspace on empty input selects the last boxed word; deleting it does not reorder others (0.5543ms)
+✔ authenticated private locator survives cache recreation with a bounded lifetime (1.1462ms)
+✔ public, loopback, RTC, invalid IPv4/port and self locators are never cached (0.158ms)
+✔ private/VPN and carrier-grade addresses are accepted; bound is sixteen and ownership stays separate (0.6842ms)
+✔ corrupt, foreign and future cache data cannot manufacture trusted addresses; failed writes keep saved data (0.5488ms)
+✔ reviewed batch commits all selections together and preserves captions (90.8385ms)
+✔ later staging failure rolls back every file and publishes no partial batch (26.3976ms)
+✔ each group item has a distinct shared message ID and independent per-recipient transfers (18.8384ms)
+✔ empty audience and account replacement cannot stage files (41.4111ms)
+✔ download publication requires full size and readback checksum (136.032ms)
+✔ wrong-size published file is removed so restart can recover instead of looping forever (47.3218ms)
+✔ wrong-checksum file cannot be published (16.996ms)
+✔ lock prevents even damaged-file cleanup (42.8493ms)
+✔ gallery export records its location without replacing the seekable chat file (26.7042ms)
+✔ batched preparation preserves each encrypted chunk, checksum and proof with bounded native calls (197.4599ms)
+✔ short source reads and write failures never publish prepared attachment files (106.3648ms)
+✔ locking during a preparation yield closes handles and removes unpublished bytes (32.8392ms)
+✔ full-file read-back verification preserves publication checks: native (58.8797ms)
+✔ full-file read-back verification preserves publication checks: fallback (65.3615ms)
+✔ full-file read-back verification preserves publication checks: wrong (53.7018ms)
+✔ full-file read-back verification preserves publication checks: error (55.5916ms)
+✔ full-file read-back verification preserves publication checks: locked (68.7415ms)
+✔ call nickname effect tolerates a synchronously locked inbox and a later lock (132.8116ms)
+✔ nickname resolution completing after unmount cannot change the call screen (50.2787ms)
+✔ ended-call screen closes after three seconds without dismissing a newer call (22.7778ms)
+✔ ringing and connected calls do not start the dismissal timeout (59.5625ms)
+✔ background protection requires a foreground-started service and connected media (70.0802ms)
+✔ background start or failed native service cannot keep keys unlocked (10.8812ms)
+✔ late native startup after hangup cannot resurrect background authorization (5.7177ms)
+✔ call recovery retains history while direct and relay retries use only pending journals (83.409ms)
+✔ a stalled direct send cannot block relay polling or later call-expiry ticks (21.1963ms)
+(node:31740) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ disabled call push still persists signed invites for later recovery (77.193ms)
+✔ verified direct incoming calls notify in background once and clear on foreground or answer (21.7223ms)
+✔ direct call notifications obey blocking, preferences, and local identity (102.0033ms)
+✔ consuming a wake during background ringing retains the answer notification (24.8979ms)
+✔ root wake verifies signatures, persists once and retains a consumed replay tombstone (40.7876ms)
+✔ cancel before invite cannot be replayed into a ringing notification (22.7124ms)
+✔ blocked callers, wrong target devices, tampering and a changed local account fail closed (54.984ms)
+✔ pending device removal suppresses wake context and incoming call notifications (19.9317ms)
+✔ both incoming call paths show only the verified caller’s local nickname (42.572ms)
+✔ new callers and contacts without a nickname get a generic call label (108.1766ms)
+✔ edits preserve original retry payload, round-trip once, and use monotonically increasing revisions (3.0584ms)
+✔ only the original author can edit/delete; changed action retries and unrelated targets fail (0.6473ms)
+✔ out-of-order edit/delete persists before original; deleted messages cannot reappear (0.489ms)
+✔ reactions are independent per participant; removals do not erase the other choice (1.1567ms)
+✔ read acknowledgments can only come from recipient and repeated marking is idempotent (0.3658ms)
+✔ conflicting revision, blocked peer, disk failure, locked account and oversize event fail closed (0.7293ms)
+✔ presentation index keeps direct and group targets isolated even with matching message IDs (0.1823ms)
+✔ descriptor acknowledgement never marks an attachment delivered; verified final receipt does (64.6883ms)
+✔ authenticated sender, signed device and immutable attachment description are enforced (14.1525ms)
+✔ blocked attachment senders never enter own history (22.6611ms)
+✔ attachment replies retain verified reference through duplicate delivery and final receipt (20.8686ms)
+✔ forged attachment reply author and malformed reference cannot enter the inbox (13.0146ms)
+✔ identity-addressed text persists before acknowledgement and deduplicates retries (1.8291ms)
+✔ wrong recipient and blocked sender cannot enter the inbox (0.2225ms)
+✔ delete chat clears history but preserves nickname and acceptance; old delivery cannot restore it (0.7748ms)
+✔ deleting one chat keeps other conversations and saved rejection; explicit restart unhides it (0.445ms)
+✔ failed or locked deletion leaves the saved conversation intact (0.4215ms)
+✔ initiating a chat accepts it locally without accepting it for the recipient (0.1541ms)
+✔ accept and reject decisions persist across reopening the ledger and later messages (0.3529ms)
+✔ outbox preserves stable IDs and local nicknames without publishing them (0.2454ms)
+✔ locked identity, persistence failure and corrupt storage cannot acknowledge or replace history (0.2118ms)
+✔ serialized incoming writes preserve simultaneous messages and enforce byte limits (0.1911ms)
+✔ relationship migration applies saved blocks once and preserves later local choices (0.3073ms)
+✔ failed relationship commit does not mark migration complete or partially apply contacts (0.1044ms)
+✔ replies round-trip with original author and no copied quote or nickname (0.2794ms)
+✔ outgoing replies require the original in the same conversation with the right author (0.1697ms)
+✔ out-of-order replies are retained and duplicate IDs cannot change their quote (0.1892ms)
+✔ reply decoding rejects supplied excerpts, extra fields, and foreign authors (0.1139ms)
+✔ reply persistence failure and lock do not create partial messages (0.1276ms)
+✔ outgoing text respects encoded transport size including escaped characters (0.1023ms)
+✔ private mute preference persists without blocking delivery or entering the wire message (0.136ms)
+✔ network storage persists without claiming delivery or leaving the retry queue (0.2849ms)
+✔ status icons distinguish custody, complete media, read and expired custody (7.3385ms)
+✔ signed member backup restores the creator automatically without private keys or history (48.9827ms)
+✔ unsigned creator recovery remains untrusted until explicit local confirmation (4.3185ms)
+✔ backup signature rejects tampered members, name, revision, creator and wrong root (14.6459ms)
+✔ older signed snapshots cannot roll back known membership or unblock a group (10.4506ms)
+✔ recovered member receives current creator metadata through another member, then queued text (10.9579ms)
+✔ creator reconnect repairs membership without pending text and preserves local preferences (12.2565ms)
+✔ group recovery rejects outsiders, removed targets and forged membership (14.2493ms)
+✔ group recovery requests are durable and identical retries do not multiply responses (46.723ms)
+✔ local group chat deletion keeps membership and direct history; a new group message reopens it (15.5926ms)
+✔ group replies bind logical message and author across different recipient copies (12.2804ms)
+✔ group author edits fan out immutably with separate receipts and permanent deletion (8.6755ms)
+✔ group reactions belong to individual members and removal changes only their choice (18.5816ms)
+✔ out-of-order group actions wait for membership and tombstones survive original arriving later (8.4863ms)
+✔ forged group actions, cross-group targets, future membership, changed retries and removal fail closed (11.9389ms)
+✔ group delivery IDs bind recipient and packet domain for the existing custody store (0.2237ms)
+✔ malformed membership, too many members, future versions and forged creator updates fail closed (16.3607ms)
+✔ group invitations and fan-out persist per-recipient receipts and do not become direct chats (10.6066ms)
+✔ out-of-order group text waits for membership and duplicates cannot change context or text (7.4153ms)
+✔ only the authenticated creator changes membership; removal prevents future group fan-out (6.6722ms)
+✔ leave retries cannot remove a subsequently re-added member (10.6591ms)
+✔ group media keeps the signed recipient-specific manifest and waits for its completion receipt (16.4679ms)
+✔ blocked groups and senders are local policy, and corrupt group storage is preserved (11.2139ms)
+✔ invalid local group preferences and null stored group rows preserve existing state (12.0869ms)
+✔ group reads acknowledge each recipient independently, persist once and never create direct contacts (6.3477ms)
+✔ group reads cannot acknowledge to another member or claim another reader (5.8243ms)
+✔ group mute survives membership updates without muting the same member in direct chat (6.1117ms)
+✔ creator photo uses authenticated encrypted group media, survives rename and clears explicitly (7.8393ms)
+✔ camera queues typed media under the initiating owner (92.0473ms)
+✔ gallery uses system selection without requesting broad library access (14.2505ms)
+✔ cancel and denied camera permission do not queue files (8.034ms)
+✔ lock while native picker is open permits staging for the same owner (5.2506ms)
+✔ account switch while selecting cannot enqueue under the replacement account (4.6424ms)
+✔ oversized and missing media are rejected before staging (3.5459ms)
+✔ locked entry cannot launch a picker (3.393ms)
+✔ preview waits for confirmation and cancellation never stages media (7.5318ms)
+✔ account changes while preview is open cannot send under a different identity (3.8256ms)
+✔ reviewed multiple media preserve edits, removal and captions in the queued batch (4.2276ms)
+✔ reply reference survives picker lock and is handed to durable selection staging (3.6402ms)
+✔ forward text rereads original history and uses a fresh ID (15.3742ms)
+✔ forward attachment stages own bytes with the destination instead of reusing encrypted descriptor (6.1537ms)
+✔ pending incoming attachment cannot be forwarded (8.0619ms)
+✔ missing own attachment bytes cannot enqueue a forward (5.4554ms)
+✔ attachment forwarding stages bytes while the recipient directory is unavailable (6.1032ms)
+✔ blocked recipient and stale source cannot forward (9.5757ms)
+✔ lock or account switch while allocating ID prevents send (15.7724ms)
+✔ group forward creates a new text event and stages attachment captions for the audience (8.9469ms)
+[Axonic recovery] grant
+[Axonic recovery] granted
+[Axonic recovery] resumed
+[Axonic recovery] status {}
+[Axonic recovery] releasing
+[Axonic recovery] runtime-released
+[Axonic recovery] released
+[Axonic recovery] grant
+[Axonic recovery] granted
+[Axonic recovery] resumed
+[Axonic recovery] status {}
+[Axonic recovery] releasing
+[Axonic recovery] runtime-released
+[Axonic recovery] released
+[Axonic recovery] grant
+[Axonic recovery] granted
+[Axonic recovery] resumed
+[Axonic recovery] status {}
+[Axonic recovery] releasing
+[Axonic recovery] runtime-released
+[Axonic recovery] released
+[Axonic recovery] grant
+[Axonic recovery] granted
+[Axonic recovery] resumed
+[Axonic recovery] status {}
+[Axonic recovery] releasing
+[Axonic recovery] runtime-released
+[Axonic recovery] released
+[Axonic recovery] grant
+[Axonic recovery] granted
+[Axonic recovery] resumed
+[Axonic recovery] status {}
+[Axonic recovery] releasing
+[Axonic recovery] runtime-released
+[Axonic recovery] released
+✔ background recovery drives delivery without relying on display-frame JS timers (74.6042ms)
+✔ a durable inbox entry does not close the wake transport before the receipt exchange (10.6185ms)
+✔ unlocked verified-wake recovery acquires a bounded native window and releases its transport lease (8.764ms)
+✔ locked or mismatched accounts and old native builds cannot access background transport (14.3659ms)
+✔ remembered session may resume; storage failure still releases native and runtime leases (46.4321ms)
+(node:47076) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[Axonic message wake] context
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] context
+[Axonic message wake] context
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] context
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] preview
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] preview
+[Axonic message wake] context
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] preview
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] generic
+[Axonic message wake] preview
+[Axonic message wake] context
+[Axonic message wake] recovery
+[Axonic message wake] preview
+✔ locked recipient sees one generic signed notice; durable delivery clears it and prevents replay (84.5039ms)
+✔ blocked, changed owner, forged and already-delivered messages do not notify (120.7069ms)
+✔ a failed OS display can retry, while foreground delivery remains quiet (53.8363ms)
+✔ muted signed message hints remain silent without treating the contact as blocked (24.2317ms)
+✔ background previews use an audible channel while sound opt-out remains silent (46.3956ms)
+✔ corrected channel preserves the old OS block and custom sound (45.7039ms)
+✔ message push preference suppresses notices but still runs verified delivery recovery (20.4327ms)
+✔ durably decrypted message replaces generic hint with a preview and delayed hints cannot erase it (18.2943ms)
+✔ foreground conversations elsewhere notify; current conversation, read, muted, locked and changed owner do not expose content (113.9428ms)
+✔ only verified signed wakes may request inbox recovery (20.2759ms)
+✔ processed read/control envelopes never create a phantom message notification (17.1415ms)
+✔ completed preview metadata is bounded without silencing subsequent real messages (26.1895ms)
+✔ messages from one conversation replace its notice; other senders and groups remain separate (16.0268ms)
+✔ delayed generic hints, older previews and old read updates preserve the newest preview (15.3051ms)
+✔ a decrypted group message replaces its own generic sender hint (17.8574ms)
+✔ muted group suppresses unclassified hints and group previews but direct previews still notify (17.0174ms)
+✔ notification reply is durably queued once with the original reply reference (92.8215ms)
+✔ an interrupted action retains its ID so replay cannot create a second message (28.7093ms)
+✔ locked, changed-owner, blocked, unaccepted and unknown-message actions cannot send (66.8836ms)
+✔ mark as read sends the original message receipt once without fabricating a reply (7.8556ms)
+✔ group replies use the group message ID and require current group membership (16.0272ms)
+✔ acting on an older notification leaves the newer conversation notification visible (16.3037ms)
+✔ shared content is staged as a private file and temporary bytes are removed after durable queueing (59.634ms)
+✔ queue failure or account change after copying preserves account isolation and removes temporary bytes (33.8546ms)
+✔ ordinary private files are not copied or deleted and locked entry cannot import (20.6979ms)
+✔ voice send stages once, restores audio mode and removes only recorder temporary file (73.809ms)
+✔ cancel during permission prompt never starts microphone or sends (9.6499ms)
+✔ lock during recording prevents sending (8.7765ms)
+✔ unmount during preparation stops and releases recording activity (5.4906ms)
+✔ denied permission and short clips cannot be sent (21.1904ms)
+✔ failed send releases recorder activity so future recording is possible (5.089ms)
+✔ native stop failure still restores audio mode and releases activity (5.2555ms)
+✔ native share patch is repeatable and refuses unsupported source (2.9867ms)
+✔ shared text preserves content and does not duplicate the extracted URL (0.821ms)
+✔ multiple local shared files retain their names, types and order (0.2102ms)
+✔ unsupported paths, oversize files, empty shares and excessive batches fail before sending (0.1848ms)
+✔ partial failure retries only remaining items and pins account and recipient (0.3539ms)
+✔ locking mid-batch pauses remaining items and concurrent taps cannot duplicate sends (0.2529ms)
+✔ side-by-side manifest keeps native classes and sharing filters while separating launcher identity (1.7315ms)
+✔ native startup uses the existing icon and app dark background in both themes (0.6815ms)
+✔ loading screen renders the real icon, readable branding and cyan progress (1.0598ms)
+✔ icon scales down for small screens and respects safe areas (0.6097ms)
+✔ theme hydration uses the shared loading screen (1.5772ms)
+✔ selection stays square and within portrait, landscape and tiny images (2.1651ms)
+✔ centered and resized selection maps to source pixels (0.1038ms)
+✔ draft image and name survive editor recreation (0.9756ms)
+✔ failed replacement keeps previous draft and removes only new staged copy (0.3581ms)
+✔ old editor cannot delete or rename a newer draft (0.2019ms)
+✔ cancel deletes only the owned draft after the index commits (0.1206ms)
+✔ account switch during staged selection does not write or retain new file (0.1501ms)
+✔ failed cancel preserves draft and its file (0.1146ms)
+✔ sticker grid fits exactly three columns on small phones, tablets and landscape (0.6142ms)
+✔ sticker picker animates the grid and preview without selection gating (1.1519ms)
+✔ every bundled sticker roundtrips through the existing text transport (1.4978ms)
+✔ recent is ordered, deduplicated, persistent and account scoped (1.1559ms)
+✔ favorites toggle independently from recent without losing concurrent changes (0.7992ms)
+✔ corrupt preferences and removed sticker ids do not break picker (0.8415ms)
+✔ storage failure is surfaced rather than pretending favorite was saved (0.8081ms)
+✔ root identities keep sticker preferences separate from one another and legacy accounts (1.1301ms)
+✔ syncing header safely grows from a notification placeholder to a group name (1.4749ms)
+✔ title updates while idle remain safe when syncing resumes (0.6194ms)
+✔ header caps rendered characters without splitting emoji surrogate pairs (0.58ms)
+(node:42944) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ real file database survives reopening, deduplicates atomically and rejects conflicting content (74.3865ms)
+✔ failed commits cannot acknowledge delivery; cancellation and invalid input leave no rows (24.2656ms)
+✔ receipt loss and worker restart retry the same ID and leave exactly one durable recipient row (25.9046ms)
+✔ lock invalidates late receipt; re-unlock requires consent and can recover the pending message (21.5866ms)
+✔ storage bounds reject new entries while preserving duplicate receipts at capacity (158.9091ms)
+✔ automatic retains existing adaptive bitrate and resolution behavior (0.6401ms)
+✔ manual preferences are not overwritten by connection quality changes (0.6191ms)
+✔ data saving modes reduce bitrate, frame rate and encoded resolution (0.1559ms)
+✔ neuron adapter exclusively owns signaling and ICE; cleanup stops native media (113.4642ms)
+✔ failed neuron ICE config fails closed without Django fallback or peer creation (28.6633ms)
+✔ missing neuron transport fails closed without creating a peer connection (20.8035ms)
+✔ incoming identity channel is announced before registering an observer that can drain buffered hello (1.4167ms)
+✔ native identity patch is repeatable and rejects dependency drift or tampering (2.1672ms)
+✔ native peer policy is pinned, repeatable and gates unknown channels before bridge registration (3.446ms)
+ℹ tests 770
+ℹ suites 0
+ℹ pass 767
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 3
+ℹ todo 0
+ℹ duration_ms 14825.8784

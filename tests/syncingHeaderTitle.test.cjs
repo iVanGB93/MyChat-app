@@ -27,6 +27,7 @@ function fixture() {
     exports: {},
     React: { createElement: (type, props, ...children) => ({ type, props, children }) },
     View: 'View',
+    Text: 'Text',
     styles: {},
     useMemo(factory, deps) {
       const index = cursor++;

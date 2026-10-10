@@ -1,0 +1,40 @@
+PRODUCTION CANDIDATE CHECKS — 10 OCTOBER 2026
+
+Fresh npm run check: 742 passed, 3 skipped, zero failures; typecheck, cycles,
+module boundaries and consolidation passed. Fixed the isolated header component
+test fixture to include React Native Text; application UI was not changed.
+Evidence: D:\Proyects\Axonic\builds\readiness-final-check.log.
+
+Full separate phone Dev client built locally and installed preserving data.
+Build command: :app:assembleDebug -PaxonicSideBySide=true -PreactNativeArchitectures=arm64-v8a.
+All-architecture attempt hit Windows path limits for armeabi-v7a. ARM64 phone
+build passed. Official com.axonic app was not installed or altered.
+
+Phone Dev cold startup preserved the same unlocked test identity and rejoined
+peers. New native close action terminated its own process, and reopening
+restored the account. No removal journal was written and no account was erased.
+Full destructive device removal remains fixture-tested, not tested on user data.
+
+Labeled emulator-to-Phone-Dev background text: delivered with matching Android
+notification while the phone app remained background. This is not a Doze,
+force-stopped, reboot, or AoN-origin notification validation.
+Evidence: D:\Proyects\Axonic\builds\readiness-phone-background-notice.json.
+
+Synthetic 3,147,775-byte attachment delivered emulator -> phone Dev, survived
+background/foreground transition, and matched expected SHA-256 on both ends.
+Completion was observed about 87 seconds after queueing, including background
+pause and inspection intervals; this is not a throughput benchmark.
+
+Production AAB creation requested using existing EAS production profile, with
+no automatic submission. Public version is 1.1.7. Remote Android code before
+build was 49; verify allocated code from actual build result. Production submit
+profile still selects internal. No Play track or settings changed.
+
+Release limits remain: latest UI parity is not certified by this non-UI pass;
+full two-phone/separate-network/Doze/reboot/AoN matrix not repeated; mixed-version
+group read/photo features require coordinated client updates. Candidate creation
+is not proof of all production behavior or approval to submit automatically.
+
+Created EAS build 4a1d113a-8508-4d27-8060-cad9e1982cfb, version 1.1.7 / 50.
+Build URL: https://expo.dev/accounts/ivangb93/projects/MyChat-app/builds/4a1d113a-8508-4d27-8060-cad9e1982cfb
+

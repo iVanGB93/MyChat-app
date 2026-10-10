@@ -53,6 +53,30 @@ class AxonicMediaStoreModule : Module() {
       }
     }
     OnDestroy { deletePromise?.resolve(false); deletePromise = null }
+    // Resolve a granted content URI only after the user confirms sharing. Bound
+    // the copy even when a provider omits or lies about its reported size.
+    AsyncFunction("copyShared") { value: String ->
+      val uri = Uri.parse(value)
+      require(uri.scheme == "content") { "Expected a shared content URI" }
+      val target = File.createTempFile("axonic-share-", ".tmp", context.cacheDir)
+      try {
+        var total = 0L
+        requireNotNull(resolver.openInputStream(uri)).use { input ->
+          target.outputStream().use { output ->
+            val buffer = ByteArray(65536)
+            while (true) {
+              val count = input.read(buffer)
+              if (count < 0) break
+              total += count
+              require(total <= 250L * 1024 * 1024) { "Choose a file no larger than 250 MiB" }
+              output.write(buffer, 0, count)
+            }
+          }
+        }
+        require(total > 0) { "The shared file is empty" }
+        Uri.fromFile(target).toString()
+      } catch (error: Exception) { target.delete(); throw error }
+    }
     AsyncFunction("save") { source: String, name: String, mime: String, kind: String ->
       check(Build.VERSION.SDK_INT >= 29)
       require(name.startsWith("AXN_") && !name.contains('/') && !name.contains('\\'))

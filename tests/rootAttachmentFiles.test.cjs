@@ -2,8 +2,8 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {load,fixture}=require('./helpers/attachment.cjs');
 function setup(){
  const data=new Map(),path=args=>args.map(a=>typeof a==='string'?a:a.uri).join('/');
- class Directory{constructor(...args){this.uri=path(args);}}
- class File{constructor(...args){this.uri=path(args);}get exists(){return data.has(this.uri);}get size(){return data.get(this.uri)?.length??0;}delete(){data.delete(this.uri);}write(bytes){data.set(this.uri,Uint8Array.from(bytes));}move(to){data.set(to.uri,data.get(this.uri));data.delete(this.uri);this.uri=to.uri;}open(){const file=this;return {offset:0,readBytes(n){const bytes=data.get(file.uri).slice(this.offset,this.offset+n);this.offset+=bytes.length;return bytes;},close(){}};}}
+ class Directory{constructor(...args){this.uri=path(args);}create(){}}
+ class File{constructor(...args){this.uri=path(args);}get exists(){return data.has(this.uri);}get size(){return data.get(this.uri)?.length??0;}delete(){data.delete(this.uri);}write(bytes){data.set(this.uri,typeof bytes==='string'?Buffer.from(bytes):Uint8Array.from(bytes));}textSync(){return Buffer.from(data.get(this.uri)).toString();}move(to){data.set(to.uri,data.get(this.uri));data.delete(this.uri);this.uri=to.uri;}open(){const file=this;return {offset:0,readBytes(n){const bytes=data.get(file.uri).slice(this.offset,this.offset+n);this.offset+=bytes.length;return bytes;},close(){}};}}
  const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentFiles.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>name==='expo-file-system'?{File,Directory,Paths:{document:'own'}}:name.includes('axonic-nearby')?{default:{}}:name==='./localAccount'?{}:name.startsWith('./')?load(name.slice(2)):require(name),out);
  const f=fixture(),job={owner:f.manifest.recipient,digest:load('attachmentProtocol').attachmentDigest(f.manifest),descriptor:{manifest:f.manifest,checksum:crypto.createHash('sha256').update(f.plain).digest('hex')}};
  const final=out.rootAttachmentFile(job.owner,job.digest),partial=new File(final.uri.replace(/content$/,'partial'));
@@ -22,4 +22,11 @@ test('wrong-checksum file cannot be published',async()=>{
 });
 test('lock prevents even damaged-file cleanup',async()=>{
  const f=setup();f.final.write([1]);await assert.rejects(f.out.commitRootAttachmentFile(f.job,()=>false),/Unlock/);assert(f.final.exists);
+});
+
+test('gallery export records its location without replacing the seekable chat file',()=>{
+ const f=setup();f.final.write(f.plain);f.out.linkRootAttachmentExport(f.job.owner,f.job.digest,'content://media/external/images/media/1');
+ assert.equal(f.out.rootAttachmentExportLink(f.job.owner,f.job.digest),'content://media/external/images/media/1');
+ assert.equal(f.out.rootAttachmentFile(f.job.owner,f.job.digest).uri,f.final.uri);assert.equal(f.final.size,f.plain.length);
+ assert.throws(()=>f.out.linkRootAttachmentExport(f.job.owner,f.job.digest,'file:///other'),/Invalid/);
 });

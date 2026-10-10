@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.1.6",
+    "version": "1.1.8",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -65,7 +65,6 @@
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
-      "@react-native-google-signin/google-signin",
       [
         "expo-audio",
         {
@@ -80,29 +79,8 @@
           "cameraPermission": "Axonic uses the camera to scan friend tags so you can quickly add contacts."
         }
       ],
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/notification-icon.png",
-          "color": "#5B21B6",
-          "defaultChannel": "messages"
-        }
-      ],
-      "expo-background-task",
-      "expo-task-manager",
       "expo-sqlite",
       "expo-secure-store",
-      [
-        "expo-media-library",
-        {
-          "photosPermission": "Allow Axonic to access photos and videos you choose.",
-          "savePhotosPermission": "Allow Axonic to save received photos and videos to your Gallery.",
-          "granularPermissions": [
-            "photo",
-            "video"
-          ]
-        }
-      ],
       "./plugins/withForegroundService",
       "./plugins/withRingtoneRaw",
       "./plugins/withNotifeeRepo",
@@ -137,6 +115,13 @@
             "video/*",
             "*/*"
           ]
+        }
+      ],
+      [
+        "./plugins/withNotificationResources",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#5B21B6"
         }
       ]
     ],

@@ -19,6 +19,34 @@ test('stale UI owner rejects a send before allocating an ID',async()=>{const f=s
 test('group creation and group sending use the same durable ledger commands',async()=>{const f=setup(),id=await f.commands.createGroup('Family',[b]);await f.commands.sendGroupText(id,'hello');const s=await f.ledger.snapshot();assert.equal(s.groups[0].name,'Family');assert.equal(s.messages[0].peer,b);assert.equal(s.messages[0].status,'pending');});
 test('editing through a command retains the original message and queues an action',async()=>{const f=setup(),id=await f.commands.sendText(b,'original');await f.commands.act(b,{id,author:a},'edit','changed');const s=await f.ledger.snapshot();assert.equal(s.messages[0].text,'original');assert.equal(s.actions[0].kind,'edit');});
 test('direct acknowledgement marks delivery without custody or key lookup',async()=>{const f=setup();await f.commands.sendText(b,'hello');const d=delivery(f,{send:async()=>true});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');assert.ok(!d.events.some(e=>e[0]==='resolve'||e[0]==='deposit'));});
+
+async function until(check){for(let n=0;n<100;n++){if(await check())return;await new Promise(r=>setTimeout(r,2));}assert.fail('worker did not finish');}
+test('outbox wake notification follows successful durable enqueue only',async()=>{
+ let raw=null,fail=false;const queued=[];
+ const ledger=createRootChatLedger({owner:a,current:()=>true,now:()=>1800000000000,read:async()=>raw,write:async v=>{if(fail)throw Error('disk');raw=v;},queued:(peer,id)=>{assert(JSON.parse(raw).messages.some(m=>m.id===id));queued.push([peer,id]);}});
+ const id='1'.repeat(64);await ledger.enqueue(b,id,'hello');await ledger.enqueue(b,id,'hello');assert.deepEqual(queued,[[b,id]]);
+ fail=true;await assert.rejects(ledger.enqueue(b,'2'.repeat(64),'failed'),/disk/);assert.equal(queued.length,1);
+});
+test('wake sends the newly queued message without a periodic tick and preserves older outbox work',async()=>{
+ const f=setup();await f.commands.sendText(c,'older');const id=await f.commands.sendText(b,'now');const sent=[];
+ const d=delivery(f,{send:async(peer,raw,id)=>{sent.push(id);return true;}});
+ d.worker.wake(b,id);await until(async()=> (await f.ledger.snapshot()).messages.find(m=>m.id===id).status==='delivered');d.worker.stop();
+ assert.deepEqual(sent,[id]);assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');
+});
+test('wake during an active send is retained without concurrent duplicate sends',async()=>{
+ const f=setup(),first=await f.commands.sendText(b,'first');let release,active=0,peak=0;const sent=[];
+ const d=delivery(f,{send:async(peer,raw,id)=>{active++;peak=Math.max(peak,active);sent.push(id);if(id===first)await new Promise(r=>release=r);active--;return true;}});
+ d.worker.wake(b,first);await until(()=>!!release);const second=await f.commands.sendText(b,'second');d.worker.wake(b,second);release();
+ await until(async()=> (await f.ledger.snapshot()).messages.every(m=>m.status==='delivered'));d.worker.stop();assert.deepEqual(sent,[first,second]);assert.equal(peak,1);
+});
+test('a thrown direct disconnect falls back during the same attempt',async()=>{
+ const f=setup(),id=await f.commands.sendText(b,'hello'),d=delivery(f,{send:async()=>{throw Error('disconnected');}});
+ d.worker.wake(b,id);await until(()=>d.events.some(e=>e[0]==='deposit'));d.worker.stop();assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');
+});
+test('stopping before a scheduled wake prevents sending',async()=>{
+ const f=setup(),id=await f.commands.sendText(b,'hello');let sent=0;const d=delivery(f,{send:async()=>{sent++;return true;}});
+ d.worker.wake(b,id);d.worker.stop();await new Promise(r=>setTimeout(r,10));assert.equal(sent,0);
+});
 test('custody deposit preserves pending status and the same wire ID',async()=>{const f=setup(),id=await f.commands.sendText(b,'hello'),d=delivery(f);await d.worker.tick();await d.worker.tick();const deposits=d.events.filter(e=>e[0]==='deposit');assert.equal(deposits.length,2);assert.equal(deposits[0][3],id);assert.deepEqual(deposits[0],deposits[1]);assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');});
 test('overlapping delivery ticks send a message only once',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish,count=0;const d=delivery(f,{send:()=>{count++;return new Promise(r=>finish=r);}});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));await d.worker.tick();assert.equal(count,1);finish(true);await first;});
 test('invalidated delivery cannot acknowledge even after the same account unlocks',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish;const d=delivery(f,{send:()=>new Promise(r=>finish=r)});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));f.setOwner(null);d.worker.invalidate();f.setOwner(a);finish(true);await first;assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');});

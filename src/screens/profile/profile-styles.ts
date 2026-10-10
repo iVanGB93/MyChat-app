@@ -165,8 +165,8 @@ export const profileStyles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: Spacing.md,
   },
-  actionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  actionLabel: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1 },
+  actionLeft: { flexDirection: 'row', alignItems: 'center', flex: 1, gap: Spacing.sm },
+  actionLabel: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1, flexShrink: 1 },
 
   toggleRow: {
     flexDirection: 'row',

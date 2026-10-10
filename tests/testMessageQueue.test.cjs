@@ -10,7 +10,7 @@ function fixture(t) {
  const sqlite={openDatabaseAsync:async()=>({...tx,execAsync:async sql=>database.exec(sql),withExclusiveTransactionAsync:async fn=>{
   database.exec('BEGIN IMMEDIATE');try{await fn(tx);if(fail)throw Error('simulated commit failure');database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}
  }})};
- function load(name){const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync(`src/services/identity/${name}.ts`,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?sqlite:n==='./identityProtocol'?{validAccountId:x=>/^axonic:1:[0-9a-f]{64}$/.test(x)}:require(n),out);return out;}
+ function load(name){const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync(`tests/support/identity/${name}.ts`,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?sqlite:n==='../../../src/services/identity/identityProtocol'?{validAccountId:x=>/^axonic:1:[0-9a-f]{64}$/.test(x)}:require(n),out);return out;}
  const create=load('testMessageStore').createTestMessageStore,queue=load('testMessageQueue').createTestMessageQueue;
  return {create,queue,reopen(){database.close();open();},fail(v){fail=v;}};
 }

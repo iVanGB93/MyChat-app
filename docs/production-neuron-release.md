@@ -1,4 +1,13 @@
-# Production AAB preparation
+Current implementation and release gates: [production-release-current.txt](production-release-current.txt).
+
+# Historical production AAB preparation — September 2026
+
+**Superseded:** the device-registration and Django instructions below describe an
+earlier migration stage. Do not use them for the next release. See
+[the October 10 readiness audit](production-readiness-audit-2026-10-10.txt) for
+current wiring, unresolved parity gaps, and the release validation checklist.
+
+The historical notes below are retained as evidence, not current instructions.
 
 The production EAS profile builds an Android App Bundle for `com.axonic`, with
 remote version codes and auto-increment. `EXPO_PUBLIC_AXONIC_NETWORK=1` enables

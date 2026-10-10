@@ -1,5 +1,7 @@
+import {KeyboardFormScrollView} from '../ui/KeyboardForm';
+import {KeyboardAwareTextInput as TextInput} from '../ui/KeyboardForm';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, ScrollView, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import Svg, { Image as SvgImage, Path, Text as SvgText } from 'react-native-svg';
 import { manipulateAsync, SaveFormat, type ImageResult } from 'expo-image-manipulator';
 import { File, Paths } from 'expo-file-system';
@@ -155,6 +157,6 @@ export default function PhotoEditor({ uri, onClose, onSave, embedded = false, on
     </>;
   if (embedded) return <View style={{ gap: 12 }}>{content}</View>;
   return <Modal animationType="slide" onRequestClose={() => { if (!busy) onClose(); }}>
-    <ScrollView scrollEnabled={!dragging} keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1, padding: 16, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16, gap: 14, backgroundColor: c.background }}>{content}</ScrollView>
+    <KeyboardFormScrollView scrollEnabled={!dragging} contentContainerStyle={{ flexGrow: 1, padding: 16, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16, gap: 14, backgroundColor: c.background }}>{content}</KeyboardFormScrollView>
   </Modal>;
 }

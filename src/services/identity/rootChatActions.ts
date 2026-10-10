@@ -20,10 +20,17 @@ export function validRootAction(a: RootChatAction, owner: string, peer: string):
 export const encodeRootAction = (a: RootChatAction) => JSON.stringify(['axonic-root-action-v1',a.peer,a.id,actionBody(a)]);
 /** Keep the immutable original payload for retries; derive local presentation from authenticated events. */
 export function rootChatView(owner: string, state: RootChatState): RootChatState {
+ // Index once: history rendering must not scan every action for every message.
+ type Event=NonNullable<RootChatState['actions']>[number]|NonNullable<RootChatState['groupActions']>[number];
+ const direct=new Map<string,Event[]>(),groups=new Map<string,Event[]>();
+ const key=(scope:string,id:string,author:string)=>scope+'|'+id+'|'+author;
+ function add(index:Map<string,Event[]>,scope:string,event:Event){const k=key(scope,event.target.id,event.target.author),events=index.get(k);if(events)events.push(event);else index.set(k,[event]);}
+ for(const event of state.actions??[])add(direct,event.peer,event);
+ for(const event of state.groupActions??[])add(groups,event.group.id,event);
  return {...state,messages:state.messages.map(m => {
   
   const author = m.direction === 'outgoing' ? owner : m.peer;
-  const events = m.group?(state.groupActions??[]).filter(a=>a.group.id===m.group!.id&&sameTarget(a.target,{id:m.group!.messageId,author})):(state.actions??[]).filter(a=>a.peer===m.peer&&sameTarget(a.target,{id:m.id,author}));
+  const events = m.group?groups.get(key(m.group.id,m.group.messageId,author))??[]:direct.get(key(m.peer,m.id,author))??[];
   const deleted = events.some(a => a.kind === 'delete');
   const edit = events.filter(a => a.kind === 'edit').sort((a,b) => b.revision-a.revision)[0];
   const choices = new Map<string,(typeof events)[number]>();
@@ -32,6 +39,6 @@ export function rootChatView(owner: string, state: RootChatState): RootChatState
    if (!old || old.revision < a.revision) choices.set(actor,a);
   }
   return {...m,text:deleted?'Message deleted':!m.attachment&&edit?edit.text:m.text,deleted,edited:!!edit&&!deleted,
-   read:m.group?m.read:events.some(a => a.kind === 'read'),reactions:deleted?[]:[...choices].filter(([,a]) => a.text).map(([author,a]) => ({author,text:a.text}))} as RootChatMessage;
+   read:m.group?(m.direction==='incoming'?m.read:events.some(a=>a.kind==='read'&&a.direction==='incoming'&&a.peer===m.peer)):events.some(a => a.kind === 'read'),reactions:deleted?[]:[...choices].filter(([,a]) => a.text).map(([author,a]) => ({author,text:a.text}))} as RootChatMessage;
  })};
 }

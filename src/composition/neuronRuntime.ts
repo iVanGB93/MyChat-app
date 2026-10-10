@@ -1,3 +1,5 @@
+import {createChatActivity} from '../services/identity/chatActivity';
+import {createGroupRecovery} from '../services/identity/groupRecovery';
 // Composition root: joins module ports and owns foreground/background leases.
 import {shortIdentity} from '../services/identity/identityPresentation';
 import {rootChatView} from '../services/identity/rootChatActions';
@@ -12,11 +14,11 @@ import { allowedAxons, loadAllowedAxons, subscribeAllowedAxons } from '../servic
 import { localAccount } from '../services/identity/localAccount';
 import { createLanIdentityRuntime, type NativeAxonLan } from '../services/identity/lanIdentityRuntime';
 import { createMobileIdentityRecordStore } from '../services/identity/identityRecordStore';
-import { createInternetAxonConnector, FIRST_NEURON, BOOTSTRAP_NEURONS } from '../services/identity/internetAxonTransport';
+import { createInternetAxonConnector, BOOTSTRAP_NEURONS } from '../services/identity/internetAxonTransport';
 import { createCustodyService } from '../services/identity/custodyService';
 import {createCustodyWakeForwarder} from '../services/identity/custodyWakeForwarder';
 import { createMobileCustodyStore } from '../services/identity/mobileCustodyStore';
-import { localRootChat } from '../services/identity/localRootChat';
+import { localRootChat,subscribeRootChatQueued } from '../services/identity/localRootChat';
 import {createMessageDelivery} from '../modules/messaging/delivery';
 import { AppState, NativeModules, Platform } from 'react-native';
 import { RTCPeerConnection } from 'react-native-webrtc';
@@ -43,6 +45,9 @@ const callListeners=new Set<(view:NeuronCallView<string>|null)=>void>();
 export const localAccountCalls=()=>activeCalls?.coordinator??null;
 export const localAccountCallDiagnostics=()=>activeCalls?.diagnostics()??null;
 export function subscribeLocalAccountCalls(listener:(view:NeuronCallView<string>|null)=>void){callListeners.add(listener);listener(localAccountCalls()?.snapshot()??null);return()=>{callListeners.delete(listener);};}
+let activeActivity:ReturnType<typeof createChatActivity>|null=null;
+export const peerTyping=(peer:string,group?:string)=>activeActivity?.typing(peer,group)??false;
+export const notifyPeerTyping=(peer:string,value:boolean,group?:string)=>activeActivity?.notify(peer,value,group)??Promise.resolve();
 let activeSnapshot: (() => ReturnType<ReturnType<typeof createLanIdentityRuntime>['snapshot']>) | null = null;
 let activeLookup: ((account: string) => Promise<DirectoryLookupResult>) | null = null;
 export const localAccountLookupIdentity = (account: string) => activeLookup?.(account) ?? Promise.resolve(unavailableDirectoryLookup());
@@ -110,6 +115,8 @@ function createLocalAccountNetwork() {
     if(attachments?.owner!==account)attachments={owner:account,service:createAttachmentCustody({owner:account,records,store:createMobileAttachmentStore(account),now:Date.now,current:()=>owner()===account})};
     return attachments.service;
   }
+  const activity=createChatActivity({owner,now:Date.now,allowed:async(peer,group)=>{const s=await localRootChat().snapshot();if(s.contacts.some(c=>c.account===peer&&c.blocked))return false;return group?s.groups?.some(g=>g.id===group&&g.accepted&&!g.blocked&&g.members.includes(peer)&&g.members.includes(owner()!))===true:s.contacts.some(c=>c.account===peer&&c.accepted);},send:async(peer,raw)=>{if(AppState.currentState!=='active')return false;const id=await Native!.identityRandomBytes!(32);return runtime.sendChatMessage(peer,raw,id);}});
+  activeActivity=activity;
   const native = Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> };
   async function receiveMessage(message:{from:string;id:string;text:string}){
     const account=owner();if(!account)return false;
@@ -142,8 +149,9 @@ function createLocalAccountNetwork() {
     onCallMediaRelay:async(raw,peer)=>{try{return await callService()?.relayMedia(raw,peer)??false;}catch{return false;}},
     onRelayedCallMedia:async(raw,peer)=>{try{return await callService()?.receiveRoutedMedia(raw,peer)??false;}catch{return false;}},
     onCallMedia:async(raw,peer,instance)=>{try{return await callService()?.receiveMedia(raw,peer,instance)??false;}catch{return false;}},
-    onChatMessage: async message => { try { return await receiveMessage(message); } catch { return false; } },
+    onChatMessage: async message => { try { const hint=await activity.receive(message.from,message.text);return hint===null?await receiveMessage(message):hint; } catch { return false; } },
     rtc: Platform.OS==='android'&&NativeModules.WebRTCModule?.axonicIdentityGuardVersion?.()===1?{
+      mediaLane:typeof Native?.axonEnableMediaLane==='function',
       wait: Native?.axonMessageWait ? milliseconds => Native!.axonMessageWait!(milliseconds) : undefined,
       authenticated:NativeModules.WebRTCModule?.axonicIdentityAuthenticated?channel=>{
         if(typeof channel._peerConnectionId==='number'&&typeof channel._reactTag==='string')NativeModules.WebRTCModule.axonicIdentityAuthenticated(channel._peerConnectionId,channel._reactTag);
@@ -165,22 +173,24 @@ function createLocalAccountNetwork() {
       await ledger.delivered(receipt.recipient,receipt.id);return current();
     },
   });
-  const unsub = localAccount.subscribe(() => { if (!owner()) {peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();} });
+  const unsub = localAccount.subscribe(() => { if (!owner()) {activity.clear();peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();} });
   const unlimit = subscribeAllowedAxons(() => runtime.setLimit(allowedAxons()));
   void loadAllowedAxons().catch(() => {});
   const delivery=createMessageDelivery({owner,ledger:localRootChat,
     blocked:peers=>{blocked.clear();for(const peer of peers)blocked.add(peer);},collect:()=>courier.tick(),
     send:runtime.sendChatMessage,resolve:peerResolver.resolve,deposit:(...args)=>courier.deposit(...args)});
-  const pump = () => { loadRemembered(); runtime.tick(); service();void custody?.wake.tick(); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
+  const unqueue=subscribeRootChatQueued((account,peer,id)=>{if(owner()===account)delivery.wake(peer,id);});
+  const groupRecovery=createGroupRecovery({owner,now:Date.now,peers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),random:()=>Native!.identityRandomBytes!(32),recover:(peer,id)=>localRootChat().recoverGroupsForPeer(peer,id)});
+  const pump = () => { loadRemembered(); runtime.tick(); service();void groupRecovery.tick().catch(()=>{});void custody?.wake.tick(); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
   const tick = setInterval(pump, 1000);
   let sweeping = false;
   const sweep = setInterval(() => { if (sweeping) return; const current = service(); if (!current) return;
     sweeping = true; void Promise.all([current.sweep(),attachmentService()?.sweep()]).catch(() => {}).finally(() => { sweeping = false; }); }, 60_000);
   runtime.tick(); inspectDirectory = directory.snapshot; activeLookup = directory.lookup; activeSnapshot = runtime.snapshot;
   activePeerResolver=peerResolver.resolve;
-  const attachmentApi={peers:runtime.attachmentPeers,request:runtime.attachmentRequest};attachmentNetwork=attachmentApi;
+  const attachmentApi={peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,bulkRequest:runtime.attachmentBulkRequest};attachmentNetwork=attachmentApi;
   ownAttachments=startRootAttachmentRuntime({...attachmentApi,lookup:peerResolver.resolve});
-  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume: runtime.resume, tick:pump, stop() { delivery.stop();ownAttachments.stop();if(attachmentNetwork===attachmentApi)attachmentNetwork=null;if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
+  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume: runtime.resume, tick:pump, stop() { activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(attachmentNetwork===attachmentApi)attachmentNetwork=null;if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
 }
 
 // Foreground UI and a headless wake share one transport; each releases only its own lease.
@@ -189,3 +199,5 @@ export function startLocalAccountNetwork(){
  const shared=sharedNetwork??={runtime:createLocalAccountNetwork(),references:0};shared.references++;
  let released=false;return {snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
 }
+
+

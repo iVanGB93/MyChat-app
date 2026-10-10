@@ -21,9 +21,10 @@ export function createNeuronConnections(d: {
   if (!accountPattern.test(d.localAccount) || !Number.isInteger(limit) || limit < 1 || limit > 20) throw Error('Invalid neuron configuration');
   type Candidate = { value: NeuronCandidate; failures: number; retryAt: number };
   type Slot = { candidate: NeuronCandidate; controller: AbortController; deadline: number;
-    state: 'authenticating' | 'connected' | 'closing'; link?: NeuronLink; failed: boolean };
+    state: 'authenticating' | 'connected' | 'closing'; link?: NeuronLink; failed: boolean; promotion: boolean };
   const candidates = new Map<string, Candidate>(), slots = new Map<string, Slot>();
   const upgrades = new Map<string, Slot>();
+  const inboundPromotionRetry = new Map<string, number>();
   const allSlots = () => [...slots.values(), ...upgrades.values()];
   const occupied = () => slots.size + upgrades.size;
   const owns = (slot: Slot) => slots.get(slot.candidate.account) === slot || upgrades.get(slot.candidate.account) === slot;
@@ -37,7 +38,7 @@ export function createNeuronConnections(d: {
       c.failures = Math.min(7, c.failures + 1);
       const jitter = Math.max(0, Math.min(1, (d.jitter ?? Math.random)()));
       c.retryAt = d.now() + Math.min(60_000, 1000 * 2 ** (c.failures - 1)) + Math.floor(jitter * 250);
-    }
+    } else if (slot.promotion) inboundPromotionRetry.set(slot.candidate.account, d.now() + 60_000);
   }
   function retire(slot: Slot, failed: boolean) {
     if (!owns(slot)) return;
@@ -63,15 +64,30 @@ export function createNeuronConnections(d: {
     return true;
   }
   function start(candidate: NeuronCandidate, open: OpenNeuron) {
-    if (stopped || occupied() >= limit || !valid(candidate) || upgrades.has(candidate.account)) return false;
+    if (stopped || !valid(candidate) || upgrades.has(candidate.account)) return false;
     const previous = slots.get(candidate.account);
     if (previous && (previous.state !== 'connected' || routeRank[candidate.route] >= routeRank[previous.candidate.route])) return false;
     const known = candidates.get(candidate.account);
     if (known && known.retryAt > d.now()) return false;
+    if (previous && !known && ((inboundPromotionRetry.get(candidate.account) ?? 0) > d.now()
+      || inboundPromotionRetry.size >= 128 && !inboundPromotionRetry.has(candidate.account))) return false;
+    if (occupied() >= limit && previous && upgrades.size === 0) {
+      // A full pool must not pin a known peer to a slower route forever.
+      // Retain its working connection until authentication completes, and keep
+      // another established wider-network route after a successful LAN upgrade.
+      const established = [...slots.values()].filter(s => s.state === 'connected');
+      const victim = established.filter(s => s !== previous
+        && routeRank[s.candidate.route] > routeRank[candidate.route]
+        && (candidate.route !== 'lan' || established.some(other =>
+          other !== previous && other !== s && other.candidate.route !== 'lan')))
+        .sort((a,b) => routeRank[b.candidate.route] - routeRank[a.candidate.route])[0];
+      if (victim) retire(victim, false);
+    }
+    if (occupied() >= limit) return false;
     const slot: Slot = { candidate: { ...candidate }, controller: new AbortController(),
-      deadline: d.now() + 10_000, state: 'authenticating', failed: false };
+      deadline: d.now() + 10_000, state: 'authenticating', failed: false, promotion: !!previous };
     // Keep the working link until the preferred route authenticates. The extra
-    // handshake consumes a real pool slot; a full pool postpones promotion.
+    // handshake consumes a real pool slot; no connection limit is exceeded.
     const owner = previous ? upgrades : slots;
     owner.set(candidate.account, slot);
     void (async () => {
@@ -91,6 +107,7 @@ export function createNeuronConnections(d: {
           slots.set(candidate.account, slot);
         }
         slot.link = link; slot.state = 'connected';
+        inboundPromotionRetry.delete(candidate.account);
         const c = candidates.get(candidate.account); if (c) { c.failures = 0; c.retryAt = 0; }
       } catch { fail(slot); close(link ?? undefined); }
       finally { if (slot.state !== 'connected' && owner.get(candidate.account) === slot) owner.delete(candidate.account); }
@@ -100,6 +117,7 @@ export function createNeuronConnections(d: {
   function tick() {
     if (stopped) return;
     const now = d.now();
+    for (const [account, until] of inboundPromotionRetry) if (until <= now) inboundPromotionRetry.delete(account);
     for (const [id, c] of candidates) if (c.value.expiresAt <= now && !slots.has(id) && c.retryAt <= now) candidates.delete(id);
     for (const slot of allSlots()) {
       if (slot.state === 'authenticating' && slot.deadline <= now) retire(slot, true);
@@ -143,7 +161,7 @@ export function createNeuronConnections(d: {
     accept(candidate: NeuronCandidate, authenticate: OpenNeuron) {
       return start(candidate, authenticate);
     },
-    stop() { stopped = true; for (const slot of allSlots()) retire(slot, false); candidates.clear(); },
+    stop() { stopped = true; for (const slot of allSlots()) retire(slot, false); candidates.clear(); inboundPromotionRetry.clear(); },
     snapshot() { return { limit, stopped, known: candidates.size, connections: allSlots().map(s => ({
       account: s.candidate.account, route: s.candidate.route, state: s.state,
       expiresAt: s.link?.peer.expiresAt ?? null,

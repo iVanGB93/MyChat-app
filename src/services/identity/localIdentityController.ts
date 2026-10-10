@@ -5,6 +5,8 @@ import { signCallControl, type CallControl } from './callControlProtocol';
 import { signCallControlReceipt } from './callControlDelivery';
 import { signCallMediaSignal, type CallMediaSignal } from './callMediaProtocol';
 import { publicDevice } from './identityProtocol';
+import {signRootGroupBackup} from './rootGroups';
+import type {RootGroupMembership} from './rootGroupTypes';
 import { signChatBinding, type ChatBindingChallenge } from './chatIdentityBinding';
 import type { IntroductionHooks } from './identityIntroductions';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
@@ -18,19 +20,20 @@ import { createLocalIdentity, recoverReplacingDevices, destroyIdentity, sealIden
   type SecureRandom, type UnlockedIdentity, type PasswordDerivation } from './identityVault';
 
 export interface IdentityStorage {
+  beginRemoval?(account:string):Promise<void>;
   readVault(): Promise<string | null>;
   writeVault(value: string): Promise<void>;
   readDeviceSecret(): Promise<string | null>;
   writeDeviceSecret(value: string): Promise<void>;
 }
-export interface LocalIdentityStatus { state: 'empty' | 'locked' | 'unlocked' | 'backup'; account: string | null; busy: boolean }
+export interface LocalIdentityStatus { state: 'empty' | 'locked' | 'unlocked' | 'backup'; account: string | null; busy: boolean; removalPending?:boolean }
 /** One experimental local account, separate from existing Django storage and sessions. */
 export function createLocalIdentityController(storage: IdentityStorage, random: SecureRandom, now: () => number,
   derive?: PasswordDerivation) {
   let identity: UnlockedIdentity | null = null, draft: UnlockedIdentity | null = null;
   // Public, deterministic metadata only; never retain a seed or unlocked identity here.
   // Re-derive once per unlock, rather than doing two curve operations for every chunk.
-  let cachedDeviceId: string | null = null;
+  let cachedDeviceId: string | null = null, removing=false;
   let account: string | null = null, state: LocalIdentityStatus['state'] = 'empty', busy = false, epoch = 0;
   const axons = new Set<() => void>();
   const closeAxons = () => { for (const close of [...axons]) close(); };
@@ -38,12 +41,13 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
   const emit = () => { for (const listener of listeners) listener(); };
   const assertCurrent = (e: number) => { if (epoch !== e) throw Error('Account operation interrupted'); };
   async function exclusive<T>(work: (e: number) => Promise<T>): Promise<T> {
+    if(removing)throw Error('Close and reopen Axonic to finish removing this account');
     if (busy) throw Error('An account operation is already running');
     busy = true; const e = epoch; emit();
     try { return await work(e); } finally { busy = false; emit(); }
   }
   return {
-    status(): LocalIdentityStatus { return { state, account, busy }; },
+    status(): LocalIdentityStatus { return { state, account, busy,...(removing?{removalPending:true}:{}) }; },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     inspect() { return exclusive(async e => {
       const raw = await storage.readVault(); assertCurrent(e);
@@ -145,6 +149,20 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       } finally { secret.fill(0); if (opened) destroyIdentity(opened); }
     }); },
 
+    prepareDeviceRemoval(password:string,expectedAccount:string){return exclusive(async e=>{
+      if(!identity||account!==expectedAccount||!storage.beginRemoval)throw Error('Unlock this account before removing it');
+      const raw=await storage.readVault(),secretHex=await storage.readDeviceSecret();assertCurrent(e);
+      if(!raw||!secretHex||!/^[0-9a-f]{64}$/.test(secretHex))throw Error('Account protection unavailable');
+      const secret=hexToBytes(secretHex);let verified:UnlockedIdentity|undefined;
+      try{
+        verified=await unlockIdentity(raw,password,secret,now(),derive);assertCurrent(e);
+        if(verified.record.account!==expectedAccount)throw Error('Account changed');
+        try{await storage.beginRemoval(expectedAccount);}finally{
+          removing=true;epoch++;closeAxons();if(identity)destroyIdentity(identity);if(draft)destroyIdentity(draft);
+          identity=null;draft=null;cachedDeviceId=null;state='locked';emit();
+        }
+      }finally{secret.fill(0);if(verified)destroyIdentity(verified);}
+    });},
     changePassword(currentPassword:string,newPassword:string){return exclusive(async e=>{
       if(!identity)throw Error('Unlock the local account first');
       const raw=await storage.readVault(),secretHex=await storage.readDeviceSecret();assertCurrent(e);
@@ -162,7 +180,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       const e = epoch, source = identity; if (!source || busy) throw Error('Unlock the local account first');
       const result = await sealCustody({ ...source, recipient, recipientDevice, id, text, now: now(), random });
       // Silent history updates synchronize at unlock; they must not create message notifications.
-      try { if (JSON.parse(text)?.[0] === 'axonic-root-action-v1') delete result.wakeSignature; } catch { /* Ordinary text retains its wake. */ }
+      try { if (['axonic-root-action-v1','axonic-root-group-action-v1'].includes(JSON.parse(text)?.[0])) delete result.wakeSignature; } catch { /* Ordinary text retains its wake. */ }
       assertCurrent(e); if (source !== identity) throw Error('Account operation interrupted'); return result;
     },
     async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>) {
@@ -173,6 +191,11 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       if (!await persist({ from: envelope.sender, id: envelope.id, text })) return null;
       assertCurrent(e); if (source !== identity || envelope.expires <= now()) return null;
       return signCustodyReceipt(envelope, source.signingSeed, source.encryptionSeed);
+    },
+    signGroup(group:RootGroupMembership){
+      if(!identity||busy)throw Error('Unlock your account first');
+      const root=rootFromEntropy(identity.entropy);
+      try{return signRootGroupBackup(group,root);}finally{root.fill(0);}
     },
     publicRecord(): IdentityRecord | null { return identity ? JSON.parse(JSON.stringify(identity.record)) : null; },
     callDevice(): string | null { return identity && !busy ? cachedDeviceId ??= publicDevice(identity.signingSeed,identity.encryptionSeed).id : null; },

@@ -10,17 +10,43 @@ import java.net.ServerSocket
 import java.net.Socket
 
 class AxonSocketsTest {
+  @Test(timeout = 10000) fun bulkFramesRequireAdmissionAndTransferExactBytes() {
+    val transport = AxonSockets()
+    ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { server ->
+      try {
+        val outgoing = transport.reserve(Socket())
+        transport.connect(outgoing, InetSocketAddress(server.inetAddress, server.localPort))
+        val incoming = transport.incoming(server.accept())
+        assertThrows(IllegalStateException::class.java) { transport.enableBulkAttachments(outgoing) }
+        assertThrows(IllegalArgumentException::class.java) { transport.write(outgoing, "x".repeat(20001)) }
+        for (id in listOf(outgoing,incoming)) { transport.enableAttachments(id); transport.enableMediaLane(id); transport.enableBulkAttachments(id) }
+        val value = "x".repeat(800000)
+        val writer = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+          val written = writer.submit { transport.write(outgoing,value) }
+          assertEquals(value,transport.read(incoming));written.get()
+          assertThrows(IllegalArgumentException::class.java) { transport.write(outgoing,"x".repeat(850001)) }
+        } finally { writer.shutdownNow() }
+      } finally { transport.destroy() }
+    }
+  }
+  @Test fun unadmittedBulkLengthIsRejectedBeforeAllocation() {
+    val bytes = java.nio.ByteBuffer.allocate(4).putInt(800000).array()
+    val input = DataInputStream(ByteArrayInputStream(bytes))
+    assertThrows(IllegalArgumentException::class.java) { AxonFrames.read(input.read(),input) }
+  }
   @Test(timeout = 15000) fun authenticatedBudgetIncludesControlAndAttachmentFrames() {
-    for (authenticated in listOf(false, true)) {
+    for (mode in listOf(0, 1, 2)) {
       val transport = AxonSockets()
       ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress()).use { server ->
         try {
           val id = transport.reserve(Socket())
           transport.connect(id, InetSocketAddress(server.inetAddress, server.localPort))
           server.accept().use { peer ->
-            if (authenticated) transport.enableAttachments(id)
+            if (mode >= 1) transport.enableAttachments(id)
+            if (mode == 2) transport.enableMediaLane(id)
             val output = DataOutputStream(peer.getOutputStream())
-            val budget = if (authenticated) 3856 else 64
+            val budget = if (mode == 2) 28256 else if (mode == 1) 3856 else 64
             repeat(budget) {
               output.writeInt(1); output.writeByte(65); output.flush()
               assertEquals("A", transport.read(id))

@@ -10,7 +10,7 @@ function setup(storage = new Map()) {
     setItem: async (key, value) => { storage.set(key, value); },
     removeItem: async (key) => { storage.delete(key); },
   } }) };
-  vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/services/chat-drafts.ts'), 'utf8'), {
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/modules/storage/chatDrafts.ts'), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, sandbox);
   return sandbox.exports;
@@ -32,7 +32,7 @@ test('sending/clearing removes the stored draft and ordered writes cannot restor
   assert.equal(await setup(disk).loadChatDraft(1, 'a'), '');
 });
 test('typing wins over a concurrent initial read', async () => {
-  const service = setup(new Map([['@axonic_draft:1:a', 'old']]));
+  const service = setup(new Map([['@axonic_root_draft:1:a', 'old']]));
   const read = service.loadChatDraft(1, 'a');
   await service.saveChatDraft(1, 'a', 'new');
   assert.equal(await read, 'new');

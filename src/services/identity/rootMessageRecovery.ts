@@ -1,16 +1,15 @@
 import {AppState} from 'react-native';
 import Native from '../../../modules/axonic-nearby';
-import {localAccount,localAccountSession} from './localAccount';
-import {localRootChat} from './localRootChat';
-import {startLocalAccountNetwork} from './localAccountNetwork';
+import {localAccount,startLocalAccount} from './localAccount';
+import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
 let tail:Promise<unknown>=Promise.resolve();
 /** Only verified wakes reach this bounded recovery path; locked-account policy is preserved. */
-export function recoverRootMessage(account:string,sender:string,id:string,expires:number){
+export function recoverRootMessage(account:string,_sender:string,_id:string,expires:number){
  const result=tail.then(async()=>{
   if(expires<=Date.now())return;
-  if(!localAccount.status().account)await localAccount.inspect();
+  if(localAccount.status().account&&localAccount.status().account!==account)return;
+  await startLocalAccount();
   if(localAccount.status().account!==account)return;
-  if(localAccount.status().state==='locked')await localAccountSession.initialize();
   if(localAccount.status().state!=='unlocked'||localAccount.status().account!==account)return;
   const background=AppState.currentState!=='active';if(background&&!Native?.axonMessageWake)return;
   let network:ReturnType<typeof startLocalAccountNetwork>|undefined;

@@ -26,20 +26,23 @@ function store() {
     records.set(id, next); return true;
   } };
 }
-function wires() {
-  let dead = false, drop = false;
+function wires(media = [false,false], latency = 0) {
+  let dead = false, drop = false, paused=false;const held=[];
   const listeners = [], closed = [], history = [[], []];
   const wire = i => ({
+    mediaLane:!!media[i],
+    bulkAttachments:media[i]==='bulk',
+    smallAttachmentBatches:media[i]==='small',
     listen(message, close) { listeners[i] = message; closed[i] = close; return () => { listeners[i] = null; closed[i] = null; }; },
-    send(raw) { if (dead) throw Error('closed'); history[i].push(raw); queueMicrotask(() => { if (!dead && !drop) listeners[1-i]?.(raw); }); },
+    send(raw) { if (dead) throw Error('closed'); history[i].push(raw); const deliver=()=>{if(!dead&&!drop){if(paused)held.push([1-i,raw]);else listeners[1-i]?.(raw);}};if(latency)setTimeout(deliver,latency);else queueMicrotask(deliver); },
     close() { if (dead) return; dead = true; for (const close of closed) close?.(); },
   });
-  return { wire, history, inject: (i, frame) => listeners[i]?.(typeof frame === 'string' ? frame : JSON.stringify(frame)), blackhole: () => { drop = true; } };
+  return { wire, history,pause:()=>{paused=true;},resume:()=>{paused=false;for(const [i,raw] of held.splice(0))if(!dead)listeners[i]?.(raw);}, inject: (i, frame) => listeners[i]?.(typeof frame === 'string' ? frame : JSON.stringify(frame)), blackhole: () => { drop = true; } };
 }
-function pair(t, overrides = {}) {
-  const transport = wires(), identities = [identity(), identity()];
+function pair(t, overrides = {}, media = [false,false], latency = 0, factory = createPersistentAxon) {
+  const transport = wires(media,latency), identities = [identity(), identity()];
   let clock = now, active = true; const closed = [0, 0];
-  const sessions = identities.map((id, i) => createPersistentAxon({ ...id, instance: random(32), store: store(),
+  const sessions = identities.map((id, i) => factory({ ...id, instance: random(32), store: store(),
     expectedAccount: identities[1-i].record.account, wire: transport.wire(i), now: () => clock,
     current: () => active, random: async n => random(n), onClosed: () => { closed[i]++; }, ...overrides[i] }));
   t.after(() => sessions.forEach(s => s.stop()));
@@ -49,6 +52,47 @@ async function settle(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 5)); }
   assert.fail('condition did not settle');
 }
+
+for(const mode of ['success','lock','deadline','count-limit','byte-limit'])test(`early custody traffic waits for authentication with bounded lifetime (${mode})`,async t=>{
+ let release,held=false,delayRead=false,index=0,handled=0;
+ const gate=new Promise(r=>release=r);t.after(()=>release());
+ const f=pair(t,{0:{onCustody:async()=>{handled++;return 'ok';}},1:{onCustody:async()=> 'ok'}},[false,false],0,d=>{
+  if(index++!==0)return createPersistentAxon(d);
+  const base=d.store,wire=d.wire;
+  return createPersistentAxon({...d,store:{...base,read:async id=>{if(delayRead&&!held){held=true;await gate;}return base.read(id);}},
+   wire:{...wire,listen(message,closed){return wire.listen(raw=>{const frame=JSON.parse(raw);if(frame.kind==='response'&&frame.id===2)delayRead=true;message(raw);},closed);}}});
+ });
+ await f.sessions[1].ready;await settle(()=>held);
+ assert.equal(f.sessions[0].snapshot().state,'authenticating');
+ const request=f.sessions[1].custodyRequest('poll');await new Promise(r=>setImmediate(r));
+ assert.equal(handled,0);assert.equal(f.sessions[0].snapshot().state,'authenticating');
+ if(mode!=='success'){
+  if(mode==='lock'){f.lock();f.sessions[0].tick();}
+  if(mode==='deadline'){f.advance(10001);f.sessions[0].tick();}
+  if(mode==='count-limit'||mode==='byte-limit')for(let i=0;i<4;i++)f.transport.inject(0,{version:1,kind:'request',id:10+i,operation:'custody',body:mode==='byte-limit'?'x'.repeat(15000):'poll'});
+  assert.equal(f.sessions[0].snapshot().state,'closed');release();await assert.rejects(f.sessions[0].ready);await request;
+  await new Promise(r=>setImmediate(r));assert.equal(handled,0);return;
+ }
+ release();await f.sessions[0].ready;assert.equal(await request,'ok');assert.equal(handled,1);
+ assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+});
+
+test('delayed peer discovery waits a full interval after completion before retrying',async t=>{
+ let release,held=false,index=0,received=0;
+ const hooks={list:()=>[],received:()=>{received++;}};
+ const f=pair(t,{0:{introductions:hooks,onAttachment:async()=> 'ok'},1:{introductions:hooks,onAttachment:async()=> 'ok'}},[true,true],0,d=>{
+  if(index++!==0)return createPersistentAxon(d);const wire=d.wire;
+  return createPersistentAxon({...d,wire:{...wire,send(raw){const frame=JSON.parse(raw);if(!held&&frame.kind==='request'&&frame.operation==='introductions'){held=true;release=()=>wire.send(raw);}else wire.send(raw);}}});
+ });
+ await Promise.all(f.sessions.map(s=>s.ready));f.advance(5000);
+ await f.sessions[1].attachmentRequest('probe'); // Shared media permits the bounded15s control grace.
+ f.sessions[0].tick();await settle(()=>held);
+ f.advance(12000);release();await settle(()=>received===1);
+ f.advance(3000);f.sessions[0].tick();await new Promise(r=>setImmediate(r));
+ const requests=()=>f.transport.history[0].map(JSON.parse).filter(x=>x.operation==='introductions').length;
+ assert.equal(requests(),1);f.advance(12000);f.sessions[0].tick();await settle(()=>received===2);
+ assert.equal(requests(),2);assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+});
 
 test('bidirectional background control traffic survives repeated minute windows', async t => {
   const hooks = {onCustody:async()=> 'ok', onDirectory:async()=> 'ok', onCallRelay:async()=> 'ok'};
@@ -204,7 +248,23 @@ test('duplicate hello, unsolicited response, oversized and malformed frames fail
 test('unresponsive peers lose their axon after a renewal request times out', async t => {
   const f = pair(t); await Promise.all(f.sessions.map(s => s.ready));
   f.transport.blackhole(); f.advance(21_000); f.sessions[0].tick();
-  await new Promise(r => setTimeout(r, 4200)); assert.deepEqual(f.closed, [1, 1]);
+  await new Promise(r=>setImmediate(r));f.advance(15001);f.sessions[0].tick();assert.deepEqual(f.closed,[1,1]);
+});
+
+test('authenticated renewal survives a five-second transport pause without extending an expired proof',async t=>{
+ const f=pair(t);await Promise.all(f.sessions.map(s=>s.ready));const old=f.sessions[0].snapshot().expiresAt;
+ f.transport.pause();f.advance(21000);f.sessions[0].tick();await new Promise(r=>setImmediate(r));
+ f.advance(5001);f.sessions[0].tick();assert.equal(f.sessions[0].snapshot().state,'connected');
+ f.transport.resume();await settle(()=>f.sessions[0].snapshot().expiresAt>old);assert.equal(f.sessions[0].snapshot().state,'connected');
+ const g=pair(t);await Promise.all(g.sessions.map(s=>s.ready));g.transport.blackhole();g.advance(59000);g.sessions[0].tick();await new Promise(r=>setImmediate(r));g.advance(1001);g.sessions[0].tick();assert.equal(g.sessions[0].snapshot().state,'closed');
+});
+
+test('control traffic sharing a recently active media lane tolerates a bounded stall',async t=>{
+ const hooks={onAttachment:async()=> 'media',onCustody:async()=> 'control'};
+ const f=pair(t,{0:hooks,1:hooks},[true,true]);await Promise.all(f.sessions.map(s=>s.ready));
+ await f.sessions[0].attachmentRequest('{}');f.transport.pause();const request=f.sessions[0].custodyRequest('{}');
+ await new Promise(r=>setImmediate(r));f.advance(5001);f.sessions[0].tick();assert.equal(f.sessions[0].snapshot().state,'connected');
+ f.transport.resume();assert.equal(await request,'control');
 });
 test('adapter cleanup exceptions do not retain authentication or skip close notification', async t => {
   const f = pair(t, { 0: { onClosed: () => { throw Error('observer'); } } });
@@ -411,6 +471,23 @@ test('LAN discovery connects non-contact identities once, authenticates both dir
   a.lock(); await settle(() => connected(rb) === 0);
   assert.equal(ra.snapshot().state, 'locked'); assert.equal(da.state.active, false);
 });
+test('foreground resume retries deferred LAN without letting discovery refresh bypass backoff', async t => {
+  const ids = [await controller(), await controller()].sort((a,b)=>a.status().account.localeCompare(b.status().account));
+  const bus=lanBus(),devices=ids.map((_,i)=>bus.device(`192.168.1.${80+i}`));
+  let attempts=0;
+  const dial=devices[0].api.axonConnect;
+  devices[0].api.axonConnect=async host=>{if(++attempts===1)throw Error('Lifecycle socket closed');return dial(host);};
+  const runtimes=ids.map((identity,i)=>createLanIdentityRuntime({identity,native:devices[i].api,store:store(),now:()=>now,rtc:{}}));
+  t.after(()=>{runtimes.forEach(r=>r.stop());ids.forEach(id=>id.lock());});
+  runtimes.forEach(r=>r.tick());await new Promise(r=>setImmediate(r));runtimes.forEach(r=>r.tick());
+  await settle(()=>attempts===1);await new Promise(r=>setImmediate(r));
+  for(let i=0;i<5;i++){runtimes.forEach(r=>r.tick());await new Promise(r=>setImmediate(r));}
+  assert.equal(attempts,1);
+  runtimes[0].resume();runtimes.forEach(r=>r.tick());
+  await settle(()=>runtimes.every(r=>r.snapshot().pool?.connections.some(c=>c.state==='connected'&&c.route==='lan')));
+  assert.equal(attempts,2);
+});
+
 test('incoming sockets cannot exceed a pool occupied by an outgoing attempt', () => {
   const id = lifecycleIdentity(); let closed = 0;
   const runtime = createIdentityNetwork({ identity: id, store: store(), now: () => now, limit: 1,
@@ -572,6 +649,21 @@ test('signaling cannot queue for offline peers, survive locks, accept oversized 
 });
 
 const { createRtcAxonTransport, validAxonSdp } = load('rtcAxonTransport');
+test('RTC path diagnostics expose only selected route metrics, never addresses or IDs',()=>{
+ const {rtcPathSummary}=load('rtcAxonTransport');
+ const reports=new Map([
+  ['transport',{type:'transport',selectedCandidatePairId:'pair'}],
+  ['pair',{type:'candidate-pair',state:'succeeded',localCandidateId:'local',remoteCandidateId:'remote',bytesSent:42,bytesReceived:24,currentRoundTripTime:0.02,requestsSent:Infinity,responsesReceived:-1}],
+  ['local',{candidateType:'host',protocol:'udp',address:'private-address',port:123}],
+  ['remote',{candidateType:'srflx',address:'public-address',usernameFragment:'secret'}]
+ ]);
+ const summary=JSON.parse(JSON.stringify(rtcPathSummary(reports)));
+ assert.deepEqual(summary,{selected:true,state:'succeeded',localType:'host',remoteType:'srflx',protocol:'udp',roundTripSeconds:0.02,bytesSent:42,bytesReceived:24});
+ reports.delete('transport');assert.deepEqual(rtcPathSummary(reports),{selected:false});
+ reports.get('pair').selected=true;reports.get('local').protocol='private-address';
+ assert.equal(rtcPathSummary(reports).protocol,undefined);
+ assert.equal(rtcPathSummary(reports).selected,true);
+});
 function rtcFixture() {
   const pcs = new Map(); let sequence = 0;
   class Events {
@@ -586,15 +678,17 @@ function rtcFixture() {
   }
   const sdp = id => 'v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 '+Array(32).fill('AB').join(':')+'\r\na=x-test:'+id+'\r\n';
   class PC extends Events {
+    remoteDescriptions=[];
     id=++sequence;localDescription=null;iceGatheringState='complete';connectionState='new';
     constructor(){super();pcs.set(this.id,this);}
     createDataChannel(){this.channel=new Channel();return this.channel;}
-    async createOffer(){return {type:'offer',sdp:sdp(this.id)};}
+    async createOffer(options){this.offerOptions=options;return {type:'offer',sdp:sdp(this.id)};}
     async createAnswer(){return {type:'answer',sdp:sdp(this.id)};}
     async setLocalDescription(d){this.localDescription=d;}
     async setRemoteDescription(d){
+      this.remoteDescriptions.push(d);
       this.other=pcs.get(Number(/a=x-test:(\d+)/.exec(d.sdp)[1]));
-      if(d.type==='offer') {this.channel=new Channel();this.channel.protocol='';this.emit('datachannel',{channel:this.channel});}
+      if(d.type==='offer') {if(!this.channel){this.channel=new Channel();this.channel.protocol='';this.emit('datachannel',{channel:this.channel});}}
       else {this.channel.other=this.other.channel;this.other.channel.other=this.channel;
         this.channel.readyState=this.other.channel.readyState='open';this.channel.emit('open');this.other.channel.emit('open');}
     }
@@ -602,6 +696,40 @@ function rtcFixture() {
   }
   return { PC,sdp };
 }
+
+test('RTC diagnostics bound concurrent sampling and discard results after closure',async t=>{
+ const ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+ const {PC}=rtcFixture();let pc,clock=now,calls=0,resolveStats;
+ const logs=[];t.mock.method(console,'info',(...args)=>logs.push(args));
+ const transport=createRtcAxonTransport({account:()=>ids[0].record.account,now:()=>clock,random:async()=> 'ab'.repeat(32),createConnection:()=>{
+  pc=new PC();pc.getStats=()=>{calls++;return new Promise(resolve=>resolveStats=resolve);};return pc;
+ },sign:()=>'',send:()=>true,accept:()=>false});
+ t.after(()=>transport.stop());
+ await transport.connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
+ pc.connectionState='connected';pc.emit('connectionstatechange');pc.emit('connectionstatechange');assert.equal(calls,1);
+ resolveStats(new Map());await new Promise(resolve=>setImmediate(resolve));
+ pc.emit('connectionstatechange');assert.equal(calls,1);clock+=1000;
+ pc.emit('connectionstatechange');assert.equal(calls,2);transport.stop();resolveStats(new Map());
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(logs.filter(args=>args[0]==='[Axonic RTC path]').length,1);
+});
+
+test('RTC tolerates a transient ICE disconnection but bounds recovery and closes on failure',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+ for(const hardFailure of [false,true]){
+  const {PC}=rtcFixture();let pc;
+  const transport=createRtcAxonTransport({account:()=>ids[0].record.account,now:()=>now,random:async()=> 'ab'.repeat(32),createConnection:()=>pc=new PC(),sign:()=>'',send:()=>true,accept:()=>false});
+  t.after(()=>transport.stop());const wire=await transport.connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
+  let closed=0;wire.listen(()=>{},()=>closed++);pc.channel.readyState='open';pc.channel.emit('open');
+  const state=s=>{pc.connectionState=s;pc.emit('connectionstatechange');};
+  state('disconnected');t.mock.timers.tick(7999);assert.equal(closed,0);
+  state('connected');t.mock.timers.tick(2);assert.equal(closed,0);
+  state('disconnected');
+  if(hardFailure)state('failed');else{t.mock.timers.tick(4000);state('connecting');state('disconnected');t.mock.timers.tick(4000);}
+  assert.equal(closed,1);assert.deepEqual(transport.snapshot(),[]);t.mock.timers.tick(10000);assert.equal(closed,1);
+ }
+});
 
 test('RTC rejects oversized, binary and empty frames and bounds the pre-listener queue', async t => {
   const ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
@@ -645,6 +773,51 @@ test('RTC data channels carry independent mutual identity authentication and clo
   transports[0].stop();assert.ok(sessions.every(s=>s.snapshot().state==='closed'));
   assert.deepEqual(transports.map(t=>t.snapshot()),[[],[]]);
 });
+test('RTC recovery binds fresh signed negotiation to the existing device, session and certificate',async t=>{
+ const {PC}=rtcFixture(),ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+ const transports=[],pcs=[],wires=[],packets=[];let automatic=true;
+ for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,
+  random:async()=>Buffer.from(random(32)).toString('hex'),authenticated:()=>{},createConnection:()=>pcs[i]=new PC(),
+  sign:(...args)=>signAxonSignal(ids[i].record,ids[i].signingSeed,[],...args,now),
+  send:(_via,raw)=>{const signal=verifyAxonSignal(raw,now);assert.ok(signal);packets.push({i,signal});if(automatic)queueMicrotask(()=>transports[1-i].receive(signal,'relay'));return true;},
+  accept:(_candidate,wire)=>{wires[i]=wire;return true;}});
+ t.after(()=>transports.forEach(x=>x.stop()));
+ wires[0]=await transports[0].connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
+ await settle(()=>packets.length===2&&pcs[0].channel.readyState==='open');wires.forEach(w=>w.enableAttachments());
+ const original=packets[0].signal.session,channels=pcs.map(p=>p.channel);automatic=false;
+ pcs[0].connectionState='disconnected';pcs[0].emit('connectionstatechange');
+ await settle(()=>packets.length===3);const offer=packets[2].signal;
+ assert.notEqual(offer.session,original);assert.match(offer.sdp,new RegExp('a=x-axonic-restart:'+original));
+ assert.deepEqual(pcs[0].offerOptions,{iceRestart:true});
+ for(const bad of [{...offer,device:'bad'}, {...offer,sdp:offer.sdp.replace(/AB:/g,'CD:')}, {...offer,sdp:offer.sdp.replace(original,'00'.repeat(32))}])transports[1].receive(bad,'relay');
+ transports[1].receive(offer,'wrong-relay');await new Promise(r=>setImmediate(r));assert.equal(packets.length,3);
+ transports[1].receive(offer,'relay');await settle(()=>packets.length===4);const answer=packets[3].signal;
+  transports[0].receive(packets[1].signal,'relay'); // stale initial answer cannot answer the restart
+  transports[0].receive({...answer,device:'bad'},'relay');
+  assert.equal(pcs[0].remoteDescriptions.length,1);
+  transports[0].receive(answer,'relay');await new Promise(r=>setImmediate(r));
+  assert.equal(pcs[0].remoteDescriptions.length,2);assert.equal(pcs[1].remoteDescriptions.length,2);
+ assert.deepEqual(pcs.map(p=>p.channel),channels);assert.ok(transports.every(x=>x.snapshot()[0].open));
+ const received=[];wires[1].listen(raw=>received.push(raw),()=>{});wires[0].send('after restart');await new Promise(r=>setImmediate(r));assert.deepEqual(received,['after restart']);
+ pcs[0].connectionState='connected';pcs[0].emit('connectionstatechange');pcs[0].connectionState='disconnected';pcs[0].emit('connectionstatechange');
+ transports[1].receive({...offer,session:'ee'.repeat(32)},'relay');await new Promise(r=>setImmediate(r));assert.equal(packets.length,4);
+});
+
+test('RTC restart cannot outlive closure or extend the existing disconnect deadline',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const {PC,sdp}=rtcFixture(),ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+ let pc,release,calls=0,sends=0;
+ const transport=createRtcAxonTransport({account:()=>ids[0].record.account,now:()=>now,
+  authenticated:()=>{},random:()=>++calls===1?Promise.resolve('ab'.repeat(32)):new Promise(r=>release=r),
+  createConnection:()=>{pc=new PC();pc.setRemoteDescription=async()=>{};return pc;},sign:()=>'',send:()=>{sends++;return true;},accept:()=>false});
+ t.after(()=>transport.stop());
+ const wire=await transport.connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
+ await new Promise(r=>setImmediate(r));pc.channel.readyState='open';pc.channel.emit('open');wire.enableAttachments();
+ transport.receive({target:ids[0].record.account,record:ids[1].record,device:ids[1].record.devices[0].id,kind:'answer',session:'ab'.repeat(32),sdp:sdp(1),expiresAt:now+30000},'relay');
+ await new Promise(r=>setImmediate(r));pc.connectionState='disconnected';pc.emit('connectionstatechange');assert.equal(calls,2);
+ t.mock.timers.tick(8000);assert.deepEqual(transport.snapshot(),[]);release('cd'.repeat(32));await new Promise(r=>setImmediate(r));assert.equal(sends,1);
+});
+
 test('RTC refuses media/relay SDP, rejects pool admission before answering, and cancels pending randomness', async () => {
   const { PC,sdp }=rtcFixture();assert.equal(validAxonSdp(sdp(1)),true);
   assert.equal(validAxonSdp(sdp(1)+'m=audio 9 RTP/AVP 0\r\n'),false);
@@ -744,6 +917,18 @@ test('older test-only peers decline normal chat while retaining the experimental
  assert.equal(f.inbox[1].length,1);
 });
 
+test('normal message waiting for group metadata withholds ACK without closing the axon',async t=>{
+ let ready=false,attempts=0;
+ const f=await testMessagePair(t,undefined,undefined,async()=>{attempts++;return ready;},true);
+ const id='bc'.repeat(32),pending=f.sessions[0].sendChatMessage('group waiting for membership',id);
+ await settle(()=>attempts===1);
+ assert.equal(f.sessions[1].snapshot().state,'connected');
+ assert.equal(f.bus.history[1].filter(raw=>JSON.parse(raw).kind==='chat-message').length,0);
+ assert.equal(await pending,false);ready=true;
+ assert.equal(await f.sessions[0].sendChatMessage('group waiting for membership',id),true);
+ assert.equal(f.sessions[1].snapshot().state,'connected');
+});
+
 test('relabeling experimental or normal ciphertext cannot cross message domains',async t=>{
  for(const kind of ['test-message','chat-message']){
   const f=await testMessagePair(t,raw=>{const frame=JSON.parse(raw);if(frame.kind===kind)frame.kind=kind==='test-message'?'chat-message':'test-message';return JSON.stringify(frame);},undefined,undefined,true);
@@ -802,6 +987,37 @@ test('authenticated negotiated attachments have a separate bounded budget and ke
  assert.equal(f.sessions[0].snapshot().state,'connected');f.advance(20000);f.sessions.forEach(s=>s.tick());await settle(()=>f.transport.history[0].filter(s=>s.includes('authenticate')).length>=2);
  assert.equal(f.sessions[0].snapshot().state,'connected');
 });
+test('four attachment reads queue without rejecting chunks or overlapping wire requests',async t=>{
+ let release;const received=[];
+ const hooks={onAttachment:async raw=>{received.push(raw);return raw==='first'?await new Promise(r=>{release=()=>r('first-ok');}):raw+'-ok';}};
+ const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ const first=f.sessions[0].attachmentRequest('first');await settle(()=>!!release);
+ const rest=['second','third','fourth'].map(raw=>f.sessions[0].attachmentRequest(raw));
+ assert.equal(await f.sessions[0].attachmentRequest('overflow'),null);
+ assert.deepEqual(received,['first']);release();assert.equal(await first,'first-ok');
+ for(let i=0;i<rest.length;i++){f.advance(50);assert.equal(await rest[i],['second-ok','third-ok','fourth-ok'][i]);}
+ assert.deepEqual(received,['first','second','third','fourth']);
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+});
+
+test('queued control traffic gets a turn before attachment read-ahead continues',async t=>{
+ let release;const received=[];
+ const hooks={onCustody:async()=>{received.push('control');return 'ok';},onAttachment:async raw=>{received.push(raw);return raw==='first'?await new Promise(r=>{release=()=>r('ok');}):'ok';}};
+ const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ const first=f.sessions[0].attachmentRequest('first');await settle(()=>!!release);
+ const second=f.sessions[0].attachmentRequest('second');const control=f.sessions[0].custodyRequest('{}');
+ release();await first;f.advance(50);await control;await second;
+ assert.deepEqual(received,['first','control','second']);
+});
+
+test('closing an axon drains all locally queued attachment requests',async t=>{
+ const hooks={onAttachment:async()=> 'ok'};
+ const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ f.transport.blackhole();const requests=Array.from({length:4},()=>f.sessions[0].attachmentRequest('{}'));
+ await new Promise(r=>setImmediate(r));f.sessions[0].stop();
+ assert.deepEqual(await Promise.all(requests),[null,null,null,null]);
+});
+
 test('an old peer cannot be sent attachment frames',async t=>{
  const f=pair(t,{0:{onAttachment:async()=>'{"status":"ok"}'}});await Promise.all(f.sessions.map(s=>s.ready));
  assert.equal(f.sessions[0].supportsAttachments(),false);assert.equal(await f.sessions[0].attachmentRequest('{}'),null);
@@ -870,4 +1086,205 @@ test('first-contact custody resolves a signed sender record before decrypting an
  assert.equal(await load('custodyProtocol').verifyCustody(receipt,records,now),true);
  const composition=require('node:fs').readFileSync('src/composition/neuronRuntime.ts','utf8');
  assert.match(composition,/receiveCustody\(envelope,operationalRecords,receiveMessage\)/);
+});
+
+test('native ticks release queued custody polling when background JS timers are suspended',async t=>{
+ let release;
+ const hooks={onCustody:async raw=>raw==='first'?await new Promise(r=>{release=()=>r('first-ok');}):'second-ok'};
+ const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ const original=setTimeout;global.setTimeout=()=>({});
+ try{
+  const first=f.sessions[0].custodyRequest('first');
+  for(let n=0;n<20&&!release;n++)await Promise.resolve();
+  assert.equal(typeof release,'function');
+  let received=null;const second=f.sessions[0].custodyRequest('second').then(r=>{received=r;});
+  release();assert.equal(await first,'first-ok');
+  for(let n=0;n<30&&received===null;n++){f.advance(30);f.sessions.forEach(s=>s.tick());await new Promise(r=>setImmediate(r));}
+  assert.equal(received,'second-ok');await second;
+ }finally{global.setTimeout=original;}
+});
+
+test('native ticks expire unanswered exchanges when background JS timers are suspended',async t=>{
+ const hooks={onCustody:async()=> 'ok'};
+ const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ const original=setTimeout;global.setTimeout=()=>({});
+ try{
+  f.transport.blackhole();let done=false;
+  const request=f.sessions[0].custodyRequest('poll').then(r=>{assert.equal(r,null);done=true;});
+  f.advance(4001);f.sessions[0].tick();await new Promise(r=>setImmediate(r));
+  assert.equal(done,true);assert.equal(f.sessions[0].snapshot().closeReason,'exchange-timeout:custody');await request;
+ }finally{global.setTimeout=original;}
+});
+
+function mediaClock(t,f){const timer=setInterval(()=>{f.advance(5);f.sessions.forEach(s=>s.tick());},5);t.after(()=>clearInterval(timer));}
+
+test('small RTC batches negotiate independently, fit worst-case proofs, and retain control traffic',async t=>{
+ const data='A'.repeat(4*Math.ceil(3*(4096+16+32*16)/3));
+ const sample=JSON.stringify({status:'ok',data,custodians:Array.from({length:10},()=> 'axonic:1:'+'f'.repeat(64))});
+ const hooks={onAttachment:async()=>sample,onCustody:async()=> 'control'};
+ const f=pair(t,{0:hooks,1:hooks},['small','small']);await Promise.all(f.sessions.map(s=>s.ready));
+ assert(f.sessions.every(s=>s.supportsAttachmentBulk()&&s.attachmentBatchChunks()===3));
+ const request=JSON.stringify({operation:'direct-get-batch',count:3});
+ assert.equal(await f.sessions[0].attachmentBulkRequest(request),sample);
+ assert.equal(await f.sessions[0].custodyRequest('{}'),'control');
+ assert(f.transport.history.flat().every(raw=>Buffer.byteLength(raw)<=20000));
+ assert.equal(await f.sessions[0].attachmentBulkRequest(JSON.stringify({operation:'direct-get-batch',count:4})),null);
+ const old=pair(t,{0:hooks,1:hooks},['small',true]);await Promise.all(old.sessions.map(s=>s.ready));
+ assert(!old.sessions[0].supportsAttachmentBulk());
+});
+
+test('small batches reject oversized requests before serving and retain the 20KB receive bound',async t=>{
+ let called=0;const hooks={onAttachment:async()=>{called++;return 'ok';}};
+ const f=pair(t,{0:hooks,1:hooks},['small','small']);await Promise.all(f.sessions.map(s=>s.ready));
+ f.transport.inject(0,{version:1,kind:'bulk-request',id:1,body:JSON.stringify({operation:'direct-get-batch',count:128})});
+ await settle(()=>f.sessions[0].snapshot().state==='closed');assert.equal(called,0);
+ const g=pair(t,{0:hooks,1:hooks},['small','small']);await Promise.all(g.sessions.map(s=>s.ready));
+ g.transport.inject(0,{version:1,kind:'bulk-response',id:1,body:'x'.repeat(20001)});
+ await settle(()=>g.sessions[0].snapshot().state==='closed');
+});
+
+test('authenticated bulk response delivers a bounded batch while control remains usable',async t=>{
+ const sample='A'.repeat(790000),hooks={onAttachment:async()=>sample,onCustody:async()=> 'control'};
+ const f=pair(t,{0:hooks,1:hooks},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
+ assert(f.sessions.every(s=>s.supportsAttachmentBulk()));
+ assert.equal(await f.sessions[0].attachmentBulkRequest('{}'),sample);
+ assert.equal(await f.sessions[0].custodyRequest('{}'),'control');assert.equal(f.sessions[0].snapshot().state,'connected');
+});
+test('bulk capability requires both adapters and still rejects oversized control frames',async t=>{
+ const hooks={onAttachment:async()=> 'ok'};
+ const old=pair(t,{0:hooks,1:hooks},['bulk',true]);await Promise.all(old.sessions.map(s=>s.ready));
+ assert.equal(old.sessions[0].supportsAttachmentBulk(),false);assert.equal(await old.sessions[0].attachmentBulkRequest('{}'),null);
+ assert.equal(await old.sessions[0].attachmentRequest('{}'),'ok');
+ const f=pair(t,{0:hooks,1:hooks},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
+ f.transport.inject(0,{version:1,kind:'request',id:123,operation:'custody',body:'x'.repeat(20001)});
+ await settle(()=>f.sessions[0].snapshot().state==='closed');assert.equal(f.sessions[0].snapshot().closeReason,'oversized-control');
+});
+test('bulk requests drain on close and oversized responses close the session',async t=>{
+ const hooks={onAttachment:async()=> 'x'.repeat(850001)};
+ const f=pair(t,{0:hooks,1:hooks},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
+ assert.equal(await f.sessions[0].attachmentBulkRequest('{}'),null);assert.equal(f.sessions[0].snapshot().state,'closed');
+ const g=pair(t,{0:hooks,1:hooks},['bulk','bulk']);await Promise.all(g.sessions.map(s=>s.ready));g.transport.blackhole();
+ const pending=g.sessions[0].attachmentBulkRequest('{}');g.sessions[0].stop();assert.equal(await pending,null);
+});
+
+test('media bursts use at most four credits and refill at the original average rate',async t=>{
+ let hold=false;const releases=new Map(),hooks={onAttachment:async raw=>hold?new Promise(r=>releases.set(raw,r)):raw};
+ const f=pair(t,{0:hooks,1:hooks},[true,true]);await Promise.all(f.sessions.map(s=>s.ready));
+ for(let i=0;i<6;i++){f.advance(5);assert.equal(await f.sessions[0].attachmentRequest('warm'),'warm');}
+ f.advance(20);hold=true;
+ const batch=['a','b','c','d'].map(raw=>f.sessions[0].attachmentRequest(raw));
+ await settle(()=>releases.size===4);assert.equal(f.sessions[0].snapshot().mediaInFlight,4);
+ for(const name of ['a','b','c','d'])releases.get(name)(name);await Promise.all(batch);
+ const next=f.sessions[0].attachmentRequest('next');await new Promise(setImmediate);assert(!releases.has('next'));
+ f.advance(4);f.sessions[0].tick();await new Promise(setImmediate);assert(!releases.has('next'));
+ f.advance(1);f.sessions[0].tick();await settle(()=>releases.has('next'));releases.get('next')('next');assert.equal(await next,'next');
+ // A backwards wall clock cannot mint credits.
+ f.advance(-100);const backwards=f.sessions[0].attachmentRequest('backwards');await new Promise(setImmediate);assert(!releases.has('backwards'));
+ f.sessions[0].stop();assert.equal(await backwards,null);
+});
+test('media lane pipelines replies out of order while control completes independently',async t=>{
+ let hold=false;const releases=new Map();
+ const hooks={onCustody:async()=> 'control',onAttachment:async raw=>hold?new Promise(r=>releases.set(raw,r)):raw};
+ const f=pair(t,{0:hooks,1:hooks},[true,true]);await Promise.all(f.sessions.map(s=>s.ready));mediaClock(t,f);
+ for(let i=0;i<6;i++)assert.equal(await f.sessions[0].attachmentRequest('warm'),'warm');
+ hold=true;
+ const batch=['a','b','c','d'].map(raw=>f.sessions[0].attachmentRequest(raw));
+ await settle(()=>releases.size===4);
+ assert.equal(await f.sessions[0].attachmentRequest('overflow'),null);
+ assert.equal(await f.sessions[0].custodyRequest('{}'),'control');
+ for(const name of ['d','b','a','c'])releases.get(name)(name+'-ok');
+ assert.deepEqual(await Promise.all(batch),['a-ok','b-ok','c-ok','d-ok']);
+ assert(f.sessions.every(s=>s.snapshot().state==='connected'));
+ assert(f.transport.history[0].some(raw=>JSON.parse(raw).kind==='media-request'));
+});
+test('new media peer falls back to serialized attachments with an old adapter',async t=>{
+ const hooks={onAttachment:async raw=>raw};const f=pair(t,{0:hooks,1:hooks},[true,false]);
+ await Promise.all(f.sessions.map(s=>s.ready));assert.equal(await f.sessions[0].attachmentRequest('old'),'old');
+ assert(f.sessions.every(s=>!s.snapshot().mediaLane));assert(!f.transport.history.flat().some(raw=>JSON.parse(raw).kind==='media-request'));
+});
+test('media lane timeout and close drain requests without retaining pending buffers',async t=>{
+ const hooks={onAttachment:async raw=>raw};const f=pair(t,{0:hooks,1:hooks},[true,true]);
+ await Promise.all(f.sessions.map(s=>s.ready));f.transport.blackhole();
+ const requests=Array.from({length:4},()=>f.sessions[0].attachmentRequest('{}'));
+ await new Promise(r=>setImmediate(r));f.advance(4001);f.sessions[0].tick();
+ assert.deepEqual(await Promise.all(requests),[null,null,null,null]);
+ assert.equal(f.sessions[0].snapshot().mediaInFlight,0);assert.equal(f.sessions[0].snapshot().state,'connected');
+ f.sessions[0].stop();assert.equal(f.sessions[0].snapshot().mediaInFlight,0);
+});
+test('media lane rejects unnegotiated frames and cannot bypass authentication',async t=>{
+ const hooks={onAttachment:async raw=>raw};const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ f.transport.inject(0,{version:1,kind:'media-request',id:123,body:'{}'});
+ await settle(()=>f.sessions[0].snapshot().state==='closed');
+ assert.equal(f.sessions[0].snapshot().closeReason,'invalid-media-request');
+});
+for(const bulk of [false,true])test(`one expired media request preserves authentication and ignores only its matching late reply: bulk=${bulk}`,async t=>{
+ let release,hold=true;const hooks={onAttachment:async raw=>hold?new Promise(r=>release=r):raw,onCustody:async()=> 'control'};
+ const f=pair(t,{0:hooks,1:hooks},bulk?['small','small']:[true,true]);await Promise.all(f.sessions.map(s=>s.ready));
+ const raw=JSON.stringify({operation:'direct-get-batch',count:3});
+ const request=()=>bulk?f.sessions[0].attachmentBulkRequest(raw):f.sessions[0].attachmentRequest(raw);
+ const pending=request();await settle(()=>!!release);f.advance(bulk?15001:4001);f.sessions[0].tick();
+ assert.equal(await pending,null);assert.equal(f.sessions[0].snapshot().state,'connected');assert.equal(f.sessions[0].snapshot().mediaInFlight,0);
+ release(raw);await new Promise(r=>setImmediate(r));assert.equal(f.sessions[0].snapshot().state,'connected');
+ assert.equal(await f.sessions[0].custodyRequest('{}'),'control');
+ hold=false;f.advance(5);assert.equal(await request(),raw);assert.equal(f.sessions[0].snapshot().consecutiveMediaTimeouts,0);
+ f.transport.inject(0,{version:1,kind:bulk?'bulk-response':'media-response',id:999999,body:'unsolicited'});
+ await settle(()=>f.sessions[0].snapshot().state==='closed');assert.equal(f.sessions[0].snapshot().closeReason,'invalid-media-response');
+});
+
+test('three consecutive media timeouts still close the axon',async t=>{
+ let calls=0;const hooks={onAttachment:async()=>{calls++;return new Promise(()=>{});}};
+ const f=pair(t,{0:hooks,1:hooks},[true,true]);await Promise.all(f.sessions.map(s=>s.ready));
+ for(let i=1;i<=3;i++){const pending=f.sessions[0].attachmentRequest('{}');await settle(()=>calls===i);f.advance(4001);f.sessions[0].tick();assert.equal(await pending,null);}
+ assert.equal(f.sessions[0].snapshot().state,'closed');assert.equal(f.sessions[0].snapshot().closeReason,'repeated-media-timeout');
+});
+
+test('media lane shrinks its window when a receiver responds slowly',async t=>{
+ let release,slow=false;const hooks={onAttachment:async raw=>slow?new Promise(r=>release=r):raw};
+ const f=pair(t,{0:hooks,1:hooks},[true,true]);await Promise.all(f.sessions.map(s=>s.ready));
+ for(let i=0;i<6;i++){f.advance(5);await f.sessions[0].attachmentRequest('warm');}
+ assert.equal(f.sessions[0].snapshot().mediaWindow,4);slow=true;f.advance(5);
+ const pending=f.sessions[0].attachmentRequest('slow');await settle(()=>!!release);f.advance(1001);release('ok');await pending;
+ assert.equal(f.sessions[0].snapshot().mediaWindow,2);
+});
+
+test('media lane enforces four inbound operations even for an authenticated peer',async t=>{
+ let calls=0;const hooks={onAttachment:async()=>{calls++;return new Promise(()=>{});}};
+ const f=pair(t,{0:hooks,1:hooks},[true,true]);await Promise.all(f.sessions.map(s=>s.ready));
+ for(let id=100;id<105;id++)f.transport.inject(0,{version:1,kind:'media-request',id,body:'{}'});
+ await settle(()=>f.sessions[0].snapshot().state==='closed');assert.equal(calls,4);
+ assert.equal(f.sessions[0].snapshot().closeReason,'invalid-media-request');
+});
+test('media lane remains authenticated during paced bidirectional traffic and renewal',async t=>{
+ const hooks={onAttachment:async()=> 'ok',onCustody:async()=> 'control'};
+ const f=pair(t,{0:hooks,1:hooks},[true,true]);await Promise.all(f.sessions.map(s=>s.ready));
+ for(let i=0;i<2000;i++){
+  f.advance(10);for(const session of f.sessions)assert.equal(await session.attachmentRequest('{}'),'ok');
+ }
+ f.advance(10);f.sessions.forEach(s=>s.tick());await settle(()=>f.transport.history[0].filter(raw=>raw.includes('authenticate')).length>=2);
+ for(const session of f.sessions){assert.equal(session.snapshot().state,'connected');assert.equal(await session.custodyRequest('{}'),'control');}
+});
+
+test('measured media window uses actual authenticated axon scheduling with identical payloads',{skip:!process.env.AXON_MEDIA_BENCHMARK},async t=>{
+ const sample='a'.repeat(8192),results=[];
+ for(const enabled of [false,true]){
+  const hooks={onAttachment:async()=>sample};const f=pair(t,{0:hooks,1:hooks},[enabled,enabled],10);await Promise.all(f.sessions.map(s=>s.ready));mediaClock(t,f);
+  const start=performance.now();for(let index=0;index<64;index+=4){const replies=await Promise.all(Array.from({length:4},()=>f.sessions[0].attachmentRequest('{}')));for(const reply of replies)assert.equal(reply,sample);}
+  results.push({mediaLane:enabled,bytes:256*1024,oneWayDelayMs:10,elapsedMs:Math.round(performance.now()-start),state:f.sessions[0].snapshot().state});f.sessions.forEach(s=>s.stop());
+ }
+ t.diagnostic(JSON.stringify(results));assert(results.every(r=>r.state==='connected'));
+});
+
+test('media scheduler benchmark with coarse mobile-like timers',{skip:!process.env.AXON_SCHEDULER_BENCHMARK},async t=>{
+ const code=ts.transpileModule(fs.readFileSync('src/services/identity/persistentAxon.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText,out={};
+ new Function('require','exports','setTimeout',code)(n=>n.startsWith('./')?load(n.slice(2).replace(/\.ts$/,'')):require(n),out,(cb,ms)=>setTimeout(cb,Math.max(16,ms)));
+ const results=[],sample='a'.repeat(8192);
+ for(let round=0;round<3;round++){
+  const epoch=Date.now(),hooks={now:()=>now+Date.now()-epoch,onAttachment:async()=>sample};
+  const f=pair(t,{0:hooks,1:hooks},[true,true],10,out.createPersistentAxon);await Promise.all(f.sessions.map(s=>s.ready));
+  const start=performance.now();for(let index=0;index<192;index+=4){
+   const replies=await Promise.all(Array.from({length:4},()=>f.sessions[0].attachmentRequest('{}')));assert(replies.every(r=>r===sample));
+  }
+  results.push(Math.round(performance.now()-start));assert.equal(f.sessions[0].snapshot().state,'connected');f.sessions.forEach(s=>s.stop());
+ }
+ t.diagnostic(JSON.stringify({scope:'simulated 16ms timer floor, 10ms one-way link, 192 chunks; no phone I/O',milliseconds:results}));
 });

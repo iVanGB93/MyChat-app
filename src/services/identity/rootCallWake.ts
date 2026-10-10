@@ -9,6 +9,7 @@ import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {ensureCallChannel} from '../callNotificationChannel';
 import type {CallControl} from './callControlProtocol';
 import type {NeuronCallView} from './neuronCallCoordinator';
+import {DEVICE_REMOVAL_KEY} from './deviceRemoval';
 const KEY='@axonic_root_call_wake_owner_v1';
 const diagnostic={received:0,verified:0,stored:0,displayed:0,stage:'idle'};
 export const rootCallWakeDiagnostics=()=>({...diagnostic});
@@ -23,6 +24,7 @@ export async function registerRootCallWakeOwner(account:string,device:string){
  await AsyncStorage.setItem(KEY,JSON.stringify({account,device}));
 }
 export async function rootWakeContext(){
+ if(await AsyncStorage.getItem(DEVICE_REMOVAL_KEY))return null;
  const [raw,vault]=await Promise.all([AsyncStorage.getItem(KEY),AsyncStorage.getItem('@axonic_local_account_v1')]);
  if(!raw||!vault)return null;const owner=JSON.parse(raw),record=JSON.parse(vault).record;
  return validAccountId(owner.account)&&record?.account===owner.account&&record.devices?.some((d:{id:string})=>d.id===owner.device)?owner as {account:string;device:string}:null;
@@ -33,6 +35,17 @@ export async function rootWakeBlocked(owner:string,sender:string){
  return ledger.contacts.some((c:{account:string;blocked:boolean})=>c.account===sender&&c.blocked);
 }
 const context=rootWakeContext,blocked=rootWakeBlocked;
+/** Caller names come only from this account's saved nicknames, after verification. */
+async function callerName(owner:string,sender:string){
+ try{
+  const raw=await AsyncStorage.getItem('@axonic_root_chat_v1:'+owner);
+  const ledger=raw?JSON.parse(raw):null;
+  if(ledger?.version!==1||!Array.isArray(ledger.contacts))return 'Unknown caller';
+  const contact=ledger.contacts.find((c:{account:string})=>c?.account===sender);
+  if(typeof contact?.alias!=='string'||contact.alias.length>80)return 'Unknown caller';
+  return contact.alias.trim().replace(/\s+/g,' ')||'Unknown caller';
+ }catch{return 'Unknown caller';}
+}
 let liveNotice:string|null=null;
 /** Called only with the verified coordinator view, including direct axon delivery. */
 export async function syncRootCallNotification(account:string,view:NeuronCallView<string>|null){
@@ -43,16 +56,17 @@ export async function syncRootCallNotification(account:string,view:NeuronCallVie
   if(!ringing){if(id)await notifee.cancelNotification(id);return;}
   if(liveNotice===id||(await context())?.account!==account||await blocked(account,view.peerUser))return;
   if(!(await readRootNotificationPreferences(account)).calls)return;
+  const name=await callerName(account,view.peerUser);
   await ensureCallChannel();
   if(AppState.currentState==='active'||(await context())?.account!==account)return;
-  await notifee.displayNotification({id:id!,title:'Axonic call',body:'Open Axonic to answer an incoming '+view.media+' call',
+  await notifee.displayNotification({id:id!,title:name,body:'Incoming '+view.media+' call. Open Axonic to answer.',
    data:{type:'root_neuron_call',callId:view.id,account},
    android:{channelId:'incoming-calls-v2',category:AndroidCategory.CALL,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
     pressAction:{id:'root-call-open',launchActivity:'default'},timeoutAfter:60000}});
   liveNotice=id;
  });
 }
-/** Only signed public metadata is read while locked. No vault unlock or private-key access. */
+/** Signed wake metadata and local contact labels are read while locked; no private keys. */
 export async function receiveRootCallWake(data:unknown){
  diagnostic.received++;diagnostic.stage='context';
  const owner=await context(),sender=callWakeSender(data);if(!owner||!sender||await blocked(owner.account,sender))return;
@@ -75,10 +89,11 @@ export async function receiveRootCallWake(data:unknown){
   if(event.kind!=='invite'){await notifee.cancelNotification(id);return;}
   if(!(await readRootNotificationPreferences(owner.account)).calls)return;
   if(!changed||AppState.currentState==='active'||event.expiresAt<=Date.now()||await blocked(owner.account,sender))return;
+  const name=await callerName(owner.account,sender);
   if((await context())?.account!==owner.account)return;
   diagnostic.stage='channel';await ensureCallChannel();
   diagnostic.stage='display';
-  await notifee.displayNotification({id,title:'Axonic call',body:'Unlock Axonic to answer an incoming '+event.media+' call',data:{type:'root_neuron_call',callId:event.callId,account:owner.account},
+  await notifee.displayNotification({id,title:name,body:'Incoming '+event.media+' call. Open Axonic to answer.',data:{type:'root_neuron_call',callId:event.callId,account:owner.account},
    android:{channelId:'incoming-calls-v2',category:AndroidCategory.CALL,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
     pressAction:{id:'root-call-open',launchActivity:'default'},timeoutAfter:Math.max(1,event.expiresAt-Date.now())}});
   diagnostic.displayed++;diagnostic.stage='displayed';

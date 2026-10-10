@@ -11,6 +11,13 @@ function fixture(overrides={}){const data={vault:null,secret:null};const storage
 async function created(){const f=fixture();f.words=await f.id.beginCreate();await f.id.confirmBackup(f.words,password);return f;}
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
 
+test('six-character passwords support creation, cold unlock and recovery',async()=>{
+ const f=fixture(),phrase=await f.id.beginCreate();await f.id.confirmBackup(phrase,'six123');
+ const packet=f.id.recoveryRecord();f.id.lock();await f.id.unlock('six123');assert.equal(f.id.status().state,'unlocked');
+ const recovered=fixture();await recovered.id.restore(phrase,packet,'new123');await recovered.id.unlock('new123');
+ assert.equal(recovered.id.status().account,f.id.status().account);
+});
+
 test('device identity lookup avoids repeated curve work without surviving lock or bypassing busy state',async()=>{
  const f=await created(),protocol=load('identityProtocol'),original=protocol.publicDevice;
  let derivations=0;protocol.publicDevice=(...args)=>{derivations++;return original(...args);};
@@ -32,7 +39,7 @@ test('device identity lookup avoids repeated curve work without surviving lock o
 test('creation requires the exact backup, rejects a weak password, and survives cold unlock',async()=>{
  const f=fixture(),words=await f.id.beginCreate();assert.equal(f.data.vault,null);
  await assert.rejects(f.id.confirmBackup('wrong words',password),/do not match/);
- await assert.rejects(f.id.confirmBackup(words,'short'),/12 and 256/);assert.equal(f.data.vault,null);
+ await assert.rejects(f.id.confirmBackup(words,'short'),/6 and 256/);assert.equal(f.data.vault,null);
  await f.id.confirmBackup(words,password);const account=f.id.status().account,packet=f.id.recoveryRecord();
  assert(!packet.includes(words));assert(!packet.includes(password));assert(!f.data.vault.includes(words));assert(!f.data.vault.includes(password));
  f.id.lock();assert.throws(()=>f.id.recoveryRecord(),/Unlock/);
@@ -104,10 +111,10 @@ test('biometrics cannot bypass an unavailable device capability',async()=>{
  const f=await created(),bio=bioFixture(f.id,{available:()=>false});f.id.lock();
  await assert.rejects(bio.api.enroll(password),/Set up/);await assert.rejects(bio.api.unlock(),/unavailable/);assert.equal(f.id.status().state,'locked');
 });
-test('opt-in entry never initializes legacy delivery or authentication; default retains the original entry',()=>{
+test('sole entry registers neuron background handlers regardless of obsolete feature flags',()=>{
  const source=fs.readFileSync('index.ts','utf8');
- function run(flag){const calls=[];new Function('process','require',source)({env:{EXPO_PUBLIC_AXONIC_LOCAL_ACCOUNT:flag}},path=>{calls.push(path);return path==='expo'?{registerRootComponent:()=>calls.push('registered')}:path.endsWith('rootBackgroundEntry')?{registerRootBackgroundHandlers:()=>calls.push('root-background')}:{default:{}};});return calls;}
- assert.deepEqual(run('1'),['./src/services/identity/rootBackgroundEntry','root-background','expo','./src/screens/LocalAccountApp','registered']);assert.deepEqual(run(undefined),['./legacyEntry']);
+ function run(flag){const calls=[];new Function('process','require',source)({env:{EXPO_PUBLIC_AXONIC_LOCAL_ACCOUNT:flag}},path=>{calls.push(path);return path.endsWith('crashReporting')?{configureCrashReporting:()=>calls.push('crash-init')}:path==='expo'?{registerRootComponent:()=>calls.push('registered')}:path.endsWith('rootBackgroundEntry')?{registerRootBackgroundHandlers:()=>calls.push('root-background')}:{default:{}};});return calls;}
+ assert.deepEqual(run('1'),['./src/services/crashReporting','crash-init','./src/services/identity/rootBackgroundEntry','root-background','expo','./src/screens/LocalAccountApp','registered']);assert.deepEqual(run(undefined),run('1'));assert.deepEqual(run('0'),run('1'));
 });
 
 
@@ -159,4 +166,15 @@ test('failed password change storage write retains the previous password',async(
  const storage={...f.storage,writeVault:async()=>{throw Error('disk');}},broken=createLocalIdentityController(storage,random,()=>now,derive);
  await broken.inspect();await broken.unlock(password);await assert.rejects(broken.changePassword(password,'a new valid password'),/disk/);assert.equal(f.data.vault,original);
  broken.lock();f.id.lock();await f.id.unlock(password);f.id.lock();
+});
+
+test('device removal requires current password and exact account, then destroys access and blocks all reentry',async()=>{
+ const f=await created();let intent=null;f.storage.beginRemoval=async account=>{intent=account;};const account=f.id.status().account;
+ await assert.rejects(f.id.prepareDeviceRemoval('wrong password',account));assert.equal(intent,null);assert.equal(f.id.status().state,'unlocked');
+ await assert.rejects(f.id.prepareDeviceRemoval(password,'axonic:1:'+'ab'.repeat(32)));assert.equal(intent,null);
+ await f.id.prepareDeviceRemoval(password,account);assert.equal(intent,account);assert.equal(f.id.status().state,'locked');assert.equal(f.id.status().removalPending,true);assert.equal(f.id.publicRecord(),null);assert.equal(f.id.callDevice(),null);assert.throws(()=>f.id.recoveryRecord());
+ await assert.rejects(f.id.unlock(password),/reopen/);await assert.rejects(f.id.beginCreate(),/reopen/);assert(f.data.vault);assert(f.data.secret);
+});
+test('ambiguous removal-journal failure locks without falsely deleting the vault',async()=>{
+ const f=await created(),saved=f.data.vault;f.storage.beginRemoval=async()=>{throw Error('write unavailable');};await assert.rejects(f.id.prepareDeviceRemoval(password,f.id.status().account),/write unavailable/);assert.equal(f.data.vault,saved);assert.equal(f.id.publicRecord(),null);assert.equal(f.id.status().removalPending,true);
 });

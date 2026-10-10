@@ -6,7 +6,7 @@
 /*    Both    → trickle ICE candidates + full SDP with gathered ICE    */
 /*                                                                      */
 /*  ICE/TURN strategy                                                   */
-/*    On mount the hook fetches /api/calls/ice-config/ which returns   */
+/*    The authenticated neuron adapter supplies ICE configuration:   */
 /*    STUN + TURN servers configured for the user's connectivity mode: */
 /*      auto   → try P2P first, fall back to TURN relay               */
 /*      p2p    → STUN only, never use relay                            */
@@ -25,7 +25,7 @@ import {
 
 
 import { debugLog } from '../services/diagnostics';
-import { scopeCallSignal, readCallSignal } from '../services/call-signal';
+import { readCallSignal } from '../services/call-signal';
 import { createMediaPrewarmer } from '../services/media-prewarmer';
 import { videoQualityParameters, type VideoQualityMode } from '../services/video-quality';
 import type { CallType, IceConfig } from '../types';
@@ -102,9 +102,9 @@ export interface UseWebRTCOptions {
   callId: string;
   callType: CallType;
   isOutgoing: boolean;
-  /** The other user's numeric ID (needed for sendSignal). */
+  /** The peer identity for this call. */
   peerUserId: number | string;
-  /** Omit for existing Django calls. A neuron adapter owns signaling and ICE configuration. */
+  /** The authenticated neuron adapter owns signaling and ICE configuration. */
   mediaTransport?: CallMediaTransport;
   /** Called when the peer connection reaches the connected state. */
   onConnected?: () => void;
@@ -112,12 +112,6 @@ export interface UseWebRTCOptions {
   onDisconnected?: () => void;
 }
 
-export interface LegacyMediaAdapter {
- sendSignal(user:number,type:string,data:any):void;
- subscribe(listener:(payload:any)=>void):()=>void;
- loadIceConfig():Promise<IceConfig>;
-}
-const noLegacy:LegacyMediaAdapter={sendSignal(){throw Error("Call transport unavailable");},subscribe(){return()=>{};},loadIceConfig:async()=>{throw Error("Call transport unavailable");}};
 export default function useWebRTCCore({
   callId,
   callType,
@@ -126,18 +120,16 @@ export default function useWebRTCCore({
   mediaTransport,
   onConnected,
   onDisconnected,
-}: UseWebRTCOptions, legacy:LegacyMediaAdapter=noLegacy) {
-  const { sendSignal: sendRawSignal, subscribe } = legacy;
+}: UseWebRTCOptions) {
   const disconnectedRef = useRef(onDisconnected);
   disconnectedRef.current = onDisconnected;
-  const sendSignal = useCallback((userId: number | string, type: string, data: any) => {
+  const sendSignal = useCallback((_userId: number | string, type: string, data: any) => {
     if (cleanedUp.current) return;
-    if (mediaTransport) {
-      void mediaTransport.send(type, data).then(sent => {
+    if (!mediaTransport) { disconnectedRef.current?.(); return; }
+    void mediaTransport.send(type, data).then(sent => {
         if (!sent && !cleanedUp.current) disconnectedRef.current?.();
       }).catch(() => { if (!cleanedUp.current) disconnectedRef.current?.(); });
-    } else if(typeof userId==='number') sendRawSignal(userId, type, scopeCallSignal(data, callId));
-  }, [sendRawSignal, callId, mediaTransport]);
+  }, [mediaTransport]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const [videoQualityMode, setVideoQualityMode] = useState<VideoQualityMode>('automatic');
@@ -173,7 +165,7 @@ export default function useWebRTCCore({
 
   /* ---- Resolve this call's ICE configuration before negotiating ---- */
   useEffect(() => {
-    iceConfigReadyRef.current = (mediaTransport ? mediaTransport.loadIceConfig() : legacy.loadIceConfig()).then((cfg) => {
+    iceConfigReadyRef.current = (mediaTransport?.loadIceConfig() ?? Promise.reject(Error('Call transport unavailable'))).then((cfg) => {
       if (cleanedUp.current) return;
       iceConfigRef.current = cfg;
       debugLog(
@@ -181,7 +173,7 @@ export default function useWebRTCCore({
       );
     }).catch(() => {
       if (cleanedUp.current) return;
-      // A failed neuron configuration must not fall through to Django or start an offer.
+      // A failed configuration must not start an offer.
       cleanup();
       disconnectedRef.current?.();
     });
@@ -419,7 +411,7 @@ export default function useWebRTCCore({
         iceServers: ice_servers,
         iceTransportPolicy: ice_transport_policy,
         // Neuron peers support BUNDLE: use one allocation for audio and video.
-        ...(mediaTransport?{bundlePolicy:'max-bundle' as const}:{}),
+        bundlePolicy:'max-bundle' as const,
       } as any);
       pcRef.current = pc;
       if(typeof __DEV__ !== 'undefined' && __DEV__)developmentPeers.set(callId,pc);
@@ -444,7 +436,7 @@ export default function useWebRTCCore({
       (pc as any).onicecandidate = (event: any) => {
         // Neuron descriptions already include gathered candidates. Avoid putting each signed
         // candidate ahead of the offer in the durable-admission queue; retain late trickle ICE.
-        if (mediaTransport && !fullDescriptionSent.current) return;
+        if (!fullDescriptionSent.current) return;
         if (event.candidate) {
           sendSignal(peerUserId, 'ice-candidate', event.candidate.toJSON());
         }
@@ -600,13 +592,9 @@ export default function useWebRTCCore({
       }).catch(() => { if (subscribed && !cleanedUp.current) disconnectedRef.current?.(); })
         .finally(() => { queuedSignals--; });
     };
-    const unsub = mediaTransport
-      ? mediaTransport.subscribe((kind, data) => handle(kind, peerUserId, data))
-      : subscribe(payload => {
-        if (payload.event === 'webrtc_signal') handle(payload.signal_type, payload.from_user_id, payload.data);
-      });
+    const unsub = mediaTransport?.subscribe((kind, data) => handle(kind, peerUserId, data)) ?? (() => {});
     return () => { subscribed = false; unsub(); };
-  }, [subscribe, mediaTransport, peerUserId, callId, acquireMedia, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
+  }, [mediaTransport, peerUserId, callId, acquireMedia, createPeerConnection, flushCandidates, sendSignal, waitForIceGathering]);
 
   /* ---- Kick off the right flow on mount ---- */
   useEffect(() => {

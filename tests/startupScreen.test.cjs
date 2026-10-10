@@ -62,8 +62,7 @@ test('icon scales down for small screens and respects safe areas', () => {
   assert.equal(screen.props.style.paddingBottom, 24);
 });
 
-test('theme hydration and authentication share the same loading screen', () => {
+test('theme hydration uses the shared loading screen', () => {
   const read = (file) => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
   assert.match(read('src/contexts/ThemeContext.tsx'), /if \(!loaded\) return <StartupScreen \/>;/);
-  assert.match(read('src/navigation/AppNavigator.tsx'), /if \(isLoading\) \{\s*return <StartupScreen \/>;/);
 });

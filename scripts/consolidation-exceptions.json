@@ -1,0 +1,10 @@
+{
+  "src/services/identity/chatBindingTransport.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility.",
+  "src/services/identity/identityHttp.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility.",
+  "src/services/identity/identityHttpTransport.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility.",
+  "src/services/identity/neuronIdentityConnection.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility.",
+  "src/services/identity/normalChatOutbox.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility.",
+  "src/services/transports/mailboxProtocol.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility.",
+  "src/services/transports/neuronExchange.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility.",
+  "src/services/transports/neuronSignaling.ts": "Shared protocol copied into Axonic-neuron; retained for hosted compatibility."
+}

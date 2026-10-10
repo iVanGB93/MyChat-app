@@ -4,11 +4,15 @@ import { createRootChatLedger } from './rootChatLedger';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {verifyAttachmentManifest,verifyAttachmentReceipt} from './attachmentProtocol';
 const ledgers=new Map<string,ReturnType<typeof createRootChatLedger>>();
+const queuedListeners=new Set<(owner:string,peer:string,id:string)=>void>();
+export function subscribeRootChatQueued(listener:(owner:string,peer:string,id:string)=>void){queuedListeners.add(listener);return()=>{queuedListeners.delete(listener);};}
 export function localRootChat(){
  const owner=localAccount.status().account;
  if(!owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account first');
  let ledger=ledgers.get(owner);if(!ledger){const store=ownChatStore(owner);
   ledger=createRootChatLedger({owner,...store,now:Date.now,
+   signGroup:group=>localAccount.signGroup(group),
+   queued:(peer,id)=>{for(const listener of queuedListeners){try{listener(owner,peer,id);}catch{/* Durable outbox retries on its normal timer. */}}},
    verifyAttachment:async(descriptor,direction)=>{const m=descriptor.manifest,record=direction==='outgoing'?localAccount.publicRecord():await createMobileIdentityRecordStore(Date.now).read(m.sender);
     return !!record&&verifyAttachmentManifest(m,record,Date.now())&&(direction==='outgoing'?m.senderDevice:m.recipientDevice)===localAccount.callDevice();},
    verifyAttachmentReceipt:async(descriptor,receipt)=>{const m=descriptor.manifest,record=m.recipient===owner?localAccount.publicRecord():await createMobileIdentityRecordStore(Date.now).read(m.recipient);

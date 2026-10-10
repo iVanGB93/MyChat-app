@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal object IdentityKdf {
   private val running = AtomicBoolean(false)
   fun derive(password: String, saltHex: String): String {
-    require(password.length in 12..256) { "Invalid password length" }
+    require(password.length in 6..256) { "Use a password between 6 and 256 characters" }
     require(saltHex.matches(Regex("[0-9a-f]{64}"))) { "Invalid password salt" }
     check(running.compareAndSet(false, true)) { "Password derivation already running" }
     var passwordBytes: ByteArray? = null

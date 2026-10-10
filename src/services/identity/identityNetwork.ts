@@ -142,6 +142,9 @@ export function createIdentityNetwork(d: {
     },
     attachmentPeers(){const ranks={lan:0,private:1,internet:2};return (pool?.snapshot().connections??[]).filter(c=>c.state==='connected'&&[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).sort((a,b)=>ranks[a.route]-ranks[b.route]).map(c=>c.account);},
     attachmentRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.snapshot().state==='connected')?.attachmentRequest(raw)??Promise.resolve(null);},
+    attachmentBulkPeers(){return [...sessions].filter(s=>s.supportsAttachmentBulk()).map(s=>s.snapshot().account!);},
+    attachmentBatchChunks(target:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBatchChunks()??1;},
+    attachmentBulkRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBulkRequest(raw)??Promise.resolve(null);},
     custodyRequest(target: string, raw: string) {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.custodyRequest(raw) ?? Promise.resolve(null);

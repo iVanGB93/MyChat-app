@@ -70,3 +70,36 @@ test('blocked callers, wrong target devices, tampering and a changed local accou
  const other=fixture();await other.init();other.storage.set('@axonic_local_account_v1',JSON.stringify({record:{account:'axonic:1:'+'f'.repeat(64)}}));
  await other.mod.receiveRootCallWake(other.data);assert.equal(other.shown.length,0);
 });
+
+test('pending device removal suppresses wake context and incoming call notifications',async()=>{
+ const f=fixture();await f.mod.registerRootCallWakeOwner(f.recipient.account,f.recipientDevice.id);
+ f.storage.set('@axonic_device_removal_v1',JSON.stringify({version:1,account:f.recipient.account}));
+ assert.equal(await f.mod.rootWakeContext(),null);await f.mod.receiveRootCallWake(f.data);assert.equal(f.shown.length,0);
+});
+
+test('both incoming call paths show only the verified caller’s local nickname',async()=>{
+ for(const path of ['wake','direct']){
+  const f=fixture();await f.init();
+  f.storage.set('@axonic_root_chat_v1:'+f.recipient.account,JSON.stringify({version:1,contacts:[
+   {account:f.sender.account,alias:'  My friend  ',blocked:false},
+   {account:f.recipient.account,alias:'Wrong contact',blocked:false},
+  ]}));
+  if(path==='wake')await f.mod.receiveRootCallWake(f.data);
+  else await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,peerName:'Untrusted name',media:'video',outgoing:false,status:'ringing'});
+  assert.equal(f.shown.length,1,path);assert.equal(f.shown[0].title,'My friend',path);
+  assert.match(f.shown[0].body,path==='wake'?/Incoming voice call/:/Incoming video call/);
+ }
+});
+
+test('new callers and contacts without a nickname get a generic call label',async()=>{
+ for(const path of ['wake','direct'])for(const alias of [undefined,'','   ']){
+  const f=fixture();await f.init();
+  if(alias!==undefined)f.storage.set('@axonic_root_chat_v1:'+f.recipient.account,JSON.stringify({version:1,contacts:[{account:f.sender.account,alias,blocked:false}]}));
+  // Another account's saved name must never leak into this account's notification.
+  f.storage.set('@axonic_root_chat_v1:'+f.sender.account,JSON.stringify({version:1,contacts:[{account:f.sender.account,alias:'Other account nickname',blocked:false}]}));
+  if(path==='wake')await f.mod.receiveRootCallWake(f.data);
+  else await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,peerName:'Untrusted name',media:'voice',outgoing:false,status:'ringing'});
+  assert.equal(f.shown.length,1,path);assert.equal(f.shown[0].title,'Unknown caller',path);
+  assert.ok(!f.shown[0].body.includes(f.sender.account));
+ }
+});

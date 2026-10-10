@@ -1,10 +1,10 @@
 import {AppState} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import notifee from '@notifee/react-native';
+import {cancelRootMessageNotification} from './rootMessageNotification';
 import Native from '../../../modules/axonic-nearby';
-import {localAccount,localAccountSession} from './localAccount';
+import {localAccount,startLocalAccount} from './localAccount';
 import {localRootChat} from './localRootChat';
-import {startLocalAccountNetwork} from './localAccountNetwork';
+import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
 import {rootNotificationTarget,queueRootNotificationOpen} from './rootNotificationRoute';
 import {rootChatView} from './rootChatActions';
 let tail:Promise<unknown>=Promise.resolve();
@@ -14,9 +14,9 @@ export function handleRootNotificationAction(action:string,data:unknown,input?:s
  const task=tail.then(async()=>{
   const target=rootNotificationTarget(data),messageId=(data as {messageId?:string})?.messageId;
   if(!target||!messageId||!/^[a-f0-9]{64}$/.test(messageId))return;
-  if(!localAccount.status().account)await localAccount.inspect();
+  if(localAccount.status().account&&localAccount.status().account!==target.account)return;
+  await startLocalAccount();
   if(localAccount.status().account!==target.account)return;
-  if(localAccount.status().state==='locked')await localAccountSession.initialize();
   if(localAccount.status().state!=='unlocked'){await queueRootNotificationOpen(data);return;}
   const current=()=>localAccount.status().state==='unlocked'&&localAccount.status().account===target.account;
   const ledger=localRootChat(),state=rootChatView(target.account,await ledger.snapshot());
@@ -42,7 +42,7 @@ export function handleRootNotificationAction(action:string,data:unknown,input?:s
   }
   if(!current())return;
   record.done=true;await AsyncStorage.setItem(key,JSON.stringify(saved));
-  await notifee.cancelNotification('root-message:'+target.account+':'+target.sender+':'+messageId);
+  await cancelRootMessageNotification(target.account,target.sender,messageId,target.group);
   // Persist first. The existing delivery queue retains the reply if no peer is reachable.
   const background=AppState.currentState!=='active';if(background&&!Native?.axonMessageWake)return;
   let runtime:ReturnType<typeof startLocalAccountNetwork>|undefined;

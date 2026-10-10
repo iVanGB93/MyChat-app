@@ -24,7 +24,7 @@ function storage(filename = ':memory:') {
       try { await fn(db); sql.exec('COMMIT'); } catch (error) { sql.exec('ROLLBACK'); throw error; }
     },
   };
-  return { ...load('src/services/transports/mailboxStore.ts', { 'expo-sqlite': { openDatabaseAsync: async () => db }, './mailboxProtocol': protocol }), sql };
+  return { ...load('tests/support/transports/mailboxStore.ts', { 'expo-sqlite': { openDatabaseAsync: async () => db }, '../../../src/services/transports/mailboxProtocol': protocol }), sql };
 }
 const keys = new Map([1, 2, 3, 4].map(user => [user, {
   encryption: crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }),

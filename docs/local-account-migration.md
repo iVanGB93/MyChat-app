@@ -1,3 +1,6 @@
+> Historical migration notes. As of October 9, 2026, the neuron app is the only entry.
+> The opt-in flag and Django fallback described below have been removed. See app-modules.md.
+
 # Local-account migration
 
 Status: opt-in development milestone; the legacy app remains the default entry.

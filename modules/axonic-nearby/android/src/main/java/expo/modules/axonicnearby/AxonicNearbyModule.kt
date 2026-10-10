@@ -40,11 +40,13 @@ class AxonicNearbyModule : Module() {
   private data class Peer(val endpoint: String, val address: InetAddress, val port: Int)
   @Volatile private var lane: Lane? = null
   private val axons = AxonSockets()
+  private val attachmentWorkers = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(1))
   private var axonLan: AxonLan? = null
-  private var axonForeground = true
+  private val foregroundGate = AxonForegroundGate()
+  private var backgroundClose: java.util.concurrent.ScheduledFuture<*>? = null
   private var wakeUntil = 0L
   private val wakeTimer = Executors.newSingleThreadScheduledExecutor()
-  private fun transportAllowed() = axonForeground || protectedCall() || SystemClock.elapsedRealtime() < wakeUntil
+  private fun transportAllowed() = foregroundGate.allowed(SystemClock.elapsedRealtime()) || protectedCall() || SystemClock.elapsedRealtime() < wakeUntil
   private var connectedCall = false
   private fun protectedCall(): Boolean {
     if (!connectedCall) return false
@@ -105,6 +107,8 @@ class AxonicNearbyModule : Module() {
       axonWork(promise) { own?.accept() }
     }
     Function("axonClaim") { id: String -> axons.claim(id) }
+    Function("axonEnableMediaLane") { id: String -> axons.enableMediaLane(id) }
+    Function("axonEnableBulkAttachments") { id: String -> axons.enableBulkAttachments(id) }
     Function("axonEnableAttachments") { id: String -> axons.enableAttachments(id) }
     // Experimental identity frames only. Restrict dialing to the current Wi-Fi subnet.
     AsyncFunction("axonConnect") { host: String, port: Int, promise: Promise ->
@@ -165,6 +169,25 @@ class AxonicNearbyModule : Module() {
     AsyncFunction("axonRead") { id: String, promise: Promise -> axonWork(promise) { axons.read(id) } }
     AsyncFunction("axonWrite") { id: String, raw: String, promise: Promise -> axonWork(promise) { axons.write(id, raw); true } }
     Function("axonClose") { id: String -> axons.close(id) }
+    Function("attachmentSha256") { value: String -> AttachmentHash.sha256(value) }
+    AsyncFunction("attachmentFileSha256") { owner: String, digest: String, completed: Boolean, bytes: Double, promise: Promise ->
+      try {
+        require(bytes.isFinite() && bytes == bytes.toLong().toDouble() && bytes >= 1 && bytes <= 250L * 1024 * 1024)
+        val root = requireNotNull(appContext.reactContext).filesDir
+        attachmentWorkers.execute {
+          try { promise.resolve(AttachmentFileHash.sha256(root, owner, digest, completed, bytes.toLong())) }
+          catch (error: Exception) { promise.reject("ATTACHMENT_VERIFY", "Attachment verification failed", error) }
+        }
+      } catch (error: Exception) { promise.reject("ATTACHMENT_VERIFY", "Attachment verification unavailable", error) }
+    }
+    // Explicit account-removal close: a fresh process is required before private-store cleanup.
+    Function("closeForDeviceRemoval") {
+      android.os.Handler(android.os.Looper.getMainLooper()).post {
+        appContext.currentActivity?.finishAndRemoveTask()
+        android.os.Process.killProcess(android.os.Process.myPid())
+      }
+      true
+    }
     AsyncFunction("identityScrypt") { password: String, salt: String -> IdentityKdf.derive(password, salt) }
     AsyncFunction("identityRandomBytes") { size: Int ->
       require(size in 1..64)
@@ -201,9 +224,17 @@ class AxonicNearbyModule : Module() {
     }
     AsyncFunction("stop") { synchronized(this@AxonicNearbyModule) { stopLane() } }
     Function("send") { frame: String -> lane?.send(frame) ?: false }
-    OnActivityEntersForeground { synchronized(this@AxonicNearbyModule) { axonForeground = true } }
-    OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) { axonForeground = false; if (!transportAllowed()) closeBackgroundAxons() } }
-    OnDestroy { synchronized(this@AxonicNearbyModule) { axonForeground = false; axonLan?.stop(); axonLan = null; axons.destroy(); wakeTimer.shutdownNow(); axonWorkers.shutdownNow(); stopLane() } }
+    OnActivityEntersForeground { synchronized(this@AxonicNearbyModule) {
+      foregroundGate.resume(); backgroundClose?.cancel(false); backgroundClose = null
+    } }
+    OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) {
+      val delay = foregroundGate.pause(SystemClock.elapsedRealtime())
+      backgroundClose?.cancel(false)
+      backgroundClose = wakeTimer.schedule({ synchronized(this@AxonicNearbyModule) {
+        if (!transportAllowed()) closeBackgroundAxons()
+      } }, delay, TimeUnit.MILLISECONDS)
+    } }
+    OnDestroy { synchronized(this@AxonicNearbyModule) { foregroundGate.destroy(); backgroundClose?.cancel(false); backgroundClose = null; axonLan?.stop(); axonLan = null; axons.destroy(); wakeTimer.shutdownNow(); axonWorkers.shutdownNow(); attachmentWorkers.shutdownNow(); stopLane() } }
   }
   private fun stopLane() { val old = lane; lane = null; old?.stop() }
 

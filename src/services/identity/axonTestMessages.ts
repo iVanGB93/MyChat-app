@@ -84,7 +84,11 @@ export function createAxonTestMessages(d: {
         }
         if (!text.length || plaintext.length > 2048) return false;
         seen.add(p.nonce);
-        if (!await d.received({ from: c.peer.account, id: p.id, text }) || !alive()) return false;
+        const accepted=await d.received({ from: c.peer.account, id: p.id, text });
+        if(!alive())return false;
+        // Authenticated application rejection (e.g. membership not received yet)
+        // is not a broken encrypted session. Withhold the ACK so delivery retries.
+        if(!accepted)return purpose==='normal';
         const ack = await seal('ack', p.id, bytesToHex(sha256(utf8ToBytes(raw))));
         if (!alive()) return false;
         d.send(JSON.stringify(ack)); return true;

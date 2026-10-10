@@ -41,8 +41,8 @@ export function createMessagingCommands(d: {
       const s = session(), id = await s.id(), packet = await s.id();
       await s.ledger.createGroup(id, packet, name, members); return id;
     },
-    async updateGroup(group: string, name: string, members: string[]) {
-      const s = session(); await s.ledger.updateGroup(group, await s.id(), name, members);
+    async updateGroup(group: string, name: string, members: string[], photo?:string|null) {
+      const s = session(); await s.ledger.updateGroup(group, await s.id(), name, members,photo);
     },
     async leaveGroup(group: string) {
       const s = session(); await s.ledger.leaveGroup(group, await s.id());

@@ -1,0 +1,49 @@
+DEVICE-ONLY REMOVAL IMPLEMENTED — 10 OCTOBER 2026
+The user chose device-only removal. Profile now has a standard "Remove account from this device" action, using the existing confirmation dialog and current password field. Preserve these semantics when restyling:
+- modules/identity.removeAccountFromDevice({account,password,confirmed:true}) authenticates again and persists a removal journal; never call it on opening a screen or from an identity link.
+- localAccount.status().removalPending locks out login/create/recover in this process. The shell shows a finish-removal screen; closeForDeviceRemoval() closes only this app so cleanup can run before account startup on reopening.
+- Local identity protection, credentials, own chat/call stores, account-scoped preferences and app-private attachment/sticker/profile files are removed. Gallery exports and other accounts' rows/files are retained. Public network copies and other people's messages are not deleted. Words recover identity, not deleted chat history.
+- Cleanup failures preserve the journal and block replacement/login; startup RETRY resumes. A native-module rebuild is needed for the CLOSE AXONIC action. Older clients display Force stop instructions instead. Do not replace this with BackHandler.exitApp, which does not guarantee a fresh process.
+- No installed user's account was removed during validation.
+
+FOLLOW-UP VALIDATION — 10 OCTOBER 2026
+729 tests passed, 3 skipped. Emulator voice/video/cancel and a background text notification passed; native account create/recover fixture preserved installed accounts. Play update coordinator now handles aborted prompts, storage failures, root cleanup and call/recording races. No new visual controls were added here; account-removal semantics were subsequently resolved above.
+
+IMPLEMENTATION UPDATE — 10 OCTOBER 2026
+The notes below the separator are the original audit snapshot. These APIs now supersede its missing-service findings:
+
+- modules/maintenance: appUpdates.snapshot/subscribe/check(force)/install. A ready update requires an explicit install action; install refuses during a call or unfinished attachment transfer. Checks/start/resume are wired at the application root, outside navigation. Dev builds skip Play prompting. Do not add a second lifecycle observer or version endpoint.
+- modules/maintenance: appDestinations and openAppDestination('privacy'|'website'|'store') supply fixed public links without account data.
+- conversations().configureGroup(id,{muted:true|false}) persists group-specific mute. Decrypted group previews obey this in foreground/background. If a locked/failed recovery cannot classify a wake from a muted group's member, no generic hint is shown; a later verified direct preview still notifies.
+- messaging.markRead(['group:'+id]) / conversations().markGroupRead(id) now enqueue authenticated read receipts only to each original author. Use rootChatView before rootGroupMessages for all-recipient blue checks. Delivered is not read.
+- messaging.updateGroup(id,name,members,photo?) can set an existing creator-authored group image's logical message ID as the shared avatar; null removes the reference, undefined preserves it. rootGroupPhoto(view,id,owner) resolves the authenticated attachment. Use existing verified attachment storage/rendering, never construct a URL or new unverified file cache. The image must first be sent through the normal encrypted group attachment pipeline. New members need the photo shared with them; absent/deleted files show a placeholder. Selecting/removing the avatar does not delete chat media.
+- modules/identity: identityLink(account) produces axonic://identity/<checked-address>. Cold/warm link capture is root-scoped and defers routing until unlock. Existing NewChat receives a prefilled identity and still requires START CHAT. The public identity code/QR format is unchanged; share UI may optionally include the link.
+- Runtime crash initialization is restored with existing privacy filters. UI must not initialize a second reporter.
+
+Live validation: Phone Dev and both emulators exchanged a labeled group message; both recipient read receipts reached the sender, which aggregated read=true. No visual parity claim is made.
+Device-only removal was selected and implemented; see the update above. Do not label a local removal action as erasing the network identity or other people's messages.
+
+--- ORIGINAL AUDIT SNAPSHOT ---
+
+UI CHAT HANDOFF — 10 OCTOBER 2026
+
+User intent: restore the familiar original interface while retaining the neuron/local-identity system. This chat owns non-UI behavior; the user is creating a separate chat for visual problems/improvements. No other chat was created or messaged by this audit.
+
+Baseline: compare the tracked historical screen implementations in Git HEAD with the current RootAccountNavigator, RootGroupScreens, RootProfileScreen, RootAccountCallScreen and shared components. The worktree's deleted old screens remain readable through git show; do not restore their Django services/AuthContext/appStore imports.
+
+Confirmed group differences to review:
+- Group chat uses RootGroupRoom in RootGroupScreens.tsx; direct chat has a separate renderer in RootAccountNavigator.tsx. Shared style imports alone do not make their behavior/layout identical.
+- Review group creation/info, bubbles, sender labels, date/time formatting, replies, reactions, media/sticker menus, attachment preview and composer against the familiar original screens.
+- Current group-photo picker/storage and group mute support are functionally absent. Coordinate service APIs with the non-UI chat rather than adding a visual toggle that does nothing.
+- Group mark-read currently updates only local state; it does not send group read receipts. Non-UI work owns remote read acknowledgments. Do not make delivered group messages look read by changing icon logic alone.
+- Current groups allow 10 members including creator. Creator exit closes the group. Do not silently change protocol constraints while restoring visuals.
+
+Other cross-chat contracts:
+- Play update service is disconnected. Non-UI work should own checks, cooldown, native Play flow and state; UI work should use the resulting state/actions rather than restoring Django version checks.
+- Crash-reporting initialization, identity deep links, local account removal/revocation semantics and group-photo transport need non-UI ownership.
+- Preserve the current local nickname model; the user intentionally removed global display name/about/email.
+- Preserve the color-only connection bar and the user's avatar-left/small-expandable-QR-right profile preference unless they change direction.
+- Keep network lifetime above screens. Navigate through existing module APIs; screens must not create their own network sessions.
+
+Audit boundary: these are code-comparison findings, not a completed visual screenshot audit. User-reported group differences are accepted as a problem to investigate; do not claim pixel-level parity was verified here.
+Main checklist: docs/production-readiness-audit-2026-10-10.txt.

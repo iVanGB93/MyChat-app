@@ -1,0 +1,295 @@
+AXONIC CONSOLIDATION AUDIT — OCTOBER 9, 2026
+
+Outcome
+The mobile app has one foreground/headless startup: index.ts -> neuron background handlers + LocalAccountApp.
+The Django app entry, login/navigation, legacy notification registration, and unused UI/runtime adapters were removed.
+No identity, chat, media, or device storage was deleted or migrated.
+No production APK was built, no phone was reinstalled, and no commit/push was made for this audit.
+
+Architecture
+UI calls module APIs; composition/neuronRuntime owns network lifecycle and foreground/background leases.
+The active WebRTC hook has only the neuron adapter; missing/failed transport fails closed.
+The localAccountNetwork and rootMediaPicker compatibility forwarding files are removed.
+Obsolete production feature flags no longer choose another app.
+Axios, Zustand, and qrcode were removed from package dependencies and the lockfile.
+check:consolidation now runs with npm run check and rejects unaccounted-for unreachable source.
+
+Validation
+590 retained tests; TypeScript; service cycles; module boundaries; consolidation gate.
+Android DEVELOPMENT JavaScript bundle exported successfully; this is not an APK or native build.
+Shared mobile/AoN protocol source parity checked; this cleanup does not change the deployed AoN protocol.
+Legacy-only tests were retired with their implementations; a lower count is not a claim of greater coverage.
+
+Remaining boundaries and limitations
+Native dependency/configuration audit found dormant integrations (Google sign-in, Expo background-task/task-manager/notifications/observe, foreground-service, and share-intent). They remain installed/configured until a separately validated native rebuild removes them. Their old JavaScript entry/handlers are gone.
+Optional Sentry adapter and privacy filter remain; telemetry has not been newly enabled.
+Native-module compatibility and physical-device behavior still need validation with the next approved local build.
+Portable hosted compatibility adapters remain intentionally outside the mobile entry graph, listed below. Test-only implementations were moved to tests/support/. This is not a claim that every historical protocol has been removed from the AoNs.
+The automated reachability check follows static imports, exports, require and literal dynamic imports; semantic duplication still requires review.
+
+Retained support roots
+src/services/crashReporting.ts: Optional privacy-filtered Sentry adapter; retained with configured native build integration.
+src/services/crashReportingPrivacy.ts: Privacy filter for optional crash reporting.
+src/services/identity/chatBindingTransport.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+src/services/identity/identityHttp.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+src/services/identity/identityHttpTransport.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+src/services/identity/neuronIdentityConnection.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+src/services/identity/normalChatOutbox.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+src/services/transports/mailboxProtocol.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+src/services/transports/neuronExchange.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+src/services/transports/neuronSignaling.ts: Shared protocol copied into Axonic-neuron; retained for hosted compatibility.
+
+Removed source files (159)
+App.tsx
+legacyEntry.ts
+src/components/AppUpdateGate.tsx
+src/components/LocalAccountChats.tsx
+src/components/LocalAccountHistory.tsx
+src/components/chat/MessageBubble.tsx
+src/components/chat/nearby-discovery-control.tsx
+src/components/chat/reply-content.tsx
+src/components/chat/share-preview.tsx
+src/components/easy-sign-in.tsx
+src/config/appConfig.ts
+src/contexts/AuthContext.tsx
+src/contexts/NotificationContext.tsx
+src/hooks/use-call-navigation-guard.ts
+src/hooks/use-chat-draft.ts
+src/hooks/useChat.ts
+src/hooks/useContactName.ts
+src/hooks/usePermissionPrompt.ts
+src/hooks/useWebRTC.ts
+src/navigation/AppNavigator.tsx
+src/screens/auth/ForgotPasswordScreen.tsx
+src/screens/auth/LoginScreen.tsx
+src/screens/auth/RegisterScreen.tsx
+src/screens/auth/ResetPasswordScreen.tsx
+src/screens/auth/VerifyEmailScreen.tsx
+src/screens/auth/VerifyPasswordResetScreen.tsx
+src/screens/calls/ActiveCallScreen.tsx
+src/screens/calls/CallsScreen.tsx
+src/screens/calls/IncomingCallScreen.tsx
+src/screens/calls/NeuronCallScreen.tsx
+src/screens/calls/outgoing-call-screen.tsx
+src/screens/chat/ChatListScreen.tsx
+src/screens/chat/ChatRoomScreen.tsx
+src/screens/chat/GroupCreateScreen.tsx
+src/screens/chat/GroupInfoScreen.tsx
+src/screens/chat/ShareTargetScreen.tsx
+src/screens/chat/message-info-screen.tsx
+src/screens/chat/user-info-screen.tsx
+src/screens/contacts/ContactsScreen.tsx
+src/screens/contacts/ScanTagScreen.tsx
+src/screens/profile/BlockedUsersScreen.tsx
+src/screens/profile/ChangePasswordScreen.tsx
+src/screens/profile/ChatStorageMediaScreen.tsx
+src/screens/profile/ChatStorageScreen.tsx
+src/screens/profile/EditAccountScreen.tsx
+src/screens/profile/NetworkScreen.tsx
+src/screens/profile/ProfileScreen.tsx
+src/services/android-media-store.ts
+src/services/api.ts
+src/services/authService.ts
+src/services/authTokenPolicy.ts
+src/services/authTokens.ts
+src/services/axionRuntimeBootstrap.ts
+src/services/axionRuntimeBridge.ts
+src/services/axionTypes.ts
+src/services/backgroundNotificationService.ts
+src/services/call-end-queue.ts
+src/services/call-quality-state.ts
+src/services/callDedupe.ts
+src/services/callNotificationService.ts
+src/services/callService.ts
+src/services/chat-drafts.ts
+src/services/chatService.ts
+src/services/chatWsManager.ts
+src/services/contact-nicknames.ts
+src/services/contactService.ts
+src/services/deleted-media-cleanup.ts
+src/services/deliveryReconciler.ts
+src/services/easy-auth.ts
+src/services/errorMessages.ts
+src/services/fcmService.ts
+src/services/foregroundService.ts
+src/services/identity/accountIdentityActivity.ts
+src/services/identity/accountIdentityLifecycle.ts
+src/services/identity/accountIdentityStorage.ts
+src/services/identity/chatBindingBridge.ts
+src/services/identity/chatIdentityPinStore.ts
+src/services/identity/identityForeground.ts
+src/services/identity/legacyHistoryArchive.ts
+src/services/identity/localAccountMigration.ts
+src/services/identity/localAccountNetwork.ts
+src/services/identity/localIdentity.ts
+src/services/identity/mobileAxonTransport.ts
+src/services/identity/mobileCallControlRuntime.ts
+src/services/identity/mobileCallWake.ts
+src/services/identity/mobileChatBinding.ts
+src/services/identity/mobileIdentityHttpTransport.ts
+src/services/identity/mobileIdentityNetwork.ts
+src/services/identity/mobileNeuronCalls.ts
+src/services/identity/mobileNormalChatRuntime.ts
+src/services/identity/mobilePushRegistration.ts
+src/services/identity/neuronCallFeature.ts
+src/services/identity/rootMediaPicker.ts
+src/services/ingressRouter.ts
+src/services/installationIdentity.ts
+src/services/keyboard-insets.ts
+src/services/local-media-actions.ts
+src/services/localFirstCollections.ts
+src/services/localMessageStore.ts
+src/services/mailboxComposition.ts
+src/services/media-export-service.ts
+src/services/mediaChunkTransfer.ts
+src/services/mediaConfirmationQueue.ts
+src/services/mediaLane.ts
+src/services/mediaTransferPolicy.ts
+src/services/message-info.ts
+src/services/messageAckRetryQueue.ts
+src/services/messageAckTransport.ts
+src/services/messageLifecycle.ts
+src/services/messageNotificationCoordinator.ts
+src/services/messageNotificationService.ts
+src/services/networkOverview.ts
+src/services/notificationActionService.ts
+src/services/notificationBackgroundDispatcher.ts
+src/services/notificationDecision.ts
+src/services/notificationDestination.ts
+src/services/notificationNavigation.ts
+src/services/notificationPresentationPolicy.ts
+src/services/notificationReplyService.ts
+src/services/notificationWsManager.ts
+src/services/observability.ts
+src/services/open-shared-media.ts
+src/services/outboundRouter.ts
+src/services/p2pTextComposition.ts
+src/services/pendingCallNav.ts
+src/services/pendingRoomNav.ts
+src/services/presencePolicy.ts
+src/services/presenceService.ts
+src/services/pushData.ts
+src/services/pushMessageStore.ts
+src/services/pushNotificationService.ts
+src/services/rrp/envelope.ts
+src/services/sessionInvalidation.ts
+src/services/syncDelta.ts
+src/services/tokenRefresh.ts
+src/services/transports/legacyAxionTextTransport.ts
+src/services/transports/mailboxOutbox.ts
+src/services/transports/nativeTextPeer.ts
+src/services/transports/nearbyRecovery.ts
+src/services/transports/nearbyTextController.ts
+src/services/transports/neuronTextBridge.ts
+src/services/transports/p2pTextBridge.ts
+src/services/transports/p2pTextRuntime.ts
+src/services/transports/p2pTextSession.ts
+src/services/transports/textTransport.ts
+src/services/transports/textTransportManager.ts
+src/services/update-alert-policy.ts
+src/services/versionCheckService.ts
+src/services/versionPolicy.ts
+src/services/voiceMessageUtils.ts
+src/store/ActiveCallBanner.tsx
+src/store/AppLifecycleBridge.tsx
+src/store/ConnectionBanner.tsx
+src/store/DebugOverlay.tsx
+src/store/IncomingCallBanner.tsx
+src/store/ShareIntentBridge.tsx
+src/store/appStore.ts
+src/utils/keyboard-layout.ts
+src/utils/messagePreview.ts
+
+Retired legacy-only test files (60)
+tests/accountIdentityActivity.test.cjs
+tests/accountIdentityLifecycle.test.cjs
+tests/accountResetLifecycle.test.cjs
+tests/authTokenPolicy.test.cjs
+tests/backgroundDelivery.test.cjs
+tests/callEndQueue.test.cjs
+tests/callNavigationGuard.test.cjs
+tests/callQualityState.test.cjs
+tests/chatDrafts.test.cjs
+tests/chatIdentityPinStore.test.cjs
+tests/contactNicknames.test.cjs
+tests/contactService.test.cjs
+tests/deletedMediaCleanup.test.cjs
+tests/deletedMessageLayout.test.cjs
+tests/easyAuth.test.cjs
+tests/identityForeground.test.cjs
+tests/keyboardLayout.test.cjs
+tests/keyboardRecovery.test.cjs
+tests/legacyHistoryArchive.test.cjs
+tests/liveKeyboardInsets.test.cjs
+tests/localFirstCollections.test.cjs
+tests/localReceiptStore.test.cjs
+tests/mailboxComposition.test.cjs
+tests/mailboxOutbox.test.cjs
+tests/mediaConfirmationQueue.test.cjs
+tests/mediaExportNaming.test.cjs
+tests/mediaLane.test.cjs
+tests/mediaOutboxConcurrency.test.cjs
+tests/mediaStoreExport.test.cjs
+tests/mediaTransferPolicy.test.cjs
+tests/messageAckRetryQueue.test.cjs
+tests/messageAckTransport.test.cjs
+tests/messageInfo.test.cjs
+tests/messageLifecycle.test.cjs
+tests/messageReliabilityMatrix.test.cjs
+tests/mobileCallWake.test.cjs
+tests/mobileChatBinding.test.cjs
+tests/mobileNormalChatRuntime.test.cjs
+tests/nearbyRecovery.test.cjs
+tests/nearbyTextController.test.cjs
+tests/networkOverview.test.cjs
+tests/neuronCallFeature.test.cjs
+tests/neuronCallReadiness.test.cjs
+tests/notificationBackgroundNavigation.test.cjs
+tests/notificationFormatting.test.cjs
+tests/notificationMarkRead.test.cjs
+tests/notificationNavigation.test.cjs
+tests/notificationNavigationRuntime.test.cjs
+tests/notificationRecovery.test.cjs
+tests/openSharedMedia.test.cjs
+tests/p2pTextComposition.test.cjs
+tests/p2pTextRuntime.test.cjs
+tests/p2pTextSession.test.cjs
+tests/presencePolicy.test.cjs
+tests/reactionAlertReplay.test.cjs
+tests/replyStickerPreview.test.cjs
+tests/syncDelta.test.cjs
+tests/textTransportManager.test.cjs
+tests/updateDownloadStatus.test.cjs
+tests/versionPolicy.test.cjs
+
+
+Second audit pass — source internals, tests, build inputs and configuration
+- Removed unused imports and state from active screens without changing their JSX/layout.
+- Shared types now contain only CallType and IceConfig; unused Django account/chat/navigation models are removed.
+- Deleted the unused Firebase warning-suppression bootstrap.
+- Moved five test-only implementations to tests/support/: normalChatRuntime, normalChatOutboxStore, testMessageStore, testMessageQueue and mailboxStore. Their regression tests are retained.
+- Enabled noUnusedLocals and noUnusedParameters, including type-checking the moved test support.
+- Limited TypeScript inputs to actual app/modules/test support; ignored generated builds/neuron-work is no longer compiled as app source.
+- Consolidation gate rejects production imports from tests/ or builds/.
+- Inspected tracked script/plugin references; retained patch tools, native service registration and device smoke flows. Did not execute flows that message real users.
+- Remaining native packages are not assumed safe to remove merely because no direct JS import remains; plugin registration, transitive imports, native resource generation and planned feature gaps still require a native rebuild audit.
+Validation: 590 tests passed, strict TypeScript checks passed, 128-module cycle check and module/consolidation checks passed. Hosted protocol parity remains required. No native or production build, install, data removal, deployment, commit or push in this pass.
+
+Native dependency audit
+- Removed ten unused direct dependencies and their unneeded transitive packages: NetInfo, Google Sign-In, supersami foreground service, Expo application/device/background-task/task-manager/observe/notifications/media-library.
+- Current calls retain the custom MyChatForegroundService. Background delivery retains Firebase Messaging, Notifee and the Axonic native wake implementation.
+- Replaced Expo Notifications' icon/color resource generation with plugins/withNotificationResources.js; all five icon densities and Firebase metadata verified after Android prebuild. Added explicit build dependency on @expo/image-utils.
+- Kept expo-share-intent: its Android share-target integration exists, but the current JS app has no incoming-share handler. This is an unfinished feature, not a safe claim that sharing works. Restore/test the user flow separately rather than silently removing its advertised native integration.
+- Kept Expo/config-plugin/transitive modules needed by the development client and native build even when the app has no direct import.
+- npm run check passed: 590 tests, TypeScript, dependency cycles, module boundaries and consolidation.
+- Native validation uses a local x86_64 development build only. No phone install, production APK, account/data reset or hosted deployment is part of this pass.
+Native validation result: PASS. Local Gradle :app:assembleDebug x86_64 succeeded (613 tasks). Development Android JS export also succeeded. Merged debug manifest retains Firebase messaging/headless services, Notifee receivers and MyChatForegroundService, and contains none of the removed Expo notification/background-task or supersami services. No emulator or phone was installed in this pass. This proves build compatibility, not real-device background delivery or a complete visual UI review. Evidence: D:/Proyects/Axonic/builds/native-cleanup-{gradle,check,bundle,prebuild}.log.
+Additional repository hygiene finding: eight generated Gradle cache files under modules/axonic-app-update/android/.gradle remain tracked despite existing ignore rules. They should be untracked in a later commit preparation; they are build artifacts, not application code.
+
+Incoming-share follow-up
+- Restored the expo-share-intent consumer above local unlock, with reset-on-background disabled so an unlock does not discard incoming content.
+- Added a themed preview and explicit chat/group selection and Send/Cancel actions. Sharing never automatically messages a recipient.
+- Sends text via messaging commands and stages files through the existing attachment pipeline; native source files are copied into the existing account-owned staging area before the share is cleared.
+- Batches retain progress across lock/unlock in the running app, reject duplicate taps and account/recipient changes after starting, and retry only items not yet queued. This is not a persistent share-batch journal across process death.
+- Rejects remote file paths, empty/oversize attachments and batches over four files. Cancel after a partial send does not recall already queued items.
+- 595 tests and all type/module/consolidation checks passed. Only the physical phone was connected during validation; no emulator UI run or phone install was performed.

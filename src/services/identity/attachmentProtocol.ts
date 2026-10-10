@@ -13,6 +13,8 @@ export interface AttachmentManifest {
  created:number;expires:number;bytes:number;root:string;signature:string;
 }
 export interface AttachmentChunk {index:number;ciphertext:string;proof:string[]}
+/** Trusted local SHA-256 implementation over the exact ASCII leaf serialization. */
+export type AttachmentLeafHash=(canonical:string)=>string;
 export interface AttachmentReceipt {version:1;id:string;digest:string;recipient:string;device:string;expires:number;signature:string}
 const hex=(v:unknown,n:number):v is string=>typeof v==='string'&&v.length===n*2&&/^[a-f0-9]+$/.test(v);
 const encode=(v:unknown[])=>utf8ToBytes(JSON.stringify(v));
@@ -42,27 +44,40 @@ export function verifyAttachmentManifest(m:unknown,record:IdentityRecord,now:num
  }catch{return false;}
 }
 type ChunkContext=Pick<AttachmentManifest,'id'|'sender'|'recipient'|'recipientDevice'|'bytes'>;
-function chunkContext(m:ChunkContext,index:number){
+function chunkLength(m:ChunkContext,index:number){
  if(!hex(m.id,32)||!validAccountId(m.sender)||!validAccountId(m.recipient)||m.sender===m.recipient||!hex(m.recipientDevice,32)
   ||!Number.isSafeInteger(m.bytes)||m.bytes<1||m.bytes>ATTACHMENT_MAX_BYTES||!Number.isSafeInteger(index)||index<0||index>=count(m.bytes))throw Error('Invalid attachment chunk');
- const aad=encode(['axonic-attachment-chunk-v1',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
- return {aad,nonce:sha256(aad).slice(0,24),length:Math.min(ATTACHMENT_CHUNK_BYTES,m.bytes-index*ATTACHMENT_CHUNK_BYTES)};
+ return Math.min(ATTACHMENT_CHUNK_BYTES,m.bytes-index*ATTACHMENT_CHUNK_BYTES);
+}
+function chunkContext(m:ChunkContext,index:number){
+ const length=chunkLength(m,index),aad=encode(['axonic-attachment-chunk-v1',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
+ return {aad,nonce:sha256(aad).slice(0,24),length};
 }
 /** A fresh random key per attachment is carried only inside the encrypted chat descriptor. */
 export function encryptAttachmentChunk(m:ChunkContext,index:number,plain:Uint8Array,key:Uint8Array){
  const c=chunkContext(m,index);if(key.length!==32||plain.length!==c.length)throw Error('Invalid attachment bytes');
  return bytesToHex(xchacha20poly1305(key,c.nonce,c.aad).encrypt(plain));
 }
-export function decryptAttachmentChunk(m:AttachmentManifest,chunk:AttachmentChunk,key:Uint8Array){
- if(!verifyAttachmentChunk(m,chunk)||key.length!==32)throw Error('Invalid attachment proof');
+export function decryptAttachmentChunk(m:AttachmentManifest,chunk:AttachmentChunk,key:Uint8Array,hashLeaf?:AttachmentLeafHash){
+ if(!verifyAttachmentChunk(m,chunk,hashLeaf)||key.length!==32)throw Error('Invalid attachment proof');
  const c=chunkContext(m,chunk.index);return xchacha20poly1305(key,c.nonce,c.aad).decrypt(hexToBytes(chunk.ciphertext));
 }
-export function attachmentLeaf(index:number,ciphertext:string){
+export function attachmentLeaf(index:number,ciphertext:string,hashLeaf?:AttachmentLeafHash){
  if(!Number.isSafeInteger(index)||index<0||index>=count(ATTACHMENT_MAX_BYTES)||typeof ciphertext!=='string'
   ||ciphertext.length<34||ciphertext.length>(ATTACHMENT_CHUNK_BYTES+16)*2||!/^(?:[a-f0-9]{2})+$/.test(ciphertext))throw Error('Invalid attachment leaf');
- return hash(['axonic-attachment-leaf-v1',index,ciphertext]);
+ const fields=['axonic-attachment-leaf-v1',index,ciphertext];
+ if(!hashLeaf)return hash(fields);
+ const digest=hashLeaf(JSON.stringify(fields));if(!hex(digest,32))throw Error('Invalid attachment hash result');return digest;
 }
-const parent=(a:string,b:string)=>hash(['axonic-attachment-branch-v1',a,b]);
+// Public hash inputs/results only, never keys or verification decisions. Adjacent
+// chunk proofs repeat the same branches. Bound memory even for hostile proofs.
+const branches=new Map<string,string>();
+const parent=(a:string,b:string)=>{
+ const key=a+':'+b,cached=branches.get(key);if(cached!==undefined)return cached;
+ const value=hash(['axonic-attachment-branch-v1',a,b]);
+ if(branches.size>=512)branches.delete(branches.keys().next().value!);
+ branches.set(key,value);return value;
+};
 /** Tree contains only ciphertext hashes: at most about 8 MiB for a 250 MiB file. */
 export function buildAttachmentTree(leaves:string[]){
  if(!leaves.length||leaves.length>count(ATTACHMENT_MAX_BYTES)||!leaves.every(v=>hex(v,32)))throw Error('Invalid attachment tree');
@@ -73,10 +88,10 @@ export function buildAttachmentTree(leaves:string[]){
   const proof:string[]=[];for(const level of levels.slice(0,-1)){proof.push(level[index^1]??level[index]);index=Math.floor(index/2);}return proof;
  }};
 }
-export function verifyAttachmentChunk(m:AttachmentManifest,chunk:AttachmentChunk):boolean {
- try{const c=chunkContext(m,chunk.index);
-  if(!Array.isArray(chunk.proof)||chunk.proof.length!==Math.ceil(Math.log2(count(m.bytes)))||!chunk.proof.every(v=>hex(v,32))||!hex(chunk.ciphertext,c.length+16))return false;
-  let digest=attachmentLeaf(chunk.index,chunk.ciphertext),index=chunk.index;
+export function verifyAttachmentChunk(m:AttachmentManifest,chunk:AttachmentChunk,hashLeaf?:AttachmentLeafHash):boolean {
+ try{const length=chunkLength(m,chunk.index);
+  if(!Array.isArray(chunk.proof)||chunk.proof.length!==Math.ceil(Math.log2(count(m.bytes)))||!chunk.proof.every(v=>hex(v,32))||!hex(chunk.ciphertext,length+16))return false;
+  let digest=attachmentLeaf(chunk.index,chunk.ciphertext,hashLeaf),index=chunk.index;
   for(const sibling of chunk.proof){digest=index%2?parent(sibling,digest):parent(digest,sibling);index=Math.floor(index/2);}return digest===m.root;
  }catch{return false;}
 }

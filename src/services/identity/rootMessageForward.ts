@@ -2,7 +2,7 @@ import {rootChatView} from './rootChatActions';
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
 import {localRootChat} from './localRootChat';
-import {queueRootAttachmentSource} from './rootAttachmentRuntime';
+import {queueRootAttachmentSource,rootGroupAttachmentAudience,queueRootGroupAttachmentSource} from './rootAttachmentRuntime';
 import {rootAttachmentFile} from './rootAttachmentFiles';
 import {attachmentDigest} from './attachmentProtocol';
 import {validAccountId} from './identityProtocol';
@@ -12,14 +12,15 @@ import type {RootChatMessage} from './rootChatLedger';
 export async function forwardRootMessage(source:Pick<RootChatMessage,'peer'|'id'|'direction'>,recipient:string){
  const owner=localAccount.status().account;
  const check=()=>{if(!owner||localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)throw Error('Unlock your account to forward this message');};
- check();if(!validAccountId(recipient)||recipient===owner)throw Error('Choose another identity');
+ const group=recipient.startsWith('group:')?recipient.slice(6):undefined;
+ check();if(!group&&(!validAccountId(recipient)||recipient===owner))throw Error('Choose another identity');
  const state=rootChatView(owner!,await localRootChat().snapshot());check();
  if(state.contacts.find(c=>c.account===recipient)?.blocked)throw Error('This identity is blocked');
  const message=state.messages.find(m=>m.peer===source.peer&&m.id===source.id&&m.direction===source.direction);
  if(!message||message.deleted)throw Error('This message is no longer available');
  if(!message.attachment){
   const id=await Native!.identityRandomBytes!(32);check();
-  await localRootChat().enqueue(recipient,id,message.text);return;
+  if(group)await localRootChat().enqueueGroup(group,id,message.text);else await localRootChat().enqueue(recipient,id,message.text);return;
  }
  if(message.direction==='incoming'&&message.status!=='delivered')throw Error('Wait for the attachment to finish downloading');
  const file=rootAttachmentFile(owner!,attachmentDigest(message.attachment.manifest));
@@ -27,5 +28,6 @@ export async function forwardRootMessage(source:Pick<RootChatMessage,'peer'|'id'
  // Stage our own bytes offline; the attachment worker verifies the recipient
  // before preparing a fresh encrypted descriptor for this destination.
  check();
- await queueRootAttachmentSource(recipient,file.uri,message.attachment.name,message.attachment.mime,owner!);
+ if(group){await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(group),file.uri,message.attachment.name,message.attachment.mime,message.attachment.caption);return;}
+ await queueRootAttachmentSource(recipient,file.uri,message.attachment.name,message.attachment.mime,owner!,undefined,message.attachment.caption);
 }

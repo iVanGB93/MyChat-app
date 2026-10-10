@@ -21,6 +21,7 @@ function setup(preserveTransparency = false) {
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
     '../../contexts/ThemeContext': { useTheme: () => ({ colors: {} }) },
     './sticker-crop-editor': { default: 'Crop' },
+    '../ui/KeyboardForm': {KeyboardFormScrollView:'Scroll',KeyboardAwareTextInput:'Input'},
   };
   const sandbox = { exports: {}, require: (name) => { assert.ok(mocks[name], name); return mocks[name]; } };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText, sandbox);
@@ -47,8 +48,8 @@ test('drawing locks parent scrolling and releases it on finger-up, interruption,
   assert.deepEqual(s.dragging, [true, false, true, false, true, false]);
 });
 
-test('both embedded editors connect gesture locks to their scrolling container', () => {
-  for (const name of ['share-preview', 'sticker-studio']) {
+test('sticker editor connects gesture locks to its scrolling container', () => {
+  for (const name of ['sticker-studio']) {
     const parent = fs.readFileSync(path.join(__dirname, `../src/components/chat/${name}.tsx`), 'utf8');
     assert.match(parent, /scrollEnabled=\{!isDragging\}/);
     assert.match(parent, /onDraggingChange=/);
@@ -72,23 +73,6 @@ test('sticker editing preserves transparency using PNG output', async () => {
   const studio = fs.readFileSync(path.join(__dirname, '../src/components/chat/sticker-studio.tsx'), 'utf8');
   assert.match(studio, /PhotoEditor embedded preserveTransparency/);
   assert.match(studio, /if \(preserveAnimation\)\s*\{\s*await importSticker\(ownerId, draft/);
-});
-test('both share entry points use caption and edited preview data', () => {
-  const chat = fs.readFileSync(path.join(__dirname, '../src/screens/chat/ChatRoomScreen.tsx'), 'utf8');
-  const external = fs.readFileSync(path.join(__dirname, '../src/screens/chat/ShareTargetScreen.tsx'), 'utf8');
-  assert.match(chat, /item\.send\(item\)/);
-  assert.match(chat, /uri: item\.uri, width: item\.width/);
-  assert.match(chat, /caption\.trim\(\) \|\|/);
-  assert.match(external, /attachment\.caption/);
-  assert.match(external, /changes\.uri \? \{ size: undefined \}/);
-});
-
-test('share preview exposes inline editing and guards unapplied edits', () => {
-  const preview = fs.readFileSync(path.join(__dirname, '../src/components/chat/share-preview.tsx'), 'utf8');
-  assert.match(preview, /<PhotoEditor embedded/);
-  assert.doesNotMatch(preview, /setEditingId|Edit picture ·/);
-  assert.match(preview, /disabled=\{busy \|\| !items.length \|\| hasPendingEdits\}/);
-  assert.match(source, /if \(embedded\) return <View/);
 });
 
 test('selected sticker hides the picker and bounds both normal and crop previews', () => {

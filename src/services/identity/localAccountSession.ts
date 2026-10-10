@@ -80,3 +80,13 @@ export function createLocalAccountSession(d: {
     async forget() { epoch++; await serialize(d.removeCredential); },
   };
 }
+
+/** Coalesce foreground and notification startup without caching failures or bypassing lock policy. */
+export function createLocalAccountStartup(d:{inspect():Promise<void>;initialize():Promise<void>}){
+ let pending:Promise<void>|null=null;
+ return ()=>{
+  if(pending)return pending;
+  pending=Promise.resolve().then(d.inspect).then(d.initialize).finally(()=>{pending=null;});
+  return pending;
+ };
+}

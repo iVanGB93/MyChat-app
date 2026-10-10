@@ -43,7 +43,7 @@ export function ActionButton({
       >
         <Ionicons name={icon} size={22} color={active ? Colors.primary : '#fff'} />
       </View>
-      <Text style={{ color: '#fff', backgroundColor: 'rgba(2,4,19,0.65)', paddingHorizontal: 6, borderRadius: 6, fontSize: Font.size.xs, marginTop: 6, ...Font.medium }}>
+      <Text style={makeStyles(Colors).actionLabel}>
         {label}
       </Text>
     </TouchableOpacity>
@@ -92,7 +92,8 @@ export function makeStyles(Colors: any) {
       paddingTop: Platform.OS === 'ios' ? 70 : 50,
       paddingBottom: Platform.OS === 'ios' ? 50 : 32,
     },
-    top: { alignItems: 'center' },
+    top: { alignItems: 'center',paddingHorizontal:Spacing.md,paddingBottom:Spacing.lg },
+    actionLabel: {color:'#fff',backgroundColor:'rgba(2,4,19,0.65)',paddingHorizontal:6,borderRadius:6,fontSize:Font.size.xs,marginTop:6,...Font.medium,textAlign:'center'},
     typePill: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -128,6 +129,8 @@ export function makeStyles(Colors: any) {
       marginTop: Spacing.lg,
       ...Font.bold,
       letterSpacing: 0.5,
+      textAlign:'center',
+      maxWidth:'100%',
     },
     status: {
       backgroundColor: 'rgba(2,4,19,0.65)',
@@ -150,6 +153,9 @@ export function makeStyles(Colors: any) {
     },
     actions: {
       flexDirection: 'row',
+      flexWrap:'wrap',
+      alignItems:'flex-start',
+      rowGap:Spacing.md,
       justifyContent: 'space-evenly',
       paddingHorizontal: Spacing.lg,
     },

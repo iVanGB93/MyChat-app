@@ -3,6 +3,82 @@ const {load,fixture,now}=require('./helpers/attachment.cjs'),chat=load('rootChat
 const key=()=>crypto.randomBytes(32).toString('hex');
 const view=load('rootChatActions').rootChatView;
 
+function signedSetup(){
+ const seeds=[0,1,2].map(()=>crypto.randomBytes(32)),pub=require('@noble/curves/ed25519.js').ed25519;
+ const accounts=seeds.map(s=>load('identityProtocol').accountId(Buffer.from(pub.getPublicKey(s)).toString('hex'))),raws=[null,null,null];
+ const apis=accounts.map((owner,i)=>chat.createRootChatLedger({owner,current:()=>true,now:()=>now,read:async()=>raws[i],write:async raw=>{raws[i]=raw;},signGroup:g=>groups.signRootGroupBackup(g,seeds[i])}));
+ return {accounts,raws,apis,seeds,async deliver(i,j){for(const p of chat.pendingRootChat(await apis[i].snapshot(),accounts[i]).filter(p=>p.peer===accounts[j])){assert(await apis[j].receive(accounts[i],p.id,p.raw));await apis[i].delivered(p.peer,p.id);}}};
+}
+test('signed member backup restores the creator automatically without private keys or history',async()=>{
+ const f=signedSetup(),g=key();await f.apis[0].createGroup(g,key(),'Signed family',f.accounts.slice(1));await f.deliver(0,1);
+ assert(groups.validRootGroupBackup((await f.apis[1].snapshot()).groups[0].backup));
+ f.raws[0]=null;await f.apis[1].recoverGroupsForPeer(f.accounts[0],key());await f.deliver(1,0);
+ const recovered=await f.apis[0].snapshot();assert.equal(recovered.groups[0].admin,f.accounts[0]);assert.equal(recovered.groups[0].accepted,true);assert.equal(recovered.messages.length,0);
+ await f.apis[0].updateGroup(g,key(),'Creator still controls membership',[f.accounts[1]]);await f.deliver(0,1);
+ assert.equal((await f.apis[1].snapshot()).groups[0].revision,2);
+});
+test('unsigned creator recovery remains untrusted until explicit local confirmation',async()=>{
+ const f=signedSetup(),g=key(),group={id:g,admin:f.accounts[0],name:'Old family',revision:1,members:f.accounts};
+ const id=key(),offer=JSON.stringify(['axonic-group-recovery-offer-v1',f.accounts[0],id,group]);
+ assert(await f.apis[0].receive(f.accounts[1],id,offer));let s=await f.apis[0].snapshot();
+ assert.equal(s.groups[0].recoveryPending,true);assert.equal(s.groups[0].backup,undefined);assert.equal(s.groups[0].accepted,false);
+ await f.apis[0].recoverGroupsForPeer(f.accounts[1],key());assert.equal(chat.pendingRootChat(await f.apis[0].snapshot(),f.accounts[0]).length,0);
+ const requestId=key();assert.equal(await f.apis[0].receive(f.accounts[1],requestId,JSON.stringify(['axonic-group-recover-v1',f.accounts[0],requestId,{group:g,member:f.accounts[2]}])),false);
+ assert.equal(groups.rootGroupAllowed(s,f.accounts[0],f.accounts[1],{id:g,revision:1,messageId:key()}),false);
+ await assert.rejects(f.apis[0].enqueueGroup(g,key(),'must not send'));await assert.rejects(f.apis[0].updateGroup(g,key(),'changed',f.accounts));
+ await f.apis[0].configureGroup(g,{accepted:true});s=await f.apis[0].snapshot();assert.equal(s.groups[0].recoveryPending,undefined);assert(groups.validRootGroupBackup(s.groups[0].backup));
+});
+test('backup signature rejects tampered members, name, revision, creator and wrong root',async()=>{
+ const f=signedSetup(),g={id:key(),admin:f.accounts[0],name:'Family',revision:1,members:f.accounts};
+ const backup=groups.signRootGroupBackup(g,f.seeds[0]);assert(groups.validRootGroupBackup(backup));
+ for(const patch of [{name:'Other'},{members:[f.accounts[0],f.accounts[1]]},{revision:2},{admin:f.accounts[1]}])assert.equal(groups.validRootGroupBackup({...backup,group:{...g,...patch}}),false);
+ assert.equal(groups.validRootGroupBackup({...backup,root:'1'.repeat(64)}),false);
+ await assert.rejects(async()=>groups.signRootGroupBackup(g,f.seeds[1]));
+});
+test('older signed snapshots cannot roll back known membership or unblock a group',async()=>{
+ const f=signedSetup(),g=key();await f.apis[0].createGroup(g,key(),'Family',f.accounts.slice(1));await f.deliver(0,1);
+ const old=(await f.apis[1].snapshot()).groups[0].backup;
+ await f.apis[0].updateGroup(g,key(),'New name',f.accounts.slice(1));await f.deliver(0,1);await f.apis[1].configureGroup(g,{blocked:true,muted:true});
+ const id=key();assert(await f.apis[1].receive(f.accounts[2],id,JSON.stringify(['axonic-group-backup-v1',f.accounts[1],id,old])));
+ const recovered=(await f.apis[1].snapshot()).groups[0];assert.equal(recovered.revision,2);assert.equal(recovered.name,'New name');assert.equal(recovered.blocked,true);assert.equal(recovered.muted,true);
+});
+
+test('recovered member receives current creator metadata through another member, then queued text',async()=>{
+ const f=setup(),g=await f.group();
+ await f.apis[0].updateGroup(g,key(),'Current family',f.accounts.slice(1));await f.deliver(0,1);await f.deliver(0,2);
+ await f.apis[0].enqueueGroup(g,key(),'waiting for metadata');
+ const message=chat.pendingRootChat(await f.apis[0].snapshot(),f.accounts[0]).find(p=>p.peer===f.accounts[1]);
+ f.raws[1]=null;assert.equal(await f.apis[1].receive(f.accounts[0],message.id,message.raw),false);
+ await f.apis[2].recoverGroupsForPeer(f.accounts[1],key());await f.deliver(2,0);
+ const response=chat.pendingRootChat(await f.apis[0].snapshot(),f.accounts[0]).find(p=>p.peer===f.accounts[1]&&JSON.parse(p.raw)[0]==='axonic-group-members-v1');
+ assert(response);assert(await f.apis[1].receive(f.accounts[0],response.id,response.raw));
+ let restored=await f.apis[1].snapshot();assert.equal(restored.groups[0].name,'Current family');assert.equal(restored.groups[0].revision,2);assert.equal(restored.groups[0].accepted,false);assert.equal(restored.messages.length,0);
+ assert(await f.apis[1].receive(f.accounts[0],message.id,message.raw));assert.equal((await f.apis[1].snapshot()).messages.length,1);
+});
+test('creator reconnect repairs membership without pending text and preserves local preferences',async()=>{
+ const f=setup(),g=await f.group();f.raws[1]=null;
+ await f.apis[0].recoverGroupsForPeer(f.accounts[1],key());await f.deliver(0,1);
+ await f.apis[1].configureGroup(g,{accepted:true,blocked:true,muted:true});
+ await f.apis[0].recoverGroupsForPeer(f.accounts[1],key());await f.deliver(0,1);
+ const s=await f.apis[1].snapshot();assert.deepEqual([s.groups[0].accepted,s.groups[0].blocked,s.groups[0].muted],[true,true,true]);assert.equal(s.messages.length,0);assert.equal(s.contacts.length,0);
+});
+test('group recovery rejects outsiders, removed targets and forged membership',async()=>{
+ const f=setup(),g=await f.group(),outsider='axonic:1:'+'f'.repeat(64),id=key();
+ const request=member=>JSON.stringify(['axonic-group-recover-v1',f.accounts[0],id,{group:g,member}]);
+ assert.equal(await f.apis[0].receive(outsider,id,request(f.accounts[1])),false);
+ assert.equal(await f.apis[0].receive(f.accounts[2],id,request(outsider)),false);
+ await f.apis[0].updateGroup(g,key(),'Family',[f.accounts[2]]);await f.deliver(0,2);
+ assert.equal(await f.apis[0].receive(f.accounts[2],id,request(f.accounts[1])),false);
+ await f.apis[2].recoverGroupsForPeer(f.accounts[1],key());assert.equal(chat.pendingRootChat(await f.apis[2].snapshot(),f.accounts[2]).length,0);
+});
+test('group recovery requests are durable and identical retries do not multiply responses',async()=>{
+ const f=setup();await f.group();await f.apis[2].recoverGroupsForPeer(f.accounts[1],key());
+ const p=chat.pendingRootChat(await f.apis[2].snapshot(),f.accounts[2])[0];
+ assert(await f.apis[0].receive(f.accounts[2],p.id,p.raw));const count=(await f.apis[0].snapshot()).groupPackets.length;
+ assert(await f.apis[0].receive(f.accounts[2],p.id,p.raw));assert.equal((await f.apis[0].snapshot()).groupPackets.length,count);
+ const changed=JSON.parse(p.raw);changed[3].member=f.accounts[2];assert.equal(await f.apis[0].receive(f.accounts[2],p.id,JSON.stringify(changed)),false);
+});
+
 test('local group chat deletion keeps membership and direct history; a new group message reopens it',async()=>{
  const f=setup(),g=await f.group();await f.apis[0].enqueueGroup(g,key(),'old group text');await f.deliver(0,1);
  await f.apis[1].enqueue(f.accounts[0],key(),'private text');
@@ -34,3 +110,39 @@ test('group media keeps the signed recipient-specific manifest and waits for its
 test('blocked groups and senders are local policy, and corrupt group storage is preserved',async()=>{const f=setup(),g=await f.group();await f.apis[1].configureGroup(g,{blocked:true});await f.apis[0].enqueueGroup(g,key(),'blocked');const p=chat.pendingRootChat(await f.apis[0].snapshot(),f.accounts[0])[0];assert.equal(await f.apis[1].receive(f.accounts[0],p.id,p.raw),false);const old=f.raws[0];f.raws[0]=JSON.stringify({...JSON.parse(old),groups:[{id:g}]});await assert.rejects(f.apis[0].snapshot(),/recovery/);assert.notEqual(f.raws[0],old);});
 
 test('invalid local group preferences and null stored group rows preserve existing state',async()=>{const f=setup(),g=await f.group(),before=f.raws[0];for(const patch of [{accepted:'false'},{blocked:1},{unexpected:true},null]){await assert.rejects(f.apis[0].configureGroup(g,patch),/Invalid group preferences/);assert.equal(f.raws[0],before);}for(const bad of [{groups:[null]},{groupPackets:[null]}]){const raw=JSON.stringify({...JSON.parse(before),...bad});f.raws[0]=raw;await assert.rejects(f.apis[0].snapshot(),/recovery/);assert.equal(f.raws[0],raw);}});
+
+
+test('group reads acknowledge each recipient independently, persist once and never create direct contacts',async()=>{
+ const f=setup(),g=await f.group(),id=key();await f.apis[0].enqueueGroup(g,id,'read me');await f.deliver(0,1);await f.deliver(0,2);
+ const shown=async()=>groups.rootGroupMessages(view(f.accounts[0],await f.apis[0].snapshot()),g)[0];
+ await f.apis[1].markGroupRead(g);await f.apis[1].markGroupRead(g);
+ assert.equal((await f.apis[1].snapshot()).groupActions.length,1);
+ const pending=chat.pendingRootChat(await f.apis[1].snapshot(),f.accounts[1]);assert.equal(pending.length,1);assert.equal(pending[0].peer,f.accounts[0]);
+ await f.deliver(1,0);assert.equal((await shown()).read,false);
+ await f.apis[2].markGroupRead(g);await f.deliver(2,0);assert.equal((await shown()).read,true);
+ for(const api of f.apis)assert.equal((await api.snapshot()).contacts.length,0);
+});
+test('group reads cannot acknowledge to another member or claim another reader',async()=>{
+ const f=setup(),g=await f.group(),id=key();await f.apis[0].enqueueGroup(g,id,'read me');await f.deliver(0,1);await f.apis[1].markGroupRead(g);
+ const p=chat.pendingRootChat(await f.apis[1].snapshot(),f.accounts[1])[0],body=JSON.parse(p.raw);
+ body[3].target.author=f.accounts[2];assert.equal(await f.apis[0].receive(f.accounts[1],p.id,JSON.stringify(body)),false);
+ body[3].target.author=f.accounts[0];body[3].revision=2;assert.equal(await f.apis[0].receive(f.accounts[1],p.id,JSON.stringify(body)),false);
+ assert.equal(await f.apis[0].receive(f.accounts[2],p.id,p.raw),true);
+ const messages=view(f.accounts[0],await f.apis[0].snapshot()).messages;assert.equal(messages.find(m=>m.peer===f.accounts[1]).read,false);assert.equal(messages.find(m=>m.peer===f.accounts[2]).read,true);
+});
+test('group mute survives membership updates without muting the same member in direct chat',async()=>{
+ const f=setup(),g=await f.group();await f.apis[1].configureGroup(g,{muted:true});await f.apis[0].updateGroup(g,key(),'Renamed',f.accounts.slice(1));await f.deliver(0,1);
+ const s=await f.apis[1].snapshot();assert.equal(s.groups[0].muted,true);assert.equal(s.contacts.length,0);await assert.rejects(f.apis[1].configureGroup(g,{muted:'yes'}));
+});
+
+
+test('creator photo uses authenticated encrypted group media, survives rename and clears explicitly',async()=>{
+ const f=setup(),g=await f.group(),photo=key(),descriptor={manifest:f.manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'photo.jpg',mime:'image/jpeg'};
+ await assert.rejects(f.apis[0].updateGroup(g,key(),'Family',f.accounts.slice(1),photo));
+ await f.apis[0].enqueueAttachment(descriptor,undefined,{id:g,revision:1,messageId:photo});await f.apis[0].updateGroup(g,key(),'Family',f.accounts.slice(1),photo);await f.deliver(0,1);
+ let s=await f.apis[1].snapshot();assert.equal(groups.rootGroupPhoto(s,g,f.accounts[1]).attachment.manifest.id,f.manifest.id);
+ await assert.rejects(f.apis[1].updateGroup(g,key(),'Family',f.accounts,photo));
+ await f.apis[0].updateGroup(g,key(),'Renamed',f.accounts.slice(1));await f.deliver(0,1);assert.equal((await f.apis[1].snapshot()).groups[0].photo,photo);
+ await f.apis[0].updateGroup(g,key(),'Renamed',f.accounts.slice(1),null);await f.deliver(0,1);s=await f.apis[1].snapshot();assert.equal(groups.rootGroupPhoto(s,g,f.accounts[1]),null);
+ assert.equal(s.messages.length,1); // Removing the avatar never deletes a shared chat attachment.
+});

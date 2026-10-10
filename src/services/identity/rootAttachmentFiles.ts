@@ -11,7 +11,19 @@ function folder(owner:string,id:string,staging=false){
  if(!validAccountId(owner)||!/^[a-f0-9]{64}$/.test(id))throw Error('Invalid attachment path');
  return new Directory(Paths.document,'axonic-own-attachments-v1',owner.slice(9),staging?'staging':'files',id);
 }
+// Transfer verification and forwarding require seekable app-owned files. MediaStore
+// URIs are not supported by Expo's synchronous File handles.
 export const rootAttachmentFile=(owner:string,digest:string)=>new File(folder(owner,digest),'content');
+export function rootAttachmentExportLink(owner:string,digest:string){
+ const link=new File(folder(owner,digest),'export.json');
+ try{if(link.exists){const value=JSON.parse(link.textSync());if(typeof value.uri==='string'&&/^content:\/\/media\//.test(value.uri))return value.uri as string;}}catch{}
+ return null;
+}
+export function linkRootAttachmentExport(owner:string,digest:string,uri:string){
+ if(!/^content:\/\/media\//.test(uri))throw Error('Invalid exported media URI');
+ const directory=folder(owner,digest);directory.create({intermediates:true,idempotent:true});
+ new File(directory,'export.json').write(JSON.stringify({uri}));
+}
 export const rootAttachmentSource=(owner:string,id:string)=>new File(folder(owner,id,true),'source');
 export function removeRootAttachmentSource(owner:string,id:string){const directory=folder(owner,id,true);if(directory.exists)directory.delete();}
 export function stageRootAttachmentSource(owner:string,id:string,uri:string){
@@ -21,7 +33,7 @@ export function stageRootAttachmentSource(owner:string,id:string,uri:string){
 }
 function check(current:()=>boolean){if(!current())throw Error('Unlock your account to continue');}
 /** Streams bounded chunks; original file names never become filesystem paths. */
-export async function prepareRootAttachment(input:{id:string;name:string;mime:string;recipient:IdentityRecord;current():boolean}):Promise<AttachmentDescriptor>{
+export async function prepareRootAttachment(input:{id:string;name:string;mime:string;caption?:string;recipient:IdentityRecord;current():boolean}):Promise<AttachmentDescriptor>{
  const owner=localAccount.status().account,record=localAccount.publicRecord(),device=localAccount.callDevice();
  if(!owner||!record||!device||!verifyRecord(input.recipient,Date.now()))throw Error('Attachment identity unavailable');
  check(input.current);const directory=folder(owner,input.id,true),metadata=new File(directory,'descriptor.json');
@@ -35,14 +47,25 @@ export async function prepareRootAttachment(input:{id:string;name:string;mime:st
   check(input.current);const now=Date.now(),fields={version:1 as const,id:input.id,sender:owner,senderDevice:device,recipient:input.recipient.account,recipientDevice:input.recipient.devices[0].id,created:now,expires:now+ATTACHMENT_TTL-30000,bytes:source.size};
   for(const file of [cipher,content,treeFile])if(file.exists)file.delete();cipher.create();content.create();
   sourceHandle=source.open();cipherHandle=cipher.open();ownHandle=content.open();const leaves:string[]=[],checksum=sha256.create();
-  for(let index=0;index<Math.ceil(fields.bytes/ATTACHMENT_CHUNK_BYTES);index++){
-   check(input.current);const plain=sourceHandle.readBytes(Math.min(ATTACHMENT_CHUNK_BYTES,fields.bytes-index*ATTACHMENT_CHUNK_BYTES));
-   try{checksum.update(plain);ownHandle.writeBytes(plain);const encrypted=encryptAttachmentChunk(fields,index,plain,key);cipherHandle.writeBytes(hexToBytes(encrypted));leaves.push(attachmentLeaf(index,encrypted));}
-   finally{plain.fill(0);}if(index%16===15)await pause();
+  // Batch native file calls, while retaining the exact 4-KiB encryption chunks,
+  // nonce/AAD derivation and Merkle leaves used by older peers.
+  for(let offset=0;offset<fields.bytes;offset+=16*ATTACHMENT_CHUNK_BYTES){
+   check(input.current);const length=Math.min(16*ATTACHMENT_CHUNK_BYTES,fields.bytes-offset),plain=sourceHandle.readBytes(length);
+   const encryptedBytes=new Uint8Array(length+16*Math.ceil(length/ATTACHMENT_CHUNK_BYTES));
+   try{
+    if(plain.length!==length)throw Error('Attachment source changed');
+    checksum.update(plain);ownHandle.writeBytes(plain);let written=0;
+    for(let at=0;at<plain.length;at+=ATTACHMENT_CHUNK_BYTES){
+     check(input.current);const index=(offset+at)/ATTACHMENT_CHUNK_BYTES,encrypted=encryptAttachmentChunk(fields,index,plain.subarray(at,at+ATTACHMENT_CHUNK_BYTES),key);
+     const bytes=hexToBytes(encrypted);encryptedBytes.set(bytes,written);written+=bytes.length;leaves.push(attachmentLeaf(index,encrypted,Native?.attachmentSha256?value=>Native!.attachmentSha256!(value):undefined));
+    }
+    cipherHandle.writeBytes(encryptedBytes);
+   }finally{plain.fill(0);encryptedBytes.fill(0);}
+   await pause();
   }
   sourceHandle.close();sourceHandle=undefined;cipherHandle.close();cipherHandle=undefined;ownHandle.close();ownHandle=undefined;check(input.current);
   const tree=buildAttachmentTree(leaves),manifest=localAccount.signAttachment({...fields,root:tree.root});
-  const descriptor:AttachmentDescriptor={manifest,key:bytesToHex(key),checksum:bytesToHex(checksum.digest()),name:input.name,mime:input.mime};
+  const descriptor:AttachmentDescriptor={manifest,key:bytesToHex(key),checksum:bytesToHex(checksum.digest()),name:input.name,mime:input.mime,...(input.caption?{caption:input.caption}:{})};
   if(!validAttachmentDescriptor(descriptor))throw Error('Invalid file name or type');treeFile.write(JSON.stringify(leaves));
   const target=folder(owner,attachmentDigest(manifest));if(target.exists)throw Error('Attachment destination already exists');target.create({intermediates:true});createdFinal=target;
   for(const [file,name] of [[cipher,'ciphertext'],[content,'content'],[treeFile,'tree.json']] as const)file.move(new File(target,name));
@@ -69,9 +92,15 @@ export async function commitRootAttachmentFile(job:AttachmentJob,current:()=>boo
  check(current);
  const directory=folder(job.owner,job.digest),final=rootAttachmentFile(job.owner,job.digest),partial=new File(directory,'partial'),file=final.exists?final:partial;
  if(!file.exists||file.size!==job.descriptor.manifest.bytes){if(final.exists)final.delete();throw new AttachmentFileReset('Attachment size changed');}
- const handle=file.open(),checksum=sha256.create();
- try{for(let offset=0;offset<file.size;offset+=65536){check(current);const bytes=handle.readBytes(Math.min(65536,file.size-offset));try{checksum.update(bytes);}finally{bytes.fill(0);}await pause();}}
- finally{handle.close();}
- check(current);if(bytesToHex(checksum.digest())!==job.descriptor.checksum){if(final.exists)final.delete();throw new AttachmentFileReset('Attachment checksum failed');}
+ let digest:string;
+ if(Native?.attachmentFileSha256){
+  digest=await Native.attachmentFileSha256(job.owner,job.digest,final.exists,job.descriptor.manifest.bytes);
+ }else{
+  const handle=file.open(),checksum=sha256.create();
+  try{for(let offset=0;offset<file.size;offset+=65536){check(current);const bytes=handle.readBytes(Math.min(65536,file.size-offset));try{checksum.update(bytes);}finally{bytes.fill(0);}await pause();}}
+  finally{handle.close();}
+  digest=bytesToHex(checksum.digest());
+ }
+ check(current);if(!/^[a-f0-9]{64}$/.test(digest)||digest!==job.descriptor.checksum){if(final.exists)final.delete();throw new AttachmentFileReset('Attachment checksum failed');}
  if(!final.exists)partial.move(final);
 }

@@ -23,13 +23,15 @@ export {subscribeLocalAccountCalls} from '../../composition/neuronRuntime';
 export type {NeuronCallView} from '../../services/identity/neuronCallCoordinator';
 export type {RootChatState,RootChatMessage,RootChatReply,RootChatContact} from '../../services/identity/rootChatTypes';
 export {rootChatView,ROOT_REACTIONS,type RootActionKind} from '../../services/identity/rootChatActions';
-export {rootGroupMessages} from '../../services/identity/rootGroups';
+export {rootGroupMessages,rootGroupPhoto} from '../../services/identity/rootGroups';
 export {rootStickerDraft} from '../../services/identity/rootStickerDraft';
 export {forwardRootMessage} from '../../services/identity/rootMessageForward';
-export {queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,
+export {queueRootAttachmentBatch,queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,
   rootAttachmentProgress,retryRootAttachmentSelection,removeRootAttachmentSelection,controlRootAttachment} from '../../services/identity/rootAttachmentRuntime';
 export {attachmentDigest} from '../../services/identity/attachmentProtocol';
 export {createRootVoiceRecorder,rootVoiceRecordingActive} from '../../services/identity/rootVoiceRecorder';
 export {startRootCallLease,stopRootCallLease,markRootCallConnected,rootCallMayRunBackground} from '../../services/identity/rootCallLifetime';
 
 export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';
+
+export {peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';

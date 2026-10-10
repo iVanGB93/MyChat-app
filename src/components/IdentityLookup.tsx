@@ -1,7 +1,8 @@
+import {KeyboardAwareTextInput as TextInput} from './ui/KeyboardForm';
 import {parseIdentityCode} from '../modules/identity';
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, Pressable, Text, TextInput, View } from 'react-native';
-import { validAccountId, type DirectoryLookupResult } from '../modules/identity';
+import { AppState, Pressable, Text, View } from 'react-native';
+import { type DirectoryLookupResult } from '../modules/identity';
 const messages: Record<DirectoryLookupResult['status'], string> = {
   found: 'Signed identity verified', conflict: 'Conflicting signed records found. No record selected.',
   'missing-history': 'More signed history is needed to connect these records. No record selected.',

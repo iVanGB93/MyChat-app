@@ -1,4 +1,4 @@
-import {StyleSheet,Platform} from 'react-native';
+import {StyleSheet} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
 export const messageBubbleStyles = StyleSheet.create({
   stickerBubble: {

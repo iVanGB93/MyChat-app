@@ -1,4 +1,7 @@
-import {ConfirmProvider} from '../contexts/ConfirmContext';
+import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
+import {startAppMaintenance} from '../modules/maintenance';
+import {RootShareProvider} from '../components/chat/RootSharePicker';
+import {ConfirmProvider,useConfirm} from '../contexts/ConfirmContext';
 import {ThemedAlertBridge} from '../components/ui/ThemedAlert';
 import RootNetworkPanel from './profile/RootNetworkPanel';
 import RootProfileScreen from './profile/RootProfileScreen';
@@ -26,36 +29,36 @@ import { checkRecoveryRecord, findRecoveryRecord } from '../modules/identity';
 import { accountFromRecoveryPhrase } from '../modules/identity';
 
 import Input from '../components/ui/Input';
+import RecoveryWordsInput from '../components/ui/RecoveryWordsInput';
 
 import Button from '../components/ui/Button';
 
 import { Font, Spacing, Radius } from '../theme';
 
-import IdentityLookup from '../components/IdentityLookup';
 
 import React, { useEffect, useRef, useState } from 'react';
 
-import { AppState, Image, KeyboardAvoidingView, Platform, Switch, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AppState, Image, Switch, Share, StyleSheet, Text, View } from 'react-native';
 
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-import { localAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
+import { localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
-import { localAccountLookupIdentity, localAccountDirectorySnapshot, startLocalAccountNetwork } from '../modules/network';
+import { localAccountDirectorySnapshot, startLocalAccountNetwork } from '../modules/network';
 
-import { allowedAxons, setAllowedAxons } from '../modules/network';
 
-/** Opt-in development flow. Its storage and entry point are independent of Django sessions. */
+/** Application shell for local identities and the neuron network. */
 
 export default function LocalAccountApp() {
+ useEffect(startAppMaintenance,[]);
 
- return <GestureHandlerRootView style={{flex:1}}><SafeAreaProvider><ThemeProvider><ConfirmProvider><ThemedAlertBridge/><LocalAccountContent/></ConfirmProvider></ThemeProvider></SafeAreaProvider></GestureHandlerRootView>;
+ return <GestureHandlerRootView style={{flex:1}}><SafeAreaProvider><ThemeProvider><ConfirmProvider><ThemedAlertBridge/><RootShareProvider><LocalAccountContent/></RootShareProvider></ConfirmProvider></ThemeProvider></SafeAreaProvider></GestureHandlerRootView>;
 
 }
 
 function LocalAccountContent() {
 
-  const {colors}=useTheme(),styles=makeLocalStyles(colors);
+  const {colors}=useTheme(),styles=makeLocalStyles(colors),{confirm}=useConfirm();
 
   const [status, setStatus] = useState(localAccount.status());
 
@@ -87,7 +90,6 @@ function LocalAccountContent() {
 
   const [replicas, setReplicas] = useState(localAccountDirectorySnapshot);
 
-  const [limit, setLimit] = useState(allowedAxons());
 
   const generation = useRef(0), actionRunning = useRef(false);
 
@@ -109,15 +111,15 @@ function LocalAccountContent() {
 
     try { await work(); }
 
-    catch (e) { if (restoring) { closeRecovery(); if (!localAccount.status().account) setSetup(false); } if (generation.current === own) setError(e instanceof Error ? e.message : 'Unable to complete this action'); }
+    catch (e) { if (restoring && !setup) { closeRecovery(); } if (generation.current === own) setError(e instanceof Error ? e.message : 'Unable to complete this action'); }
 
-    finally { if (generation.current === own) { setPassword(''); setRepeat('');setNewPassword('');setNewRepeat(''); } actionRunning.current = false; setBusy(false); }
+    finally { if (generation.current === own && !setup) { setPassword(''); setRepeat('');setNewPassword('');setNewRepeat(''); } actionRunning.current = false; setBusy(false); }
 
   }
 
   async function inspect() {
 
-    await localAccount.inspect(); await localAccountSession.initialize(); autoLockRef.current = localAccountSession.autoLock(); setAutoLock(autoLockRef.current);
+    await startLocalAccount(); autoLockRef.current = localAccountSession.autoLock(); setAutoLock(autoLockRef.current);
 
     const account = localAccount.status().account;
 
@@ -137,11 +139,12 @@ function LocalAccountContent() {
 
     try { runtime = startLocalAccountNetwork(); } catch { setError('Network transport unavailable in this build.'); }
 
-    const timer = setInterval(() => { setNetwork(runtime?.snapshot() ?? null); setReplicas(localAccountDirectorySnapshot()); setLimit(allowedAxons()); }, 1000);
+    const timer = setInterval(() => { setNetwork(runtime?.snapshot() ?? null); setReplicas(localAccountDirectorySnapshot()); }, 1000);
 
     const state = AppState.addEventListener('change', next => {
 
       setForeground(next === 'active');
+      if (next === 'active') runtime?.resume();
 
       // iOS biometric prompts briefly make the app inactive;
 
@@ -156,9 +159,16 @@ function LocalAccountContent() {
   }, []);
 
   const button = (label:string,onPress:()=>void,extraDisabled=false)=><Button title={label.toUpperCase()} onPress={onPress} loading={busy} disabled={disabled||extraDisabled}/>;
-  const passwordInput=<Input accessibilityLabel="Local password" label="CURRENT PASSWORD" placeholder="Local password (12+ characters)" isPassword autoCapitalize="none" autoCorrect={false} textContentType="none" autoComplete="off" maxLength={256} value={password} onChangeText={setPassword} editable={!disabled}/>;
+  const passwordInput=<Input accessibilityLabel="Local password" label="CURRENT PASSWORD" placeholder="Current local password" isPassword autoCapitalize="none" autoCorrect={false} textContentType="none" autoComplete="off" maxLength={256} value={password} onChangeText={setPassword} editable={!disabled}/>;
 
-  const confirmPassword = () => { if (password.length < 12 || password !== repeat) throw Error('Use at least 12 characters and enter the same password twice.'); };
+  const confirmPassword = () => { if (password.length < 6) throw Error('Password must contain at least 6 characters.'); if (password.length > 256) throw Error('Password must contain no more than 256 characters.'); if (password !== repeat) throw Error('Passwords do not match. Enter the same password in both fields.'); };
+
+  if(status.removalPending)return <SafeAreaView style={styles.root}><View style={styles.card}>
+    <Text style={styles.heading}>Finish removing this account</Text>
+    <Text style={styles.text}>Your account is locked. Close Axonic below, then reopen it to finish removing this device’s identity, chats and private files. Saved gallery media and other people’s messages stay unchanged.</Text>
+    {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+    <Button title="CLOSE AXONIC" onPress={()=>void closeForDeviceRemoval().catch(e=>setError(e instanceof Error?e.message:'Unable to close Axonic'))}/>
+  </View></SafeAreaView>;
 
   if(ready&&!locked&&!setup)return <View style={styles.root}><RootAccountNavigator profile={<RootProfileScreen account={status.account!} loginName={loginName} connected={connections}>
 
@@ -184,10 +194,12 @@ function LocalAccountContent() {
           <Input label="New password" accessibilityLabel="New local password" value={newPassword} onChangeText={setNewPassword} isPassword maxLength={256} autoComplete="off" textContentType="none" editable={!disabled}/>
           <Input label="Confirm new password" accessibilityLabel="Confirm new local password" value={newRepeat} onChangeText={setNewRepeat} isPassword maxLength={256} autoComplete="off" textContentType="none" editable={!disabled}/>
           {button('Change local password',()=>void action(async()=>{
-            if(newPassword.length<12||newPassword!==newRepeat)throw Error('Use at least 12 characters and enter the same new password twice.');
+            if(newPassword.length<6)throw Error('New password must contain at least 6 characters.');
+            if(newPassword!==newRepeat)throw Error('New passwords do not match. Enter the same password in both fields.');
             await localAccount.unlock(password);await biometrics.disable();await localAccountSession.forget(); await localAccount.changePassword(password,newPassword); await localAccountSession.remember(newPassword);
             setNotice('Password changed. Enable biometric unlock again with your new password if you want to use it.');
           }))}
+          {button('Remove account from this device',()=>confirm({title:'Remove from this device?',message:'This removes your local identity, password, chats, call history and app-private media after you close and reopen Axonic. Your 12 recovery words can restore your identity, but not these chats. Gallery copies, the network identity and other people’s messages are not deleted. Enter your current password above before continuing.',buttons:[{text:'Cancel',style:'cancel'},{text:'Remove from device',style:'destructive',onPress:()=>void action(async()=>{await removeAccountFromDevice({account:status.account!,password,confirmed:true});clearSecrets();})}]}))}
           {button('Disable biometric unlock', () => void action(async () => { await biometrics.disable(); setNotice('Biometric unlock disabled.'); }))}
 
           {button('Lock account', () => void action(async () => { generation.current++; await localAccountSession.lock(); clearSecrets(); setNotice(''); }))}
@@ -208,9 +220,7 @@ function LocalAccountContent() {
 
     {!foreground ? <View style={styles.card}><Text style={styles.title}>Axonic is locked</Text></View> :
 
-    <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
+    <KeyboardFormScrollView contentContainerStyle={styles.content}>
 
         <View style={styles.header}>
 
@@ -222,13 +232,13 @@ function LocalAccountContent() {
 
         </View>
 
-        {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+        {!!error && !setup && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
 
         {!!notice && <Text style={styles.text}>{notice}</Text>}
 
         {!ready && <Text style={styles.text}>Opening local account…</Text>}
 
-        {!ready && authButton('RETRY', () => void action(inspect))}
+        {!ready && <Button title="RETRY" onPress={() => void action(inspect)} loading={busy} disabled={busy||status.busy}/>}
 
         {ready && status.state === 'empty' && !restoring && <View style={styles.card}>
 
@@ -250,13 +260,13 @@ function LocalAccountContent() {
 
             <Text style={styles.text}>{restoring
 
-              ? 'Enter your recovery words. Recovery replaces previous devices; it does not restore messages stored only on a lost phone. Existing 24-word phrases are also supported.'
+              ? 'Enter your 12 recovery words in their original order, separated by spaces. Do not type numbers or punctuation. If your original backup has 24 words, enter all 24 instead. Recovery replaces previous devices; it does not restore messages stored only on a lost phone.'
 
               : 'Write these words down in order and keep them somewhere safe. Anyone with these words can control your identity.'}</Text>
 
             {!!phrase && <View style={styles.wordGrid}>{phrase.split(' ').map((word,index)=><Text key={index} style={styles.word}>{index+1}. {word}</Text>)}</View>}
 
-            {restoring ? <Input label="Recovery words" accessibilityLabel="Recovery words" placeholder="Enter your recovery words" multiline autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" maxLength={512} value={words} onChangeText={setWords} editable={!disabled}/> : <>
+            {restoring ? <RecoveryWordsInput value={words} onChangeText={setWords} editable={!disabled}/> : <>
               <Text style={styles.text}>Confirm two words from your backup.</Text>
               {positions.map((position,index)=><Input key={position} label={`Word #${position+1}`} accessibilityLabel={`Confirm word ${position+1}`} placeholder={`Enter word #${position+1}`} autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" maxLength={32} value={answers[index]} onChangeText={value=>setAnswers(old=>index===0?[value,old[1]]:[old[0],value])} editable={!disabled}/>)}
             </>}
@@ -289,13 +299,15 @@ function LocalAccountContent() {
 
             {usernameInput}
 
-            <Input label="Password" accessibilityLabel="Local password" placeholder="At least 12 characters" isPassword
+            <Input label="Password" accessibilityLabel="Local password" placeholder="At least 6 characters" isPassword
 
               autoCorrect={false} autoComplete="off" textContentType="none" maxLength={256} value={password} onChangeText={setPassword} editable={!disabled}/>
 
             <Input label="Confirm password" accessibilityLabel="Confirm local password" placeholder="Repeat your password" isPassword
 
               autoCorrect={false} autoComplete="off" textContentType="none" maxLength={256} value={repeat} onChangeText={setRepeat} editable={!disabled}/>
+
+            {!!error && <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
 
             <View style={styles.row}><Text style={styles.text}>Enable biometric login</Text><Switch accessibilityLabel="Enable biometric login"
 
@@ -392,9 +404,7 @@ function LocalAccountContent() {
 
         </View>}
 
-      </ScrollView>
-
-    </KeyboardAvoidingView>}
+    </KeyboardFormScrollView>}
 
   </SafeAreaView>;
 

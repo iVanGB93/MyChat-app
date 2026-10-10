@@ -1,13 +1,14 @@
 import {hexToBytes} from '@noble/hashes/utils.js';
 import {attachmentDigest,validAttachmentManifest,verifyAttachmentManifest,verifyAttachmentChunk,decryptAttachmentChunk,
- verifyAttachmentReceipt,ATTACHMENT_CHUNK_BYTES,type AttachmentManifest,type AttachmentChunk,type AttachmentReceipt} from './attachmentProtocol.ts';
+ verifyAttachmentReceipt,ATTACHMENT_CHUNK_BYTES,type AttachmentManifest,type AttachmentChunk,type AttachmentReceipt,type AttachmentLeafHash} from './attachmentProtocol.ts';
 import {validAccountId,type IdentityRecord} from './identityProtocol.ts';
 import type {IdentityPeer} from './identityClient.ts';
+import {ATTACHMENT_BATCH_CHUNKS,ATTACHMENT_BULK_FRAME_BYTES,validAttachmentRange,packAttachmentBatch,unpackAttachmentBatch} from './attachmentBatch.ts';
 
 /** Private chat metadata. Never send this descriptor to a custodian outside encrypted chat. */
-export interface AttachmentDescriptor {manifest:AttachmentManifest;key:string;checksum:string;name:string;mime:string}
+export interface AttachmentDescriptor {manifest:AttachmentManifest;key:string;checksum:string;name:string;mime:string;caption?:string}
 export class AttachmentFileReset extends Error {}
-export const attachmentDescriptorFingerprint=(d:AttachmentDescriptor)=>JSON.stringify([attachmentDigest(d.manifest),d.key,d.checksum,d.name,d.mime]);
+export const attachmentDescriptorFingerprint=(d:AttachmentDescriptor)=>JSON.stringify([attachmentDigest(d.manifest),d.key,d.checksum,d.name,d.mime,...(d.caption!==undefined?[d.caption]:[])]);
 export type AttachmentPhase='queued'|'uploading'|'downloading'|'confirming'|'complete'|'expired'|'cancelled';
 export interface AttachmentJob {
  version:1;owner:string;digest:string;direction:'outgoing'|'incoming';descriptor:AttachmentDescriptor;
@@ -19,6 +20,8 @@ export interface AttachmentJobStore {
  retire?(owner:string,current:()=>boolean):Promise<void>;
  list(owner:string):Promise<AttachmentJob[]>;
  get(owner:string,digest:string):Promise<AttachmentJob|null>;
+ /** Optional indexed check of an already validated job. Every committed mutation must advance revision. */
+ isCurrent?(owner:string,digest:string,revision:number):Promise<boolean>;
  /** expected=null creates. Commit atomically only when revision and current() still match. */
  save(job:AttachmentJob,expected:number|null,current:()=>boolean):Promise<boolean>;
 }
@@ -26,7 +29,7 @@ const terminal=(phase:AttachmentPhase)=>['complete','expired','cancelled'].inclu
 const total=(job:AttachmentJob)=>Math.ceil(job.descriptor.manifest.bytes/ATTACHMENT_CHUNK_BYTES);
 export function validAttachmentDescriptor(value:unknown):value is AttachmentDescriptor {
  const d=value as AttachmentDescriptor;
- return !!d&&Object.keys(d).length===5&&validAttachmentManifest(d.manifest,d.manifest?.expires-1)&&Object.keys(d.manifest).length===11&&typeof d.key==='string'&&/^[a-f0-9]{64}$/.test(d.key)
+ return !!d&&(Object.keys(d).sort().join(',')==='checksum,key,manifest,mime,name'||Object.keys(d).sort().join(',')==='caption,checksum,key,manifest,mime,name'&&typeof d.caption==='string'&&new TextEncoder().encode(d.caption).length<=1600)&&validAttachmentManifest(d.manifest,d.manifest?.expires-1)&&Object.keys(d.manifest).length===11&&typeof d.key==='string'&&/^[a-f0-9]{64}$/.test(d.key)
   &&typeof d.checksum==='string'&&/^[a-f0-9]{64}$/.test(d.checksum)&&typeof d.name==='string'&&d.name.length>0&&d.name.length<=120
   &&!/[\x00-\x1f\x7f/\\]/.test(d.name)&&typeof d.mime==='string'&&d.mime.length<=100&&/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(d.mime);
 }
@@ -47,8 +50,15 @@ export function validAttachmentJob(job:unknown):job is AttachmentJob {
 /** Durable resumable jobs. Platform adapters own file I/O; no Django IDs, URLs or access tokens. */
 export function createAttachmentTransfer(d:{
  owner():string|null;device():string|null;now():number;store:AttachmentJobStore;
+ hashLeaf?:AttachmentLeafHash;
+ /** Bounded read-ahead; wire format and durable per-chunk checkpoints stay unchanged. */
+ downloadWindow?:number;
+ uploadWindow?:number;
  record(account:string):Promise<IdentityRecord|null>;peers():string[];allowed(peer:string):boolean;allowedJob?(job:AttachmentJob):boolean;
  request(peer:string,raw:string):Promise<string|null>;
+  bulkPeers?():string[];
+  batchChunks?(peer:string):number;
+ bulkRequest?(peer:string,raw:string):Promise<string|null>;
  readChunk(job:AttachmentJob,index:number):Promise<AttachmentChunk>;
  /** Persist exact bytes at index; repeating a chunk must be idempotent. Never use the remote name as a path. */
  writeChunk(job:AttachmentJob,index:number,plain:Uint8Array,current:()=>boolean):Promise<void>;
@@ -59,9 +69,20 @@ export function createAttachmentTransfer(d:{
  stored?(job:AttachmentJob,current:()=>boolean):Promise<void>;
  completed(job:AttachmentJob,current:()=>boolean):Promise<void>;
 }){
- let stopped=false,busy=false,generation=0,cursor=0,requests=0;
+ const downloadWindow=d.downloadWindow??1,uploadWindow=d.uploadWindow??1;
+ if(!Number.isSafeInteger(uploadWindow)||uploadWindow<1||uploadWindow>4)throw Error('Invalid attachment upload window');
+ if(!Number.isSafeInteger(downloadWindow)||downloadWindow<1||downloadWindow>4)throw Error('Invalid attachment download window');
+ let stopped=false,busy=false,generation=0,cursor=0,requests=0,bulkRequests=0;
  const unavailable=new Map<string,number>();
  const directWaiting=new Map<string,number>();
+ const published=new Set<string>();
+ async function publish(job:AttachmentJob,current:()=>boolean){
+  const key=job.owner+':'+job.direction+':'+job.digest;
+  if(published.has(key))return;
+  await d.completed(job,current);
+  if(current()){if(published.size>=128)published.clear();published.add(key);}
+ }
+
  async function request(peer:string,operation:string,job:AttachmentJob,extra:object={}){
   const raw=await d.request(peer,JSON.stringify({version:1,operation,digest:job.digest,...extra}));
   if(!raw||raw.length>14000)throw Error('Attachment route unavailable');return JSON.parse(raw);
@@ -70,7 +91,11 @@ export function createAttachmentTransfer(d:{
   let job=initial;const manifest=job.descriptor.manifest;
   const other=job.direction==='outgoing'?manifest.recipient:manifest.sender;
   const current=()=>!stopped&&generation===epoch&&d.owner()===job.owner&&d.allowed(other)&&(d.allowedJob?.(job)??true);
-  async function live(){const saved=await d.store.get(job.owner,job.digest);return current()&&saved?.revision===job.revision&&!terminal(saved.phase);}
+  async function live(){
+   if(!current())return false;
+   if(d.store.isCurrent)return await d.store.isCurrent(job.owner,job.digest,job.revision)&&current();
+   const saved=await d.store.get(job.owner,job.digest);return current()&&saved?.revision===job.revision&&!terminal(saved.phase);
+  }
   async function save(patch:Partial<AttachmentJob>){
    const next={...job,...patch,revision:job.revision+1};if(!current()||!await d.store.save(next,job.revision,current))throw Error('Attachment job changed');job=next;
   }
@@ -84,7 +109,7 @@ export function createAttachmentTransfer(d:{
    if(job.direction==='outgoing'&&job.receipt){
     const recipient=await d.record(manifest.recipient);
     if(!recipient||!verifyAttachmentReceipt(job.receipt,manifest,recipient,d.now())||!await live())return;
-    await d.completed(job,current);if(await live())await save({phase:'complete',next:0});return;
+    await publish(job,current);if(await live())await save({phase:'complete',next:0});return;
    }
    if(job.direction==='outgoing'&&d.peers().includes(peer)){
     // A ready recipient pulls directly from our own encrypted file. Older peers reject this operation.
@@ -100,7 +125,7 @@ export function createAttachmentTransfer(d:{
    if(job.direction==='incoming'&&job.receipt){
     const recipient=await d.record(manifest.recipient);
     if(!recipient||!verifyAttachmentReceipt(job.receipt,manifest,recipient,d.now())||!await live())return;
-    await d.completed(job,current);if(!await live())return;
+    await publish(job,current);if(!await live())return;
     const pending=job.custodians.filter(p=>!job.acknowledged.includes(p));
     if(!pending.length){await save({phase:'complete',next:0});return;}
     const relay=pending.find(p=>d.peers().includes(p)&&(unavailable.get(job.digest+':'+p)??0)<=d.now());if(!relay)return;
@@ -124,37 +149,88 @@ export function createAttachmentTransfer(d:{
      await save({phase:r.status==='completed'?'confirming':'uploading',custodians,failures:0,next:0});return;
     }
     if(job.phase==='uploading'&&job.cursor<total(job)){
-     const chunk=await d.readChunk(job,job.cursor);if(!await live())return;
-     if(chunk.index!==job.cursor||!verifyAttachmentChunk(manifest,chunk))throw Error('Own attachment chunk invalid');
-     const r=await request(relay,'put',job,{chunk});if(!await live())return;
-     if(!['held','completed'].includes(r.status))throw Error('Attachment chunk refused');
-     const next=job.cursor+1;if(next===total(job)&&r.status==='held'){await d.stored?.(job,current);if(!await live())return;}await save({cursor:next,phase:r.status==='completed'||next===total(job)?'confirming':'uploading',failures:0,next:0});return;
+     const start=job.cursor,count=Math.min(uploadWindow,total(job)-start);
+     const results=await Promise.allSettled(Array.from({length:count},async(_,offset)=>{
+      const index=start+offset,chunk=await d.readChunk(job,index);
+      if(!await live())throw Error('Attachment job changed');
+      if(chunk.index!==index||!verifyAttachmentChunk(manifest,chunk,d.hashLeaf))throw Error('Own attachment chunk invalid');
+      return request(relay,'put',job,{chunk});
+     }));
+     let next=start,completed=false;
+     try{for(const result of results){
+      if(!await live())return;
+      if(result.status==='rejected')throw result.reason;
+      if(!['held','completed'].includes(result.value.status))throw Error('Attachment chunk refused');
+      completed ||= result.value.status==='completed';next++;
+     }}finally{
+      if(next>start&&await live()){
+       if(next===total(job)&&!completed){await d.stored?.(job,current);if(!await live())return;}
+       await save({cursor:next,phase:completed||next===total(job)?'confirming':'uploading',failures:0,next:0});
+      }
+     }
+     return;
     }
     const r=await request(relay,'status',job);if(!await live())return;
     if(r.status==='held'){if(job.cursor===total(job))await d.stored?.(job,current);if(!await live())return;await save({next:d.now()+2000});return;}
     const recipient=await d.record(manifest.recipient);
     if(r.status!=='completed'||!recipient||!verifyAttachmentReceipt(r.receipt,manifest,recipient,d.now()))throw Error('No verified attachment receipt');
     if(!await live())return;
-    await d.completed({...job,receipt:r.receipt},current);if(!await live())return;
+    await publish({...job,receipt:r.receipt},current);if(!await live())return;
     await save({receipt:r.receipt,phase:'complete',next:0,failures:0});return;
    }
    if(job.cursor<total(job)){
-    const r=await request(relay,relay===manifest.sender?'direct-get':'get',job,{index:job.cursor});if(!await live())return;
-    if(r.status!=='ok'||!r.chunk||r.chunk.index!==job.cursor||!verifyAttachmentChunk(manifest,r.chunk))throw Error('Attachment chunk unavailable');
-    const key=hexToBytes(job.descriptor.key);let plain:Uint8Array|undefined;
-    try{plain=decryptAttachmentChunk(manifest,r.chunk,key);if(!await live())return;await d.writeChunk(job,job.cursor,plain,current);}
-    finally{key.fill(0);plain?.fill(0);}
-    if(!await live())return;
-    // The sender can disclose prior upload destinations so direct completion also cleans partial custody.
-    const prior=relay===manifest.sender&&Array.isArray(r.custodians)?r.custodians.filter((p:unknown)=>validAccountId(p)&&p!==job.owner).slice(0,9):[];
-    const custodians=[...new Set<string>([...job.custodians,relay,...prior])];if(custodians.length>10)throw Error('Too many attachment sources');
-    await save({cursor:job.cursor+1,custodians,next:0,failures:0});return;
+    // Fetch a bounded window concurrently, but commit only a verified contiguous prefix.
+    // Wait for every request to settle before returning so retries cannot accumulate in-flight reads.
+    const start=job.cursor,bulk=relay===manifest.sender&&!!d.bulkRequest&&d.bulkPeers?.().includes(relay);
+    const negotiated=bulk?(d.batchChunks?.(relay)??ATTACHMENT_BATCH_CHUNKS):downloadWindow;
+    if(!Number.isSafeInteger(negotiated)||negotiated<1||negotiated>ATTACHMENT_BATCH_CHUNKS)throw Error('Invalid negotiated batch size');
+    const count=Math.min(bulk&&negotiated<=3?2*negotiated:negotiated,total(job)-start);
+    let results:PromiseSettledResult<any>[];
+    if(bulk){
+     const batches=await Promise.allSettled(Array.from({length:Math.ceil(count/negotiated)},async(_,batch)=>{
+      const index=start+batch*negotiated,length=Math.min(negotiated,count-batch*negotiated);
+      const raw=await d.bulkRequest!(relay,JSON.stringify({version:1,operation:'direct-get-batch',digest:job.digest,index,count:length}));
+      if(!raw||raw.length>ATTACHMENT_BULK_FRAME_BYTES-1024)throw Error('Attachment batch unavailable');
+      const response=JSON.parse(raw);if(response.status!=='ok'||response.index!==index||response.count!==length)throw Error('Attachment batch unavailable');
+      return unpackAttachmentBatch(manifest,index,length,response.data).map(chunk=>({status:'fulfilled' as const,value:{status:'ok',chunk,custodians:response.custodians}}));
+     }));
+     results=batches.flatMap<PromiseSettledResult<any>>(batch=>batch.status==='fulfilled'?batch.value:[{status:'rejected',reason:batch.reason}]);
+    }else results=await Promise.allSettled(Array.from({length:count},(_,offset)=>
+     request(relay,relay===manifest.sender?'direct-get':'get',job,{index:start+offset})));
+    let verifiedCursor=start,custodians=job.custodians;
+    try{for(let offset=0;offset<results.length;offset++){
+     if(!await live())return;
+     if(manifest.expires<=d.now())throw Error('Attachment expired');
+     const result=results[offset];if(result.status==='rejected')throw result.reason;
+     const r=result.value,index=start+offset;
+     // decryptAttachmentChunk verifies the complete Merkle proof before decrypting.
+     // Keep the requested-index check here; do not hash the same proof twice.
+     if(r.status!=='ok'||!r.chunk||r.chunk.index!==index)throw Error('Attachment chunk unavailable');
+     const key=hexToBytes(job.descriptor.key);let plain:Uint8Array|undefined;
+     try{plain=decryptAttachmentChunk(manifest,r.chunk,key,d.hashLeaf);if(!await live())return;await d.writeChunk(job,index,plain,current);}
+     finally{key.fill(0);plain?.fill(0);}
+     if(!await live())return;
+     const prior=relay===manifest.sender&&Array.isArray(r.custodians)?r.custodians.filter((p:unknown)=>validAccountId(p)&&p!==job.owner).slice(0,9):[];
+     custodians=[...new Set<string>([...custodians,relay,...prior])];if(custodians.length>10)throw Error('Too many attachment sources');
+     verifiedCursor=index+1;
+     if(bulk&&(offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
+    }}finally{
+     // Files are written at fixed offsets. A crash before this checkpoint safely
+     // replays at most one bounded window; a failed chunk preserves its verified prefix.
+     if(verifiedCursor>start&&await live())await save({cursor:verifiedCursor,custodians,next:0,failures:0});
+    }
+    // Finish a fully written file in this turn instead of waiting for another
+    // scheduler pass. Partial windows still yield to the other transfer jobs.
+    if(job.cursor<total(job)||!await live())return;
    }
    if(!job.receipt){
     await d.commitFile(job,current);if(!await live())return;
     const receipt=await d.signReceipt(manifest),recipient=await d.record(manifest.recipient);
     if(!recipient||!verifyAttachmentReceipt(receipt,manifest,recipient,d.now())||!await live())return;
     await save({receipt,phase:'confirming'});
+    // Persist the verified receipt before publishing. Remote receipt cleanup
+    // remains resumable and does not delay showing the locally verified file.
+    if(await live())await publish(job,current);
    }
   }catch(error){
    if(!await live())return;
@@ -167,11 +243,12 @@ export function createAttachmentTransfer(d:{
   /** Own-file requests are scoped to the authenticated intended endpoint, never arbitrary peers. */
   async receive(raw:string,peer:IdentityPeer):Promise<string|null>{
    let input;try{if(raw.length>13000)return null;input=JSON.parse(raw);}catch{return null;}
-   if(!['direct-status','direct-get','direct-receipt'].includes(input?.operation))return null;
+   if(!['direct-status','direct-get','direct-get-batch','direct-receipt'].includes(input?.operation))return null;
+   const bulk=input.operation==='direct-get-batch';if(bulk&&bulkRequests>=2)return JSON.stringify({status:'unavailable'});
    const reply=(status:string,extra:object={})=>JSON.stringify({status,...extra});
    let admittedJob:AttachmentJob|null=null;
    const owner=d.owner(),epoch=generation,current=()=>!stopped&&generation===epoch&&d.owner()===owner&&d.allowed(peer.account)&&peer.expiresAt>d.now()&&(!admittedJob||(d.allowedJob?.(admittedJob)??true));
-   if(!owner||requests>=8||input.version!==1||typeof input.digest!=='string'||!/^[a-f0-9]{64}$/.test(input.digest)||!current())return reply('rejected');requests++;
+   if(!owner||requests>=8||input.version!==1||typeof input.digest!=='string'||!/^[a-f0-9]{64}$/.test(input.digest)||!current())return reply('rejected');requests++;if(bulk)bulkRequests++;
    try{
     const job=await d.store.get(owner,input.digest);if(!job||!current()||!(d.allowedJob?.(job)??true)||['cancelled','expired'].includes(job.phase))return reply('unavailable');
     admittedJob=job;
@@ -179,15 +256,41 @@ export function createAttachmentTransfer(d:{
     if(!sender||!recipient||!verifyAttachmentManifest(m,sender,d.now())||!current())return reply('rejected');
     if(input.operation==='direct-status')return job.direction==='incoming'&&peer.account===m.sender&&peer.device===m.senderDevice&&d.device()===m.recipientDevice&&job.failures===0?reply('ready'):reply('unavailable');
     if(job.direction!=='outgoing'||peer.account!==m.recipient||peer.device!==m.recipientDevice||d.device()!==m.senderDevice)return reply('rejected');
+    if(bulk){
+     if(!validAttachmentRange(m,input.index,input.count))return reply('rejected');
+     const chunks:AttachmentChunk[]=[];
+     for(let offset=0;offset<input.count;offset++){
+      if(!current()||m.expires<=d.now())return reply('unavailable');
+      chunks.push(await d.readChunk(job,input.index+offset));
+      if((offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
+     }
+     const saved=await d.store.get(owner,input.digest);
+     // Outgoing polling may advance revision while we read. Only cancellation,
+     // expiry or changed content invalidates these immutable encrypted bytes.
+     if(!current()||!saved||attachmentDescriptorFingerprint(saved.descriptor)!==attachmentDescriptorFingerprint(job.descriptor)||['cancelled','expired'].includes(saved.phase)||m.expires<=d.now())return reply('unavailable');
+     const latestSender=await d.record(m.sender);if(!latestSender||!verifyAttachmentManifest(m,latestSender,d.now())||!current())return reply('unavailable');
+     const data=packAttachmentBatch(m,input.index,chunks,d.hashLeaf);
+     return current()&&m.expires>d.now()?reply('ok',{index:input.index,count:input.count,data,custodians:saved.custodians.slice(0,9)}):reply('unavailable');
+    }
     if(input.operation==='direct-get'){
      if(!Number.isSafeInteger(input.index)||input.index<0||input.index>=total(job))return reply('rejected');
-     const chunk=await d.readChunk(job,input.index);return current()&&chunk.index===input.index&&verifyAttachmentChunk(m,chunk)?reply('ok',{chunk,custodians:job.custodians.slice(0,9)}):reply('rejected');
+     const chunk=await d.readChunk(job,input.index);return current()&&chunk.index===input.index&&verifyAttachmentChunk(m,chunk,d.hashLeaf)?reply('ok',{chunk,custodians:job.custodians.slice(0,9)}):reply('rejected');
     }
     if(!verifyAttachmentReceipt(input.receipt,m,recipient,d.now())||!current())return reply('rejected');
-    if(job.receipt)return reply('completed');
-    const saved=await d.store.save({...job,revision:job.revision+1,receipt:input.receipt,next:0},job.revision,current);
-    return reply(saved?'completed':'unavailable');
-   }catch{return reply('rejected');}finally{requests--;}
+    // Outgoing polling may checkpoint while the receipt is being verified.
+    // Retry that local race before making the receiver back off its network route.
+    let latest=job;
+    const fingerprint=attachmentDescriptorFingerprint(job.descriptor);
+    for(let attempt=0;attempt<3;attempt++){
+     admittedJob=latest;
+     if(!current()||m.expires<=d.now()||latest.direction!=='outgoing'||['cancelled','expired'].includes(latest.phase)
+      ||attachmentDescriptorFingerprint(latest.descriptor)!==fingerprint)return reply('unavailable');
+     if(latest.receipt)return reply('completed');
+     if(await d.store.save({...latest,revision:latest.revision+1,receipt:input.receipt,next:0},latest.revision,current))return reply('completed');
+     const refreshed=await d.store.get(owner,input.digest);if(!refreshed)return reply('unavailable');latest=refreshed;
+    }
+    return reply('unavailable');
+   }catch{return reply('rejected');}finally{requests--;if(bulk)bulkRequests--;}
   },
   async enqueue(descriptor:AttachmentDescriptor,direction:AttachmentJob['direction']){
    const owner=d.owner(),epoch=generation;if(!owner||stopped||!validAttachmentDescriptor(descriptor))throw Error('Invalid attachment');
@@ -232,6 +335,6 @@ export function createAttachmentTransfer(d:{
    unavailable.clear();directWaiting.clear();
    if(!await d.store.save({...job,revision:job.revision+1,phase:job.receipt?'confirming':job.direction==='outgoing'?'queued':'downloading',cursor:job.direction==='outgoing'?0:job.cursor,relay:null,next:0,failures:0},job.revision,()=>!stopped&&generation===epoch&&d.owner()===owner&&d.allowed(peer)))throw Error('Transfer changed. Try again');
   },
-  invalidate(){generation++;unavailable.clear();directWaiting.clear();},stop(){stopped=true;generation++;unavailable.clear();directWaiting.clear();},
+  invalidate(){generation++;unavailable.clear();directWaiting.clear();published.clear();},stop(){stopped=true;generation++;unavailable.clear();directWaiting.clear();published.clear();},
  };
 }

@@ -5,8 +5,8 @@ import { validAccountId } from './identityProtocol.ts';
 import {validAttachmentDescriptor,attachmentDescriptorFingerprint,type AttachmentDescriptor} from './attachmentTransfer.ts';
 import type {AttachmentReceipt} from './attachmentProtocol.ts';
 import type {RootChatReply,RootChatMessage,RootChatContact,RootChatState} from './rootChatTypes.ts';
-import {changeRootGroup,receiveRootGroupControl,leaveRootGroup,validGroupContext,validGroupStorage,rootGroupAllowed,encodeRootGroupMessage,rootGroupDeliveryId} from './rootGroups.ts';
-import type {RootGroupContext} from './rootGroupTypes.ts';
+import {validRootGroupBackup,queueRootGroupBackup,recoverRootGroupsForPeer,changeRootGroup,receiveRootGroupControl,leaveRootGroup,validGroupContext,validGroupStorage,rootGroupAllowed,encodeRootGroupMessage,rootGroupDeliveryId} from './rootGroups.ts';
+import type {RootGroupContext,RootGroupMembership,RootGroupBackup} from './rootGroupTypes.ts';
 export type {RootChatReply,RootChatMessage,RootChatContact,RootChatState} from './rootChatTypes.ts';
 const idValid=(id:string)=>/^[a-f0-9]{64}$/.test(id);
 export const validRootReply=(r:unknown,owner:string,peer:string):r is RootChatReply=>{const v=r as RootChatReply;return !!v&&Object.keys(v).length===2&&idValid(v.id)&&(v.author===owner||v.author===peer);};
@@ -14,6 +14,8 @@ const sameReply=(a?:RootChatReply,b?:RootChatReply)=>a?.id===b?.id&&a?.author===
 const byteLength=(text:string)=>new TextEncoder().encode(text).length;
 /** Private own history. Peer identity comes exclusively from the authenticated transport. */
 export function createRootChatLedger(d:{owner:string;read():Promise<string|null>;write(raw:string):Promise<void>;current():boolean;now():number;
+ queued?(peer:string,id:string):void;
+ signGroup?(group:RootGroupMembership):RootGroupBackup;
  verifyAttachment?(descriptor:AttachmentDescriptor,direction:RootChatMessage['direction']):Promise<boolean>;
  verifyAttachmentReceipt?(descriptor:AttachmentDescriptor,receipt:AttachmentReceipt):Promise<boolean>;
 }){
@@ -41,12 +43,20 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    ||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.group!==undefined&&(!validGroupContext(m.group)||!s.groups?.some(g=>g.id===m.group!.id)))
    ||s.groupActions!==undefined&&(!Array.isArray(s.groupActions)||s.groupActions.length>10000||s.groupActions.some(a=>!validGroupAction(a,d.owner)||!s.groups?.some(g=>g.id===a.group.id)))
    ||s.groupSeen!==undefined&&(!Array.isArray(s.groupSeen)||s.groupSeen.length>2000||s.groupSeen.some(v=>!validPeer(v.peer)||!idValid(v.id)||typeof v.raw!=='string'||byteLength(v.raw)>2048)))throw Error('Chat storage needs recovery; it was not replaced');
+  if(s.groups?.some(g=>g.recoveryPending!==undefined&&(g.recoveryPending!==true||g.admin!==d.owner||g.accepted)||g.backup!==undefined&&(!validRootGroupBackup(g.backup)||g.backup.group.id!==g.id||g.backup.group.admin!==g.admin)))throw Error('Group backup needs recovery; it was not replaced');
   return s;
  }
  async function save(s:RootChatState){check();await d.write(JSON.stringify(s));check();}
+ function signGroups(s:RootChatState,id:string){
+  if(!d.signGroup)return;
+  for(const g of s.groups??[])if(g.admin===d.owner&&!g.blocked&&!g.recoveryPending&&(!g.backup||g.backup.group.revision!==g.revision)){
+   g.backup=d.signGroup(g);queueRootGroupBackup(s,d.owner,g,rootGroupDeliveryId(id,g.id,'signed-group-backup'));
+  }
+ }
  function contact(s:RootChatState,peer:string){let c=s.contacts.find(c=>c.account===peer);if(!c){if(s.contacts.length>=500)throw Error('Contact storage is full');c={account:peer,alias:'',blocked:false,accepted:false};s.contacts.push(c);}return c;}
  return {
   snapshot:()=>run(read),
+  recoverGroupsForPeer:(peer:string,requestId:string)=>run(async()=>{const s=await read(),before=JSON.stringify(s);signGroups(s,requestId);recoverRootGroupsForPeer(s,d.owner,peer,requestId);if(JSON.stringify(s)!==before)await save(s);}),
   deleteChats:(keys:string[])=>run(async()=>{
    if(!Array.isArray(keys)||!keys.length||keys.some(k=>!validChat(k)))throw Error('Choose valid chats');
    const s=await read(),chosen=new Set(keys),matches=(m:RootChatMessage)=>chosen.has(m.group?'group:'+m.group.id:m.peer);
@@ -59,11 +69,11 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    s.hiddenChats=[...new Set([...(s.hiddenChats??[]),...keys])];
    await save(s);return removed;
   }),
-  createGroup:(id:string,packetId:string,name:string,members:string[])=>run(async()=>{const s=await read();if(s.groups?.some(g=>g.id===id))throw Error('Group already exists');changeRootGroup(s,d.owner,id,packetId,name,members);await save(s);}),
-  updateGroup:(id:string,packetId:string,name:string,members:string[])=>run(async()=>{const s=await read();if(!s.groups?.some(g=>g.id===id))throw Error('Group unavailable');changeRootGroup(s,d.owner,id,packetId,name,members);await save(s);}),
-  configureGroup:(id:string,patch:{accepted?:boolean;blocked?:boolean})=>run(async()=>{if(!patch||Object.keys(patch).some(k=>!['accepted','blocked'].includes(k))||patch.accepted!==undefined&&typeof patch.accepted!=='boolean'||patch.blocked!==undefined&&typeof patch.blocked!=='boolean')throw Error('Invalid group preferences');const s=await read(),g=s.groups?.find(g=>g.id===id);if(!g)throw Error('Group unavailable');if(patch.accepted!==undefined)g.accepted=patch.accepted;if(patch.blocked!==undefined)g.blocked=patch.blocked;await save(s);}),
-  markGroupRead:(id:string)=>run(async()=>{const s=await read();let changed=false;for(const m of s.messages)if(m.group?.id===id&&m.direction==='incoming'&&!m.read){m.read=true;changed=true;}if(changed)await save(s);}),
-  leaveGroup:(id:string,packetId:string)=>run(async()=>{const s=await read();leaveRootGroup(s,d.owner,id,packetId);await save(s);}),
+  createGroup:(id:string,packetId:string,name:string,members:string[])=>run(async()=>{const s=await read();if(s.groups?.some(g=>g.id===id))throw Error('Group already exists');changeRootGroup(s,d.owner,id,packetId,name,members);signGroups(s,packetId);await save(s);}),
+  updateGroup:(id:string,packetId:string,name:string,members:string[],photo?:string|null)=>run(async()=>{const s=await read();if(!s.groups?.some(g=>g.id===id))throw Error('Group unavailable');changeRootGroup(s,d.owner,id,packetId,name,members,photo);signGroups(s,packetId);await save(s);}),
+  configureGroup:(id:string,patch:{accepted?:boolean;blocked?:boolean;muted?:boolean})=>run(async()=>{if(!patch||Object.keys(patch).some(k=>!['accepted','blocked','muted'].includes(k))||patch.accepted!==undefined&&typeof patch.accepted!=='boolean'||patch.blocked!==undefined&&typeof patch.blocked!=='boolean'||patch.muted!==undefined&&typeof patch.muted!=='boolean')throw Error('Invalid group preferences');const s=await read(),g=s.groups?.find(g=>g.id===id);if(!g)throw Error('Group unavailable');if(patch.accepted===true&&g.recoveryPending){if(g.admin!==d.owner||!d.signGroup)throw Error('Group recovery signing unavailable');delete g.recoveryPending;g.accepted=true;signGroups(s,rootGroupDeliveryId(g.id,d.owner,'confirm-group-recovery'));}if(patch.accepted!==undefined)g.accepted=patch.accepted;if(patch.blocked!==undefined)g.blocked=patch.blocked;if(patch.muted!==undefined)g.muted=patch.muted;await save(s);}),
+  markGroupRead:(id:string)=>run(async()=>{const s=await read();let changed=false;for(const m of s.messages)if(m.group?.id===id&&m.direction==='incoming'&&!m.read){const g=s.groups?.find(g=>g.id===id);if(g?.accepted&&!g.blocked&&g.members.includes(d.owner)&&g.members.includes(m.peer)&&!s.contacts.some(c=>c.account===m.peer&&c.blocked)&&!s.groupActions?.some(a=>a.group.id===id&&a.target.id===m.group!.messageId&&a.target.author===m.peer&&a.kind==='delete'))enqueueGroupAction(s,d.owner,id,rootGroupDeliveryId(m.group.messageId,d.owner,'read'),{id:m.group.messageId,author:m.peer},'read','',d.now());m.read=true;changed=true;}if(changed)await save(s);}),
+  leaveGroup:(id:string,packetId:string)=>run(async()=>{const s=await read();leaveRootGroup(s,d.owner,id,packetId);signGroups(s,packetId);await save(s);}),
   actGroup:(groupId:string,id:string,target:RootChatReply,kind:RootGroupAction['kind'],text='')=>run(async()=>{const s=await read();enqueueGroupAction(s,d.owner,groupId,id,target,kind,text,d.now());await save(s);}),
   enqueueGroup:(groupId:string,id:string,text:string,reply?:RootChatReply)=>run(async()=>{
    const s=await read(),g=s.groups?.find(g=>g.id===groupId);if(!g||g.blocked||!g.accepted||!g.members.includes(d.owner)||!idValid(id)||!text.trim()||byteLength(text)>1600)throw Error('Accept an active group and enter a message up to 1,600 bytes');
@@ -97,7 +107,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if(reference&&!s.messages.some(m=>m.peer===peer&&m.id===reference.id&&(m.direction==='outgoing'?d.owner:peer)===reference.author))throw Error('Original message is no longer available');
    const old=s.messages.find(m=>m.id===id&&m.peer===peer&&m.direction==='outgoing');if(old){if(old.text!==text||old.attachment||!sameReply(old.reply,reply))throw Error('Message ID conflict');return;}
    if(s.messages.length>=5000)throw Error('Chat storage is full');c.accepted=true;
-   s.hiddenChats=s.hiddenChats?.filter(k=>k!==peer);s.messages.push({id,peer,direction:'outgoing',text,at:d.now(),status:'pending',...(reply?{reply:{...reply}}:{})});await save(s);
+   s.hiddenChats=s.hiddenChats?.filter(k=>k!==peer);s.messages.push({id,peer,direction:'outgoing',text,at:d.now(),status:'pending',...(reply?{reply:{...reply}}:{})});await save(s);d.queued?.(peer,id);
   }),
 
   act:(peer:string,id:string,target:RootChatReply,kind:RootActionKind,text='')=>run(async()=>{
@@ -131,7 +141,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if(reply&&!s.messages.some(m=>m.peer===peer&&m.id===reply!.id&&(m.direction==='outgoing'?d.owner:peer)===reply!.author))throw Error('Original message is no longer available');
    const old=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(old){if(JSON.stringify(old.group)!==JSON.stringify(group)||!sameReply(old.reply,reply)||!old.attachment||attachmentDescriptorFingerprint(old.attachment)!==attachmentDescriptorFingerprint(descriptor))throw Error('Attachment ID conflict');return;}
    if(s.messages.length>=5000)throw Error('Chat storage is full');if(!group)c.accepted=true;
-   s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});await save(s);
+   s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});await save(s);d.queued?.(peer,id);
   }),
   receive:(from:string,id:string,raw:string)=>run(async()=>{
    if(!validPeer(from)||!idValid(id)||byteLength(raw)>2048)return false;
@@ -140,12 +150,12 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    const prior=await read();
    if(prior.removedMessages?.some(m=>m.peer===from&&m.id===id&&m.direction==='incoming'))return true;
    if(a[0]==='axonic-root-group-action-v1'){const s=await read();if(!receiveGroupAction(s,d.owner,from,id,a[3],d.now()))return false;await save(s);return true;}
-   if(a[0]==='axonic-group-members-v1'||a[0]==='axonic-group-leave-v1'){
+   if(a[0]==='axonic-group-members-v1'||a[0]==='axonic-group-leave-v1'||a[0]==='axonic-group-recover-v1'||a[0]==='axonic-group-backup-v1'||a[0]==='axonic-group-recovery-offer-v1'){
     const s=await read(),old=s.groupSeen?.find(v=>v.peer===from&&v.id===id);if(old)return old.raw===raw;
     if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
     if((s.groupSeen?.length??0)>=2000||s.messages.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming')||s.actions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
     if(!receiveRootGroupControl(s,d.owner,from,id,a[0],a[3]))return false;
-    (s.groupSeen??=[]).push({peer:from,id,raw});await save(s);return true;
+    signGroups(s,id);(s.groupSeen??=[]).push({peer:from,id,raw});await save(s);return true;
    }
    let group:RootGroupContext|undefined,groupReply:RootChatReply|undefined;
    if(a[0]==='axonic-root-group-text-v1'||a[0]==='axonic-root-group-attachment-v1'){

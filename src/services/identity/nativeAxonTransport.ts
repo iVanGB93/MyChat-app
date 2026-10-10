@@ -1,4 +1,5 @@
 import { AXON_FRAME_BYTES, type AxonWire } from './persistentAxon';
+import {ATTACHMENT_BULK_FRAME_BYTES} from './attachmentBatch';
 import type { NeuronCandidate, ConnectionContext } from './neuronConnections';
 
 export interface NativeAxonTransport {
@@ -7,6 +8,8 @@ export interface NativeAxonTransport {
   axonWrite(id: string, raw: string): Promise<boolean>;
   axonClose(id: string): void;
   axonEnableAttachments?(id:string):void;
+  axonEnableMediaLane?(id:string):void;
+  axonEnableBulkAttachments?(id:string):void;
 }
 /** Foreground development LAN transport. Native code independently checks the Wi-Fi
  * subnet and bounds frame allocation; callers cannot label an internet route as LAN.
@@ -20,18 +23,20 @@ export function createNativeAxonConnector(native: NativeAxonTransport) {
       || octets.join('.') !== match[1] || Number(match[2]) > 65535
       || !(octets[0] === 10 || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
         || (octets[0] === 192 && octets[1] === 168)) || context.signal.aborted) throw Error('Unsupported axon route');
-    return openNativeWire(native, context, () => native.axonConnect(match[1], Number(match[2])));
+    return openNativeWire(native, context, () => native.axonConnect(match[1], Number(match[2])),undefined,true);
   };
 }
 /** The listener already read one bounded hello to identify the pool slot. Replay it
  * into the normal verifier; a discovered/claimed account is never authentication.
  */
 export function adoptNativeAxonWire(native: NativeAxonTransport, id: string, hello: string, context: ConnectionContext) {
-  return openNativeWire(native, context, async () => id, hello);
+  return openNativeWire(native, context, async () => id, hello,true);
 }
 export async function openNativeWire(native: NativeAxonTransport, context: ConnectionContext,
-  dial: () => Promise<string>, firstFrame?: string): Promise<AxonWire> {
+  dial: () => Promise<string>, firstFrame?: string, lan=false): Promise<AxonWire> {
     let id: string | undefined, closed = false, listening = false, writing = false, queuedBytes = 0;
+    let mediaEnabled=false;
+    let bulkEnabled=false;
     let receive: ((raw: string) => void) | undefined, notify: (() => void) | undefined;
     const queue: { raw: string; bytes: number }[] = [];
     const disposeNative = (key: string) => { try { native.axonClose(key); } catch { /* Best-effort native cleanup. */ } };
@@ -54,7 +59,8 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
         while (!closed && receive) {
           const raw = await native.axonRead(id!);
           if (closed) return;
-          if (typeof raw !== 'string' || new TextEncoder().encode(raw).length > AXON_FRAME_BYTES) throw Error('Invalid native axon frame');
+          const limit=bulkEnabled?ATTACHMENT_BULK_FRAME_BYTES:AXON_FRAME_BYTES;
+          if (typeof raw !== 'string' || raw.length>limit || new TextEncoder().encode(raw).length > limit) throw Error('Invalid native axon frame');
           receive?.(raw);
         }
       } catch { close(); }
@@ -73,11 +79,16 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
     }
     return {
       close,
+      mediaLane:typeof native.axonEnableMediaLane==='function',
+      bulkAttachments:lan&&typeof native.axonEnableBulkAttachments==='function',
+      enableBulkAttachments(){if(!closed&&id&&lan&&native.axonEnableBulkAttachments){native.axonEnableBulkAttachments(id);bulkEnabled=true;}},
+      enableMediaLane(){if(!closed&&id){native.axonEnableMediaLane?.(id);mediaEnabled=true;}},
       attachments:typeof native.axonEnableAttachments==='function',
       enableAttachments(){if(!closed&&id)native.axonEnableAttachments?.(id);},
       send(raw) {
-        const bytes = new TextEncoder().encode(raw).length;
-        if (closed || !bytes || bytes > AXON_FRAME_BYTES || queuedBytes + bytes > 2 * AXON_FRAME_BYTES || queue.length >= 8) {
+        const limit=bulkEnabled?ATTACHMENT_BULK_FRAME_BYTES:AXON_FRAME_BYTES;
+        const bytes = raw.length>limit?Infinity:new TextEncoder().encode(raw).length;
+        if (closed || !bytes || bytes > limit || queuedBytes + bytes > (bulkEnabled?2*ATTACHMENT_BULK_FRAME_BYTES+120000:(mediaEnabled?6:2)*AXON_FRAME_BYTES) || queue.length >= (mediaEnabled?16:8)) {
           close(); throw Error('Axon send capacity exceeded');
         }
         queue.push({ raw, bytes }); queuedBytes += bytes; void flush();

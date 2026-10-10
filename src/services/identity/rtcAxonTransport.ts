@@ -11,13 +11,36 @@ interface Channel {
 export interface AxonPeerConnection {
   localDescription: { type: string; sdp: string } | null;
   iceGatheringState: string; connectionState: string;
+  getStats?(): Promise<Map<string, any>>;
   createDataChannel(label: string, options: { ordered: boolean; protocol: string }): Channel;
-  createOffer(): Promise<any>; createAnswer(): Promise<any>;
+  createOffer(options?: { iceRestart: boolean }): Promise<any>; createAnswer(): Promise<any>;
   setLocalDescription(description: any): Promise<void>; setRemoteDescription(description: any): Promise<void>;
   addEventListener(event: string, callback: (event: any) => void): void;
   close(): void;
 }
 const LABEL = 'axonic-identity-v1';
+let diagnosticSequence = 0;
+const restartParent = (sdp: string) => /^a=x-axonic-restart:([0-9a-f]{64})\r?$/m.exec(sdp)?.[1];
+const fingerprints = (sdp: string) => sdp.split(/\r?\n/).filter(l => l.startsWith('a=fingerprint:')).map(l => l.toUpperCase()).sort().join('\n');
+/** Deliberately omit addresses, candidate IDs, certificates and SDP. */
+export function rtcPathSummary(reports: Map<string, any>) {
+  const values = [...reports.values()];
+  const transport = values.find(r => r.type === 'transport' && r.selectedCandidatePairId);
+  const pair = transport ? reports.get(transport.selectedCandidatePairId)
+    : values.find(r => r.type === 'candidate-pair' && r.selected === true);
+  if (!pair || pair.type !== 'candidate-pair') return { selected: false };
+  const local = reports.get(pair.localCandidateId), remote = reports.get(pair.remoteCandidateId);
+  const allowed = (value: unknown, choices: string[]) => typeof value === 'string' && choices.includes(value) ? value : undefined;
+  const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+  return { selected: true,
+    state: allowed(pair.state, ['frozen', 'waiting', 'in-progress', 'failed', 'succeeded']),
+    localType: allowed(local?.candidateType, ['host', 'srflx', 'prflx', 'relay']),
+    remoteType: allowed(remote?.candidateType, ['host', 'srflx', 'prflx', 'relay']),
+    protocol: allowed(local?.protocol, ['udp', 'tcp']),
+    roundTripSeconds: number(pair.currentRoundTripTime), bytesSent: number(pair.bytesSent),
+    bytesReceived: number(pair.bytesReceived), requestsSent: number(pair.requestsSent),
+    responsesReceived: number(pair.responsesReceived) };
+}
 // UTF-16 length is a cheap lower bound on UTF-8 size. Never allocate an
 // encoder buffer for an already-oversized string from an untrusted peer.
 const size = (raw: string) => raw.length > 20000 ? Infinity : new TextEncoder().encode(raw).length;
@@ -31,6 +54,7 @@ export function validAxonSdp(sdp: string) {
     && !lines.some(l => l.startsWith('a=candidate:') && / typ relay(?: |$)/.test(l));
 }
 export function createRtcAxonTransport(d: {
+  mediaLane?:boolean;
   authenticated?(channel: Channel):void;
   account(): string | null; now(): number; random(): Promise<string>;
   createConnection(): AxonPeerConnection;
@@ -40,18 +64,39 @@ export function createRtcAxonTransport(d: {
   send(via: string, raw: string): boolean;
   accept(candidate: NeuronCandidate, wire: AxonWire): boolean;
 }) {
-  type Entry = { account: string; session: string; via: string; stop(): void; answer(s: AxonSignal): Promise<void>; open(): boolean };
+  type Entry = { account: string; session: string; via: string; stop(): void; answer(s: AxonSignal): Promise<void>; restart(s: AxonSignal): Promise<void>; open(): boolean };
   const entries = new Map<string, Entry>();
   let epoch = 0;
   function make(account: string, session: string, via: string, initiator: boolean) {
     if (entries.size >= 5 || entries.has(account) || !d.account()) throw Error('RTC axon capacity');
     const pc = d.createConnection();
+    const diagnosticId = ++diagnosticSequence;
+    const trace = (event: string, details: object = {}) => console.info('[Axonic RTC lifecycle]', JSON.stringify({connection:diagnosticId,event,initiator,...details}));
+    const originalSession = session;
+    let authenticated = false, restartUsed = false, restarting = false;
+    let remoteDevice: string | undefined, remoteFingerprint = '';
+    let restartDeadline: ReturnType<typeof setTimeout> | undefined;
+    let mediaEnabled=false;
     let dead = false, channel: Channel | null = null, answered = false, opened = false;
     let message: ((raw: string) => void) | null = null, closed: (() => void) | null = null;
     let outbound: string[] = [], inbound: string[] = [];
-    const deadline = setTimeout(() => { if (!opened) stop(); }, 9000);
-    function stop() {
+    let disconnectTimer:ReturnType<typeof setTimeout>|undefined;
+    let statsPending = false, lastStatsAt = -Infinity;
+    function samplePath() {
+      if (dead || statsPending || !pc.getStats || d.now() - lastStatsAt < 1000) return;
+      statsPending = true; lastStatsAt = d.now();
+      const state = pc.connectionState;
+      void pc.getStats().then(reports => {
+        if (!dead) console.info('[Axonic RTC path]', state, JSON.stringify({connection:diagnosticId,...rtcPathSummary(reports)}));
+      }).catch(() => { /* Diagnostics must never change connection behavior. */ })
+        .finally(() => { statsPending = false; });
+    }
+    const deadline = setTimeout(() => { if (!opened) stop('open-timeout'); }, 9000);
+    function stop(reason='local-close') {
       if (dead) return; dead = true; clearTimeout(deadline);
+      if(disconnectTimer!==undefined)clearTimeout(disconnectTimer);
+      if(restartDeadline!==undefined)clearTimeout(restartDeadline);
+      trace('closed',{reason,opened,mediaEnabled,restarting,state:pc.connectionState,bufferedBytes:channel?.bufferedAmount??0});
       if (entries.get(account) === entry) entries.delete(account);
       outbound = []; inbound = [];
       try { channel?.close(); } catch { /* Continue ownership cleanup. */ }
@@ -61,40 +106,53 @@ export function createRtcAxonTransport(d: {
     function attach(c: Channel) {
       // Android react-native-webrtc reports an empty protocol for incoming channels.
       // The fixed label and independent signed identity handshake still gate this wire.
-      if (dead || channel || c.label !== LABEL || (c.protocol !== LABEL && (initiator || c.protocol !== ''))) { c.close(); stop(); return; }
+      if (dead || channel || c.label !== LABEL || (c.protocol !== LABEL && (initiator || c.protocol !== ''))) { c.close(); stop('unexpected-channel'); return; }
       channel = c;
       const flush = () => {
         if (dead || c.readyState !== 'open') return;
         opened = true; clearTimeout(deadline);
-        try { for (const raw of outbound) { if (c.bufferedAmount + size(raw) > 40000) throw Error('RTC queue full'); c.send(raw); } outbound = []; }
-        catch { stop(); }
+        try { for (const raw of outbound) { if (c.bufferedAmount + size(raw) > (mediaEnabled?120000:40000)) throw Error('RTC queue full'); c.send(raw); } outbound = []; }
+        catch { stop('initial-send-failed'); }
       };
       c.addEventListener('open', flush);
-      c.addEventListener('close', stop); c.addEventListener('error', stop);
+      c.addEventListener('close',()=>stop('channel-closed')); c.addEventListener('error',()=>stop('channel-error'));
       c.addEventListener('message', e => {
         if (dead) return;
-        if (typeof e.data !== 'string' || !e.data.length || size(e.data) > 20000) { stop(); return; }
+        if (typeof e.data !== 'string' || !e.data.length || size(e.data) > 20000) { stop('invalid-frame'); return; }
         if (message) message(e.data);
         else if (inbound.length < 2 && inbound.reduce((n, s) => n + size(s), 0) + size(e.data) <= 40000) inbound.push(e.data);
-        else stop();
+        else stop('inbound-queue-full');
       });
       flush();
     }
-    pc.addEventListener('datachannel', e => { if (initiator) { e.channel.close(); stop(); } else attach(e.channel); });
+    pc.addEventListener('datachannel', e => { if (initiator) { e.channel.close(); stop('extra-channel'); } else attach(e.channel); });
     pc.addEventListener('connectionstatechange', () => {
-      if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) stop();
+      if(dead)return;
+      if (['connected', 'disconnected', 'failed'].includes(pc.connectionState)) samplePath();
+      if(pc.connectionState==='disconnected'){
+        // ICE disconnection can be transient. Keep the bounded channel queue
+        // and valid identity session while ICE gets a short chance to recover.
+        if(disconnectTimer===undefined)disconnectTimer=setTimeout(()=>stop('disconnect-timeout'),8000);
+        if(initiator && authenticated && answered && !restartUsed) void restart();
+      }else{
+        if(pc.connectionState==='connected'&&disconnectTimer!==undefined){clearTimeout(disconnectTimer);disconnectTimer=undefined;}
+        if(['failed','closed'].includes(pc.connectionState))stop('connection-'+pc.connectionState);
+      }
     });
     const wire: AxonWire = {
+      mediaLane:!!d.authenticated&&d.mediaLane===true,
+      smallAttachmentBatches:!!d.authenticated&&d.mediaLane===true,
+      enableMediaLane(){mediaEnabled=true;},
       attachments:!!d.authenticated,
-      enableAttachments(){if(!dead&&channel)d.authenticated?.(channel);},
+      enableAttachments(){if(!dead&&channel){d.authenticated?.(channel);authenticated=!!d.authenticated;}},
       close: stop,
       send(raw) {
         if (dead || size(raw) > 20000) throw Error('RTC axon unavailable');
         if (channel?.readyState === 'open') {
-          if (channel.bufferedAmount + size(raw) > 40000) { stop(); throw Error('RTC queue full'); }
+          if (channel.bufferedAmount + size(raw) > (mediaEnabled?120000:40000)) { stop('outbound-buffer-full'); throw Error('RTC queue full'); }
           channel.send(raw);
         } else if (outbound.length < 2 && outbound.reduce((n, s) => n + size(s), 0) + size(raw) <= 40000) outbound.push(raw);
-        else { stop(); throw Error('RTC queue full'); }
+        else { stop('outbound-queue-full'); throw Error('RTC queue full'); }
       },
       listen(onMessage, onClosed) {
         message = onMessage; closed = onClosed;
@@ -102,21 +160,57 @@ export function createRtcAxonTransport(d: {
         return () => { message = null; closed = null; };
       },
     };
-    async function describe(kind: 'offer' | 'answer') {
-      await pc.setLocalDescription(kind === 'offer' ? await pc.createOffer() : await pc.createAnswer());
+    async function describe(kind: 'offer' | 'answer', recovery = false) {
+      const description = kind === 'offer' ? await pc.createOffer(recovery ? {iceRestart:true} : undefined) : await pc.createAnswer();
+      if(dead)return;
+      await pc.setLocalDescription(description);
       // Gathering has a deadline; a bounded partial candidate set may still succeed.
       const until = d.now() + 2000;
       for (let attempts = 0; !dead && pc.iceGatheringState !== 'complete' && d.now() < until && attempts < 80; attempts++)
         await (d.wait?.(25) ?? new Promise(resolve => setTimeout(resolve, 25)));
       if (dead) return;
-      const sdp = pc.localDescription?.sdp;
+      let sdp = pc.localDescription?.sdp;
+      // This binding is inside the existing signed SDP, so old relays need no changes.
+      if(sdp && recovery)sdp += `${sdp.endsWith('\n')?'':'\r\n'}a=x-axonic-restart:${originalSession}\r\n`;
       if (!sdp || !validAxonSdp(sdp) || !d.send(via, d.sign(account, session, kind, sdp))) stop();
     }
+    function beginRestart() {
+      restartUsed=true;restarting=true;
+      trace('restart-started');
+      restartDeadline=setTimeout(()=>stop('restart-timeout'),8000);
+    }
+    async function restart() {
+      beginRestart();
+      try {
+        const fresh=await d.random();
+        if(dead)return;
+        if(!/^[0-9a-f]{64}$/.test(fresh)||fresh===originalSession){stop('restart-session');return;}
+        session=fresh;entry.session=fresh;answered=false;
+        await describe('offer',true);
+      }catch{stop('restart-failed');}
+    }
+    function sameRemote(signal: AxonSignal) {
+      return signal.device===remoteDevice && fingerprints(signal.sdp)===remoteFingerprint;
+    }
+    function finishRestart(){if(restarting)trace('restart-negotiated');restarting=false;if(restartDeadline!==undefined)clearTimeout(restartDeadline);}
     const entry: Entry = { account, session, via, stop, open: () => opened,
       async answer(signal) {
         if (dead || !initiator || answered || !validAxonSdp(signal.sdp)) return;
+        if(restarting && (restartParent(signal.sdp)!==originalSession || !sameRemote(signal)))return;
+        if(!restarting && restartParent(signal.sdp))return;
         answered = true;
-        try { await pc.setRemoteDescription({ type: 'answer', sdp: signal.sdp }); } catch { stop(); }
+        remoteDevice=signal.device;remoteFingerprint=fingerprints(signal.sdp);
+        try { await pc.setRemoteDescription({ type: 'answer', sdp: signal.sdp });if(!dead)finishRestart(); } catch { stop(); }
+      },
+      async restart(signal) {
+        if(dead || initiator || !authenticated || !opened || restartUsed || !sameRemote(signal)
+          || signal.session===originalSession || restartParent(signal.sdp)!==originalSession || !validAxonSdp(signal.sdp))return;
+        beginRestart();session=signal.session;entry.session=session;
+        try{
+          await pc.setRemoteDescription({type:'offer',sdp:signal.sdp});
+          if(dead)return;
+          await describe('answer',true);if(!dead)finishRestart();
+        }catch{stop('restart-failed');}
       },
     };
     entries.set(account, entry);
@@ -124,7 +218,7 @@ export function createRtcAxonTransport(d: {
       async start(offer?: AxonSignal) {
         try {
           if (initiator) attach(pc.createDataChannel(LABEL, { ordered: true, protocol: LABEL }));
-          else { if (!offer || !validAxonSdp(offer.sdp)) { stop(); return; } await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp }); }
+          else { if (!offer || !validAxonSdp(offer.sdp)) { stop(); return; } remoteDevice=offer.device;remoteFingerprint=fingerprints(offer.sdp);await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp }); }
           if (!dead) await describe(initiator ? 'offer' : 'answer');
         } catch { stop(); }
       },
@@ -138,7 +232,7 @@ export function createRtcAxonTransport(d: {
       if (generation !== epoch || own !== d.account() || context.signal.aborted) throw Error('RTC attempt canceled');
       const item = make(candidate.account, session, candidate.endpoint.slice(4), true);
       const abort = () => item.entry.stop(); context.signal.addEventListener('abort', abort, { once: true });
-      const close = item.wire.close; item.wire.close = () => { context.signal.removeEventListener('abort', abort); close(); };
+      const close = item.wire.close; item.wire.close = reason => { context.signal.removeEventListener('abort', abort); close(reason); };
       void item.start(); return item.wire;
     },
     receive(signal: AxonSignal, via: string) {
@@ -148,7 +242,9 @@ export function createRtcAxonTransport(d: {
         if (old && old.session === signal.session && old.via === via) void old.answer(signal);
         return;
       }
-      if (signal.record.account >= signal.target || old || !validAxonSdp(signal.sdp)) return;
+      if (signal.record.account >= signal.target || !validAxonSdp(signal.sdp)) return;
+      if(old){if(old.via===via)void old.restart(signal);return;}
+      if(restartParent(signal.sdp))return;
       let item: ReturnType<typeof make>;
       try { item = make(signal.record.account, signal.session, via, false); } catch { return; }
       if (!d.accept({ account: signal.record.account, endpoint: `rtc:${via}`, route: 'internet', expiresAt: signal.expiresAt }, item.wire)) { item.entry.stop(); return; }

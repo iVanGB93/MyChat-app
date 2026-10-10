@@ -1,14 +1,14 @@
 import {shortIdentity} from '../../modules/identity';
 import React,{useRef,useState} from 'react';
-import {Modal,Pressable,ScrollView,Text,View} from 'react-native';
+import {Modal,Pressable,ScrollView,Text} from 'react-native';
 import {useTheme} from '../../contexts/ThemeContext';
 import {chatRoomStyles as styles} from './chat-room-styles';
 import type {RootChatContact,RootChatMessage} from '../../modules/messaging';
 import {forwardRootMessage} from '../../modules/messaging';
 
-export default function RootForwardPicker({message,contacts,onClose}:{message:RootChatMessage;contacts:RootChatContact[];onClose():void}){
+export default function RootForwardPicker({message,contacts,groups=[],onClose}:{message:RootChatMessage;contacts:RootChatContact[];groups?:{id:string;name:string;accepted:boolean;blocked:boolean}[];onClose():void}){
  const {colors}=useTheme(),sending=useRef(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const available=contacts.filter(c=>!c.blocked);
+ const available=[...contacts.filter(c=>!c.blocked),...groups.filter(g=>g.accepted&&!g.blocked).map(g=>({account:'group:'+g.id,alias:g.name}))];
  async function send(peer:string){if(sending.current)return;sending.current=true;setBusy(true);setError('');
   try{await forwardRootMessage(message,peer);onClose();}catch(e){setError(e instanceof Error?e.message:'Unable to forward this message');}finally{sending.current=false;setBusy(false);}}
  return <Modal transparent visible animationType="fade" onRequestClose={()=>{if(!sending.current)onClose();}}>

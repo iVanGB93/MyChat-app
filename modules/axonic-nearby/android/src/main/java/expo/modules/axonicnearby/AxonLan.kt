@@ -33,7 +33,8 @@ internal class AxonLan(private val context: Context, private val account: String
   private val services = LinkedHashMap<String, NsdServiceInfo>()
   private val peers = LinkedHashMap<String, Map<String, Any>>()
   private val resolvedAt = HashMap<String, Long>()
-  private var resolving: String? = null
+  private val resolution = AxonResolutionGate()
+  private var resolveListener: NsdManager.ResolveListener? = null
   private var server: ServerSocket? = null
   private var registration: NsdManager.RegistrationListener? = null
   private var discovery: NsdManager.DiscoveryListener? = null
@@ -94,16 +95,28 @@ internal class AxonLan(private val context: Context, private val account: String
     } catch (error: Exception) { stop(); throw error }
   }
   @Synchronized @Suppress("DEPRECATION") private fun resolveNext() {
-    if (!active.get() || resolving != null) return
+    if (!active.get()) return
     val now = SystemClock.elapsedRealtime()
+    // Android can keep resolving a vanished cached advertisement indefinitely.
+    // API34 provides cancellation; invalidate its callback before starting another.
+    if (Build.VERSION.SDK_INT >= 34) resolution.expired(now)?.let { ticket ->
+      val listener = resolveListener
+      resolution.finish(ticket); resolveListener = null; peers.remove(ticket.name)
+      listener?.let { runCatching { nsd.stopServiceResolution(it) } }
+    }
+    if (resolution.current != null) return
     val entry = services.entries.firstOrNull { now - (resolvedAt[it.key] ?: -60_000L) >= 60_000 } ?: return
-    val name = entry.key; resolving = name; resolvedAt[name] = now
-    fun finish() { synchronized(this@AxonLan) { resolving = null; resolveNext() } }
-    try { nsd.resolveService(entry.value, object : NsdManager.ResolveListener {
-      override fun onResolveFailed(info: NsdServiceInfo, code: Int) { synchronized(this@AxonLan) { peers.remove(name) }; finish() }
+    val name = entry.key; val ticket = resolution.begin(name, now); resolvedAt[name] = now
+    fun finish() { synchronized(this@AxonLan) {
+      if (resolution.finish(ticket)) { resolveListener = null; resolveNext() }
+    } }
+    val listener = object : NsdManager.ResolveListener {
+      override fun onResolveFailed(info: NsdServiceInfo, code: Int) {
+        synchronized(this@AxonLan) { if (resolution.owns(ticket)) peers.remove(name) }; finish()
+      }
       override fun onServiceResolved(info: NsdServiceInfo) {
         try { synchronized(this@AxonLan) {
-          if (!active.get() || !services.containsKey(name)) return
+          if (!active.get() || !resolution.owns(ticket) || !services.containsKey(name)) return
           peers.remove(name)
           val peer = info.attributes["account"]?.toString(Charsets.UTF_8) ?: return
           val host = if (Build.VERSION.SDK_INT >= 34) info.hostAddresses.firstOrNull { it is Inet4Address } else info.host
@@ -112,7 +125,9 @@ internal class AxonLan(private val context: Context, private val account: String
           peers[name] = mapOf("account" to peer, "host" to host.hostAddress!!, "port" to info.port)
         } } finally { finish() }
       }
-    }) } catch (_: Exception) { finish() }
+    }
+    resolveListener = listener
+    try { nsd.resolveService(entry.value, listener) } catch (_: Exception) { finish() }
   }
   @Synchronized fun snapshot(): Map<String, Any> {
     resolveNext()
@@ -146,6 +161,9 @@ internal class AxonLan(private val context: Context, private val account: String
   }
   @Synchronized fun stop() {
     if (!active.getAndSet(false)) return
+    val pendingResolution = resolveListener
+    resolution.clear(); resolveListener = null
+    if (Build.VERSION.SDK_INT >= 34) pendingResolution?.let { runCatching { nsd.stopServiceResolution(it) } }
     runCatching { server?.close() }; server = null; sockets.closeLan()
     discovery?.let { runCatching { nsd.stopServiceDiscovery(it) } }; discovery = null
     registration?.let { runCatching { nsd.unregisterService(it) } }; registration = null

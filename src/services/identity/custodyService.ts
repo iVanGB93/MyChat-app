@@ -54,8 +54,9 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
         }
         const digest = custodyDigest(packet);
         if (old) return JSON.stringify({ status: old.digest === digest ? (old.packet?.kind === 'envelope' ? 'held' : 'completed') : 'rejected' });
-        if (rows.length >= CUSTODY_LIMIT || rows.filter(r => r.sender === peer).length >= 16
-          || rows.filter(r => r.recipient === packet!.recipient).length >= 16
+        // Consumed receipts retain replay protection, but no longer occupy a live mailbox slot.
+        if (rows.length >= CUSTODY_LIMIT || rows.filter(r => r.packet !== null && r.sender === peer).length >= 16
+          || rows.filter(r => r.packet !== null && r.recipient === packet!.recipient).length >= 16
           || JSON.stringify(rows).length + JSON.stringify(packet).length + 600 > 512_000) return JSON.stringify({ status: 'full' });
         rows.push({ sender: packet.sender, recipient: packet.recipient, recipientDevice: packet.recipientDevice,
           id: packet.id, expires: packet.expires, digest, packet });

@@ -43,9 +43,3 @@ test('stop during async challenge creation prevents transmission',async()=>{
  const {nodes:[a,b]}=fixture();const request=a.transport.request(room,b.user);a.transport.stop();
  assert.equal(await request,false);assert.equal(a.frames.length,0);
 });
-test('Axion handler registration is disabled by default and stale cleanup cannot remove a replacement',async()=>{
- const bridge=load('chatBindingBridge');assert.equal(await bridge.routeChatBindingFrame({}),false);
- const handler=async()=>true,old=bridge.registerChatBindingHandler(handler),next=bridge.registerChatBindingHandler(handler);
- old();assert.equal(await bridge.routeChatBindingFrame({}),true);next();assert.equal(await bridge.routeChatBindingFrame({}),false);
- const stop=bridge.registerChatBindingHandler(async()=>{throw Error('Unavailable');});assert.equal(await bridge.routeChatBindingFrame({}),false);stop();
-});

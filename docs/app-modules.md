@@ -44,10 +44,10 @@ worker. Selecting/recording is not a delivery acknowledgement.
 ## Existing implementations and FirstNeuron
 
 The many existing files under `services/identity/` are retained as internal protocol
-and platform implementations, not all physically moved in this change. The former
-`localAccountNetwork` and `rootMediaPicker` entry points forward to the new locations
-for older internal callers. Legacy Django screens are outside this fresh-account
-boundary and were not rewritten.
+and platform implementations, not all physically moved in this change. The compatibility forwarding entry points and the unreachable Django app were removed
+in the October 9 consolidation. Background handlers use the composition root directly;
+screens use the public module APIs. `index.ts` always starts the neuron app, regardless
+of obsolete build flags.
 
 The messaging command, delivery and call-command factories accept dependencies
 instead of importing React Native, sockets or phone storage. This gives a hosted
@@ -65,7 +65,13 @@ and that persistence adapters do not depend on UI or networking. Existing theme,
 media playback and sensor libraries remain UI concerns.
 
 `npm run check:cycles` now includes `src/composition` and `src/modules` as well as services.
-Both commands are included in `npm run check`. The regression tests exercise actual
+Both commands, plus `check:consolidation`, are included in `npm run check`.
+The consolidation check follows imports from the foreground/headless entry, rejects
+retired entry points and requires a documented consumer for otherwise unreachable
+source. `scripts/consolidation-exceptions.json` lists portable hosted compatibility,
+optional crash-reporting support and shared hosted protocols. Test-only adapters
+now live under `tests/support/`; production imports of test/build source are rejected.
+TypeScript checks unused locals/parameters and excludes generated build copies. The regression tests exercise actual
 ledger persistence, offline sends, blocked contacts, account switches, group
 commands, interrupted delivery, missing routes and invalid peer identities.
 

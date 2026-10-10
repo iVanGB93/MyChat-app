@@ -1,8 +1,8 @@
-const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto');
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),path=require('node:path');
 const {DatabaseSync}=require('node:sqlite');
 function fixture(t){const databases=new Map(),cache=new Map(),opens=[];const random=n=>new Uint8Array(crypto.randomBytes(n));let now=1800000000000;
  const sqlite={openDatabaseAsync:async (name,options)=>{opens.push({name,options});let db=databases.get(name);if(!db){db=new DatabaseSync(':memory:');databases.set(name,db);}const tx={getFirstSync:(s,...p)=>db.prepare(s).get(...p)??null,getAllAsync:async(s,...p)=>db.prepare(s).all(...p),getFirstAsync:async(s,...p)=>db.prepare(s).get(...p)??null,runAsync:async(s,...p)=>db.prepare(s).run(...p)};return {...tx,execAsync:async s=>db.exec(s),withExclusiveTransactionAsync:async f=>{db.exec('BEGIN IMMEDIATE');try{await f(tx);db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}}};}};
- function load(n){if(cache.has(n))return cache.get(n);const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync(`src/services/identity/${n}.ts`,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(x=>x==='expo-sqlite'?sqlite:x.startsWith('./')?load(x.slice(2).replace(/\.ts$/,'')):require(x),out);cache.set(n,out);return out;}
+ function load(n){if(cache.has(n))return cache.get(n);const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync(fs.existsSync(`src/services/identity/${n}.ts`)?`src/services/identity/${n}.ts`:`tests/support/identity/${n}.ts`,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(x=>x==='expo-sqlite'?sqlite:x.startsWith('.')?load(path.basename(x).replace(/\.ts$/,'')):require(x),out);cache.set(n,out);return out;}
  const p=load('identityProtocol'),protocol=load('custodyProtocol'),{createCustodyService}=load('custodyService'),{createMobileCustodyStore}=load('mobileCustodyStore');
  const ids=Array.from({length:4},()=>{const signingSeed=random(32),encryptionSeed=random(32),device=p.publicDevice(signingSeed,encryptionSeed);return {signingSeed,encryptionSeed,device,record:p.issueRecord(random(32),[device],now)};});
  const records={read:async account=>ids.find(x=>x.record.account===account)?.record??null};
@@ -42,6 +42,21 @@ test('immutable deposits, sender quotas, expiry and shutdown remain bounded',asy
  for(let i=1;i<16;i++)assert.equal((await f.request(s,0,'deposit',await f.seal())).status,'held');
  assert.equal((await f.request(s,0,'deposit',await f.seal())).status,'full');
  f.stop();assert.equal((await f.request(s,0,'deposit',e)).status,'rejected');f.expire();await s.sweep();assert.equal(await f.store.transaction(r=>r.length),0);
+});
+
+test('completed deliveries free live mailbox quota without losing replay protection',async t=>{
+ const f=fixture(t),s=f.service();let first;
+ for(let i=0;i<20;i++){
+  const e=await f.seal();first??=e;
+  assert.equal((await f.request(s,0,'deposit',e)).status,'held');
+  const receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+  assert.equal((await f.request(s,2,'receipt',receipt)).status,'accepted');
+  assert.equal((await f.request(s,0,'consume',{id:e.id,digest:receipt.digest})).status,'accepted');
+ }
+ assert.equal((await f.request(s,0,'deposit',first)).status,'completed');
+ assert.equal(await f.store.transaction(rows=>rows.filter(r=>r.packet===null).length),20);
+ for(let i=0;i<16;i++)assert.equal((await f.request(s,0,'deposit',await f.seal())).status,'held');
+ assert.equal((await f.request(s,0,'deposit',await f.seal())).status,'full');
 });
 test('custody exchanges use mutually authenticated Axons and preserve optional-feature compatibility',async t=>{
  const f=fixture(t),relay=f.service(),handlers=[],close=[],queued=[[],[]];let dead=false;

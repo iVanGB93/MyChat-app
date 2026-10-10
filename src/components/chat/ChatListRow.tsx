@@ -1,4 +1,5 @@
 import React from 'react';
+import {deliveryStatusIcon,deliveryStatusLabel} from '../../modules/messaging';
 import {View,Text,TouchableOpacity} from 'react-native';
 import {Swipeable} from 'react-native-gesture-handler';
 import {Ionicons} from '@expo/vector-icons';
@@ -159,18 +160,13 @@ function ChatListRowBase({
                 ? (
                   <>
                     {lastMsgFromMe && (
-                      <Text
-                        style={{
-                          color: lastMsgStatus === 'read' || lastMsgStatus === 'delivered'
-                            ? Colors.checkBlue
-                            : Colors.textTertiary,
-                        }}
-                      >
-                        {lastMsgStatus === 'pending'
-                          ? '⏱ '
-                          : lastMsgStatus === 'read' || lastMsgStatus === 'delivered'
-                            ? '✓✓ '
-                            : '✓ '}
+                      <Text>
+                        <Ionicons
+                          accessibilityLabel={deliveryStatusLabel(lastMsgStatus ?? 'pending')}
+                          name={deliveryStatusIcon(lastMsgStatus ?? 'pending')}
+                          size={14}
+                          color={lastMsgStatus === 'read' ? Colors.checkBlue : Colors.textTertiary}
+                        />{' '}
                       </Text>
                     )}
                     {chatPreviewText(lastMsgContent)}

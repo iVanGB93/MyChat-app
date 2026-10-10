@@ -1,9 +1,10 @@
+import {KeyboardAwareTextInput as TextInput} from './KeyboardForm';
 /* ------------------------------------------------------------------ */
 /*  Input — styled text input with label                               */
 /* ------------------------------------------------------------------ */
 
 import React, { useState } from 'react';
-import { View, TextInput, Text, StyleSheet, TextInputProps, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TextInputProps, TouchableOpacity } from 'react-native';
 import { Font, Radius, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 

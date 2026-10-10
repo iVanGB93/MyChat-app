@@ -1,0 +1,44 @@
+Group recovery protocol and rollout
+
+Group metadata is retained by group members, not a global public address book.
+On connection, the group recovery pump queues metadata for a known member.
+It retries failed persistence, limits reconnect churn to once per minute per
+peer, and resets its session bookkeeping when the local identity changes.
+
+New or changed creator-owned groups get an Ed25519 root signature with domain
+axonic-group-backup-v1. The canonical payload includes group ID, creator,
+name, revision, ordered membership, and photo reference (absent means null).
+The root public key must hash to the creator's Axonic account ID. Root private
+keys never leave the account controller. Mobile-derived temporary roots are
+cleared after signing. The AoN uses its existing root-key lifetime.
+
+Members retain the signed snapshot and return it over authenticated encrypted
+chat/custody transport. Only members listed in that snapshot can forward it,
+and the recovering owner must also be listed. Existing higher revisions and
+local block/mute choices are preserved. An empty creator ledger can restore
+its own signed group automatically. These are durable public-authority proofs,
+not expiring identity admission records; device-key renewal does not invalidate
+them. This is not consensus: an empty device cannot prove that the highest
+snapshot returned by reachable members is globally the newest revision.
+
+Legacy unsigned metadata cannot prove creator authority after creator recovery.
+It creates a recoveryPending offer, not an active group. The app displays a
+Review action and asks the creator to confirm the name and full member list.
+Until confirmed, it cannot send/receive group traffic, change membership,
+sign backups, or answer another member's recovery request. Confirmation signs
+and redistributes a backup; subsequent recovery is automatic.
+
+Missing membership withholds message acknowledgement. Authenticated application
+rejection no longer tears down a normal chat axon. Invalid ciphertext and
+transport authentication failures still close the session.
+
+Limits: recovery requires a reachable member holding metadata (or its queued
+encrypted delivery); it does not restore deleted history, media files, local
+nicknames, or device preferences. Existing storage bounds remain enforced.
+
+Rollout: new recovery control tags require updated recipients. Keep app and AoN
+protocol sources identical. Do not deploy proactive recovery to the live AoNs
+ahead of the matching app update: old Play Store clients reject unknown control
+tags. No production build or official phone installation was authorized in this
+task. The current group predates signed backups and needs one local review after
+the updated app is installed. Both AoNs hold its legacy membership.

@@ -17,20 +17,21 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal object AxonFrames {
   const val MAX_BYTES = 20_000
-  fun read(first: Int, input: DataInputStream): String {
+  const val BULK_BYTES = 850_000
+  fun read(first: Int, input: DataInputStream, maximum: () -> Int = { MAX_BYTES }): String {
     require(first >= 0) { "Axon closed" }
     val length = (first shl 24) or (input.readUnsignedByte() shl 16) or
       (input.readUnsignedByte() shl 8) or input.readUnsignedByte()
-    require(length in 1..MAX_BYTES) { "Invalid axon frame size" }
+    require(length in 1..maximum()) { "Invalid axon frame size" }
     val bytes = ByteArray(length)
     input.readFully(bytes)
     return Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
       .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(bytes)).toString()
   }
-  fun encode(raw: String): ByteArray {
-    require(raw.length in 1..MAX_BYTES) { "Invalid axon frame size" }
+  fun encode(raw: String, maximum: Int = MAX_BYTES): ByteArray {
+    require(raw.length in 1..maximum) { "Invalid axon frame size" }
     val bytes = raw.toByteArray(Charsets.UTF_8)
-    require(bytes.size <= MAX_BYTES) { "Invalid axon frame size" }
+    require(bytes.size <= maximum) { "Invalid axon frame size" }
     return bytes
   }
 }
@@ -47,6 +48,8 @@ internal class AxonSockets {
     var windowAt = System.nanoTime()
     var frames = 0
     @Volatile var attachments = false
+    @Volatile var mediaLane = false
+    @Volatile var bulk = false
   }
   private val sockets = ConcurrentHashMap<String, Entry>()
   private var limit = 5
@@ -70,6 +73,12 @@ internal class AxonSockets {
     entry.socket.soTimeout = 30_000
   }
   // Only the verified JS session enables this; discovery/claim alone leaves the admission limit intact.
+  fun enableMediaLane(id:String) { (sockets[id] ?: error("Axon closed")).mediaLane = true }
+  fun enableBulkAttachments(id:String) {
+    val entry = sockets[id] ?: error("Axon closed")
+    check(!entry.websocket && entry.attachments && entry.mediaLane) { "Bulk requires an admitted LAN session" }
+    entry.bulk = true
+  }
   fun enableAttachments(id:String) { (sockets[id] ?: error("Axon closed")).attachments = true }
   fun connect(id: String, address: InetSocketAddress) {
     val entry = sockets[id] ?: error("Axon closed")
@@ -104,16 +113,16 @@ internal class AxonSockets {
       try {
         val now = System.nanoTime()
         if (now - entry.windowAt >= TimeUnit.MINUTES.toNanos(1)) { entry.windowAt = now; entry.frames = 0 }
-        check(++entry.frames <= if(entry.attachments) 3856 else 64) { "Axon frame rate exceeded" }
+        check(++entry.frames <= if(entry.mediaLane) 28256 else if(entry.attachments) 3856 else 64) { "Axon frame rate exceeded" }
         return if (entry.websocket) AxonWebSocket.read(first, input) { opcode, bytes -> AxonWebSocket.write(entry.output, bytes, opcode) }
-          else AxonFrames.read(first, input)
+          else AxonFrames.read(first, input) { if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES }
       } finally { deadline.cancel(false) }
     } catch (error: Exception) { close(id); throw error }
     finally { entry.reading.set(false) }
   }
   fun write(id: String, raw: String) {
-    val bytes = AxonFrames.encode(raw)
     val entry = sockets[id] ?: error("Axon closed")
+    val bytes = AxonFrames.encode(raw, if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES)
     check(entry.writing.compareAndSet(false, true)) { "Axon write already pending" }
     val deadline = deadlines.schedule({ close(id) }, 4000, TimeUnit.MILLISECONDS)
     try {

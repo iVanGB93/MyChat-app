@@ -1,5 +1,6 @@
+import {KeyboardFormScrollView} from './ui/KeyboardForm';
 import React, {useState} from 'react';
-import {Modal, ScrollView, Text, TouchableOpacity, View} from 'react-native';
+import {Modal, Text, TouchableOpacity, View} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useTheme} from '../contexts/ThemeContext';
@@ -22,9 +23,9 @@ export default function NetworkDiagnostics({lookup}: Pick<React.ComponentProps<t
           </TouchableOpacity>
           <Text accessibilityRole="header" style={{flex: 1, color: colors.headerText, fontSize: 18, fontWeight: '600'}}>Advanced diagnostics</Text>
         </View>
-        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{padding: 18, paddingBottom: insets.bottom + 24}}>
+        <KeyboardFormScrollView contentContainerStyle={{padding: 18, paddingBottom: insets.bottom + 24}}>
           {open && <IdentityLookup lookup={lookup} color={colors.text} muted={colors.textSecondary} border={colors.border}/>}
-        </ScrollView>
+        </KeyboardFormScrollView>
       </View>
     </Modal>
   </>;

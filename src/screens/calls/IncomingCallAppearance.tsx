@@ -1,13 +1,14 @@
 import React,{useEffect,useRef} from 'react';
-import {Animated,Easing,Platform,StyleSheet,Text,TouchableOpacity,View} from 'react-native';
+import {ActivityIndicator,Animated,Easing,ScrollView,StyleSheet,Text,TouchableOpacity,View} from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {Ionicons} from '@expo/vector-icons';
 import {RTCView} from 'react-native-webrtc';
-import {Font,Radius,Spacing} from '../../theme';
+import {Font,Spacing} from '../../theme';
 import Avatar from '../../components/ui/Avatar';
 import {useTheme} from '../../contexts/ThemeContext';
 /** Original incoming-call presentation; transport and permissions belong to the caller. */
-export default function IncomingCallAppearance({callerName,isVideo,localPreviewUrl=null,busy=false,error='',handleAccept,handleReject}:{callerName:string;isVideo:boolean;localPreviewUrl?:string|null;busy?:boolean;error?:string;handleAccept:()=>void;handleReject:()=>void}){
- const {colors:Colors}=useTheme(),styles=makeStyles(Colors);
+export default function IncomingCallAppearance({callerName,isVideo,localPreviewUrl=null,busy=false,error,handleAccept,handleReject}:{callerName:string;isVideo:boolean;localPreviewUrl?:string|null;busy?:boolean;error?:string;handleAccept:()=>void;handleReject:()=>void}){
+ const {colors:Colors}=useTheme(),styles=makeStyles(Colors),insets=useSafeAreaInsets();
  const pulse=useRef(new Animated.Value(0)).current,sweep=useRef(new Animated.Value(0)).current;
  useEffect(()=>{
   const rings=Animated.loop(Animated.sequence([Animated.timing(pulse,{toValue:1,duration:1100,easing:Easing.inOut(Easing.ease),useNativeDriver:true}),Animated.timing(pulse,{toValue:0,duration:1100,easing:Easing.inOut(Easing.ease),useNativeDriver:true})]));
@@ -20,7 +21,7 @@ export default function IncomingCallAppearance({callerName,isVideo,localPreviewU
   const sweepRotate = sweep.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container,{paddingTop:insets.top+24,paddingBottom:Math.max(insets.bottom,16)+24,paddingLeft:insets.left,paddingRight:insets.right}]}>
       {isVideo && localPreviewUrl && (
         <RTCView
           streamURL={localPreviewUrl}
@@ -34,7 +35,7 @@ export default function IncomingCallAppearance({callerName,isVideo,localPreviewU
       <View pointerEvents="none" style={styles.bgGlowTop} />
       <View pointerEvents="none" style={styles.bgGlowBottom} />
 
-      <View style={styles.content}>
+      <ScrollView style={{flexGrow:0,flexShrink:1}} contentContainerStyle={styles.content}>
         <View style={[styles.typePill, { borderColor: Colors.neonBorder }]}>
           <Ionicons
             name={isVideo ? 'videocam-outline' : 'call-outline'}
@@ -77,9 +78,10 @@ export default function IncomingCallAppearance({callerName,isVideo,localPreviewU
           </>
         )}
 
-        <Text style={styles.callerName}>{callerName}</Text>
-        <Text style={[styles.status, { color: Colors.textSecondary }]}>is calling you…</Text>
-      </View>
+        <Text numberOfLines={2} ellipsizeMode="tail" style={styles.callerName}>{callerName}</Text>
+        <Text accessibilityLiveRegion="polite" style={styles.status}>{busy?'Answering…':'is calling you…'}</Text>
+        {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+      </ScrollView>
 
       <View style={styles.actions}>
         <View style={{ alignItems: 'center' }}>
@@ -89,10 +91,10 @@ export default function IncomingCallAppearance({callerName,isVideo,localPreviewU
           <Text style={styles.btnLabel}>Decline</Text>
         </View>
         <View style={{ alignItems: 'center' }}>
-          <TouchableOpacity style={styles.acceptBtn} accessibilityRole="button" accessibilityLabel="Accept call" disabled={busy} onPress={handleAccept} activeOpacity={0.85}>
-            <Ionicons name={isVideo ? 'videocam' : 'call'} size={28} color="#021015" />
+          <TouchableOpacity style={[styles.acceptBtn,busy&&{opacity:0.65}]} accessibilityRole="button" accessibilityLabel="Accept call" accessibilityState={{disabled:busy,busy}} disabled={busy} onPress={handleAccept} activeOpacity={0.85}>
+            {busy?<ActivityIndicator color="#021015"/>:<Ionicons name={isVideo ? 'videocam' : 'call'} size={28} color="#021015" />}
           </TouchableOpacity>
-          <Text style={styles.btnLabel}>Accept</Text>
+          <Text style={styles.btnLabel}>{busy?'Answering':'Accept'}</Text>
         </View>
       </View>
     </View>
@@ -104,8 +106,6 @@ function makeStyles(Colors: any) {
       flex: 1,
       backgroundColor: '#020413',
       justifyContent: 'space-between',
-      paddingTop: Platform.OS === 'ios' ? 80 : 60,
-      paddingBottom: Platform.OS === 'ios' ? 60 : 40,
     },
     bgGlowTop: {
       position: 'absolute',
@@ -128,7 +128,7 @@ function makeStyles(Colors: any) {
       opacity: 0.07,
     },
 
-    content: { alignItems: 'center' },
+    content: { alignItems: 'center',paddingHorizontal:Spacing.lg,paddingBottom:Spacing.lg },
     incomingPreview: {
       ...StyleSheet.absoluteFillObject,
       backgroundColor: '#000',
@@ -193,14 +193,22 @@ function makeStyles(Colors: any) {
       marginTop: Spacing.xl,
       ...Font.bold,
       letterSpacing: 0.5,
+      textAlign:'center',
+      maxWidth:'100%',
     },
     status: {
+      color:'rgba(255,255,255,0.85)',
+      backgroundColor:'rgba(2,4,19,0.65)',
+      paddingHorizontal:8,
+      borderRadius:8,
       fontSize: Font.size.md,
       marginTop: Spacing.xs,
       letterSpacing: 0.5,
     },
+    error: {color:'#FF8FA8',textAlign:'center',marginTop:Spacing.md,fontSize:Font.size.sm,backgroundColor:'rgba(2,4,19,0.85)',padding:Spacing.sm,borderRadius:8},
 
     actions: {
+      flexShrink:0,
       flexDirection: 'row',
       justifyContent: 'space-evenly',
       paddingHorizontal: Spacing.xl,

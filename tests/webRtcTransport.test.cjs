@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),ts=require('typescript');
-function harness(custom=true,failConfig=false){
+function harness(failConfig=false,missing=false){
   const effects=[],cleanups=[],sent=[],legacySent=[],pcs=[];
   let configReads=0,subscriptions=0,listener,closed=0,stopped=0,disconnected=0;
   const track={kind:'audio',stop(){stopped++;}},stream={getTracks:()=>[track]};
@@ -32,11 +32,11 @@ function harness(custom=true,failConfig=false){
   },exports);
   return exports;
   }
-  const exports=loadHook(custom?'useWebRTCCore':'useWebRTC');
+  const exports=loadHook('useWebRTCCore');
   const transport={send:async(...args)=>{sent.push(args);return true;},subscribe:fn=>{listener=fn;return()=>{listener=null;};},
     loadIceConfig:async()=>{if(failConfig)throw Error('unavailable');return {ice_servers:[],ice_transport_policy:'all'};}};
   const hook=exports.default({callId:'one-call',peerUserId:14,callType:'voice',isOutgoing:true,
-    mediaTransport:custom?transport:undefined,onDisconnected:()=>{disconnected++;}});
+    mediaTransport:missing?undefined:transport,onDisconnected:()=>{disconnected++;}});
   for(const effect of effects){const cleanup=effect();if(cleanup)cleanups.push(cleanup);}
   return {hook,sent,legacySent,pcs,emit:(...a)=>listener?.(...a),unmount:()=>cleanups.forEach(f=>f()),
     counts:()=>({configReads,subscriptions,closed,stopped,disconnected})};
@@ -55,22 +55,15 @@ test('neuron adapter exclusively owns signaling and ICE; cleanup stops native me
   const count=h.sent.length;h.pcs[0].onicecandidate({candidate:{toJSON:()=>({candidate:'late'})}});
   await settle();assert.equal(h.sent.length,count);
 });
-test('legacy adapter still scopes outgoing calls and ignores another call answer',async()=>{
-  const h=harness(false);
-  try {
-    await h.hook.startAsOfferer();await settle();
-    assert.equal(h.legacySent[0][2].axonic_call_id,'one-call');
-    assert.deepEqual(h.legacySent.map(e=>e[1]),['ice-candidate','offer']);
-    assert.equal(h.counts().configReads,1);assert.equal(h.counts().subscriptions,1);
-    h.emit({event:'webrtc_signal',signal_type:'answer',from_user_id:14,data:{type:'answer',sdp:'v=0',axonic_call_id:'another-call'}});
-    await settle();assert.equal(h.pcs[0].remoteDescription,undefined);
-  } finally {h.unmount();}
-});
 test('failed neuron ICE config fails closed without Django fallback or peer creation',async()=>{
-  const h=harness(true,true);
+  const h=harness(true);
   try {
     await settle();await h.hook.startAsOfferer();await settle();
     assert.equal(h.pcs.length,0);assert.equal(h.sent.length,0);assert.equal(h.legacySent.length,0);
     assert.equal(h.counts().configReads,0);assert.equal(h.counts().disconnected,1);
   } finally {h.unmount();}
+});
+
+test('missing neuron transport fails closed without creating a peer connection',async()=>{
+ const h=harness(false,true);try{await settle();await h.hook.startAsOfferer();await settle();assert.equal(h.pcs.length,0);assert.equal(h.sent.length,0);assert.equal(h.counts().disconnected,1);}finally{h.unmount();}
 });

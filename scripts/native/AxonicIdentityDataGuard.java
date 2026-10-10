@@ -20,7 +20,7 @@ final class AxonicIdentityDataGuard {
             windowStart = now;
             frames = 0;
         }
-        if (binary || data == null || data.remaining() == 0 || data.remaining() > 20_000 || ++frames > (authenticated ? 3856 : 64)) {
+        if (binary || data == null || data.remaining() == 0 || data.remaining() > 20_000 || ++frames > (authenticated ? 28256 : 64)) {
             rejected = true;
             return null;
         }
