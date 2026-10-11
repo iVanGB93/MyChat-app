@@ -29,9 +29,17 @@ function configureManifest(manifest) {
         if (data.$['android:scheme'] === 'axonic') data.$['android:scheme'] = '${axonicScheme}';
         if (data.$['android:scheme'] === 'exp+mychat-app') data.$['android:scheme'] = '${axonicExpoScheme}';
       }
+      if (filter.data) filter.data = filter.data.filter((data, index, entries) =>
+        entries.findIndex(other => JSON.stringify(other.$) === JSON.stringify(data.$)) === index);
     }
   }
   return manifest;
+}
+
+// Local Gradle builds use the same display version as Expo; version codes stay release-owned.
+function configureVersionName(contents) {
+  return contents.replace(/versionName\s+["'][^"']+["']/g,
+    "versionName new groovy.json.JsonSlurper().parse(rootProject.file('../app.json')).expo.version");
 }
 
 module.exports = function withSideBySideDev(config) {
@@ -49,9 +57,12 @@ module.exports = function withSideBySideDev(config) {
     return mod;
   });
   return withAppBuildGradle(config, mod => {
+    mod.modResults.contents = configureVersionName(mod.modResults.contents);
     if (!mod.modResults.contents.includes(marker)) mod.modResults.contents += gradle;
     return mod;
   });
 };
 module.exports.gradle = gradle;
 module.exports.configureManifest = configureManifest;
+
+module.exports.configureVersionName = configureVersionName;

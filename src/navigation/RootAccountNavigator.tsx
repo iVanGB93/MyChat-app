@@ -1,3 +1,7 @@
+import RootGroupMessageInfo from '../screens/chat/RootGroupMessageInfo';
+import RootMessageReactions from '../components/chat/RootMessageReactions';
+import {dismissRootConversationNotifications} from '../modules/messaging/notifications';
+import type {TextInput as NativeTextInput} from 'react-native';
 import {KeyboardAvoidingScreen,KeyboardFormScrollView} from '../components/ui/KeyboardForm';
 import {KeyboardAwareTextInput as TextInput} from '../components/ui/KeyboardForm';
 import {groupPhotoUri} from '../components/chat/group-photo';
@@ -88,7 +92,7 @@ import * as Clipboard from 'expo-clipboard';
 
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 
-import {AppState,BackHandler,FlatList,Pressable,ScrollView,Share,Text,TouchableOpacity,View} from 'react-native';
+import {AppState,BackHandler,Keyboard,FlatList,Pressable,ScrollView,Share,Text,TouchableOpacity,View} from 'react-native';
 
 import {NavigationContainer,DarkTheme,DefaultTheme,useIsFocused,createNavigationContainerRef} from '@react-navigation/native';
 
@@ -231,7 +235,11 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  const name=nickname(state,peer),contact=state.contacts.find(c=>c.account===peer),messages=state.messages.filter(m=>m.peer===peer&&!m.group).slice().reverse();
 
+ const composer=useRef<NativeTextInput>(null);
+ useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
  const list=useRef<FlatList<RootChatMessage>>(null),owner=localAccount.status().account;
+
+ useEffect(()=>{if(focused&&foreground&&owner)void dismissRootConversationNotifications(owner,{peer}).catch(()=>{});},[focused,foreground,owner,peer]);
 
  const replyReference=replyTo?{id:replyTo.id,author:replyTo.direction==='outgoing'?owner!:peer}:undefined;
 
@@ -267,7 +275,8 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   {(['video','voice'] as const).map(kind=><TouchableOpacity key={kind} testID={kind==='voice'?'axonic-voice-call':'axonic-video-call'} accessibilityLabel={kind==='voice'?'Start voice call':'Start video call'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind})} style={{width:36,height:36,borderRadius:18,backgroundColor:'rgba(0,229,255,0.10)',borderWidth:1,borderColor:'rgba(0,229,255,0.30)',alignItems:'center',justifyContent:'center',opacity:contact?.blocked?0.4:1}}><Ionicons name={kind==='voice'?'call-outline':'videocam-outline'} size={18} color="#00E5FF"/></TouchableOpacity>)}</View>});},[navigation,peer,name,colors,contact?.blocked,contact?.muted,activity.online.join()]);
 
- async function send(){if(busy||!text.trim()||contact?.blocked)return;const value=text,selection=replyTo;setBusy(true);try{if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;if(editing){await messaging.act(peer,{id:editing.id,author:owner!},'edit',value,owner);setEditing(undefined);}else await messaging.sendText(peer,value,selection?{id:selection.id,author:selection.direction==='outgoing'?owner!:peer}:undefined,owner);setReplyTo(current=>current===selection?undefined:current);setText(current=>current===value?'':current);list.current?.scrollToOffset({offset:0,animated:true});}catch(e){report(e);}finally{setBusy(false);}}
+ async function send(){
+ composer.current?.focus();if(busy||!text.trim()||contact?.blocked)return;const value=text,selection=replyTo;setBusy(true);try{if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;if(editing){await messaging.act(peer,{id:editing.id,author:owner!},'edit',value,owner);setEditing(undefined);}else await messaging.sendText(peer,value,selection?{id:selection.id,author:selection.direction==='outgoing'?owner!:peer}:undefined,owner);setReplyTo(current=>current===selection?undefined:current);setText(current=>current===value?'':current);list.current?.scrollToOffset({offset:0,animated:true});}catch(e){report(e);}finally{setBusy(false);}}
 
  async function sendSticker(sticker:Sticker){if(!owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account');await messaging.sendText(peer,stickerMessage(sticker),replyReference,owner);setReplyTo(undefined);}
 
@@ -284,17 +293,17 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   <FlatList ref={list} inverted data={messages} keyExtractor={m=>m.direction+':'+m.id} style={roomStyles.messageList} contentContainerStyle={roomStyles.messagesList} keyboardShouldPersistTaps="handled"
 
-   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubbleTouchTarget,bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
+   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
 
     {!m.deleted&&m.reply&&<View style={{borderLeftWidth:3,borderLeftColor:colors.primary,padding:8,marginBottom:6}}><Text style={{color:colors.primary,fontWeight:'600'}}>{m.reply.author===owner?'You':name}</Text><Text numberOfLines={2} style={{color:colors.textSecondary}}>{quoted?(quoted.attachment?(quoted.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':quoted.attachment.name):parseSticker(quoted.text)?'Sticker':quoted.text):'Original message unavailable on this device'}</Text></View>}
 
     {m.deleted?<Text style={{color:colors.textSecondary,fontStyle:'italic'}}>Message deleted</Text>:m.attachment?<RootAttachmentBubble onLongPress={event=>{setMenuY(event.nativeEvent.pageY);setMenu(m);}} message={m} progress={transfers.jobs.find(j=>j.digest===attachmentDigest(m.attachment!.manifest))} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={150}/></Pressable>:<SmartMessageText style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary}>{m.text}</SmartMessageText>}
 
-    {!!m.reactions?.length&&<View style={{flexDirection:'row',gap:6,marginTop:6}}>{m.reactions.map(r=><Text key={r.author} style={{fontSize:18}}>{r.text}</Text>)}</View>}
+
 
     <View style={bubbleStyles.metaRow}>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>
 
-   </Pressable></View></ReplySwipe>;}}/>
+   </Pressable></RootMessageReactions></View></ReplySwipe>;}}/>
 
   {activity.typing.includes(peer)&&<Text style={{color:colors.primary,paddingHorizontal:16,paddingVertical:4}}>{name} is typing…</Text>}
 
@@ -328,7 +337,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
    {!voiceActive&&<TouchableOpacity accessibilityLabel="Attach" disabled={busy||!!editing||contact?.blocked} onPress={()=>setAttachOpen(true)} style={[roomStyles.attachBtn,{borderColor:colors.neonBorder,backgroundColor:colors.surface,shadowColor:colors.primary}]}><Ionicons name="add" size={25} color={colors.primary}/></TouchableOpacity>}
 
-   {!voiceActive&&<View style={[roomStyles.inputRow,{backgroundColor:colors.surface,borderColor:colors.neonBorder,paddingLeft:12}]}><Pressable accessibilityLabel="Open stickers" disabled={busy||!!editing||contact?.blocked} onPress={()=>setStickersOpen(true)} style={{padding:8}}><Ionicons name="happy-outline" size={24} color={colors.primary}/></Pressable><TextInput testID="axonic-message-composer" accessibilityLabel="New message" placeholder="Compose message…" placeholderTextColor={colors.textTertiary} style={[roomStyles.textInput,{color:colors.text}]} value={text} onChangeText={value=>{setText(value);activity.notify(peer,!!value.trim());}} multiline maxLength={1600} editable={!contact?.blocked}/></View>}
+   {!voiceActive&&<View style={[roomStyles.inputRow,{backgroundColor:colors.surface,borderColor:colors.neonBorder,paddingLeft:12}]}><Pressable accessibilityLabel="Open stickers" disabled={busy||!!editing||contact?.blocked} onPress={()=>setStickersOpen(true)} style={{padding:8}}><Ionicons name="happy-outline" size={24} color={colors.primary}/></Pressable><TextInput ref={composer} testID="axonic-message-composer" accessibilityLabel="New message" placeholder="Compose message…" placeholderTextColor={colors.textTertiary} style={[roomStyles.textInput,{color:colors.text}]} value={text} onChangeText={value=>{setText(value);activity.notify(peer,!!value.trim());}} multiline maxLength={1600} editable={!contact?.blocked}/></View>}
 
    {text.trim()||editing?<TouchableOpacity testID="axonic-send-message" accessibilityLabel="Send message" disabled={busy||!text.trim()||contact?.blocked} onPress={()=>void send()} style={[roomStyles.sendBtn,{backgroundColor:colors.primary,borderColor:colors.neonBorder,shadowColor:colors.primary,opacity:busy||!text.trim()||contact?.blocked?0.45:1}]}><Text style={[roomStyles.sendIcon,{color:colors.textInverse}]}>▶</Text></TouchableOpacity>:<RootVoiceComposer peer={peer} reply={replyReference} onSent={clearReply} disabled={busy||!!contact?.blocked} onError={report} onActive={setVoiceActive}/>}
 
@@ -428,7 +437,7 @@ function NewChat({navigation,route}:Screen<'NewChat'>){
 
  return <KeyboardAvoidingScreen style={[contactStyles.container,{backgroundColor:colors.background}]}>
 
-  <View style={contactStyles.searchBar}><View style={{flex:1}}><Input accessibilityLabel="Peer identity" placeholder="Search nickname or paste an axon code…" autoCapitalize="none" autoCorrect={false} value={peer} onChangeText={setPeer} style={contactStyles.searchInput}/></View><RootIdentityScanner compact onIdentity={account=>void open(displayIdentity(account))}/></View>
+  <View style={contactStyles.searchBar}><View style={{flex:1}}><Input accessibilityLabel="Identity code" placeholder="Paste an identity code…" autoCapitalize="none" autoCorrect={false} value={peer} onChangeText={setPeer} containerStyle={contactStyles.searchInput}/></View><RootIdentityScanner compact onIdentity={account=>void open(displayIdentity(account))}/></View>
 
   <TouchableOpacity style={[contactStyles.item,{borderBottomWidth:1,borderBottomColor:colors.divider}]} onPress={()=>navigation.navigate('GroupCreate')}><Ionicons name="people-outline" size={26} color={colors.primary}/><Text style={[contactStyles.name,{color:colors.primary,marginLeft:Spacing.md}]}>New group</Text></TouchableOpacity>
 
@@ -476,7 +485,8 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
  const ref=useRef(createNavigationContainerRef<Routes>()).current;
 
- const visible=()=>{const route=ref.getCurrentRoute();setRootVisibleConversation(route?.name==='ChatRoom'?{peer:(route.params as Routes['ChatRoom']).peer}:route?.name==='GroupRoom'?{group:(route.params as Routes['GroupRoom']).id}:null);};
+ const visibleRoom=useRef<string|null>(null);
+ const visible=()=>{const route=ref.getCurrentRoute(),room=route&&['ChatRoom','GroupRoom'].includes(route.name)?route.key:null;if(visibleRoom.current&&visibleRoom.current!==room)Keyboard.dismiss();visibleRoom.current=room;setRootVisibleConversation(route?.name==='ChatRoom'?{peer:(route.params as Routes['ChatRoom']).peer}:route?.name==='GroupRoom'?{group:(route.params as Routes['GroupRoom']).id}:null);};
 
  useEffect(()=>{
 
@@ -510,7 +520,7 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
    <Stack.Screen name="ChatRoom" component={ChatRoom}/><Stack.Screen name="NewChat" component={NewChat} options={{title:'New chat'}}/><Stack.Screen name="Contact" component={Contact} options={{title:'User details'}}/>
 
-   <Stack.Screen name="GroupCreate" component={RootGroupCreate} options={{title:'New group'}}/><Stack.Screen name="GroupRoom" component={RootGroupRoom}/><Stack.Screen name="GroupInfo" component={RootGroupInfo} options={{title:'Group information'}}/>
+   <Stack.Screen name="GroupCreate" component={RootGroupCreate} options={{title:'New group'}}/><Stack.Screen name="GroupRoom" component={RootGroupRoom}/><Stack.Screen name="GroupMessageInfo" component={RootGroupMessageInfo} options={{title:'Message info'}}/><Stack.Screen name="GroupInfo" component={RootGroupInfo} options={{title:'Group information'}}/>
 
    <Stack.Screen name="ChatStorage" component={RootChatStorageScreen} options={{title:'Chat storage'}}/>
 

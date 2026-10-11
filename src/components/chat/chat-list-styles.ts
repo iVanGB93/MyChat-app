@@ -2,7 +2,6 @@ import {StyleSheet} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
 export const chatListStyles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   emptyContainer: { flexGrow: 1 },
   list: { paddingBottom: 80 },
 
@@ -106,12 +105,6 @@ export const chatListStyles = StyleSheet.create({
     fontSize: Font.size.sm,
     ...Font.semiBold,
   },
-  headerAction: {
-    width: 40,
-    height: 40,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
 
   fab: {
     position: 'absolute',
@@ -127,11 +120,5 @@ export const chatListStyles = StyleSheet.create({
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 0 },
     elevation: 8,
-  },
-  fabIcon: {
-    fontSize: 28,
-    fontWeight: '300',
-    lineHeight: 32,
-    letterSpacing: 0,
   },
 });

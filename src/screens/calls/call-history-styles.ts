@@ -2,7 +2,6 @@ import {StyleSheet} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
 export const callHistoryStyles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   list: { paddingVertical: Spacing.xs },
   emptyContainer: { flexGrow: 1 },
   callItem: {
@@ -41,6 +40,5 @@ export const callHistoryStyles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  callbackIcon: { fontSize: 14, fontWeight: '600' },
   separator: { height: 1, marginLeft: 56 },
 });

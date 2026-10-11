@@ -2,7 +2,7 @@ const fs=require('node:fs'),path=require('node:path'),ts=require('typescript');
 const root=path.resolve(__dirname,'..');
 const screens=[
  'src/screens/LocalAccountApp.tsx','src/navigation/RootAccountNavigator.tsx',
- 'src/screens/chat/RootGroupScreens.tsx','src/screens/calls/RootAccountCallScreen.tsx',
+ 'src/screens/chat/RootGroupMessageInfo.tsx','src/screens/chat/RootGroupScreens.tsx','src/screens/calls/RootAccountCallScreen.tsx',
  'src/screens/profile/RootProfileScreen.tsx','src/screens/profile/RootNetworkPanel.tsx','src/screens/profile/RootChatStorageScreen.tsx',
  'src/components/RootAttachmentBubble.tsx','src/components/RootIdentityScanner.tsx','src/components/IdentityLookup.tsx','src/components/AxonLimitSetting.tsx',
  ...fs.readdirSync(path.join(root,'src/components/chat')).filter(n=>/^Root.*\.tsx$/.test(n)).map(n=>'src/components/chat/'+n),

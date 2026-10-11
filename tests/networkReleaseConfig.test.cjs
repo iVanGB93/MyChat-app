@@ -1,16 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),ts=require('typescript');
 
-// JS release flags cannot detect a native debug-only gate. Check the bridge too:
-// all six mailbox operations must be available, while unsigned LAN stays guarded.
-test('native release bridge exposes mailbox crypto but keeps unsigned LAN debug-only', () => {
- const native = fs.readFileSync('modules/axonic-nearby/android/src/main/java/expo/modules/axonicnearby/AxonicNearbyModule.kt', 'utf8');
- const mailbox = native.slice(native.indexOf('AsyncFunction("mailboxIdentity")'), native.indexOf('AsyncFunction("start")'));
- for (const method of ['Identity', 'Digest', 'Sign', 'Verify', 'Seal', 'Open']) {
-  assert.ok(mailbox.includes(`AsyncFunction("mailbox${method}")`));
- }
- assert.doesNotMatch(mailbox, /developmentOnly|FLAG_DEBUGGABLE|BuildConfig\.DEBUG/);
- const lan = native.slice(native.indexOf('AsyncFunction("start")'), native.indexOf('AsyncFunction("stop")'));
- assert.match(lan, /check\(context\.applicationInfo\.flags and ApplicationInfo\.FLAG_DEBUGGABLE != 0\)/);
+// Retired numeric-user mailbox and unsigned room transport have no mobile bridge.
+test('native bridge retains identity primitives and removes retired mailbox and room entry points',()=>{
+ const native=fs.readFileSync('modules/axonic-nearby/android/src/main/java/expo/modules/axonicnearby/AxonicNearbyModule.kt','utf8');
+ for(const name of ['identityScrypt','identityRandomBytes','axonLanStart','axonWssConnect','attachmentFileSha256'])assert(native.includes(`AsyncFunction("${name}")`));
+ assert.doesNotMatch(native,/MailboxCrypto|AsyncFunction\("(?:mailbox\w+|start|stop)"\)|Function\("send"\)|onNearby|class Lane/);
 });
 
 // Release flags in JavaScript cannot override a native debuggable-only check.

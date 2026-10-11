@@ -1,3 +1,4 @@
+import {requestInitialNotificationPermission} from '../services/notificationPermission';
 import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
 import {startAppMaintenance} from '../modules/maintenance';
 import {RootShareProvider} from '../components/chat/RootSharePicker';
@@ -51,6 +52,11 @@ import { localAccountDirectorySnapshot, startLocalAccountNetwork } from '../modu
 
 export default function LocalAccountApp() {
  useEffect(startAppMaintenance,[]);
+ useEffect(()=>{
+  const ask=()=>void requestInitialNotificationPermission().catch(()=>{});
+  ask();const listener=AppState.addEventListener('change',state=>{if(state==='active')ask();});
+  return()=>listener.remove();
+ },[]);
 
  return <GestureHandlerRootView style={{flex:1}}><SafeAreaProvider><ThemeProvider><ConfirmProvider><ThemedAlertBridge/><RootShareProvider><LocalAccountContent/></RootShareProvider></ConfirmProvider></ThemeProvider></SafeAreaProvider></GestureHandlerRootView>;
 
@@ -432,6 +438,6 @@ const makeLocalStyles = (colors:ReturnType<typeof useTheme>['colors'])=>StyleShe
 
   buttonText: { color: colors.textInverse, fontSize: 16, fontWeight: '600' }, disabled: { opacity: 0.4 },
 
-  row: { flexDirection: 'row', gap: 16 }, code: { fontSize: 13, color: colors.textSecondary },
+  row: { flexDirection: 'row', gap: 16 },
 
 });

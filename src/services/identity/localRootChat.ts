@@ -1,3 +1,4 @@
+import {publishRootMessageFeedback} from './rootMessageFeedback';
 import {ownChatStore} from '../../modules/storage/chatStore';
 import { localAccount } from './localAccount';
 import { createRootChatLedger } from './rootChatLedger';
@@ -11,6 +12,12 @@ export function localRootChat(){
  if(!owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account first');
  let ledger=ledgers.get(owner);if(!ledger){const store=ownChatStore(owner);
   ledger=createRootChatLedger({owner,...store,now:Date.now,
+   messageCommitted:(m,state)=>{
+    // Outgoing attachment feedback occurs when selections are staged, before deferred preparation.
+    if(m.direction==='outgoing'&&m.attachment)return;
+    const muted=m.group?state.groups?.find(g=>g.id===m.group!.id)?.muted:state.contacts.find(c=>c.account===m.peer)?.muted;
+    publishRootMessageFeedback({owner,peer:m.peer,id:m.group?.messageId??m.id,direction:m.direction,...(m.group?{group:m.group.id}:{}),muted});
+   },
    signGroup:group=>localAccount.signGroup(group),
    queued:(peer,id)=>{for(const listener of queuedListeners){try{listener(owner,peer,id);}catch{/* Durable outbox retries on its normal timer. */}}},
    verifyAttachment:async(descriptor,direction)=>{const m=descriptor.manifest,record=direction==='outgoing'?localAccount.publicRecord():await createMobileIdentityRecordStore(Date.now).read(m.sender);

@@ -55,11 +55,6 @@ export const localAccountBiometrics = createLocalAccountBiometrics({ identity: l
   write: password => SecureStore.setItemAsync(BIOMETRIC, password, biometricOptions),
   remove: () => SecureStore.deleteItemAsync(BIOMETRIC, { keychainService: biometricOptions.keychainService }),
 });
-export const localAccountName = {
-  read: () => AsyncStorage.getItem('@axonic_local_account_name_v1'),
-  write: (name: string) => AsyncStorage.setItem('@axonic_local_account_name_v1', name.trim().slice(0, 80)),
-};
-
 /** Login name is separate from the editable profile nickname. */
 export const localAccountUsername = {
   read: (account: string) => AsyncStorage.getItem('@axonic_local_username_v1:' + account),

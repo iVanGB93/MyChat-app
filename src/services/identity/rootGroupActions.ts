@@ -5,6 +5,11 @@ import type {RootGroupAction} from './rootGroupTypes.ts';
 export type {RootGroupAction} from './rootGroupTypes.ts';
 const reactions=['👍','❤️','😂','😮','😢','🙏'];
 export const validGroupReply=(v:unknown):v is RootChatReply=>{const r=v as RootChatReply;return !!r&&Object.keys(r).sort().join(',')==='author,id'&&/^[a-f0-9]{64}$/.test(r.id)&&validAccountId(r.author);};
+/** Outgoing replies must point to an available message in this group, including a third member's message. */
+export function groupReplyAvailable(s:RootChatState,owner:string,group:string,reply:RootChatReply){
+ return validGroupReply(reply)&&s.messages.some(m=>m.group?.id===group&&m.group.messageId===reply.id&&(m.direction==='outgoing'?owner:m.peer)===reply.author&&!m.deleted)
+  &&!s.groupActions?.some(a=>a.group.id===group&&a.target.id===reply.id&&a.target.author===reply.author&&a.kind==='delete');
+}
 const family=(kind:string)=>kind==='reaction'?'reaction':kind==='read'?'read':'content';
 export const groupActionBody=(a:RootGroupAction)=>({group:a.group,target:a.target,kind:a.kind,revision:a.revision,text:a.text});
 export const sameGroupAction=(a:RootGroupAction,b:RootGroupAction)=>JSON.stringify(groupActionBody(a))===JSON.stringify(groupActionBody(b));

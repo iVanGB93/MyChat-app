@@ -37,6 +37,13 @@ test('mark as read sends the original message receipt once without fabricating a
  const f=fixture();await f.mod.handleRootNotificationAction('root-mark-read',f.data);await f.mod.handleRootNotificationAction('root-mark-read',f.data);
  assert.equal(f.calls.length,1);assert.equal(f.calls[0][0],'read');assert.equal(f.calls[0][4],'read');
 });
+
+test('mark as read dismisses only the acted-on notification and preserves other cards',async()=>{
+ const f=fixture(),other='root-conversation:'+f.account+':direct:another-test-peer';
+ f.displayed.set(other,{id:other,data:{sender:'another-test-peer',messageId:'e'.repeat(64)}});
+ await f.mod.handleRootNotificationAction('root-mark-read',f.data);
+ assert.equal(f.cancelled.length,1);assert.equal(f.displayed.size,1);assert(f.displayed.has(other));
+});
 test('group replies use the group message ID and require current group membership',async()=>{
  const f=fixture(),group='e'.repeat(64),original='f'.repeat(64);f.data.group=group;f.state.messages[0].group={id:group,messageId:original};f.state.groups=[{id:group,accepted:true,blocked:false,members:[f.account,f.sender]}];
  await f.mod.handleRootNotificationAction('root-reply',f.data,'Group reply');assert.equal(f.calls[0][0],'group');assert.deepEqual(f.calls[0][4],{id:original,author:f.sender});

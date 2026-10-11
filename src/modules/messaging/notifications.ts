@@ -3,3 +3,5 @@ export {handleRootNotificationAction} from '../../services/identity/rootNotifica
 export {setRootVisibleConversation,queueRootNotificationOpen,pendingRootNotificationOpen,finishRootNotificationOpen} from '../../services/identity/rootNotificationRoute';
 export {subscribeRootMessageToast,type RootToast} from '../../services/identity/rootMessageToast';
 export {defaultRootNotificationPreferences,readRootNotificationPreferences,saveRootNotificationPreferences,type RootNotificationPreferences} from '../../services/identity/rootNotificationPreferences';
+
+export {dismissRootConversationNotifications} from '../../services/identity/rootMessageNotification';

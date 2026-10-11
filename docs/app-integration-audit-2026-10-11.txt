@@ -1,0 +1,49 @@
+MIGRATION GAP FOLLOW-UP — OCTOBER 11, 2026
+The user requested implementation of the three remaining feature gaps below. Group media/voice replies, group message info, and original message feedback clips are now implemented and tested. The gap descriptions in this audit are historical findings. See migration-gap-fixes-2026-10-11.txt for current validation and the phone-login limitation.
+
+AXONIC APP INTEGRATION AND CLEANUP AUDIT — OCTOBER 11, 2026
+
+Scope
+Source/integration audit of the current mobile working tree: foreground and headless entry points, navigation, identity/account lifecycle, messaging/groups, attachment/voice/sticker flows, calls, notifications, maintenance, storage, dependency/configuration consumers and Android bridge code. Compared current code with the earlier consolidation/readiness audits and pre-migration implementations. This is not an exhaustive physical-device or Play-installed release certification.
+Previous-turn fixes and unrelated custody/recovery changes were present before this audit and were preserved. No commit, push, deployment, production build, installation, account removal or stored-data migration was performed.
+
+Confirmed defects fixed in this audit
+1. Call tones never started: playLooping claimed a token before stopLooping immediately invalidated it. The player now releases the previous tone, claims a generation, refreshes actual ringer mode, and checks cancellation across asynchronous work. Cancellation during a system-mode query cannot resurrect a ringtone. Failed playback releases the allocated player.
+2. The ringer subscription had no startup caller after the old app entry was retired. Application maintenance now owns one listener across overlapping leases and removes it when its last owner stops. Native listener failures do not block startup. Foreground tones refresh Android mode before playing instead of relying on an uninitialized normal-mode cache.
+3. Local Gradle display-version metadata remained at 1.1.6 while Expo/package metadata says 1.1.8. Gradle now reads the configured display version from app.json; the config plugin preserves this on regeneration. Release version codes, signing and EAS remote auto-increment were not changed.
+4. Repeated prebuilds left duplicate deep-link intent data. Existing duplicates were removed and the side-by-side plugin now deduplicates each filter without removing distinct sharing filters or mixing Dev and official schemes.
+
+Removed confirmed unused code
+- 73 StyleSheet entries with no property-access consumers, across chat/profile/group/contact/call presentation. No dynamic style-key consumers were present; TypeScript passes after removal.
+- Uncalled camera prewarming exports and their stream holder/helper, plus its two retired helper tests. Active media acquisition, track cleanup, connection-quality sampling and authenticated signaling remain.
+- Unread development peer registry, unused attachment-network/call-diagnostics accessors, unused global profile-name writer, unused crash-reporting operation hooks/old Axion tags, unused voice-activity subscription and unread wake counters. Wake-stage logs and privacy-filtered crash startup remain.
+- The uncalled one-shot/fallback sound API and five assets that had no active callers. Current call ringtone/ringback assets and OS notification sounds remain. This does not restore the historical foreground message/connect/end sound effects; see remaining parity gaps.
+- Native numeric-user mailbox operations and MailboxCrypto implementation/test, plus the unconsumed unsigned room-based LAN diagnostic/events and TypeScript declarations. Current root identity/KDF/random primitives, authenticated LAN/WSS sockets, attachment hashing, bounded background recovery and foreground call protection remain. Existing device keys/storage were not deleted.
+
+Current integration assessment
+Startup: one foreground/headless entry, registering new background handlers before mounting LocalAccountApp; no retired Django app/auth/store entry was found in the app graph.
+Identity/security: local credentials, recovery/backup checks, biometrics, remembered session and journaled device-only removal use current module APIs. Recovery is identity recovery, not a full chat-history backup.
+Messaging: current command/delivery/ledger path owns direct/group sends, receipt semantics, editing, deletion, reactions, forwarding and invitations. UI receives rootChatView-derived messages; stored/delivered/read remain distinct. Previous-turn keyboard, badge, notification-dismissal and permission fixes remain.
+Media: current attachment selection/preview/staging/export path owns files, comments, stickers and voice notes. No old server media uploader/export coordinator was reconnected.
+Calls: new coordinator/transport, RTC hook, audio route, call UI and call lease are connected. MyChatService is an active microphone/camera foreground service used by rootCallLifetime and protected-call native checks; its historical name is not evidence of dead code.
+Notifications: current Firebase/Notifee wake, recovery, action and route handlers are registered. No legacy notification websocket/registration/bootstrap was found in the mobile entry graph.
+Maintenance: Play-only check/start/complete/install-state observation and crash startup are active. Native Play eligibility still requires a Play-installed release test.
+Storage: profile/avatar/drafts, ledger, attachment and call journals use current storage modules. Cleanup does not delete saved accounts, messages, media or compatibility keys.
+
+Remaining confirmed parity gaps (not dead code)
+- Group attachment/voice replies: UI disables these while replying, and persisted selections/batch validation explicitly reject group + reply. Direct attachment replies and group text replies work through separate supported schemas. Completing group media replies requires coordinated validation/storage/protocol work, not merely enabling the picker.
+- Group message info: RootMessageMenu accepts info, and direct chats supply the MessageInfo route, but group chats do not supply it. Per-recipient group read/delivery data exists; the corresponding detail UI is missing.
+- Historical foreground one-shot message/connect/end effects have no current lifecycle consumer. Their old uncalled implementation/assets were removed rather than treating it as active functionality. Restoring those sounds needs deliberate wiring to current send/admission events and notification preferences, with duplicate-wake prevention.
+- Store availability, interrupted/downloaded update behavior and fresh-install permission prompting still need physical release-path validation. Automated tests do not establish real Play eligibility.
+- The checked-in local Android versionCode remains 1; local production APK release codes need explicit release preparation. EAS production still uses remote auto-increment. No release code was invented or remote version configuration changed.
+
+Intentional retained boundaries
+The eight consolidation support roots are portable hosted compatibility protocols, not mobile app startup paths. Current Axonic-neuron consumers include exchange.ts/storage.ts (mailbox), hostedChatNeuron.ts (chat binding/outbox), and index.ts (signal relay). Their compatibility roots/tests remain documented in scripts/consolidation-exceptions.json. Do not remove them based solely on mobile reachability.
+Likewise, native/autolink dependencies and build plugins cannot be judged only by JS import counts: Firebase app, navigation/screen peers, Expo font/assets/linking/system UI/dev client and config/build-time integrations have native, plugin or transitive consumers. No package was removed on a string-search-only assumption.
+Historical audit/release logs remain historical evidence, not current implementation instructions; this document records current findings.
+
+Validation
+npm run check: TypeScript, 781 passing unit tests, 3 skipped, service cycles (149 modules), module boundaries and consolidation (222 reachable app source modules; 8 documented support roots) passed.
+Focused regressions cover call-tone playback/replacement/silent suppression/cancellation, listener lease ownership, native API retirement, intent deduplication and version-source idempotence.
+Gradle :axonic-nearby:compileDebugKotlin and :axonic-nearby:testDebugUnitTest passed: 25 native tests passed, 1 skipped. The first test compile caught the obsolete MailboxCryptoTest after retiring its implementation; the obsolete test was then retired and the active native suite rerun successfully.
+Native removal/version/manifest changes require the next native client build to be packaged onto devices. This audit compiled/tested the debug module; it did not create or install an APK/AAB. Previous phone verification of keyboard/reaction behavior remains limited to the Dev app and labeled test conversations.

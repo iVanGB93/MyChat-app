@@ -55,3 +55,29 @@ test('forged attachment reply author and malformed reference cannot enter the in
  assert.equal(await receiver.receive(m.sender,m.id,chat.encodeRootAttachment(m.recipient,m.id,f.descriptor,{id:'bad',author:m.sender})),false);
  assert.equal((await receiver.snapshot()).messages.length,0);
 });
+
+async function groupReplySetup(){
+ const f=setup(),[sender,receiver]=f.ledgers,owner=f.manifest.sender,peer=f.manifest.recipient,third=f.ids[2].record.account,g='a1'.repeat(32),original='b1'.repeat(32),groups=load('rootGroups');
+ await sender.createGroup(g,'c1'.repeat(32),'Family',[peer,third]);
+ for(const packet of chat.pendingRootChat(await sender.snapshot(),owner).filter(p=>p.peer===peer))assert(await receiver.receive(owner,packet.id,packet.raw));
+ await receiver.configureGroup(g,{accepted:true});
+ const id=groups.rootGroupDeliveryId(original,owner);
+ assert(await sender.receive(third,id,JSON.stringify(['axonic-root-group-text-v1',owner,id,{group:{id:g,revision:1,messageId:original},text:'Third member message'}])));
+ return {...f,sender,receiver,owner,peer,third,g,groups,reply:{id:original,author:third},context:{id:g,revision:1,messageId:'d1'.repeat(32)}};
+}
+test('group image and voice replies quote a third member across wire, reload and duplicate delivery',async()=>{
+ for(const [name,mime] of [['Photo.jpg','image/jpeg'],['Voice message.m4a','audio/mp4']]){
+ const f=await groupReplySetup(),descriptor={...f.descriptor,name,mime};await f.sender.enqueueAttachment(descriptor,f.reply,f.context);
+ const wire=chat.pendingRootChat(await f.sender.snapshot(),f.owner).find(p=>p.id===f.manifest.id).raw;
+ assert.deepEqual(JSON.parse(wire)[3].reply,f.reply);assert(await f.receiver.receive(f.owner,f.manifest.id,wire));assert(await f.receiver.receive(f.owner,f.manifest.id,wire));
+ const rows=(await f.receiver.snapshot()).messages.filter(m=>m.attachment);assert.equal(rows.length,1);assert.deepEqual(rows[0].reply,f.reply);assert.equal(rows[0].attachment.mime,mime);
+ const changed=JSON.parse(wire);changed[3].reply.author=f.owner;assert.equal(await f.receiver.receive(f.owner,f.manifest.id,JSON.stringify(changed)),false);
+ const extra=JSON.parse(wire);extra[3].reply.extra=true;assert.equal(await f.receiver.receive(f.owner,f.manifest.id,JSON.stringify(extra)),false);
+ }
+});
+test('group attachments reject unavailable, wrong-author and deleted quote targets',async()=>{
+ const f=await groupReplySetup();for(const reply of [{...f.reply,id:'e1'.repeat(32)},{...f.reply,author:f.peer}])await assert.rejects(f.sender.enqueueAttachment(f.descriptor,reply,f.context),/Original/);
+ const action={group:{id:f.g,revision:1,messageId:'f1'.repeat(32)},target:f.reply,kind:'delete',revision:1,text:''},id=f.groups.rootGroupDeliveryId(action.group.messageId,f.owner,'action');
+ assert(await f.sender.receive(f.third,id,JSON.stringify(['axonic-root-group-action-v1',f.owner,id,action])));
+ await assert.rejects(f.sender.enqueueAttachment(f.descriptor,f.reply,f.context),/Original/);assert.equal((await f.sender.snapshot()).messages.filter(m=>m.attachment).length,0);
+});

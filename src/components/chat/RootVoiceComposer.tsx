@@ -22,7 +22,7 @@ export default function RootVoiceComposer({peer,groupId,disabled,onError,onActiv
   current:()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner&&AppState.currentState==='active'&&!callActive(),
   permission:async()=>{
    if(callActive())throw Error('Finish your call before recording a voice message');
-   if(groupId)await rootGroupAttachmentAudience(groupId);
+   if(groupId)await rootGroupAttachmentAudience(groupId,reply);
    // Recording is local. Verified recipient keys are required later, before encryption and delivery.
    // Android can briefly background the app even when requesting an already-granted
    // permission. That cancels this foreground-only recorder, so check first.
@@ -32,7 +32,7 @@ export default function RootVoiceComposer({peer,groupId,disabled,onError,onActiv
   mode:allowsRecording=>setAudioModeAsync({allowsRecording,playsInSilentMode:true,shouldPlayInBackground:false}),
   prepare:()=>recorder.prepareToRecordAsync(),record:()=>recorder.record({forDuration:300}),stop:()=>recorder.stop(),uri:()=>recorder.uri,
   remove:uri=>{try{const file=new File(uri);if(file.exists)file.delete();}catch{/* Native recorder can already have released its temporary file. */}},
-  enqueue:async uri=>{if(!owner)throw Error('Unlock your account');if(groupId)await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(groupId),uri,'Voice message.m4a','audio/mp4');else await queueRootAttachmentSource(peer,uri,'Voice message.m4a','audio/mp4',owner,reply);onSent?.();},
+  enqueue:async uri=>{if(!owner)throw Error('Unlock your account');if(groupId)await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(groupId,reply),uri,'Voice message.m4a','audio/mp4');else await queueRootAttachmentSource(peer,uri,'Voice message.m4a','audio/mp4',owner,reply);onSent?.();},
   now:Date.now,changed:s=>{setState(s);onActive(s!=='idle');},
  }),[peer,groupId,owner,recorder,onActive,reply?.id,reply?.author,onSent]);
  useEffect(()=>{const sub=AppState.addEventListener('change',s=>{if(s!=='active')void controller.cancel().catch(()=>{});});return()=>{sub.remove();void controller.dispose().catch(()=>{});};},[controller]);

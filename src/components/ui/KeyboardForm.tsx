@@ -74,7 +74,8 @@ function KeyboardFormContent({contentContainerStyle,onScroll,onLayout,onContentS
 /** Keeps the native ref and caller focus handlers, including recovery-word editors. */
 export const KeyboardAwareTextInput=forwardRef<TextInput,TextInputProps>(function KeyboardAwareTextInput({onFocus,onBlur,...props},ref){
  const input=useRef<TextInput|null>(null),context=useContext(FocusContext);
- return <TextInput {...props} ref={value=>{input.current=value;if(typeof ref==='function')ref(value);else if(ref)ref.current=value;}}
+ const assignRef=useCallback((value:TextInput|null)=>{input.current=value;if(typeof ref==='function')ref(value);else if(ref)ref.current=value;},[ref]);
+ return <TextInput {...props} ref={assignRef}
   onFocus={event=>{if(input.current)context?.focus(input.current);onFocus?.(event);}}
   onBlur={event=>{if(input.current)context?.blur(input.current);onBlur?.(event);}}/>;
 });

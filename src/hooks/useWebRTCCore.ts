@@ -26,58 +26,12 @@ import {
 
 import { debugLog } from '../services/diagnostics';
 import { readCallSignal } from '../services/call-signal';
-import { createMediaPrewarmer } from '../services/media-prewarmer';
 import { videoQualityParameters, type VideoQualityMode } from '../services/video-quality';
 import type { CallType, IceConfig } from '../types';
 import type { CallMediaTransport } from '../services/call-media-transport';
 
 /** The ICE gather timeout — same as web app */
 const ICE_GATHER_TIMEOUT = 5000;
-const developmentPeers = new Map<string, RTCPeerConnection>();
-/** Public counters only; never return SDP, ICE addresses, tokens or keys. */
-export async function developmentCallMediaSnapshot(callId: string) {
-  if (typeof __DEV__ === 'undefined' || !__DEV__) return null;
-  const pc=developmentPeers.get(callId);if(!pc)return null;
-  const reports=await pc.getStats();
-  const media: Array<Record<string,unknown>>=[];
-  reports.forEach((r:any)=>{
-    if(['inbound-rtp','outbound-rtp'].includes(r.type))media.push({type:r.type,kind:r.kind??r.mediaType,
-      packetsReceived:r.packetsReceived,packetsSent:r.packetsSent,bytesReceived:r.bytesReceived,bytesSent:r.bytesSent,
-      framesDecoded:r.framesDecoded,framesEncoded:r.framesEncoded});
-  });
-  const candidates: Array<{local?:string;remote?:string}>=[];
-  reports.forEach((r:any)=>{if(r.type==='candidate-pair'&&r.state==='succeeded'&&(r.nominated||r.selected))
-    candidates.push({local:reports.get(r.localCandidateId)?.candidateType,remote:reports.get(r.remoteCandidateId)?.candidateType});});
-  const candidateInventory: Record<string,number>={};
-  reports.forEach((r:any)=>{if(['local-candidate','remote-candidate','candidate-pair'].includes(r.type)){
-    const key=r.type+':'+(r.candidateType??r.state)+':'+(r.protocol??'');candidateInventory[key]=(candidateInventory[key]??0)+1;
-  }});
-  return {ice:pc.iceConnectionState,connection:pc.connectionState,media,candidates,candidateInventory,
-    localTracks:pc.getSenders().flatMap(sender=>sender.track?[{kind:sender.track.kind,enabled:sender.track.enabled}]:[])};
-}
-
-const videoPrewarmer = createMediaPrewarmer<MediaStream>(async () => {
-  try {
-    return await mediaDevices.getUserMedia({
-      audio: true,
-      video: {
-        facingMode: 'user',
-        width: { ideal: 1280, min: 640 },
-        height: { ideal: 720, min: 360 },
-        frameRate: { ideal: 30, max: 30 },
-      },
-    }) as MediaStream;
-  } catch {
-    return await mediaDevices.getUserMedia({
-      audio: true,
-      video: { facingMode: 'user', width: 640, height: 480, frameRate: 24 },
-    }) as MediaStream;
-  }
-}, (stream) => stream.getTracks().forEach((track) => track.stop()));
-
-export const prewarmVideoCallMedia = videoPrewarmer.warm;
-export const discardPrewarmedVideoCallMedia = videoPrewarmer.discard;
-
 /** Fallback config if the server is unreachable */
 const FALLBACK_ICE_CONFIG: IceConfig = {
   ice_servers: [
@@ -202,8 +156,7 @@ export default function useWebRTCCore({
   }, []);
 
   /** Acquire camera + mic. Idempotent — returns the existing stream if one
-   *  has already been acquired (e.g. caller pre-warmed the preview while
-   *  ringing). */
+   *  has already been acquired for this call. */
   const acquireMedia = useCallback(async (): Promise<MediaStream> => {
     if (localStreamRef.current) {
       return localStreamRef.current;
@@ -211,8 +164,6 @@ export default function useWebRTCCore({
     if (mediaAcquirePromiseRef.current) return mediaAcquirePromiseRef.current;
 
     mediaAcquirePromiseRef.current = (async () => {
-      const prewarmed = callType === 'video' ? await videoPrewarmer.take() : null;
-      if (prewarmed) return prewarmed;
       const constraints: any = {
         audio: true,
         video: callType === 'video'
@@ -414,7 +365,6 @@ export default function useWebRTCCore({
         bundlePolicy:'max-bundle' as const,
       } as any);
       pcRef.current = pc;
-      if(typeof __DEV__ !== 'undefined' && __DEV__)developmentPeers.set(callId,pc);
       hasRemoteDesc.current = false;
       fullDescriptionSent.current = false;
       startQualityMonitoring(pc);
@@ -658,7 +608,6 @@ export default function useWebRTCCore({
     }
 
     if (pcRef.current) {
-      if(developmentPeers.get(callId)===pcRef.current)developmentPeers.delete(callId);
       pcRef.current.close();
       pcRef.current = null;
     }

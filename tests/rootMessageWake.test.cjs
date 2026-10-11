@@ -8,17 +8,18 @@ async function fixture(t){
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
  const storage=new Map(),displayed=new Map(),shown=[],cancelled=[],toasts=[],channels=[],database=new DatabaseSync(':memory:');t.after(()=>database.close());
  let channel=null;let owner={account:recipient.account,device:recipientDevice.id},blocked=false,fail=false,locked=false,visible=false;
- const app={currentState:'background'};
+ const app={currentState:'background'};let onDisplay=()=>{};
  const db={execAsync:async sql=>database.exec(sql),runAsync:async(sql,...args)=>database.prepare(sql).run(...args),
  getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
  withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(db);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const imports={
+ '../../../modules/axonic-nearby':{default:{notificationReadActionInShade:async()=>true}},
  './rootMessageToast':{publishRootMessageToast:preview=>{toasts.push(preview);return true;}},
  './localAccount':{localAccount:{status:()=>({state:locked?'locked':'unlocked',account:owner?.account})}},
  './rootNotificationRoute':{rootConversationVisible:()=>visible},
  '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null}},
  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:app},
- '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},
+ '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);onDisplay();},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},
  './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>id===sender.account?sender:null})},
  './rootCallWake':{rootWakeContext:async()=>owner,rootWakeBlocked:async()=>blocked}};
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
@@ -26,8 +27,8 @@ async function fixture(t){
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)));
  const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:'private text',now,random:async n=>new Uint8Array(n).fill(12)});
  const data=c.createCustodyWake(envelope,sender);
- return {mod,data,envelope,shown,displayed,cancelled,toasts,channels,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
- delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
+ return {database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
+ onDisplay:fn=>onDisplay=fn,delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
 }
 test('locked recipient sees one generic signed notice; durable delivery clears it and prevents replay',async t=>{
  const f=await fixture(t);await Promise.all([f.mod.receiveRootMessageWake(f.data),f.mod.receiveRootMessageWake(f.data)]);
@@ -102,6 +103,7 @@ test('processed read/control envelopes never create a phantom message notificati
 });
 test('completed preview metadata is bounded without silencing subsequent real messages',async t=>{
  const f=await fixture(t);for(let i=0;i<130;i++)await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,i.toString(16).padStart(64,'0'),{name:'Friend',text:'Message '+i,at:Date.now()});assert.equal(f.shown.length,130);
+ assert.equal(f.shown.at(-1).android.style.messages.length,25);
 });
 
 test('messages from one conversation replace its notice; other senders and groups remain separate',async t=>{
@@ -109,11 +111,38 @@ test('messages from one conversation replace its notice; other senders and group
  await f.mod.finishRootMessageWake(owner,sender,'11'.repeat(32),{name:'Friend',text:'First',at:1});
  await f.mod.finishRootMessageWake(owner,sender,'22'.repeat(32),{name:'Friend',text:'Second',at:2});
  assert.equal(f.displayed.size,1);assert.equal([...f.displayed.values()][0].body,'Second');
+ assert.deepEqual([...f.displayed.values()][0].android.style.messages.map(m=>m.text),['First','Second']);
  await f.mod.finishRootMessageWake(owner,'axonic:1:'+'f'.repeat(64),'33'.repeat(32),{name:'Other',text:'Separate',at:3});
  await f.mod.finishRootMessageWake(owner,sender,'44'.repeat(32),{name:'Group',text:'Group message',at:4,group:'a'.repeat(64)});
  assert.equal(f.displayed.size,3);
  await f.mod.finishRootMessageWake(owner,'axonic:1:'+'f'.repeat(64),'55'.repeat(32),{name:'Group',text:'Another group member',at:5,group:'a'.repeat(64)});
  assert.equal(f.displayed.size,3);
+});
+
+test('expanded group notice retains each member while collapsed body shows the newest message',async t=>{
+ const f=await fixture(t),group='ab'.repeat(32),other='axonic:1:'+'f'.repeat(64);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'11'.repeat(32),{group,name:'Family',senderName:'Alice',text:'First',at:10});
+ await f.mod.finishRootMessageWake(f.recipient.account,other,'22'.repeat(32),{group,name:'Family',senderName:'Bob',text:'Latest',at:30});
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'33'.repeat(32),{group,name:'Family',senderName:'Alice',text:'Delayed',at:20});
+ const n=[...f.displayed.values()][0];assert.equal(n.body,'Latest');assert.equal(n.data.sender,other);assert.equal(n.data.messageId,'22'.repeat(32));assert.equal(n.android.onlyAlertOnce,true);
+ assert.deepEqual(n.android.style.messages.map(m=>[m.person.name,m.text]),[['Alice','First'],['Alice','Delayed'],['Bob','Latest']]);
+ await f.mod.finishRootMessageWake(f.recipient.account,other,'22'.repeat(32),{group,name:'Family',senderName:'Bob',text:'Latest',at:30});
+ assert.equal([...f.displayed.values()][0].android.style.messages.length,3);
+});
+
+test('dismissed notification starts a new expanded list instead of restoring old messages',async t=>{
+ const f=await fixture(t);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'11'.repeat(32),{name:'Friend',text:'Old',at:1});
+ f.displayed.clear();
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'22'.repeat(32),{name:'Friend',text:'New',at:2});
+ assert.deepEqual([...f.displayed.values()][0].android.style.messages.map(m=>m.text),['New']);
+});
+
+test('an existing single-message notice from the old client is retained during upgrade',async t=>{
+ const f=await fixture(t),id='root-conversation:'+f.recipient.account+':direct:'+f.sender.account;
+ f.displayed.set(id,{id,title:'Friend',body:'Before update',data:{sender:f.sender.account,messageId:'11'.repeat(32),messageAt:'1'}});
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'22'.repeat(32),{name:'Friend',text:'After update',at:2});
+ assert.deepEqual(f.displayed.get(id).android.style.messages.map(m=>m.text),['Before update','After update']);
 });
 
 test('delayed generic hints, older previews and old read updates preserve the newest preview',async t=>{
@@ -138,4 +167,34 @@ test('muted group suppresses unclassified hints and group previews but direct pr
  await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,0);
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{group,name:'Muted family',text:'quiet',at:Date.now()});assert.equal(f.shown.length,0);
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'ef'.repeat(32),{name:'Friend',text:'direct',at:Date.now()});assert.equal(f.shown.length,1);assert.equal(f.shown[0].body,'direct');
+});
+
+test('opening the conversation during an OS preview display retires the racing notification',async t=>{
+ const f=await fixture(t);f.onDisplay(()=>{f.app.currentState='active';f.visible();});
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Friend',text:'Hello',at:Date.now()});
+ assert.equal(f.shown.length,1);assert.equal(f.displayed.size,0);assert.equal(f.cancelled.length,1);
+});
+
+test('128 retained previews cannot suppress a later valid signed wake or forget earlier deduplication',async t=>{
+ const f=await fixture(t);
+ for(let i=0;i<128;i++)await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,i.toString(16).padStart(64,'0'),{name:'Peer',text:'fixture',at:Date.now()});
+ f.displayed.clear();f.shown.length=0;
+ await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,1);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'00'.repeat(32),{name:'Peer',text:'old fixture',at:Date.now()});
+ assert.equal(f.shown.length,1,'old preview remains deduplicated');
+});
+
+test('stalled recovery cannot postpone an authenticated background notice indefinitely',async t=>{
+ const f=await fixture(t);let release,timedOut=false;const stalled=new Promise(resolve=>release=resolve);
+ const task=f.mod.receiveRootMessageWake(f.data,()=>stalled);
+ await new Promise(resolve=>{const stop=setTimeout(()=>{timedOut=true;release();resolve();},3500);f.onDisplay(()=>{clearTimeout(stop);release();resolve();});});
+ await task;assert.equal(timedOut,false);assert.equal(f.shown.length,1);
+});
+
+test('decrypted preview updates the same hint without sounding twice; a later message can alert',async t=>{
+ const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'recovered',at:Date.now()});
+ assert.equal(f.shown.at(-1).android.onlyAlertOnce,true);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'ef'.repeat(32),{name:'Peer',text:'next',at:Date.now()+1});
+ assert.equal(f.shown.at(-1).android.onlyAlertOnce,false);
 });

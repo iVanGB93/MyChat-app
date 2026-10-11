@@ -142,3 +142,10 @@ test('status icons distinguish custody, complete media, read and expired custody
  assert.equal(status.rootMessageStatus({...m,attachment:{},read:true},100),'pending');assert.equal(status.rootMessageStatus({...m,status:'delivered'},100),'delivered');assert.equal(status.rootMessageStatus({...m,status:'delivered',read:true},100),'read');
  assert.deepEqual(['pending','stored','delivered','read'].map(status.deliveryStatusIcon),['time-outline','checkmark','checkmark-done','checkmark-done']);
 });
+
+test('message feedback only follows durable new admission, never history, receipts or replay',async()=>{
+ let raw=null,fail=false;const events=[];const ledger=out.createRootChatLedger({owner:a,current:()=>true,now:()=>1,read:async()=>raw,write:async value=>{if(fail)throw Error('disk unavailable');raw=value;},messageCommitted:m=>events.push([m.direction,m.id])});
+ await ledger.enqueue(b,id,'hello');await ledger.snapshot();await ledger.delivered(b,id);await ledger.enqueue(b,id,'hello');assert.deepEqual(events,[['outgoing',id]]);
+ const incoming='f'.repeat(64),wire=out.encodeRootChat(a,incoming,'new');assert(await ledger.receive(b,incoming,wire));assert(await ledger.receive(b,incoming,wire));assert.equal(events.length,2);
+ fail=true;await assert.rejects(ledger.enqueue(b,'e'.repeat(64),'failed'));assert.equal(events.length,2);
+});

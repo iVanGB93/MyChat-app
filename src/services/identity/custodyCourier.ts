@@ -45,7 +45,9 @@ export function createCustodyCourier(d: {
         }
         if (!saved || !l.current() || saved.envelope.recipient !== peer || saved.envelope.expires <= d.now()) return;
         // Keep one custodian when reachable; prefer locally ranked candidates otherwise.
-        const relay = saved.relay && candidates.includes(saved.relay) ? saved.relay : candidates[0];
+        const preferred = saved.relay && candidates.includes(saved.relay) ? saved.relay : candidates[0];
+        for(const relay of [preferred,...candidates.filter(r=>r!==preferred)].slice(0,3)){
+        if(!l.current())return;
         // A connected socket can still time out or fail to service custody.
         // Back off that peer so it cannot starve the next available custodian.
         let response: { status?: string } | null = null;
@@ -56,8 +58,10 @@ export function createCustodyCourier(d: {
           if(l.current())await d.held?.(saved.envelope);
           return l.current();
         }
-        else if (l.current() && response?.status !== 'completed') {
+        if(response?.status==='completed')return;
+        else if (l.current()) {
           if (unavailable.size >= 10) unavailable.clear(); unavailable.set(relay, d.now() + CUSTODIAN_BACKOFF_MS);
+        }
         }
       } finally { depositing = false; }
     },

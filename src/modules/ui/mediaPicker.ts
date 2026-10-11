@@ -10,7 +10,7 @@ import {ATTACHMENT_MAX_BYTES} from '../../services/identity/attachmentProtocol';
 export async function pickRootMedia(peer:string,source:'camera'|'library',reply?:RootChatReply,groupId?:string,confirm?:ConfirmAttachment){
  const owner=localAccount.status().account;
  if(!owner||localAccount.status().state!=='unlocked'||!groupId&&(!validAccountId(peer)||peer===owner))throw Error('Unlock your account and choose a peer');
- const audience=groupId?await rootGroupAttachmentAudience(groupId):null;
+ const audience=groupId?await rootGroupAttachmentAudience(groupId,reply):null;
  if(source==='camera'){
   const permission=await ImagePicker.requestCameraPermissionsAsync();
   if(!permission.granted)throw Error('Allow camera access in Settings to take a photo');
@@ -32,4 +32,4 @@ export async function pickRootMedia(peer:string,source:'camera'|'library',reply?
  if(localAccount.status().account!==owner)throw Error('Account changed');
  return queueRootAttachmentBatch({peer,owner,reply,audience:audience??undefined,items:selected});
 }
-export const pickRootGroupMedia=(id:string,source:'camera'|'library',confirm?:ConfirmAttachment)=>pickRootMedia(id,source,undefined,id,confirm);
+export const pickRootGroupMedia=(id:string,source:'camera'|'library',confirm?:ConfirmAttachment,reply?:RootChatReply)=>pickRootMedia(id,source,reply,id,confirm);

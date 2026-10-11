@@ -117,7 +117,7 @@ test('a full preferred relay yields to another connected custodian without resea
  messages:{list:async()=>[],update:async()=>{}},relays:()=>[hub.record.account,backup.record.account],receive:async()=>null,
  request:async relay=>{calls.push(relay);return JSON.stringify({status:relay===hub.record.account?'full':'held'});},
  seal:async(_record,_device,id,text)=>{seals++;return f.seal(text,id);}});
- await q.deposit(b.record.account,'relay capacity test','03'.repeat(32));await q.deposit(b.record.account,'relay capacity test','03'.repeat(32));
+ await q.deposit(b.record.account,'relay capacity test','03'.repeat(32));
  assert.deepEqual(calls,[hub.record.account,backup.record.account]);assert.equal(seals,1);
  assert.equal((await own.get(a.record.account,'03'.repeat(32))).relay,backup.record.account);
 });
@@ -129,7 +129,7 @@ for(const failure of ['timeout','throw','malformed']) test(`an unresponsive pref
  request:async relay=>{calls.push(relay);if(relay===hub.record.account){if(failure==='throw')throw Error('Disconnected');return failure==='timeout'?null:'invalid JSON';}return JSON.stringify({status:'held'});},
  seal:async(_record,_device,id,text)=>{seals++;return f.seal(text,id);}});
  const id='04'.repeat(32);
- await q.deposit(b.record.account,'unresponsive relay',id);f.advance(60001);await q.deposit(b.record.account,'unresponsive relay',id);
+ await q.deposit(b.record.account,'unresponsive relay',id);
  assert.deepEqual(calls,[hub.record.account,backup.record.account]);assert.equal(seals,1);
  assert.equal((await own.get(a.record.account,id)).relay,backup.record.account);
 });

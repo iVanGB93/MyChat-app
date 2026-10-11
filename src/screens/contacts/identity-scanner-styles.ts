@@ -2,7 +2,6 @@ import {StyleSheet} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
 export const identityScannerStyles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
@@ -47,17 +46,5 @@ export const identityScannerStyles = StyleSheet.create({
     borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  permissionTitle: {
-    marginTop: Spacing.lg,
-    fontSize: Font.size.lg,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
-  permissionDesc: {
-    marginTop: Spacing.sm,
-    fontSize: Font.size.sm,
-    lineHeight: 20,
-    textAlign: 'center',
   },
 });

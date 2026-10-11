@@ -59,11 +59,6 @@ async function refreshFromSystem(): Promise<RingerMode> {
   return cachedMode;
 }
 
-/** Synchronous getter for the last-known ringer mode. */
-export function getRingerModeSync(): RingerMode {
-  return cachedMode;
-}
-
 /** Async refresh-then-return; useful for forced re-reads. */
 export async function getRingerMode(): Promise<RingerMode> {
   return refreshFromSystem();
@@ -71,34 +66,36 @@ export async function getRingerMode(): Promise<RingerMode> {
 
 /**
  * Begin listening to ringer / mute-switch changes. Idempotent.
- * Call once from app bootstrap (e.g. AppNavigator or App.tsx).
+ * Owned by the foreground application maintenance lifecycle.
  */
 export function startRingerModeListener(): void {
   if (started) return;
-  started = true;
 
   // Prime the cache with the current value.
   refreshFromSystem();
 
-  if (Platform.OS === 'android') {
-    const sub = VolumeManager.addRingerListener((event) => {
-      cachedMode = fromAndroidEvent(event);
-    });
-    removeListener = () => {
-      try { VolumeManager.removeRingerListener(sub); } catch { /* noop */ }
-    };
-  } else if (Platform.OS === 'ios') {
-    const sub = VolumeManager.addSilentListener((event) => {
-      // iOS event shape: { isMuted: boolean, initialQuery?: boolean }
-      cachedMode = event.isMuted ? 'silent' : 'normal';
-    });
-    removeListener = () => {
-      try { sub.remove(); } catch { /* noop */ }
-    };
-  }
+  try {
+    if (Platform.OS === 'android') {
+      const sub = VolumeManager.addRingerListener((event) => {
+        cachedMode = fromAndroidEvent(event);
+      });
+      removeListener = () => {
+        try { VolumeManager.removeRingerListener(sub); } catch { /* noop */ }
+      };
+    } else if (Platform.OS === 'ios') {
+      const sub = VolumeManager.addSilentListener((event) => {
+        // iOS event shape: { isMuted: boolean, initialQuery?: boolean }
+        cachedMode = event.isMuted ? 'silent' : 'normal';
+      });
+      removeListener = () => {
+        try { sub.remove(); } catch { /* noop */ }
+      };
+    }
+    started=true;
+  }catch{removeListener=null;}
 }
 
-/** Stop the listener. Currently unused, here for symmetry / hot-reload. */
+/** Release the listener when the application maintenance owner stops. */
 export function stopRingerModeListener(): void {
   if (removeListener) removeListener();
   removeListener = null;

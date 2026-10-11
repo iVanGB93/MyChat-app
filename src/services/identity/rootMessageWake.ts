@@ -2,6 +2,7 @@ import {rootMessageNotificationId,currentRootMessageNotification,cancelRootMessa
 import {publishRootMessageToast} from './rootMessageToast';
 import {readRootNotificationPreferences} from './rootNotificationPreferences';
 import {localAccount} from './localAccount';
+import Native from '../../../modules/axonic-nearby';
 import {rootConversationVisible} from './rootNotificationRoute';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
@@ -12,14 +13,12 @@ import {verifyCustodyWake} from './custodyProtocol';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {rootWakeContext,rootWakeBlocked} from './rootCallWake';
 
-const diagnostics={received:0,verified:0,previews:0,stage:'idle'};
-function setStage(stage:string){diagnostics.stage=stage;console.info('[Axonic message wake]',stage);}
-export const rootMessageWakeDiagnostics=()=>({...diagnostics});
+function setStage(stage:string){console.info('[Axonic message wake]',stage);}
 export const rootMessageWakeFailed=()=>{setStage('failed');};
 let opening:Promise<SQLite.SQLiteDatabase>|undefined,tail:Promise<unknown>=Promise.resolve();
 function serial<T>(work:()=>Promise<T>){const result=tail.then(work);tail=result.catch(()=>{});return result;}
 function db(){return opening??=SQLite.openDatabaseAsync('axonic_root_message_wakes_v1.db',{useNewConnection:true}).then(async value=>{
- await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id));');return value;
+ await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires);');return value;
 }).catch(error=>{opening=undefined;throw error;});}
 async function muted(owner:string,sender:string,group?:string){
  const raw=await AsyncStorage.getItem('@axonic_root_chat_v1:'+owner);if(!raw)return false;
@@ -45,23 +44,30 @@ async function alreadyReceived(owner:string,sender:string,id:string){
  const ledger=JSON.parse(raw);if(ledger.version!==1||!Array.isArray(ledger.messages))throw Error('Chat state unavailable');
  return [...ledger.messages,...(ledger.actions??[]),...(ledger.groupActions??[]),] .some((m:{id:string;peer:string;direction:string})=>m.id===id&&m.peer===sender&&m.direction==='incoming')||(ledger.groupSeen??[]).some((m:{id:string;peer:string})=>m.id===id&&m.peer===sender);
 }
+/** A stalled account/network startup must not withhold an already authenticated alert. */
+async function waitForRecovery(work:Promise<void>,ms:number){
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{await Promise.race([work,new Promise<void>(resolve=>{timer=setTimeout(resolve,ms);})]);}
+ finally{if(timer!==undefined)clearTimeout(timer);}
+}
 /** Signed hint only. Private keys and message content remain unavailable until local unlock. */
 export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number)=>Promise<void>){
- diagnostics.received++;setStage('context');
+ setStage('context');
  const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048)return;
  let sender:string;try{sender=JSON.parse(d.event).sender;}catch{return;}if(!validAccountId(sender))return;
  const owner=await rootWakeContext();if(!owner||await rootWakeBlocked(owner.account,sender))return;
  const record=await createMobileIdentityRecordStore(Date.now).read(sender);
- const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event)return;diagnostics.verified++;setStage('recovery');
- if(recover)await recover(owner.account,sender,event.id,event.expires).catch(()=>{setStage('recovery-failed');});
+ const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event)return;setStage('recovery');
+ const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires)).then(()=>{},()=>{setStage('recovery-failed');});
+ await waitForRecovery(recovery,1500);
  await serial(async()=>{
   const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now())return;
   const database=await db();let admitted=false;
   await database.withExclusiveTransactionAsync(async tx=>{
    await tx.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
    const prior=await tx.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
-   if(prior?.displayed)return;
-   if(!prior){const count=await tx.getFirstAsync<{n:number}>('SELECT COUNT(*) AS n FROM notices');if((count?.n??128)>=128)return;
+   if(prior?.displayed){setStage('already-notified');return;}
+   if(!prior){
     await tx.runAsync('INSERT INTO notices(owner,sender,id,expires) VALUES(?,?,?,?)',owner.account,sender,event.id,event.expires);}
    admitted=true;
   });
@@ -69,6 +75,7 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
   const id=rootMessageNotificationId(owner.account,sender);
   const suppress=await alreadyReceived(owner.account,sender,event.id)||await rootWakeBlocked(owner.account,sender)||await muted(owner.account,sender);
   if(suppress||AppState.currentState==='active'){
+   setStage(suppress?'policy-or-received':'foreground');
    await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
    if(suppress)await cancelRootMessageNotification(owner.account,sender,event.id);return;
   }
@@ -89,9 +96,22 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
     pressAction:{id:'root-message-open',launchActivity:'default'},timeoutAfter:Math.max(1,event.expires-Date.now())}});
   await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
  });
+ // Keep the headless task alive for bounded recovery after the alert is visible.
+ await waitForRecovery(recovery,25000);
 }
 /** Invoked only after durable inbox admission, including direct delivery racing a delayed hint. */
-export type RootMessagePreview={name:string;text:string;at:number;group?:string;read?:boolean};
+export type RootMessagePreview={name:string;text:string;at:number;group?:string;read?:boolean;senderName?:string};
+type NotificationMessage={id:string;sender:string;name:string;text:string;at:number};
+function notificationMessages(raw:unknown,next:NotificationMessage){
+ let messages:NotificationMessage[]=[];
+ try{const parsed=typeof raw==='string'?JSON.parse(raw):null;
+  if(Array.isArray(parsed))messages=parsed.filter(m=>typeof m?.id==='string'&&typeof m.sender==='string'&&typeof m.name==='string'&&typeof m.text==='string'&&Number.isFinite(m.at));
+ }catch{/* An older client has no retained previews. */}
+ messages=messages.filter(m=>m.id!==next.id||m.sender!==next.sender);
+ messages.push(next);
+ // Match Android MessagingStyle's retained-message limit and keep Binder payloads bounded.
+ return messages.sort((a,b)=>a.at-b.at).slice(-25);
+}
 export async function finishRootMessageWake(owner:string,sender:string,id:string,preview?:RootMessagePreview){
  await serial(async()=>{
   const database=await db(),key=rootMessageNotificationId(owner,sender,preview?.group),current=await rootWakeContext();
@@ -101,12 +121,8 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   if(quiet){if(preview?.group)await cancelRootMessageNotification(owner,sender,id);await database.runAsync('UPDATE notices SET displayed=2 WHERE owner=? AND sender=? AND id=?',owner,sender,id);await cancelRootMessageNotification(owner,sender,id,preview?.group);return;}
   const prior=await database.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner,sender,id);if(prior?.displayed===2)return;
   await database.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
-  const count=await database.getFirstAsync<{n:number}>('SELECT COUNT(*) AS n FROM notices');if(!prior&&(count?.n??128)>=128){
-   await database.runAsync('DELETE FROM notices WHERE rowid IN (SELECT rowid FROM notices WHERE displayed=2 ORDER BY expires LIMIT 1)');
-   const remaining=await database.getFirstAsync<{n:number}>('SELECT COUNT(*) AS n FROM notices');if((remaining?.n??128)>=128)return;
-  }
   if(AppState.currentState==='active'&&publishRootMessageToast({account:owner,sender,...(preview.group?{group:preview.group}:{}),name:preview.name,text:preview.text})){
-   await cancelRootMessageNotification(owner,sender,id,preview?.group);diagnostics.previews++;setStage('preview');
+   await cancelRootMessageNotification(owner,sender,id,preview?.group);setStage('preview');
    await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);return;
   }
   const channelId=await messageChannel(preferences.sound);
@@ -115,13 +131,15 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   // Group membership is known only after decryption; retire this message's generic hint.
   if(preview.group)await cancelRootMessageNotification(owner,sender,id);
   const existing=await currentRootMessageNotification(owner,sender,preview.group);
-  if(Number(existing?.data?.messageAt)>preview.at){
-   await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);return;
-  }
-  await notifee.displayNotification({id:key,title:preview.name,body:preview.text,data:{type:'root_neuron_message',account:owner,sender,messageId:id,messageAt:String(preview.at),...(preview.group?{group:preview.group}:{})},
-   android:{channelId,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
-    pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:[{text:preview.text,timestamp:preview.at,person:{name:preview.name}}]}}});
-  diagnostics.previews++;setStage('preview');
+  // Preserve the last preview when updating a notice created by the previous client.
+  const previous=existing?.data?.messagePreviews??(existing?.body&&existing.data?.messageId&&existing.data.sender&&Number.isFinite(Number(existing.data.messageAt))?JSON.stringify([{id:existing.data.messageId,sender:existing.data.sender,name:existing.title||preview.name,text:existing.body,at:Number(existing.data.messageAt)}]):undefined);
+  const messages=notificationMessages(previous,{id,sender,name:preview.senderName||preview.name,text:preview.text,at:preview.at}),latest=messages[messages.length-1];
+  await notifee.displayNotification({id:key,title:preview.name,body:latest.text,data:{type:'root_neuron_message',account:owner,sender:latest.sender,messageId:latest.id,messageAt:String(latest.at),messagePreviews:JSON.stringify(messages),...(preview.group?{group:preview.group}:{})},
+   android:{channelId,onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
+    pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender}}))}}});
+  await Native?.notificationReadActionInShade?.(key);
+  if(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group))await cancelRootMessageNotification(owner,sender,id,preview.group);
+  setStage('preview');
   await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);
  });
 }

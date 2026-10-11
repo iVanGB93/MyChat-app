@@ -14,51 +14,6 @@ export const profileStyles = StyleSheet.create({
   identityStatus: { alignSelf: 'center', marginTop: Spacing.md },
   expandedQrScreen: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   expandedQrBox: { padding: 16, backgroundColor: '#fff', borderRadius: Radius.md },
-
-  mediaSetupNotice: {
-    marginHorizontal: Spacing.sm,
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.sm,
-    padding: Spacing.lg,
-    borderRadius: Radius.lg,
-    borderWidth: 1.5,
-    shadowOpacity: 0.22,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 0 },
-    elevation: 3,
-  },
-  mediaSetupHeading: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: Spacing.md,
-  },
-  mediaSetupIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  mediaSetupCopy: { flex: 1 },
-  mediaSetupTitle: {
-    fontSize: Font.size.sm,
-    fontWeight: '800',
-    letterSpacing: 1,
-  },
-  mediaSetupDescription: {
-    fontSize: Font.size.sm,
-    lineHeight: 19,
-    marginTop: Spacing.xs,
-  },
-  mediaSetupButton: { marginTop: Spacing.md },
-
-  avatarSection: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xl,
-    marginBottom: Spacing.sm,
-    borderBottomWidth: 1,
-  },
   avatarEditBadge: {
     position: 'absolute',
     bottom: 0,
@@ -109,10 +64,6 @@ export const profileStyles = StyleSheet.create({
   },
   cardTitle: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5, marginBottom: Spacing.md },
   label: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1, marginBottom: Spacing.xs },
-  saveBtn: {
-    marginTop: Spacing.sm,
-    borderRadius: Radius.md,
-  },
   tagBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -126,22 +77,10 @@ export const profileStyles = StyleSheet.create({
     shadowOffset: { width: 0, height: 0 },
     elevation: 3,
   },
-  tagValue: {
-    fontSize: Font.size.lg,
-    fontWeight: '800',
-    letterSpacing: 3,
-  },
   tagHint: {
     fontSize: Font.size.xs,
     marginTop: 4,
     letterSpacing: 0.5,
-  },
-  qrBox: {
-    alignSelf: 'center',
-    marginTop: Spacing.lg,
-    padding: Spacing.md,
-    borderRadius: Radius.md,
-    borderWidth: 1,
   },
   qrHint: {
     fontSize: Font.size.xs,
@@ -177,30 +116,6 @@ export const profileStyles = StyleSheet.create({
   toggleLabel: { fontSize: Font.size.sm, fontWeight: '700', letterSpacing: 1 },
   toggleDesc: { fontSize: Font.size.xs, marginTop: 2, letterSpacing: 0.2 },
 
-  logoutBtn: {
-    marginTop: Spacing.md,
-    marginHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    alignItems: 'center',
-    borderRadius: Radius.md,
-    borderWidth: 1.5,
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  logoutText: { fontSize: Font.size.sm, fontWeight: '800', letterSpacing: 2 },
-
-  deleteBtn: {
-    marginTop: Spacing.sm,
-    marginHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
-    alignItems: 'center',
-    borderRadius: Radius.sm,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-  },
-  deleteText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5 },
-
   versionText: {
     textAlign: 'center',
     marginTop: Spacing.lg,
@@ -228,40 +143,6 @@ export const profileStyles = StyleSheet.create({
     fontSize: Font.size.xs,
     fontWeight: '700',
     letterSpacing: 1,
-  },
-
-  connectivityDesc: {
-    fontSize: Font.size.sm,
-    lineHeight: 20,
-    marginBottom: Spacing.md,
-    letterSpacing: 0.2,
-  },
-  connectivityRow: {
-    flexDirection: 'row',
-    gap: Spacing.sm,
-    marginBottom: Spacing.md,
-  },
-  connectivityOption: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: Spacing.md,
-    borderRadius: Radius.sm,
-    borderWidth: 1.5,
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  connectivityLabel: {
-    fontSize: Font.size.xs,
-    fontWeight: '700',
-    letterSpacing: 1,
-    textAlign: 'center',
-  },
-  connectivitySubLabel: {
-    fontSize: Font.size.xs,
-    marginTop: 2,
-    textAlign: 'center',
-    letterSpacing: 0.3,
   },
 });
 

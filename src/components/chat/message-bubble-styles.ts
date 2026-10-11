@@ -38,8 +38,6 @@ export const messageBubbleStyles = StyleSheet.create({
     gap: 4,
   },
   timeText: { fontSize: 10, letterSpacing: 0.3 },
-  statusIcon: { fontSize: 10 },
-  transferError: { fontSize: 11, lineHeight: 15, marginTop: 5, fontWeight: '600' },
   imageBubble: {
     width: 220,
     height: 220,
@@ -66,23 +64,11 @@ export const messageBubbleStyles = StyleSheet.create({
   sharedFileInfo: { flex: 1, minWidth: 0, paddingRight: Spacing.xs },
   sharedFileTitle: { fontSize: Font.size.sm, fontWeight: '700' },
   sharedFileHint: { fontSize: Font.size.xs, marginTop: 3 },
-  mediaPlaceholder: { alignItems: 'center', justifyContent: 'center', gap: Spacing.sm },
-  mediaPlaceholderText: { fontSize: Font.size.sm, letterSpacing: 0.3 },
-  mediaOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: Spacing.xs,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    borderRadius: Radius.sm,
-  },
-  mediaOverlayText: { color: '#fff', fontSize: Font.size.sm, letterSpacing: 0.3 },
   deletedText: { fontSize: Font.size.sm, fontStyle: 'italic', flexShrink: 1 },
   // Constrain against the full row, not an already content-sized touch target.
   // The latter can clip the last word after Android measures wrapped text.
   bubbleTouchTarget: { maxWidth: '80%' },
   bubbleWrap: { minWidth: 0 },
-  bubbleWrapWithReactions: { paddingBottom: 12 },
   reactionsOverlay: {
     position: 'absolute',
     bottom: 0,

@@ -37,13 +37,10 @@ import {createMobileAttachmentStore} from '../services/identity/mobileAttachment
 import {startRootAttachmentRuntime} from '../services/identity/rootAttachmentRuntime';
 import {createPeerIdentityResolver,type PeerIdentityResult} from '../services/identity/peerIdentityResolver';
 let activeCalls:ReturnType<typeof createRootAccountCalls>|null=null;
-let attachmentNetwork:{peers():string[];request(peer:string,raw:string):Promise<string|null>}|null=null;
-export const localAccountAttachments=()=>attachmentNetwork;
 let inspectPush:(()=>{status:string})|null=null;
 export const localAccountPushStatus=()=>inspectPush?.()??{status:'locked'};
 const callListeners=new Set<(view:NeuronCallView<string>|null)=>void>();
 export const localAccountCalls=()=>activeCalls?.coordinator??null;
-export const localAccountCallDiagnostics=()=>activeCalls?.diagnostics()??null;
 export function subscribeLocalAccountCalls(listener:(view:NeuronCallView<string>|null)=>void){callListeners.add(listener);listener(localAccountCalls()?.snapshot()??null);return()=>{callListeners.delete(listener);};}
 let activeActivity:ReturnType<typeof createChatActivity>|null=null;
 export const peerTyping=(peer:string,group?:string)=>activeActivity?.typing(peer,group)??false;
@@ -126,7 +123,7 @@ function createLocalAccountNetwork() {
     if(accepted&&!seen){
       const state=rootChatView(account,await localRootChat().snapshot()),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
       const contact=state.contacts.find(c=>c.account===message.from),group=m?.group&&state.groups?.find(g=>g.id===m.group!.id);
-      const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),text:m.attachment?m.attachment.name:parseSticker(m.text)?'Sticker':m.text,at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id}:{})}:undefined;
+      const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),senderName:contact?.alias||shortIdentity(message.from),text:m.attachment?m.attachment.name:parseSticker(m.text)?'Sticker':m.text,at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id}:{})}:undefined;
       await finishRootMessageWake(account,message.from,message.id,preview).catch(()=>{});
     }
     return accepted;
@@ -188,9 +185,9 @@ function createLocalAccountNetwork() {
     sweeping = true; void Promise.all([current.sweep(),attachmentService()?.sweep()]).catch(() => {}).finally(() => { sweeping = false; }); }, 60_000);
   runtime.tick(); inspectDirectory = directory.snapshot; activeLookup = directory.lookup; activeSnapshot = runtime.snapshot;
   activePeerResolver=peerResolver.resolve;
-  const attachmentApi={peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,bulkRequest:runtime.attachmentBulkRequest};attachmentNetwork=attachmentApi;
+  const attachmentApi={peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,bulkRequest:runtime.attachmentBulkRequest};
   ownAttachments=startRootAttachmentRuntime({...attachmentApi,lookup:peerResolver.resolve});
-  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume: runtime.resume, tick:pump, stop() { activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(attachmentNetwork===attachmentApi)attachmentNetwork=null;if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
+  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume: runtime.resume, tick:pump, stop() { activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
 }
 
 // Foreground UI and a headless wake share one transport; each releases only its own lease.

@@ -19,3 +19,20 @@ test('cancelled prompts keep an in-memory cooldown when storage is unavailable',
  let starts=0;const api=mod.createPlayUpdates({now:Date.now,foreground:()=>true,safeToRestart:async()=>true,info:async()=>({availability:'available',availableVersionCode:101,flexibleAllowed:true}),read:async()=>{throw Error('storage unavailable');},write:async()=>{throw Error('storage unavailable');},start:async()=>{starts++;return 'cancelled';},complete:async()=>{}});
  await api.check();await api.check(true);assert.equal(starts,1);assert.equal(api.snapshot().status,'available');
 });
+
+test('manual checks publish checking and can reopen a cancelled daily prompt while polling cannot',async()=>{
+ const f=fixture(),states=[];f.api.subscribe(()=>states.push(f.api.snapshot().status));
+ await f.api.check();await f.api.check(true);assert.equal(f.starts.length,1);
+ await f.api.check(true,true);assert.equal(f.starts.length,2);assert(states.includes('checking'));
+ await f.api.check(true);assert.equal(f.starts.length,2);
+});
+test('manual checks can start a Play-permitted immediate update when flexible is unavailable',async()=>{
+ const f=fixture();f.info({availability:'available',availableVersionCode:100,flexibleAllowed:false,immediateAllowed:true});
+ await f.api.check();assert.equal(f.starts.length,0);await f.api.check(true,true);assert.deepEqual(f.starts,[true]);
+});
+
+test('backgrounding during a check clears checking and allows a fresh foreground query',async()=>{
+ let foreground=true,queries=0;
+ const api=mod.createPlayUpdates({now:Date.now,foreground:()=>foreground,safeToRestart:async()=>true,info:async()=>{queries++;if(queries===1)foreground=false;return {availability:'not_available',availableVersionCode:100};},start:async()=>{throw Error('should not prompt');},complete:async()=>{},read:async()=>null,write:async()=>{}});
+ await api.check();assert.equal(api.snapshot().status,'idle');foreground=true;await api.check();assert.equal(queries,2);assert.equal(api.snapshot().status,'current');
+});

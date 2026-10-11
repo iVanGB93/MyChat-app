@@ -42,3 +42,18 @@ ahead of the matching app update: old Play Store clients reject unknown control
 tags. No production build or official phone installation was authorized in this
 task. The current group predates signed backups and needs one local review after
 the updated app is installed. Both AoNs hold its legacy membership.
+
+
+Authorized rollout follow-up (10 October 2026)
+User explicitly approved the production build and both AoN deployments.
+Production EAS AAB 1.1.8 (51), build 0494bb17-4b75-4911-8d98-23c41b19cd6b,
+was started with the production profile and existing remote release keystore.
+No Play submission, official phone install, account removal, or data wipe.
+Both AoNs verified runtime SHA256:
+6aa3fcb1b48487afa5b4467aec03fa30f63d4c00bb33a3aa405ec87229ab5af0 (99 modules).
+FirstNeuron identity file hash unchanged; rollback runtime retained at
+/opt/axonic-neuron-before-group-recovery-20261010.
+SecondNeuron deployment b88191d1-92a6-44e0-8844-efb4b3caa9dd; identity unchanged;
+authenticated chat delta returned HTTP 200. Old installed clients still need
+the matching update to process recovery controls. App checks: 767 passed,
+3 skipped, zero failures; AoN tests: 136 passed, zero failures.

@@ -11,8 +11,6 @@ import type {CallControl} from './callControlProtocol';
 import type {NeuronCallView} from './neuronCallCoordinator';
 import {DEVICE_REMOVAL_KEY} from './deviceRemoval';
 const KEY='@axonic_root_call_wake_owner_v1';
-const diagnostic={received:0,verified:0,stored:0,displayed:0,stage:'idle'};
-export const rootCallWakeDiagnostics=()=>({...diagnostic});
 let opening:Promise<SQLite.SQLiteDatabase>|undefined;
 let tail:Promise<unknown>=Promise.resolve();
 function serial<T>(work:()=>Promise<T>){const result=tail.then(work);tail=result.catch(()=>{});return result;}
@@ -68,11 +66,11 @@ export async function syncRootCallNotification(account:string,view:NeuronCallVie
 }
 /** Signed wake metadata and local contact labels are read while locked; no private keys. */
 export async function receiveRootCallWake(data:unknown){
- diagnostic.received++;diagnostic.stage='context';
+
  const owner=await context(),sender=callWakeSender(data);if(!owner||!sender||await blocked(owner.account,sender))return;
- diagnostic.stage='verify';
+
  const record=await createMobileIdentityRecordStore(Date.now).read(sender),raw=record&&verifyCallWake(data,record,owner.account,owner.device,Date.now());if(!raw)return;
- diagnostic.verified++;diagnostic.stage='store';
+
  const event=JSON.parse(raw) as CallControl;
  await serial(async()=>{
   const current=await context();if(current?.account!==owner.account||current.device!==owner.device||event.expiresAt<=Date.now())return;
@@ -84,19 +82,18 @@ export async function receiveRootCallWake(data:unknown){
    const count=await tx.getFirstAsync<{n:number}>('SELECT COUNT(*) AS n FROM wakes');if(!prior&&(count?.n??64)>=64)return;
    await tx.runAsync('INSERT INTO wakes(owner,call_id,sequence,expires,raw) VALUES (?,?,?,?,?) ON CONFLICT(owner,call_id) DO UPDATE SET sequence=excluded.sequence,expires=excluded.expires,raw=excluded.raw,consumed=0',owner.account,event.callId,event.sequence,event.expiresAt,raw);changed=true;
   });
-  if(changed)diagnostic.stored++;diagnostic.stage='display-policy';
   const id='root-call:'+event.callId;
   if(event.kind!=='invite'){await notifee.cancelNotification(id);return;}
   if(!(await readRootNotificationPreferences(owner.account)).calls)return;
   if(!changed||AppState.currentState==='active'||event.expiresAt<=Date.now()||await blocked(owner.account,sender))return;
   const name=await callerName(owner.account,sender);
   if((await context())?.account!==owner.account)return;
-  diagnostic.stage='channel';await ensureCallChannel();
-  diagnostic.stage='display';
+  await ensureCallChannel();
+
   await notifee.displayNotification({id,title:name,body:'Incoming '+event.media+' call. Open Axonic to answer.',data:{type:'root_neuron_call',callId:event.callId,account:owner.account},
    android:{channelId:'incoming-calls-v2',category:AndroidCategory.CALL,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
     pressAction:{id:'root-call-open',launchActivity:'default'},timeoutAfter:Math.max(1,event.expiresAt-Date.now())}});
-  diagnostic.displayed++;diagnostic.stage='displayed';
+
  });
 }
 export async function pendingRootCallWakes(account:string){

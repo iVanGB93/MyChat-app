@@ -20,3 +20,13 @@ test('side-by-side manifest keeps native classes and sharing filters while separ
   assert.deepEqual(filters[0].data.map(d => d.$['android:scheme']), ['${axonicScheme}', '${axonicExpoScheme}']);
   assert.equal(filters[1].data[0].$['android:mimeType'], 'image/*');
 });
+
+test('repeated prebuilds deduplicate deep links without removing distinct share filters',()=>{
+ const manifest={application:[{$:{},activity:[{'intent-filter':[{data:[{$:{'android:scheme':'axonic'}},{$:{'android:scheme':'${axonicScheme}'}},{$:{'android:scheme':'exp+mychat-app'}},{$:{'android:scheme':'${axonicExpoScheme}'}}]}]}]}]};
+ const result=configureManifest(manifest);assert.equal(result.application[0].activity[0]['intent-filter'][0].data.length,2);
+ assert.deepEqual(configureManifest(result),result);
+});
+test('native display version comes from app config without changing release version codes',()=>{
+ const {configureVersionName}=require('../plugins/withSideBySideDev');const output=configureVersionName('versionCode 123\nversionName "1.1.6"');
+ assert(output.includes('versionCode 123'));assert(output.includes("parse(rootProject.file('../app.json')).expo.version"));assert.equal(configureVersionName(output),output);
+});

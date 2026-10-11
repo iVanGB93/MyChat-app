@@ -1,9 +1,7 @@
 import * as Sentry from '@sentry/react-native';
 import { sanitizeCrashEvent } from './crashReportingPrivacy';
 
-let enabled = false;
 let initialized = false;
-const reported = new Set<string>();
 
 /** An empty DSN disables reporting. Debug builds require explicit opt-in. */
 export function configureCrashReporting(): void {
@@ -39,23 +37,8 @@ export function configureCrashReporting(): void {
       integrations: (defaults) => defaults.filter((integration) =>
         !['Breadcrumbs', 'HttpContext', 'ExpoConstants', 'ExpoContext', 'MobileReplay', 'BrowserReplay'].includes(integration.name)),
     });
-    enabled = true;
   } catch {
     // Observability must never prevent the app or background handlers from starting.
     if (__DEV__) console.warn('[CrashReporting] initialization failed');
   }
-}
-
-export function setCrashConnectionState(state: string): void {
-  if (!enabled || !['connected', 'connecting', 'disconnected', 'reconnecting', 'no-internet'].includes(state)) return;
-  try { Sentry.setTag('axion_state', state); } catch {}
-}
-
-/** Once per operation per process; do not report normal retries repeatedly. */
-export function reportNotificationFailure(operation: 'notification-open' | 'notification-open-timeout', reason?: string): void {
-  if (!enabled || reported.has(operation)) return;
-  reported.add(operation);
-  try {
-    Sentry.captureException(new Error(operation), { tags: { operation, notification_blocker: reason } });
-  } catch {}
 }

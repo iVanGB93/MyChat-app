@@ -2,7 +2,6 @@ import {StyleSheet} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
 export const groupCreateStyles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   form: { paddingHorizontal: Spacing.md, paddingTop: Spacing.md },
   helper: { fontSize: Font.size.sm, marginBottom: Spacing.sm },
   list: { paddingBottom: 88 },

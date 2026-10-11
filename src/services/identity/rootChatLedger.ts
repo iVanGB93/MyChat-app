@@ -1,4 +1,4 @@
-import {validGroupReply,validGroupAction,enqueueGroupAction,receiveGroupAction,encodeGroupAction,type RootGroupAction} from './rootGroupActions.ts';
+import {validGroupReply,groupReplyAvailable,validGroupAction,enqueueGroupAction,receiveGroupAction,encodeGroupAction,type RootGroupAction} from './rootGroupActions.ts';
 import type {RootChatAction,RootActionKind} from './rootChatActionTypes.ts';
 import {validRootAction,actionFamily,sameTarget,sameAction,encodeRootAction} from './rootChatActions.ts';
 import { validAccountId } from './identityProtocol.ts';
@@ -15,18 +15,21 @@ const byteLength=(text:string)=>new TextEncoder().encode(text).length;
 /** Private own history. Peer identity comes exclusively from the authenticated transport. */
 export function createRootChatLedger(d:{owner:string;read():Promise<string|null>;write(raw:string):Promise<void>;current():boolean;now():number;
  queued?(peer:string,id:string):void;
+ messageCommitted?(message:RootChatMessage,state:RootChatState):void;
  signGroup?(group:RootGroupMembership):RootGroupBackup;
  verifyAttachment?(descriptor:AttachmentDescriptor,direction:RootChatMessage['direction']):Promise<boolean>;
  verifyAttachmentReceipt?(descriptor:AttachmentDescriptor,receipt:AttachmentReceipt):Promise<boolean>;
 }){
  if(!validAccountId(d.owner))throw Error('Invalid account');
+ let knownMessages=new Set<string>();
+ const messageKey=(m:RootChatMessage)=>m.direction+':'+m.peer+':'+m.id;
  let tail:Promise<unknown>=Promise.resolve();
  const run=<T>(work:()=>Promise<T>)=>{const p=tail.then(work);tail=p.catch(()=>{});return p;};
  const check=()=>{if(!d.current())throw Error('Unlock your account first');};
  const validPeer=(peer:string)=>validAccountId(peer)&&peer!==d.owner;
  const validChat=(key:string)=>typeof key==='string'&&(key.startsWith('group:')?idValid(key.slice(6)):validPeer(key));
  async function read():Promise<RootChatState>{
-  check();const raw=await d.read();check();if(raw===null)return {version:1,messages:[],contacts:[]};
+  check();const raw=await d.read();check();if(raw===null){knownMessages.clear();return {version:1,messages:[],contacts:[]};}
   const s=JSON.parse(raw) as RootChatState;
   if(s.version!==1||!Array.isArray(s.messages)||!Array.isArray(s.contacts)||s.messages.length>5000||s.contacts.length>500
    ||s.hiddenChats!==undefined&&(!Array.isArray(s.hiddenChats)||s.hiddenChats.length>564||s.hiddenChats.some(k=>!validChat(k)))
@@ -44,9 +47,10 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    ||s.groupActions!==undefined&&(!Array.isArray(s.groupActions)||s.groupActions.length>10000||s.groupActions.some(a=>!validGroupAction(a,d.owner)||!s.groups?.some(g=>g.id===a.group.id)))
    ||s.groupSeen!==undefined&&(!Array.isArray(s.groupSeen)||s.groupSeen.length>2000||s.groupSeen.some(v=>!validPeer(v.peer)||!idValid(v.id)||typeof v.raw!=='string'||byteLength(v.raw)>2048)))throw Error('Chat storage needs recovery; it was not replaced');
   if(s.groups?.some(g=>g.recoveryPending!==undefined&&(g.recoveryPending!==true||g.admin!==d.owner||g.accepted)||g.backup!==undefined&&(!validRootGroupBackup(g.backup)||g.backup.group.id!==g.id||g.backup.group.admin!==g.admin)))throw Error('Group backup needs recovery; it was not replaced');
+  if(d.messageCommitted)knownMessages=new Set(s.messages.map(messageKey));
   return s;
  }
- async function save(s:RootChatState){check();await d.write(JSON.stringify(s));check();}
+ async function save(s:RootChatState){check();await d.write(JSON.stringify(s));check();if(d.messageCommitted)for(const m of s.messages){const key=messageKey(m);if(knownMessages.has(key))continue;knownMessages.add(key);try{d.messageCommitted(m,s);}catch{/* Feedback cannot invalidate durable delivery. */}}}
  function signGroups(s:RootChatState,id:string){
   if(!d.signGroup)return;
   for(const g of s.groups??[])if(g.admin===d.owner&&!g.blocked&&!g.recoveryPending&&(!g.backup||g.backup.group.revision!==g.revision)){
@@ -131,14 +135,14 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   enqueueAttachment:(input:AttachmentDescriptor,reply?:RootChatReply,group?:RootGroupContext)=>run(async()=>{
    check();if(!validAttachmentDescriptor(input))throw Error('Invalid attachment');const descriptor=JSON.parse(JSON.stringify(input)) as AttachmentDescriptor;
    const {id,recipient:peer,sender}=descriptor.manifest;
-   if(group&&(!validGroupContext(group)||reply))throw Error('Invalid group attachment');
-   if(reply!==undefined&&!validRootReply(reply,d.owner,peer))throw Error('Invalid reply');
+   if(group&&!validGroupContext(group))throw Error('Invalid group attachment');
+   if(reply!==undefined&&!(group?validGroupReply(reply):validRootReply(reply,d.owner,peer)))throw Error('Invalid reply');
    if(reply)reply={...reply};
-   if(sender!==d.owner||!validPeer(peer)||byteLength(group?encodeRootGroupMessage({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,group}):encodeRootAttachment(peer,id,descriptor,reply))>2048||!await d.verifyAttachment?.(descriptor,'outgoing'))throw Error('Attachment identity could not be verified');
+   if(sender!==d.owner||!validPeer(peer)||byteLength(group?encodeRootGroupMessage({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,group,...(reply?{reply}:{})}):encodeRootAttachment(peer,id,descriptor,reply))>2048||!await d.verifyAttachment?.(descriptor,'outgoing'))throw Error('Attachment identity could not be verified');
    const s=await read(),c=group?(s.contacts.find(c=>c.account===peer)??{blocked:false,accepted:false}):contact(s,peer);if(c.blocked)throw Error('This identity is blocked');
    if(s.hiddenChats?.includes(group?'group:'+group.id:peer))throw Error('This conversation was deleted');
    if(group&&(!rootGroupAllowed(s,d.owner,peer,group)||!s.groups?.find(g=>g.id===group.id)?.accepted))throw Error('Group membership changed');
-   if(reply&&!s.messages.some(m=>m.peer===peer&&m.id===reply!.id&&(m.direction==='outgoing'?d.owner:peer)===reply!.author))throw Error('Original message is no longer available');
+   if(reply&&!(group?groupReplyAvailable(s,d.owner,group.id,reply):s.messages.some(m=>!m.group&&m.peer===peer&&m.id===reply!.id&&(m.direction==='outgoing'?d.owner:peer)===reply!.author)))throw Error('Original message is no longer available');
    const old=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(old){if(JSON.stringify(old.group)!==JSON.stringify(group)||!sameReply(old.reply,reply)||!old.attachment||attachmentDescriptorFingerprint(old.attachment)!==attachmentDescriptorFingerprint(descriptor))throw Error('Attachment ID conflict');return;}
    if(s.messages.length>=5000)throw Error('Chat storage is full');if(!group)c.accepted=true;
    s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});await save(s);d.queued?.(peer,id);
@@ -160,7 +164,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    let group:RootGroupContext|undefined,groupReply:RootChatReply|undefined;
    if(a[0]==='axonic-root-group-text-v1'||a[0]==='axonic-root-group-attachment-v1'){
     const body=a[3],isAttachment=a[0]==='axonic-root-group-attachment-v1';
-    if(!body||!(isAttachment?Object.keys(body).sort().join(',')==='descriptor,group':['group,text','group,reply,text'].includes(Object.keys(body).sort().join(',')))||!validGroupContext(body.group))return false;
+    if(!body||!(isAttachment?['descriptor,group','descriptor,group,reply'].includes(Object.keys(body).sort().join(',')):['group,text','group,reply,text'].includes(Object.keys(body).sort().join(',')))||!validGroupContext(body.group))return false;
     if(body.reply!==undefined&&!validGroupReply(body.reply))return false;groupReply=body.reply?{...body.reply}:undefined;
     const s=await read();if(!rootGroupAllowed(s,d.owner,from,body.group))return false;
     if(!isAttachment&&rootGroupDeliveryId(body.group.messageId,d.owner)!==id||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.direction==='incoming'&&m.peer===from&&m.group?.id===body.group.id&&m.group?.messageId===body.group.messageId&&m.id!==id))return false;

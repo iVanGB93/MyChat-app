@@ -35,3 +35,5 @@ export {startRootCallLease,stopRootCallLease,markRootCallConnected,rootCallMayRu
 export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';
 
 export {peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';
+
+export {groupMessageInfo} from './groupMessageInfo';

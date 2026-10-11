@@ -2,7 +2,6 @@ import {StyleSheet,Platform} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
 export const chatRoomStyles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
   headerIdentity: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 172, marginLeft: Platform.OS === 'android' ? -8 : 0 },
   syncHeaderTitle: { flexDirection: 'row', alignItems: 'center', maxWidth: 130, flexShrink: 1 },
@@ -18,38 +17,9 @@ export const chatRoomStyles = StyleSheet.create({
     borderBottomWidth: 1,
     gap: Spacing.sm,
   },
-  requestTitle: {
-    fontSize: Font.size.sm,
-    fontWeight: '700',
-  },
-  requestSubtitle: {
-    fontSize: Font.size.xs,
-    marginTop: 2,
-  },
-  requestActions: {
-    flexDirection: 'row',
-    gap: Spacing.xs,
-  },
-  requestBtn: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-  },
-  requestBtnPrimary: {
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.xs,
-    borderRadius: Radius.md,
-  },
-  requestBtnText: {
-    fontSize: Font.size.xs,
-    fontWeight: '700',
-    letterSpacing: 1,
-  },
 
   messageList: { flex: 1 },
   messagesList: { paddingHorizontal: 10, paddingVertical: 4, flexGrow: 1 },
-  historyLoader: { paddingVertical: Spacing.md, alignItems: 'center' },
 
   inputBar: {
     flexShrink: 0,
@@ -72,14 +42,6 @@ export const chatRoomStyles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
-  },
-  typingHint: {
-    position: 'absolute',
-    top: -18,
-    left: Spacing.md,
-    fontSize: Font.size.xs,
-    fontStyle: 'italic',
-    letterSpacing: 0.3,
   },
   textInput: {
     flex: 1,
@@ -190,16 +152,6 @@ export const chatRoomStyles = StyleSheet.create({
     letterSpacing: 0.5,
     marginBottom: Spacing.xs,
   },
-  forwardPreview: {
-    fontSize: Font.size.sm,
-    fontStyle: 'italic',
-    marginBottom: Spacing.xs,
-  },
-  forwardEmpty: {
-    textAlign: 'center',
-    paddingVertical: Spacing.lg,
-    fontSize: Font.size.sm,
-  },
   forwardRow: {
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.sm,
@@ -242,23 +194,5 @@ export const chatRoomStyles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     minHeight: 44,
     borderWidth: 1,
-  },
-  recordingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: Spacing.sm,
-  },
-  recordingTime: {
-    fontSize: Font.size.md,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '600',
-    marginRight: Spacing.md,
-  },
-  recordingHint: {
-    flex: 1,
-    textAlign: 'right',
-    fontSize: Font.size.xs,
-    letterSpacing: 0.3,
   },
 });

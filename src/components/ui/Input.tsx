@@ -4,7 +4,7 @@ import {KeyboardAwareTextInput as TextInput} from './KeyboardForm';
 /* ------------------------------------------------------------------ */
 
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInputProps, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TextInputProps, TouchableOpacity, type StyleProp, type ViewStyle } from 'react-native';
 import { Font, Radius, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 
@@ -12,14 +12,15 @@ interface Props extends TextInputProps {
   label?: string;
   error?: string;
   isPassword?: boolean;
+  containerStyle?: StyleProp<ViewStyle>;
 }
 
-export default function Input({ label, error, isPassword, style, ...rest }: Props) {
+export default function Input({ label, error, isPassword, style, containerStyle, ...rest }: Props) {
   const { colors: Colors } = useTheme();
   const [showPassword, setShowPassword] = useState(false);
 
   return (
-    <View style={styles.wrapper}>
+    <View style={[styles.wrapper, containerStyle]}>
       {label && (
         <Text style={[styles.label, { color: Colors.primary }]}>{label.toUpperCase()}</Text>
       )}

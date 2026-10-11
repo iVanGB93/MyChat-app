@@ -4,7 +4,7 @@ import {localAccount,validAccountId} from '../identity';
 import {queueRootAttachmentBatch,rootGroupAttachmentAudience,type RootChatReply} from '../messaging';
 export async function pickRootAttachment(peer:string,reply?:RootChatReply,confirm?:ConfirmAttachment,groupId?:string){
  const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked'||!groupId&&(!validAccountId(peer)||peer===owner))throw Error('Unlock your account and choose a peer');
- const audience=groupId?await rootGroupAttachmentAudience(groupId):null;
+ const audience=groupId?await rootGroupAttachmentAudience(groupId,reply):null;
  const result=await DocumentPicker.getDocumentAsync({copyToCacheDirectory:true,multiple:true});if(result.canceled)return;
  if(localAccount.status().account!==owner)throw Error('Account changed');
  if(result.assets.length>4)throw Error('Choose up to four attachments at a time');
@@ -13,4 +13,4 @@ export async function pickRootAttachment(peer:string,reply?:RootChatReply,confir
  if(localAccount.status().account!==owner)throw Error('Account changed');
  return queueRootAttachmentBatch({peer,owner,reply,audience:audience??undefined,items:selected});
 }
-export const pickRootGroupAttachment=(groupId:string,confirm?:ConfirmAttachment)=>pickRootAttachment(groupId,undefined,confirm,groupId);
+export const pickRootGroupAttachment=(groupId:string,confirm?:ConfirmAttachment,reply?:RootChatReply)=>pickRootAttachment(groupId,reply,confirm,groupId);
