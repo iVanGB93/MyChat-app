@@ -5,3 +5,5 @@ export {listOwnCallHistory,type OwnCallSummary} from '../../services/identity/mo
 export {readProfileAvatar,storeProfileAvatar} from './profileStore';
 
 export {getAutoSaveReceivedMedia,setAutoSaveReceivedMedia,removeRootDownloadedMedia,saveRootDownloadedMedia,finishRootMediaCleanup,withRootSharedFile} from '../../services/identity/rootMediaExport';
+
+export {readSharedAvatar,subscribeSharedAvatars} from './sharedProfileStore';

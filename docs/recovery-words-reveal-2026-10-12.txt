@@ -1,0 +1,9 @@
+RECOVERY WORDS REVEAL — OCTOBER 12, 2026
+
+Account and security now includes Show Recovery Words. A separate screen requests the current account password or retrieves the already-enrolled OS-protected biometric credential. Only successful fresh vault decryption returns the original recovery words. No remembered session credential, mere unlocked state, or boolean authentication result authorizes the reveal.
+
+The controller decrypts a temporary identity, checks the expected account and epoch, derives its original mnemonic, and destroys temporary key arrays in finally. It does not replace the active identity, renew records, write storage, or close axons. New identities show their original 12 words; older 24-word identities keep all their words. Biometric authorization does not call unlock or remember a credential again.
+
+The UI shows numbered, read-only words and Hide Words. Closing the reveal or Account and security, changing/locking the account, backgrounding, or unmounting discards the UI material and invalidates pending results. No recovery words are copied to the clipboard, shared, logged, or written to files by this feature. Biometrics requires prior Axonic biometric enrollment; password authentication is always available.
+
+Validation: targeted local-account and UI tests passed (29), covering wrong password/account, locked state, interrupted storage reads, fresh biometric credential reads, cancelled/missing/late biometrics, UI authentication gating, hiding and background/close races. Full npm run check passed with three existing skipped tests; TypeScript, cycles, module boundaries and consolidation passed. No physical biometric prompt or native UI test was performed. No production build, commit, push or deployment.

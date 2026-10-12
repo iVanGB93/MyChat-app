@@ -8,6 +8,7 @@ function fixture(mode){
  const snapshot={contacts:[{account:peer,accepted:true}],messages:[{peer,status:'pending',direction:'incoming',attachment:incoming}]};
  const worker={enqueue:async(_,direction)=>events.push(direction),tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
  const deps={
+ '../../modules/storage/chatStore':{ownChatRevision:()=>0},
  './localAccount':{localAccount:{status:()=>({account:owner,state:locked?'locked':'unlocked'}),subscribe:f=>{listener=f;return()=>{};}}},
  './localRootChat':{localRootChat:()=>({snapshot:async()=>snapshot,enqueueAttachment:async()=>events.push('publish')})},
  './attachmentPolicy':{indexAttachmentPolicy:()=>()=>true},

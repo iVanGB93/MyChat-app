@@ -2,10 +2,28 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(read,status='ended'){
  const effects=[],timers=[],timeouts=[],cleared=[],updates=[],call={id:'call',peerUser:'axonic:1:'+'a'.repeat(64),peerName:'peer',status,outgoing:true,media:'voice'};let count=0;
  const react={useState:initial=>[count++===0?call:initial,value=>updates.push(value)],useRef:value=>({current:value}),useEffect:effect=>effects.push(effect),useCallback:fn=>fn,createElement:()=>null};
- const imports={react:{default:react,...react},'react-native':{},'./CallStage':{},'./IncomingCallAppearance':{},'../../modules/messaging':{conversations:()=>({snapshot:read}),subscribeLocalAccountCalls:()=>()=>{}},'../../modules/identity':{shortIdentity:peer=>peer.replace('axonic:1:','axon')},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../services/identity/localAccountNetwork':{subscribeLocalAccountCalls:()=>()=>{}}};
+ const imports={react:{default:react,...react},'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},'../../modules/messaging/notifications':{},'../../services/soundService':{stopLooping:()=>{}},'./CallStage':{},'./IncomingCallAppearance':{},'../../modules/messaging':{conversations:()=>({snapshot:read}),subscribeLocalAccountCalls:()=>()=>{}},'../../modules/storage':{readSharedAvatar:async()=>null,subscribeSharedAvatars:()=>()=>{}},'../../modules/identity':{localAccount:{status:()=>({account:null})},shortIdentity:peer=>peer.replace('axonic:1:','axon')},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../services/identity/localAccountNetwork':{subscribeLocalAccountCalls:()=>()=>{}}};
  const out={};new Function('exports','require','setInterval','clearInterval','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,name=>imports[name]??{},fn=>{timers.push(fn);return timers.length;},()=>{},(fn,delay)=>{timeouts.push({fn,delay});return timeouts.length;},id=>cleared.push(id));
- out.default();return {effects,timers,timeouts,cleared,updates,call};
+ out.default();return {effects,timers,timeouts,cleared,updates,call,imports};
 }
+test('finding is silent; caller ringback starts only in confirmed ringing state',async()=>{
+ for(const status of ['finding','ringing','connecting']){
+  const f=fixture(()=>Promise.resolve({contacts:[]}),status),sounds=[];
+  f.imports['../../modules/identity'].localAccount.status=()=>({account:'owner'});
+  Object.assign(f.imports['../../modules/messaging/notifications'],{readRootNotificationPreferences:async()=>({sound:true})});
+  Object.assign(f.imports['../../services/soundService'],{playLooping:kind=>sounds.push(kind),stopLooping:()=>{}});
+  const cleanups=f.effects.map(fn=>fn());await new Promise(r=>setImmediate(r));assert.deepEqual(sounds,status==='ringing'?['caller_ringback']:[]);
+  for(const cleanup of cleanups)cleanup?.();
+ }
+});
+test('visible incoming calls retry a transient confirmation failure and stop after confirmation',async()=>{
+ const f=fixture(()=>Promise.resolve({contacts:[]}),'ringing');f.call.outgoing=false;let attempts=0;
+ f.imports['../../modules/messaging'].localAccountCalls=()=>({confirmRinging:async()=>++attempts>1});
+ const cleanups=f.effects.map(fn=>fn());await new Promise(r=>setImmediate(r));assert.equal(attempts,1);
+ f.timers.at(-1)();await new Promise(r=>setImmediate(r));assert.equal(attempts,2);
+ f.timers.at(-1)();await new Promise(r=>setImmediate(r));assert.equal(attempts,2);
+ for(const cleanup of cleanups)cleanup?.();
+});
 test('call nickname effect tolerates a synchronously locked inbox and a later lock',async()=>{
  let locked=true;const f=fixture(()=>{if(locked)throw Error('Unlock your account first');return Promise.resolve({contacts:[{account:'axonic:1:'+'a'.repeat(64),alias:'Test emulator'}]});});
  const cleanups=f.effects.map(effect=>effect());await new Promise(r=>setImmediate(r));assert(f.updates.includes('axon'+'a'.repeat(64)));

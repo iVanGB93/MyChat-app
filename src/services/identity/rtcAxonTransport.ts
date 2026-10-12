@@ -2,11 +2,16 @@ import type { AxonSignal } from './axonSignaling.ts';
 import type { AxonWire } from './persistentAxon.ts';
 import type { ConnectionContext, NeuronCandidate } from './neuronConnections.ts';
 
-interface Channel {
+export interface Channel {
   _peerConnectionId?: number; _reactTag?: string;
   label: string; protocol: string; readyState: string; bufferedAmount: number;
-  send(data: string): void; close(): void;
+  send(data: string|Uint8Array): void; close(): void;
   addEventListener(event: string, callback: (event: any) => void): void;
+}
+export interface RtcAttachmentLane {
+ live():boolean;ready():Promise<void>;send(data:string|Uint8Array):void;close():void;
+ credit(value:number,authorize:boolean):Promise<void>;
+ listen(message:(data:unknown)=>void,closed:()=>void):void;
 }
 export interface AxonPeerConnection {
   localDescription: { type: string; sdp: string } | null;
@@ -56,6 +61,7 @@ export function validAxonSdp(sdp: string) {
 export function createRtcAxonTransport(d: {
   mediaLane?:boolean;
   authenticated?(channel: Channel):void;
+  streamCredit?(channel:Channel,value:number,authorize:boolean):Promise<boolean>;
   account(): string | null; now(): number; random(): Promise<string>;
   createConnection(): AxonPeerConnection;
   /** Native clock for bounded background work where React Native timers can pause. */
@@ -64,12 +70,15 @@ export function createRtcAxonTransport(d: {
   send(via: string, raw: string): boolean;
   accept(candidate: NeuronCandidate, wire: AxonWire): boolean;
 }) {
-  type Entry = { account: string; session: string; via: string; stop(): void; answer(s: AxonSignal): Promise<void>; restart(s: AxonSignal): Promise<void>; open(): boolean };
+  type Entry = { account: string; session: string; via: string; stop(): void; answer(s: AxonSignal): Promise<void>; restart(s: AxonSignal): Promise<void>; open(): boolean;canStream(device:string):boolean;stream(device:string):RtcAttachmentLane };
   const entries = new Map<string, Entry>();
+  let incomingStream:((account:string,device:string,lane:RtcAttachmentLane)=>boolean)|undefined;
   let epoch = 0;
   function make(account: string, session: string, via: string, initiator: boolean) {
     if (entries.size >= 5 || entries.has(account) || !d.account()) throw Error('RTC axon capacity');
     const pc = d.createConnection();
+    const ownAccount=d.account();
+    let streamLane:RtcAttachmentLane|null=null;
     const diagnosticId = ++diagnosticSequence;
     const trace = (event: string, details: object = {}) => console.info('[Axonic RTC lifecycle]', JSON.stringify({connection:diagnosticId,event,initiator,...details}));
     const originalSession = session;
@@ -99,6 +108,7 @@ export function createRtcAxonTransport(d: {
       trace('closed',{reason,opened,mediaEnabled,restarting,state:pc.connectionState,bufferedBytes:channel?.bufferedAmount??0});
       if (entries.get(account) === entry) entries.delete(account);
       outbound = []; inbound = [];
+      streamLane?.close();
       try { channel?.close(); } catch { /* Continue ownership cleanup. */ }
       try { pc.close(); } catch { /* Continue ownership cleanup. */ }
       closed?.();
@@ -125,7 +135,33 @@ export function createRtcAxonTransport(d: {
       });
       flush();
     }
-    pc.addEventListener('datachannel', e => { if (initiator) { e.channel.close(); stop('extra-channel'); } else attach(e.channel); });
+    function adoptStream(c:Channel):RtcAttachmentLane {
+      if(dead||!authenticated||!d.streamCredit||!remoteDevice||streamLane||c.label!=='axonic-stream-v1'){
+        c.close();throw Error('RTC stream unavailable');
+      }
+      let ended=false,onMessage:((data:unknown)=>void)|undefined,onClosed:(()=>void)|undefined;
+      let resolve!:()=>void,reject!:(e:Error)=>void;
+      const ready=new Promise<void>((yes,no)=>{resolve=yes;reject=no;});void ready.catch(()=>{});
+      const timeout=setTimeout(()=>lane.close(),5000);
+      const lane:RtcAttachmentLane={
+        live:()=>!ended&&!dead&&authenticated&&d.account()===ownAccount&&c.readyState==='open',
+        ready:()=>ready,
+        send(data){if(!lane.live()||c.bufferedAmount>262144)throw Error('RTC stream queue unavailable');c.send(data);},
+        close(){if(ended)return;ended=true;clearTimeout(timeout);if(streamLane===lane)streamLane=null;reject(Error('RTC stream closed'));try{c.close();}finally{onClosed?.();}},
+        async credit(value,authorize){if(!lane.live()||!await d.streamCredit!(c,value,authorize)||!lane.live())throw Error('Native stream admission refused');},
+        listen(message,closed){if(onMessage)throw Error('Stream already owned');onMessage=message;onClosed=closed;if(ended)closed();},
+      };
+      streamLane=lane;
+      const opened=()=>{if(c.readyState==='open'){clearTimeout(timeout);resolve();}};
+      c.addEventListener('open',opened);c.addEventListener('close',()=>lane.close());c.addEventListener('error',()=>lane.close());
+      c.addEventListener('message',e=>{if(!lane.live()||!onMessage){lane.close();return;}onMessage(e.data);});opened();return lane;
+    }
+    pc.addEventListener('datachannel', e => {
+      if(e.channel.label==='axonic-stream-v1'){
+        try{const lane=adoptStream(e.channel);if(!incomingStream?.(account,remoteDevice!,lane))lane.close();}catch{e.channel.close();}return;
+      }
+      if (initiator) { e.channel.close(); stop('extra-channel'); } else attach(e.channel);
+    });
     pc.addEventListener('connectionstatechange', () => {
       if(dead)return;
       if (['connected', 'disconnected', 'failed'].includes(pc.connectionState)) samplePath();
@@ -196,6 +232,8 @@ export function createRtcAxonTransport(d: {
     }
     function finishRestart(){if(restarting)trace('restart-negotiated');restarting=false;if(restartDeadline!==undefined)clearTimeout(restartDeadline);}
     const entry: Entry = { account, session, via, stop, open: () => opened,
+      canStream:device=>!dead&&authenticated&&!!d.streamCredit&&remoteDevice===device&&!streamLane&&d.account()===ownAccount,
+      stream(device){if(!entry.canStream(device))throw Error('RTC stream unavailable');return adoptStream(pc.createDataChannel('axonic-stream-v1',{ordered:true,protocol:'axonic-stream-v1'}));},
       async answer(signal) {
         if (dead || !initiator || answered || !validAxonSdp(signal.sdp)) return;
         if(restarting && (restartParent(signal.sdp)!==originalSession || !sameRemote(signal)))return;
@@ -227,6 +265,9 @@ export function createRtcAxonTransport(d: {
     };
   }
   return {
+    canStream:(account:string,device:string)=>entries.get(account)?.canStream(device)??false,
+    openStream:(account:string,device:string)=>{const entry=entries.get(account);if(!entry)throw Error('RTC peer unavailable');return entry.stream(device);},
+    listenStreams(handler:(account:string,device:string,lane:RtcAttachmentLane)=>boolean){incomingStream=handler;return ()=>{if(incomingStream===handler)incomingStream=undefined;};},
     async connect(candidate: NeuronCandidate, context: ConnectionContext): Promise<AxonWire> {
       const own = d.account(), generation = epoch;
       if (!own || own >= candidate.account || !candidate.endpoint.startsWith('rtc:') || context.signal.aborted) throw Error('Invalid RTC route');

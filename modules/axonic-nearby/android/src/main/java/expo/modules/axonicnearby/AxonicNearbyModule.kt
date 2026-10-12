@@ -153,6 +153,16 @@ class AxonicNearbyModule : Module() {
     AsyncFunction("axonWrite") { id: String, raw: String, promise: Promise -> axonWork(promise) { axons.write(id, raw); true } }
     Function("axonClose") { id: String -> axons.close(id) }
     Function("attachmentSha256") { value: String -> AttachmentHash.sha256(value) }
+    AsyncFunction("attachmentStagedFileSha256") { owner: String, id: String, bytes: Double, promise: Promise ->
+      try {
+        require(bytes.isFinite() && bytes == bytes.toLong().toDouble() && bytes >= 1 && bytes <= 250L * 1024 * 1024)
+        val root = requireNotNull(appContext.reactContext).filesDir
+        attachmentWorkers.execute {
+          try { promise.resolve(AttachmentFileHash.sha256(root, owner, id, true, bytes.toLong(), staged = true)) }
+          catch (error: Exception) { promise.reject("ATTACHMENT_VERIFY", "Attachment verification failed", error) }
+        }
+      } catch (error: Exception) { promise.reject("ATTACHMENT_VERIFY", "Attachment verification unavailable", error) }
+    }
     AsyncFunction("attachmentFileSha256") { owner: String, digest: String, completed: Boolean, bytes: Double, promise: Promise ->
       try {
         require(bytes.isFinite() && bytes == bytes.toLong().toDouble() && bytes >= 1 && bytes <= 250L * 1024 * 1024)

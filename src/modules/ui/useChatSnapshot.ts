@@ -1,4 +1,5 @@
-import {useEffect,useRef,useState} from 'react';
+import {readProfileAvatar,readSharedAvatar,subscribeSharedAvatars} from '../storage';
+import {useEffect,useRef,useState,useMemo} from 'react';
 import {AppState} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
 import {conversations,rootChatView,type RootChatState} from '../messaging';
@@ -28,5 +29,10 @@ export function useChatSnapshot(){
   void refresh();const timer=setInterval(()=>void refresh(),700);
   return()=>{active=false;clearInterval(timer);};
  },[focused,foreground]);
- return {state,error};
+ const avatarOwner=localAccount.status().state==='unlocked'?localAccount.status().account:null;
+ const avatarPeers=[...new Set([...state.contacts.map(c=>c.account),...(state.groups??[]).flatMap(g=>g.members)])].sort().join(',');
+ const [avatars,setAvatars]=useState<{owner:string|null;uris:Record<string,string|null>}>({owner:null,uris:{}});
+ useEffect(()=>{let active=true,revision=0;const refresh=async()=>{const epoch=++revision;if(!avatarOwner)return;const pairs=await Promise.all(avatarPeers.split(',').filter(Boolean).map(async peer=>[peer,peer===avatarOwner?await readProfileAvatar(avatarOwner):await readSharedAvatar(avatarOwner,peer)] as const));if(active&&epoch===revision)setAvatars({owner:avatarOwner,uris:Object.fromEntries(pairs)});};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[avatarOwner,avatarPeers]);
+ const withAvatars=useMemo(()=>({...state,avatarUris:avatars.owner===avatarOwner?avatars.uris:{}}),[state,avatars,avatarOwner]);
+ return {state:withAvatars,error};
 }

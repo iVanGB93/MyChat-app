@@ -51,7 +51,7 @@ test('custody deposit preserves pending status and the same wire ID',async()=>{c
 test('overlapping delivery ticks send a message only once',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish,count=0;const d=delivery(f,{send:()=>{count++;return new Promise(r=>finish=r);}});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));await d.worker.tick();assert.equal(count,1);finish(true);await first;});
 test('invalidated delivery cannot acknowledge even after the same account unlocks',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish;const d=delivery(f,{send:()=>new Promise(r=>finish=r)});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));f.setOwner(null);d.worker.invalidate();f.setOwner(a);finish(true);await first;assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');});
 test('stopping during key discovery prevents a late custody deposit',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish;const d=delivery(f,{resolve:()=>new Promise(r=>finish=r)});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));d.worker.stop();finish();await first;assert.ok(!d.events.some(e=>e[0]==='deposit'));});
-test('network errors preserve the outbox and release the tick for retry',async()=>{const f=setup();await f.commands.sendText(b,'hello');let n=0;const d=delivery(f,{send:async()=>{if(++n===1)throw Error('offline');return true;}});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');});
+test('network errors preserve the outbox and release the tick for retry',async()=>{const f=setup();await f.commands.sendText(b,'hello');let n=0;const d=delivery(f,{send:async()=>{if(++n<=2)throw Error('offline');return true;}});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');});
 test('blocked peers do not enter the transport or custody queue',async()=>{const f=setup();await f.commands.sendText(b,'hello');await f.ledger.configure(b,{blocked:true});const d=delivery(f);await d.worker.tick();assert.ok(!d.events.some(e=>e[0]==='send'));assert.deepEqual(d.events[0],['blocked',[b]]);});
 function callFixture(){let owner=a,connected=true,resolve=async()=>({status:'found'}),started=0;const session={start:async()=>{started++;return 'call';}};let active=session;const calls=createCallCommands({owner:()=>owner,calls:()=>active,connected:()=>connected,readinessTimeoutMs:20,resolve:peer=>resolve(peer)});return {calls,setOwner:v=>owner=v,setConnected:v=>connected=v,setResolve:v=>resolve=v,setCalls:v=>active=v,started:()=>started};}
 test('call startup waits for the permission-induced reconnect before starting once',async()=>{
@@ -89,5 +89,46 @@ test('failed inbox polling retries independently and stop prevents further polls
  const f=setup();let polls=0;const d=delivery(f,{collect:async()=>{polls++;throw Error('offline');}});
  await d.worker.tick();await d.worker.tick();assert.equal(polls,2);
  d.worker.stop();await d.worker.tick();assert.equal(polls,2);
+});
+
+test('a newly discovered direct peer receives the same ID without a custody deposit',async()=>{
+ const f=setup(),id=await f.commands.sendText(b,'hello');let found=false;const sent=[];
+ const d=delivery(f,{send:async(peer,raw,key)=>{sent.push(key);return found;},resolve:async()=>{found=true;}});
+ await d.worker.tick();assert.deepEqual(sent,[id,id]);assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');assert(!d.events.some(e=>e[0]==='deposit'));
+});
+test('blocking during discovery cancels the direct retry and custody deposit',async()=>{
+ const f=setup();await f.commands.sendText(b,'hello');let sends=0;
+ const d=delivery(f,{send:async()=>{sends++;return false;},resolve:async()=>{await f.ledger.configure(b,{blocked:true});}});
+ await d.worker.tick();assert.equal(sends,1);assert(!d.events.some(e=>e[0]==='deposit'));
+});
+test('discovery failure does not prevent encrypted custody with an existing identity',async()=>{
+ const f=setup();await f.commands.sendText(b,'hello');const d=delivery(f,{resolve:async()=>{throw Error('discovery unavailable');}});
+ await d.worker.tick();assert(d.events.some(e=>e[0]==='deposit'));assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');
+});
+test('an offline recipient does not block a newly queued connected conversation',async()=>{
+ const f=setup();await f.commands.sendText(b,'offline');let release;
+ const d=delivery(f,{send:async peer=>peer===c,deposit:()=>new Promise(r=>release=r)});
+ const first=d.worker.tick();await until(()=>!!release);
+ const id=await f.commands.sendText(c,'urgent');d.worker.wake(c,id);
+ await until(async()=> (await f.ledger.snapshot()).messages.find(m=>m.id===id).status==='delivered');
+ assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');d.worker.stop();release();await first;
+});
+test('concurrent recipients remain bounded and a third queued recipient resumes when capacity returns',async()=>{
+ const f=setup(),other='axonic:1:'+'d'.repeat(64),ids=[];for(const peer of [b,c,other])ids.push(await f.commands.sendText(peer,'hello'));
+ const holds=new Map();let active=0,peak=0;
+ const d=delivery(f,{send:async peer=>{active++;peak=Math.max(peak,active);await new Promise(r=>holds.set(peer,r));active--;return true;}});
+ for(let i=0;i<3;i++)d.worker.wake([b,c,other][i],ids[i]);
+ await until(()=>holds.size===2);assert(!holds.has(other));holds.get(b)();await until(()=>holds.has(other));holds.get(c)();holds.get(other)();
+ await until(async()=> (await f.ledger.snapshot()).messages.every(m=>m.status==='delivered'));d.worker.stop();assert.equal(peak,2);
+});
+test('group membership, group text, group reactions and direct edits share acknowledged direct delivery',async()=>{
+ const f=setup(),group=await f.commands.createGroup('DEV test',[b,c]),groupText=await f.commands.sendGroupText(group,'group text');
+ await f.commands.actGroup(group,{id:groupText,author:a},'reaction','👍');
+ const text=await f.commands.sendText(b,'direct text');await f.commands.act(b,{id:text,author:a},'edit','edited');
+ const sent=[],d=delivery(f,{send:async(peer,raw,id)=>{sent.push({peer,raw,id});return true;}});
+ const pending=load('rootChatLedger').pendingRootChat;
+ for(let i=0;i<20&&pending(await f.ledger.snapshot(),a).length;i++)await d.worker.tick();
+ assert.equal(pending(await f.ledger.snapshot(),a).length,0);assert.equal(sent.length,8);
+ assert(!d.events.some(e=>e[0]==='resolve'||e[0]==='deposit'));d.worker.stop();
 });
 

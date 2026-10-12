@@ -1,10 +1,12 @@
+import RenderBoundary from '../components/ui/RenderBoundary';
+import {useForegroundPoll} from '../hooks/useForegroundPoll';
 import {requestInitialNotificationPermission} from '../services/notificationPermission';
 import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
 import {startAppMaintenance} from '../modules/maintenance';
 import {RootShareProvider} from '../components/chat/RootSharePicker';
 import {ConfirmProvider,useConfirm} from '../contexts/ConfirmContext';
 import {ThemedAlertBridge} from '../components/ui/ThemedAlert';
-import RootNetworkPanel from './profile/RootNetworkPanel';
+import {LiveNetworkPanel} from './profile/RootNetworkPanel';
 import RootProfileScreen from './profile/RootProfileScreen';
 import { backupWordPositions, checkBackupWords } from '../modules/identity';
 
@@ -45,7 +47,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
-import { localAccountDirectorySnapshot, startLocalAccountNetwork } from '../modules/network';
+import { localAccountNetworkSnapshot, startLocalAccountNetwork } from '../modules/network';
 
 
 /** Application shell for local identities and the neuron network. */
@@ -58,7 +60,7 @@ export default function LocalAccountApp() {
   return()=>listener.remove();
  },[]);
 
- return <GestureHandlerRootView style={{flex:1}}><SafeAreaProvider><ThemeProvider><ConfirmProvider><ThemedAlertBridge/><RootShareProvider><LocalAccountContent/></RootShareProvider></ConfirmProvider></ThemeProvider></SafeAreaProvider></GestureHandlerRootView>;
+ return <RenderBoundary scope="app"><GestureHandlerRootView style={{flex:1}}><SafeAreaProvider><ThemeProvider><ConfirmProvider><ThemedAlertBridge/><RootShareProvider><LocalAccountContent/></RootShareProvider></ConfirmProvider></ThemeProvider></SafeAreaProvider></GestureHandlerRootView></RenderBoundary>;
 
 }
 
@@ -92,10 +94,8 @@ function LocalAccountContent() {
 
   const [restoring, setRestoring] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
 
-  const [network, setNetwork] = useState<ReturnType<ReturnType<typeof startLocalAccountNetwork>['snapshot']> | null>(null);
-
-  const [replicas, setReplicas] = useState(localAccountDirectorySnapshot);
-
+  const [connections,setConnections]=useState(0);
+  useForegroundPoll(()=>setConnections(localAccountNetworkSnapshot()?.pool?.connections.filter(c=>c.state==='connected').length??0),1000);
 
   const generation = useRef(0), actionRunning = useRef(false);
 
@@ -105,7 +105,7 @@ function LocalAccountContent() {
 
   const disabled = busy || status.busy || !ready;
 
-  const connections = network?.pool?.connections.filter(c => c.state === 'connected').length ?? 0;
+
 
   async function action(work: () => Promise<void>) {
 
@@ -145,7 +145,7 @@ function LocalAccountContent() {
 
     try { runtime = startLocalAccountNetwork(); } catch { setError('Network transport unavailable in this build.'); }
 
-    const timer = setInterval(() => { setNetwork(runtime?.snapshot() ?? null); setReplicas(localAccountDirectorySnapshot()); }, 1000);
+
 
     const state = AppState.addEventListener('change', next => {
 
@@ -160,7 +160,7 @@ function LocalAccountContent() {
 
     });
 
-    return () => { generation.current++; clearInterval(timer); state.remove(); stop(); stopCallState(); recovery.current?.stop(); recovery.current = null; runtime?.stop(); biometrics.lock(); };
+    return () => { generation.current++; state.remove(); stop(); stopCallState(); recovery.current?.stop(); recovery.current = null; runtime?.stop(); biometrics.lock(); };
 
   }, []);
 
@@ -176,7 +176,7 @@ function LocalAccountContent() {
     <Button title="CLOSE AXONIC" onPress={()=>void closeForDeviceRemoval().catch(e=>setError(e instanceof Error?e.message:'Unable to close Axonic'))}/>
   </View></SafeAreaView>;
 
-  if(ready&&!locked&&!setup)return <View style={styles.root}><RootAccountNavigator profile={<RootProfileScreen account={status.account!} loginName={loginName} connected={connections}>
+  if(ready&&!locked&&!setup)return <View style={styles.root}><RenderBoundary scope="screens"><RootAccountNavigator profile={<RootProfileScreen account={status.account!} loginName={loginName} connected={connections}>
 
     {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}{!!notice&&<Text style={styles.text}>{notice}</Text>}
 
@@ -210,7 +210,7 @@ function LocalAccountContent() {
 
           {button('Lock account', () => void action(async () => { generation.current++; await localAccountSession.lock(); clearSecrets(); setNotice(''); }))}
 
-  </RootProfileScreen>} network={<RootNetworkPanel snapshot={network} replicas={replicas}/>}/><RootAccountCallScreen/></View>;
+  </RootProfileScreen>} network={<LiveNetworkPanel/>}/></RenderBoundary><RenderBoundary scope="calls"><RootAccountCallScreen/></RenderBoundary></View>;
 
   const cancelSetup = () => { generation.current++; biometrics.lock(); clearSecrets(); setRestoring(false); setUsername(''); };
 

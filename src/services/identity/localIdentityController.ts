@@ -1,3 +1,4 @@
+import {signProfile} from './rootProfileProtocol';
 import { sealCustody, openCustody, verifyCustody, signCustodyReceipt, type CustodyEnvelope } from './custodyProtocol';
 import {signAttachmentManifest,signAttachmentReceipt,type AttachmentManifest} from './attachmentProtocol';
 import { signAxonSignal, type AxonSignal } from './axonSignaling';
@@ -100,6 +101,18 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         identity = source; cachedDeviceId = null; draft = null; state = 'unlocked';
       } finally { secret?.fill(0); destroyIdentity(copy); }
     }); },
+    /** Fresh vault authentication; never disturb the live identity, axons or call session. */
+    revealRecoveryWords(password:string,expectedAccount:string){return exclusive(async e=>{
+      if(!identity||account!==expectedAccount)throw Error('Unlock this account first');
+      const raw=await storage.readVault(),secretHex=await storage.readDeviceSecret();assertCurrent(e);
+      if(!raw||!secretHex||!/^[0-9a-f]{64}$/.test(secretHex))throw Error('Account protection unavailable');
+      const secret=hexToBytes(secretHex);let verified:UnlockedIdentity|undefined;
+      try{
+        verified=await unlockIdentity(raw,password,secret,now(),derive);assertCurrent(e);
+        if(verified.record.account!==expectedAccount||account!==expectedAccount)throw Error('Account changed');
+        return entropyToMnemonic(verified.entropy,wordlist);
+      }finally{secret.fill(0);if(verified)destroyIdentity(verified);}
+    });},
     /** Public metadata only. Recovery still requires the separately saved words. */
     recoveryRecord() {
       if (!identity || busy) throw Error('Unlock the local account first');
@@ -180,7 +193,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       const e = epoch, source = identity; if (!source || busy) throw Error('Unlock the local account first');
       const result = await sealCustody({ ...source, recipient, recipientDevice, id, text, now: now(), random });
       // Silent history updates synchronize at unlock; they must not create message notifications.
-      try { if (['axonic-root-action-v1','axonic-root-group-action-v1'].includes(JSON.parse(text)?.[0])) delete result.wakeSignature; } catch { /* Ordinary text retains its wake. */ }
+      try { if (['axonic-root-action-v1','axonic-root-group-action-v1','axonic-avatar-part-v1','axonic-avatar-request-v1'].includes(JSON.parse(text)?.[0])) delete result.wakeSignature; } catch { /* Ordinary text retains its wake. */ }
       assertCurrent(e); if (source !== identity) throw Error('Account operation interrupted'); return result;
     },
     async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>) {
@@ -191,6 +204,10 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       if (!await persist({ from: envelope.sender, id: envelope.id, text })) return null;
       assertCurrent(e); if (source !== identity || envelope.expires <= now()) return null;
       return signCustodyReceipt(envelope, source.signingSeed, source.encryptionSeed);
+    },
+    signProfile(data:Uint8Array,revision:number){
+      if(!identity||busy)throw Error('Unlock your account first');const root=rootFromEntropy(identity.entropy);
+      try{return signProfile(data,revision,root);}finally{root.fill(0);}
     },
     signGroup(group:RootGroupMembership){
       if(!identity||busy)throw Error('Unlock your account first');

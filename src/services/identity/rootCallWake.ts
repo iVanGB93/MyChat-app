@@ -51,17 +51,22 @@ export async function syncRootCallNotification(account:string,view:NeuronCallVie
   const ringing=view&&!view.outgoing&&view.status==='ringing'&&AppState.currentState!=='active';
   const id=view?'root-call:'+view.id:null;
   if(liveNotice&&(!ringing||liveNotice!==id)){await notifee.cancelNotification(liveNotice);liveNotice=null;}
-  if(!ringing){if(id)await notifee.cancelNotification(id);return;}
-  if(liveNotice===id||(await context())?.account!==account||await blocked(account,view.peerUser))return;
-  if(!(await readRootNotificationPreferences(account)).calls)return;
+  if(!ringing){if(id)await notifee.cancelNotification(id);return false;}
+  if((await context())?.account!==account||await blocked(account,view.peerUser))return false;
+  if(!(await readRootNotificationPreferences(account)).calls)return false;
+  const settings=await notifee.getNotificationSettings?.();
+  if(settings&&settings.authorizationStatus<1)return false;
+  if(liveNotice===id)return true;
   const name=await callerName(account,view.peerUser);
   await ensureCallChannel();
-  if(AppState.currentState==='active'||(await context())?.account!==account)return;
+  const channel=await notifee.getChannel?.('incoming-calls-v2');if(channel?.blocked)return false;
+  if(AppState.currentState==='active'||(await context())?.account!==account)return false;
   await notifee.displayNotification({id:id!,title:name,body:'Incoming '+view.media+' call. Open Axonic to answer.',
    data:{type:'root_neuron_call',callId:view.id,account},
    android:{channelId:'incoming-calls-v2',category:AndroidCategory.CALL,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
     pressAction:{id:'root-call-open',launchActivity:'default'},timeoutAfter:60000}});
   liveNotice=id;
+  return true;
  });
 }
 /** Signed wake metadata and local contact labels are read while locked; no private keys. */

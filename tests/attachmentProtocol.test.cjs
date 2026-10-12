@@ -1,5 +1,21 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('crypto');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),random=n=>new Uint8Array(crypto.randomBytes(n));
+test('binary preparation matches the original v1/v2 nonce, AAD and ciphertext serialization',()=>{
+ const {xchacha20poly1305}=require('@noble/ciphers/chacha.js');
+ const f=fixture(4097);
+ for(const version of [1,2]){
+  const m={...f.manifest,version,...(version===2?{shared:{id:'ab'.repeat(32),count:2,slot:0}}:{})};
+  for(const index of [0,1]){
+   const fields=version===2?['axonic-attachment-chunk-v2',m.shared.id,m.sender,m.senderDevice,m.shared.count,m.bytes,index]:['axonic-attachment-chunk-v1',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index];
+   const aad=Buffer.from(JSON.stringify(fields)),nonce=crypto.createHash('sha256').update(aad).digest().subarray(0,24),plain=f.plain.slice(index*4096,(index+1)*4096);
+   const expected=xchacha20poly1305(f.key,nonce,aad).encrypt(plain);
+   assert.deepEqual(a.encryptAttachmentChunkBytes(m,index,plain,f.key),expected);
+   assert.equal(a.encryptAttachmentChunk(m,index,plain,f.key),Buffer.from(expected).toString('hex'));
+  }
+ }
+ assert.throws(()=>a.encryptAttachmentChunkBytes(f.manifest,0,new Uint8Array(1),f.key));
+ assert.throws(()=>a.encryptAttachmentChunkBytes(f.manifest,0,f.plain.slice(0,4096),new Uint8Array(31)));
+});
 test('signed attachment streams decrypt in arbitrary order with bounded ciphertext proofs',()=>{
  for(const size of [1,4096,4097,9001,32769]){const f=fixture(size);assert(a.verifyAttachmentManifest(f.manifest,f.ids[0].record,now));
  const output=new Uint8Array(size);for(const chunk of [...f.chunks].reverse()){assert(a.verifyAttachmentChunk(f.manifest,chunk));output.set(a.decryptAttachmentChunk(f.manifest,chunk,f.key),chunk.index*a.ATTACHMENT_CHUNK_BYTES);assert(JSON.stringify(chunk).length<10000);}assert.deepEqual(output,f.plain);}

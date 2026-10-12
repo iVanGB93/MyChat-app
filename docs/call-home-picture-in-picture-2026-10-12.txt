@@ -1,0 +1,33 @@
+Android Home-button call window — October 12, 2026
+
+The migrated call lifecycle never called the existing native
+MyChatService.setPictureInPictureEnabled method. The native Activity already
+supports Android Picture-in-Picture, including auto-enter on Android 12+ and
+onUserLeaveHint on Android 8–11.
+
+rootCallLifetime now disables PiP at lease startup, enables it only when the
+same call is both connected and its foreground service is ready, and disables
+it before stopping that service. Serialized transitions protect against a late
+startup or a connection callback arming an obsolete call. Connected voice and
+video calls use this window.
+
+RootAccountCallScreen keeps the WebRTC owner mounted across Home/return.
+On Android background transition it hides the separate call Modal and renders
+remote video (or call identity/timer for voice) on the Activity surface captured
+by system PiP. Returning restores the preceding full or in-app minimized view.
+
+Verification:
+- Focused call lifetime and minimize tests: 9 passed.
+- npm run check: 936 passed, 3 skipped, 0 failed; TypeScript, module boundaries,
+  dependency cycles and consolidation checks passed.
+- Full check output: builds/home-call-pip-check.log.
+- Live emulator verification was attempted but did not reach a connected call.
+  CDP calls timed out, an old incoming-call screen stopped responding, and after
+  data-preserving app restarts the clients remained in startup/account opening.
+  Actual Android Home-to-PiP rendering and return remain unverified live.
+
+No native code changes, app reinstalls, production builds, deployment, commits,
+or data wipes were performed for this fix. Physical official apps were untouched.
+
+Android API reference:
+https://developer.android.com/develop/ui/views/picture-in-picture

@@ -6,6 +6,8 @@ const tool=name=>process.env.JAVA_HOME?path.join(process.env.JAVA_HOME,'bin',nam
 try {
   cp.execFileSync(tool('javac'),['-encoding','UTF-8','-d',output,path.join(root,'scripts/native/AxonicIdentityDataGuard.java'),path.join(root,'tests/native/AxonicIdentityDataGuardTest.java')],{stdio:'inherit'});
   cp.execFileSync(tool('java'),['-cp',output,'com.oney.WebRTCModule.AxonicIdentityDataGuardTest'],{stdio:'inherit'});
+  cp.execFileSync(tool('javac'),['-encoding','UTF-8','-d',output,path.join(root,'scripts/native/AxonicStreamDataGuard.java'),path.join(root,'tests/native/AxonicStreamDataGuardTest.java')],{stdio:'inherit'});
+  cp.execFileSync(tool('java'),['-cp',output,'com.oney.WebRTCModule.AxonicStreamDataGuardTest'],{stdio:'inherit'});
 } finally {
   if(path.dirname(path.resolve(output))!==tempRoot || !path.basename(output).startsWith('axonic-native-guard-'))throw Error('Unexpected test output directory');
   fs.rmSync(output,{recursive:true,force:true});

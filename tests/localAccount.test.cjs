@@ -11,6 +11,32 @@ function fixture(overrides={}){const data={vault:null,secret:null};const storage
 async function created(){const f=fixture();f.words=await f.id.beginCreate();await f.id.confirmBackup(f.words,password);return f;}
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
 
+test('recovery-word reveal reauthenticates the vault without replacing the live identity',async()=>{
+ const f=await created(),account=f.id.status().account,record=f.id.publicRecord(),device=f.id.callDevice(),vault=f.data.vault;
+ await assert.rejects(f.id.revealRecoveryWords('incorrect password',account));
+ await assert.rejects(f.id.revealRecoveryWords(password,'other-account'),/Unlock/);
+ assert.equal(await f.id.revealRecoveryWords(password,account),f.words);
+ assert.equal(f.words.split(' ').length,12);
+ assert.deepEqual(f.id.publicRecord(),record);assert.equal(f.id.callDevice(),device);assert.equal(f.data.vault,vault);
+ f.id.lock();await assert.rejects(f.id.revealRecoveryWords(password,account),/Unlock/);
+});
+test('a lock while reveal is reading storage prevents recovery words from returning',async()=>{
+ const f=await created(),account=f.id.status().account,gate=deferred();
+ f.storage.readVault=()=>gate.promise;
+ const work=f.id.revealRecoveryWords(password,account);f.id.lock();gate.resolve(f.data.vault);
+ await assert.rejects(work,/interrupted/);
+});
+test('biometric reauthentication requires protected credential retrieval and does not unlock again',async()=>{
+ let reads=0,unlocks=0,remembered=0;const b=createLocalAccountBiometrics({identity:{unlock:async()=>{unlocks++;},lock:()=>{},status:()=>({state:'unlocked'})},available:()=>true,read:async()=>{reads++;return password;},write:async()=>{},remove:async()=>{},onUnlocked:async()=>{remembered++;}});
+ for(let i=0;i<2;i++)assert.equal(await b.authenticate(async secret=>{assert.equal(secret,password);return 'authenticated result';}),'authenticated result');
+ assert.equal(reads,2);assert.equal(unlocks,0);assert.equal(remembered,0);
+});
+test('missing, cancelled and late biometric authorization never releases a protected result',async()=>{
+ for(const read of [async()=>null,async()=>{throw Error('Cancelled');}]){let accessed=false;const b=createLocalAccountBiometrics({identity:{unlock:async()=>{},lock:()=>{},status:()=>({state:'unlocked'})},available:()=>true,read,write:async()=>{},remove:async()=>{}});await assert.rejects(b.authenticate(async()=>{accessed=true;}));assert.equal(accessed,false);}
+ const gate=deferred(),b=createLocalAccountBiometrics({identity:{unlock:async()=>{},lock:()=>{},status:()=>({state:'unlocked'})},available:()=>true,read:async()=>password,write:async()=>{},remove:async()=>{}});
+ const work=b.authenticate(()=>gate.promise);await Promise.resolve();b.lock();gate.resolve('sensitive result');await assert.rejects(work,/interrupted/);
+});
+
 test('six-character passwords support creation, cold unlock and recovery',async()=>{
  const f=fixture(),phrase=await f.id.beginCreate();await f.id.confirmBackup(phrase,'six123');
  const packet=f.id.recoveryRecord();f.id.lock();await f.id.unlock('six123');assert.equal(f.id.status().state,'unlocked');

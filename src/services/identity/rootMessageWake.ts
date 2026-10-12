@@ -110,17 +110,17 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  await waitForRecovery(recovery,25000);
 }
 /** Invoked only after durable inbox admission, including direct delivery racing a delayed hint. */
-export type RootMessagePreview={name:string;text:string;at:number;group?:string;read?:boolean;senderName?:string};
-type NotificationMessage={id:string;sender:string;name:string;text:string;at:number};
+export type RootMessagePreview={orderId?:string;name:string;text:string;at:number;group?:string;read?:boolean;senderName?:string};
+type NotificationMessage={orderId?:string;id:string;sender:string;name:string;text:string;at:number};
 function notificationMessages(raw:unknown,next:NotificationMessage){
  let messages:NotificationMessage[]=[];
  try{const parsed=typeof raw==='string'?JSON.parse(raw):null;
-  if(Array.isArray(parsed))messages=parsed.filter(m=>typeof m?.id==='string'&&typeof m.sender==='string'&&typeof m.name==='string'&&typeof m.text==='string'&&Number.isFinite(m.at));
+  if(Array.isArray(parsed))messages=parsed.filter(m=>typeof m?.id==='string'&&typeof m.sender==='string'&&(m.orderId===undefined||typeof m.orderId==='string'&&/^[a-f0-9]{64}$/.test(m.orderId))&&typeof m.name==='string'&&typeof m.text==='string'&&Number.isFinite(m.at));
  }catch{/* An older client has no retained previews. */}
  messages=messages.filter(m=>m.id!==next.id||m.sender!==next.sender);
  messages.push(next);
  // Match Android MessagingStyle's retained-message limit and keep Binder payloads bounded.
- return messages.sort((a,b)=>a.at-b.at).slice(-25);
+ return messages.sort((a,b)=>a.at-b.at||((a.orderId??a.id)<(b.orderId??b.id)?-1:(a.orderId??a.id)>(b.orderId??b.id)?1:0)||(a.sender<b.sender?-1:a.sender>b.sender?1:0)).slice(-25);
 }
 export async function finishRootMessageWake(owner:string,sender:string,id:string,preview?:RootMessagePreview){
  await serial(async()=>{
@@ -143,7 +143,7 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   const existing=await currentRootMessageNotification(owner,sender,preview.group);
   // Preserve the last preview when updating a notice created by the previous client.
   const previous=existing?.data?.messagePreviews??(existing?.body&&existing.data?.messageId&&existing.data.sender&&Number.isFinite(Number(existing.data.messageAt))?JSON.stringify([{id:existing.data.messageId,sender:existing.data.sender,name:existing.title||preview.name,text:existing.body,at:Number(existing.data.messageAt)}]):undefined);
-  const messages=notificationMessages(previous,{id,sender,name:preview.senderName||preview.name,text:preview.text,at:preview.at}),latest=messages[messages.length-1];
+  const messages=notificationMessages(previous,{id,...(preview.orderId?{orderId:preview.orderId}:{}),sender,name:preview.senderName||preview.name,text:preview.text,at:preview.at}),latest=messages[messages.length-1];
   await notifee.displayNotification({id:key,title:preview.name,body:latest.text,data:{type:'root_neuron_message',account:owner,sender:latest.sender,messageId:latest.id,messageAt:String(latest.at),messagePreviews:JSON.stringify(messages),...(preview.group?{group:preview.group}:{})},
    android:{channelId,onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
     pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender}}))}}});

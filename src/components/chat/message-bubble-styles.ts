@@ -1,7 +1,10 @@
 import {StyleSheet} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
+export const CHAT_STICKER_SIZE = 150;
 export const messageBubbleStyles = StyleSheet.create({
+  stickerImage: { width: CHAT_STICKER_SIZE, height: CHAT_STICKER_SIZE },
   stickerBubble: {
+    minWidth: 0,
     backgroundColor: 'transparent',
     borderWidth: 0,
     elevation: 0,

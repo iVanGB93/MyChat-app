@@ -1,3 +1,6 @@
+import {profileAudience,syncProfileAudience,validProfileStorage,pendingProfiles} from './rootProfileSharing.ts';
+import {validOwnProfile,profilePartId,profileCount,type OwnProfile,type ProfilePart} from './rootProfileProtocol.ts';
+import {validCreationTime} from './rootChatTypes.ts';
 import {validGroupReply,groupReplyAvailable,validGroupAction,enqueueGroupAction,receiveGroupAction,encodeGroupAction,type RootGroupAction} from './rootGroupActions.ts';
 import type {RootChatAction,RootActionKind} from './rootChatActionTypes.ts';
 import {validRootAction,actionFamily,sameTarget,sameAction,encodeRootAction} from './rootChatActions.ts';
@@ -15,6 +18,7 @@ const byteLength=(text:string)=>new TextEncoder().encode(text).length;
 /** Private own history. Peer identity comes exclusively from the authenticated transport. */
 export function createRootChatLedger(d:{owner:string;read():Promise<string|null>;write(raw:string):Promise<void>;current():boolean;now():number;
  queued?(peer:string,id:string):void;
+ receiveProfile?(from:string,id:string,part:ProfilePart):Promise<boolean>;
  messageCommitted?(message:RootChatMessage,state:RootChatState):void;
  signGroup?(group:RootGroupMembership):RootGroupBackup;
  verifyAttachment?(descriptor:AttachmentDescriptor,direction:RootChatMessage['direction']):Promise<boolean>;
@@ -31,11 +35,11 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
  async function read():Promise<RootChatState>{
   check();const raw=await d.read();check();if(raw===null){knownMessages.clear();return {version:1,messages:[],contacts:[]};}
   const s=JSON.parse(raw) as RootChatState;
-  if(s.version!==1||!Array.isArray(s.messages)||!Array.isArray(s.contacts)||s.messages.length>5000||s.contacts.length>500
+  if(!validProfileStorage(s,d.owner)||s.timestampPeers!==undefined&&(!Array.isArray(s.timestampPeers)||s.timestampPeers.length>500||s.timestampPeers.some(p=>!validPeer(p)))||s.version!==1||!Array.isArray(s.messages)||!Array.isArray(s.contacts)||s.messages.length>5000||s.contacts.length>500
    ||s.hiddenChats!==undefined&&(!Array.isArray(s.hiddenChats)||s.hiddenChats.length>564||s.hiddenChats.some(k=>!validChat(k)))
    ||s.removedMessages!==undefined&&(!Array.isArray(s.removedMessages)||s.removedMessages.length>20000||s.removedMessages.some(m=>!validPeer(m.peer)||!idValid(m.id)||!['incoming','outgoing'].includes(m.direction)))
    ||(s.imports!==undefined&&(!Array.isArray(s.imports)||s.imports.length>10||s.imports.some(v=>typeof v!=='string'||v.length>100)))
-   ||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||!idValid(m.id)||!validPeer(m.peer)||!['incoming','outgoing'].includes(m.direction)||typeof m.text!=='string'||!m.text||byteLength(m.text)>1600||!Number.isSafeInteger(m.at)||!['pending','delivered'].includes(m.status)
+   ||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.createdAt!==undefined&&(!validCreationTime(m.createdAt)||m.at!==m.createdAt)||!idValid(m.id)||!validPeer(m.peer)||!['incoming','outgoing'].includes(m.direction)||typeof m.text!=='string'||!m.text||byteLength(m.text)>1600||!Number.isSafeInteger(m.at)||!['pending','delivered'].includes(m.status)
     ||m.reply!==undefined&&(!(m.group?validGroupReply(m.reply):validRootReply(m.reply,d.owner,m.peer)))
     ||m.descriptorDelivered!==undefined&&typeof m.descriptorDelivered!=='boolean'
     ||m.attachment!==undefined&&(!validAttachmentDescriptor(m.attachment)||m.attachment.manifest.id!==m.id||m.text!==m.attachment.name
@@ -50,7 +54,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   if(d.messageCommitted)knownMessages=new Set(s.messages.map(messageKey));
   return s;
  }
- async function save(s:RootChatState){check();await d.write(JSON.stringify(s));check();if(d.messageCommitted)for(const m of s.messages){const key=messageKey(m);if(knownMessages.has(key))continue;knownMessages.add(key);try{d.messageCommitted(m,s);}catch{/* Feedback cannot invalidate durable delivery. */}}}
+ async function save(s:RootChatState){check();const previousProfilePeers=new Set(s.profileDeliveries?.map(p=>p.peer)??[]);syncProfileAudience(s,d.owner);await d.write(JSON.stringify(s));check();if(s.profileDeliveries?.some(p=>!previousProfilePeers.has(p.peer)))for(const p of pendingProfiles(s,d.owner))if(!previousProfilePeers.has(p.peer))d.queued?.(p.peer,p.id);if(d.messageCommitted)for(const m of s.messages){const key=messageKey(m);if(knownMessages.has(key))continue;knownMessages.add(key);try{d.messageCommitted(m,s);}catch{/* Feedback cannot invalidate durable delivery. */}}}
  function signGroups(s:RootChatState,id:string){
   if(!d.signGroup)return;
   for(const g of s.groups??[])if(g.admin===d.owner&&!g.blocked&&!g.recoveryPending&&(!g.backup||g.backup.group.revision!==g.revision)){
@@ -60,6 +64,10 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
  function contact(s:RootChatState,peer:string){let c=s.contacts.find(c=>c.account===peer);if(!c){if(s.contacts.length>=500)throw Error('Contact storage is full');c={account:peer,alias:'',blocked:false,accepted:false};s.contacts.push(c);}return c;}
  return {
   snapshot:()=>run(read),
+  rememberProfilePeers:(peers:string[])=>run(async()=>{if(!peers.length)return;const s=await read(),before=(s.profilePeers??[]).length,known=new Set(s.profilePeers??[]);for(const p of peers)if(validPeer(p)&&known.size<500)known.add(p);if(known.size!==before){s.profilePeers=[...known];await save(s);}}),
+  publishProfile:(profile:OwnProfile)=>run(async()=>{if(!validOwnProfile(profile,d.owner))throw Error('Invalid signed avatar');const s=await read();if(s.ownProfile&&profile.manifest.revision<=s.ownProfile.manifest.revision)throw Error('Avatar version must increase');s.ownProfile=profile;s.profileDeliveries=[];await save(s);for(const p of pendingProfiles(s,d.owner))d.queued?.(p.peer,p.id);}),
+  requestProfile:(peer:string,id:string,known:string|null)=>run(async()=>{const s=await read();if(!idValid(id)||known!==null&&!idValid(known)||!profileAudience(s,d.owner).includes(peer)||!s.profilePeers?.includes(peer))return;if(s.profileRequests?.some(p=>p.peer===peer))return;(s.profileRequests??=[]).push({peer,id,known});await save(s);d.queued?.(peer,id);}),
+  rememberTimestampPeers:(peers:string[])=>run(async()=>{if(!peers.length)return;const s=await read(),known=new Set(s.timestampPeers??[]);for(const p of peers)if(validPeer(p)&&known.size<500)known.add(p);if(known.size!==(s.timestampPeers?.length??0)){s.timestampPeers=[...known];await save(s);}}),
   recoverGroupsForPeer:(peer:string,requestId:string)=>run(async()=>{const s=await read(),before=JSON.stringify(s);signGroups(s,requestId);recoverRootGroupsForPeer(s,d.owner,peer,requestId);if(JSON.stringify(s)!==before)await save(s);}),
   deleteChats:(keys:string[])=>run(async()=>{
    if(!Array.isArray(keys)||!keys.length||keys.some(k=>!validChat(k)))throw Error('Choose valid chats');
@@ -85,7 +93,8 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    const recipients=g.members.filter(peer=>peer!==d.owner);if(!recipients.length)throw Error('Add another member first');
    if(s.messages.some(m=>m.direction==='outgoing'&&m.group?.messageId===id&&(m.group.id!==groupId||m.group.revision!==g.revision||m.text!==text||!!m.attachment||!sameReply(m.reply,reply))))throw Error('Message ID conflict');
    if(recipients.some(peer=>s.contacts.some(c=>c.account===peer&&c.blocked)))throw Error('Unblock group members before sending');
-   for(const peer of recipients){const deliveryId=rootGroupDeliveryId(id,peer),m:RootChatMessage={id:deliveryId,peer,direction:'outgoing',text,at:d.now(),status:'pending',group:{id:groupId,revision:g.revision,messageId:id},...(reply?{reply:{...reply}}:{})};
+   const at=s.messages.find(m=>m.direction==='outgoing'&&m.group?.messageId===id)?.at??d.now();
+   for(const peer of recipients){const deliveryId=rootGroupDeliveryId(id,peer),m:RootChatMessage={id:deliveryId,peer,direction:'outgoing',text,at,...(s.timestampPeers?.includes(peer)?{createdAt:at}:{}),status:'pending',group:{id:groupId,revision:g.revision,messageId:id},...(reply?{reply:{...reply}}:{})};
     if(byteLength(encodeRootGroupMessage(m))>2048)throw Error('Message is too large for delivery');
     const old=s.messages.find(v=>v.peer===peer&&v.id===deliveryId&&v.direction==='outgoing');if(old){if(old.text!==text||old.group?.id!==groupId||old.attachment)throw Error('Message ID conflict');continue;}
     if(s.groupActions?.some(v=>v.peer===peer&&v.id===deliveryId&&v.direction==='outgoing')||s.actions?.some(v=>v.peer===peer&&v.id===deliveryId&&v.direction==='outgoing')||s.groupPackets?.some(v=>v.peer===peer&&v.id===deliveryId)||s.messages.length>=5000)throw Error('Message ID conflict or chat storage full');
@@ -104,14 +113,14 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if(!validPeer(peer)||!idValid(id)||!text.trim()||byteLength(text)>1600)throw Error('Enter a valid peer and a message up to 1,600 bytes');
    if(reply!==undefined&&!validRootReply(reply,d.owner,peer))throw Error('Invalid reply');
    if(reply)reply={...reply};
-   if(byteLength(encodeRootChat(peer,id,text,reply))>2048)throw Error('Message is too large for delivery');
+   if(byteLength(encodeRootChat(peer,id,text,reply))+17>2048)throw Error('Message is too large for delivery');
    const s=await read(),c=contact(s,peer);if(c.blocked)throw Error('This identity is blocked');
    if(s.groupActions?.some(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id)||s.actions?.some(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id))throw Error('Message ID conflict');
    const reference=reply;
    if(reference&&!s.messages.some(m=>m.peer===peer&&m.id===reference.id&&(m.direction==='outgoing'?d.owner:peer)===reference.author))throw Error('Original message is no longer available');
    const old=s.messages.find(m=>m.id===id&&m.peer===peer&&m.direction==='outgoing');if(old){if(old.text!==text||old.attachment||!sameReply(old.reply,reply))throw Error('Message ID conflict');return;}
    if(s.messages.length>=5000)throw Error('Chat storage is full');c.accepted=true;
-   s.hiddenChats=s.hiddenChats?.filter(k=>k!==peer);s.messages.push({id,peer,direction:'outgoing',text,at:d.now(),status:'pending',...(reply?{reply:{...reply}}:{})});await save(s);d.queued?.(peer,id);
+   const at=d.now();s.hiddenChats=s.hiddenChats?.filter(k=>k!==peer);s.messages.push({id,peer,direction:'outgoing',text,at,...(s.timestampPeers?.includes(peer)?{createdAt:at}:{}),status:'pending',...(reply?{reply:{...reply}}:{})});await save(s);d.queued?.(peer,id);
   }),
 
   act:(peer:string,id:string,target:RootChatReply,kind:RootActionKind,text='')=>run(async()=>{
@@ -132,26 +141,36 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if((s.actions?.length??0)>=10000)throw Error('Action storage is full');
    (s.actions??=[]).push(event);await save(s);
   }),
-  enqueueAttachment:(input:AttachmentDescriptor,reply?:RootChatReply,group?:RootGroupContext)=>run(async()=>{
-   check();if(!validAttachmentDescriptor(input))throw Error('Invalid attachment');const descriptor=JSON.parse(JSON.stringify(input)) as AttachmentDescriptor;
+  enqueueAttachment:(input:AttachmentDescriptor,reply?:RootChatReply,group?:RootGroupContext,selectedAt?:number)=>run(async()=>{
+   if(selectedAt!==undefined&&!validCreationTime(selectedAt))throw Error('Invalid creation time');check();if(!validAttachmentDescriptor(input))throw Error('Invalid attachment');const descriptor=JSON.parse(JSON.stringify(input)) as AttachmentDescriptor;
    const {id,recipient:peer,sender}=descriptor.manifest;
    if(group&&!validGroupContext(group))throw Error('Invalid group attachment');
    if(reply!==undefined&&!(group?validGroupReply(reply):validRootReply(reply,d.owner,peer)))throw Error('Invalid reply');
    if(reply)reply={...reply};
-   if(sender!==d.owner||!validPeer(peer)||byteLength(group?encodeRootGroupMessage({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,group,...(reply?{reply}:{})}):encodeRootAttachment(peer,id,descriptor,reply))>2048||!await d.verifyAttachment?.(descriptor,'outgoing'))throw Error('Attachment identity could not be verified');
+   if(sender!==d.owner||!validPeer(peer)||byteLength(group?encodeRootGroupMessage({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,group,...(reply?{reply}:{})}):encodeRootAttachment(peer,id,descriptor,reply))+17>2048||!await d.verifyAttachment?.(descriptor,'outgoing'))throw Error('Attachment identity could not be verified');
    const s=await read(),c=group?(s.contacts.find(c=>c.account===peer)??{blocked:false,accepted:false}):contact(s,peer);if(c.blocked)throw Error('This identity is blocked');
    if(s.hiddenChats?.includes(group?'group:'+group.id:peer))throw Error('This conversation was deleted');
    if(group&&(!rootGroupAllowed(s,d.owner,peer,group)||!s.groups?.find(g=>g.id===group.id)?.accepted))throw Error('Group membership changed');
    if(reply&&!(group?groupReplyAvailable(s,d.owner,group.id,reply):s.messages.some(m=>!m.group&&m.peer===peer&&m.id===reply!.id&&(m.direction==='outgoing'?d.owner:peer)===reply!.author)))throw Error('Original message is no longer available');
    const old=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(old){if(JSON.stringify(old.group)!==JSON.stringify(group)||!sameReply(old.reply,reply)||!old.attachment||attachmentDescriptorFingerprint(old.attachment)!==attachmentDescriptorFingerprint(descriptor))throw Error('Attachment ID conflict');return;}
    if(s.messages.length>=5000)throw Error('Chat storage is full');if(!group)c.accepted=true;
-   s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});await save(s);d.queued?.(peer,id);
+   const at=selectedAt??d.now();s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at,...(s.timestampPeers?.includes(peer)?{createdAt:at}:{}),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});await save(s);d.queued?.(peer,id);
   }),
   receive:(from:string,id:string,raw:string)=>run(async()=>{
    if(!validPeer(from)||!idValid(id)||byteLength(raw)>2048)return false;
    let a;try{a=JSON.parse(raw);}catch{return false;}
-   if(!Array.isArray(a)||a.length!==4||a[1]!==d.owner||a[2]!==id)return false;
+   if(!Array.isArray(a)||![4,5].includes(a.length)||a[1]!==d.owner||a[2]!==id)return false;
+   const createdAt=a.length===5?a[4]:undefined;if(a.length===5&&(!validCreationTime(createdAt)||!['axonic-root-text-v1','axonic-root-reply-v1','axonic-root-attachment-v1','axonic-root-attachment-reply-v1','axonic-root-group-text-v1','axonic-root-group-attachment-v1'].includes(a[0])))return false;
    const prior=await read();
+   if(a[0]==='axonic-avatar-part-v1'){
+    if(!profileAudience(prior,d.owner).includes(from))return false;
+    return await d.receiveProfile?.(from,id,a[3])??false;
+   }
+   if(a[0]==='axonic-avatar-request-v1'){
+    if(a[3]!==null&&!idValid(a[3])||!profileAudience(prior,d.owner).includes(from))return false;
+    if(prior.ownProfile&&a[3]!==prior.ownProfile.manifest.hash){const row=prior.profileDeliveries?.find(p=>p.peer===from);if(row&&row.acked.length===profileCount(prior.ownProfile.manifest)){row.acked=[];await save(prior);for(const packet of pendingProfiles(prior,d.owner).filter(p=>p.peer===from))d.queued?.(packet.peer,packet.id);}}
+    return true;
+   }
    if(prior.removedMessages?.some(m=>m.peer===from&&m.id===id&&m.direction==='incoming'))return true;
    if(a[0]==='axonic-root-group-action-v1'){const s=await read();if(!receiveGroupAction(s,d.owner,from,id,a[3],d.now()))return false;await save(s);return true;}
    if(a[0]==='axonic-group-members-v1'||a[0]==='axonic-group-leave-v1'||a[0]==='axonic-group-recover-v1'||a[0]==='axonic-group-backup-v1'||a[0]==='axonic-group-recovery-offer-v1'){
@@ -202,8 +221,8 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    const s=await read(),c=group?(s.contacts.find(c=>c.account===from)??{blocked:false}):contact(s,from);if(c.blocked)return false;
    if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
    if(s.groupSeen?.some(v=>v.peer===from&&v.id===id)||s.actions?.some(a=>a.peer===from&&a.direction==='incoming'&&a.id===id))return false;
-   const old=s.messages.find(m=>m.id===id&&m.peer===from&&m.direction==='incoming');if(old)return JSON.stringify(old.group)===JSON.stringify(group)&&old.text===text&&sameReply(old.reply,reply)&&(!old.attachment&&!attachment||!!old.attachment&&!!attachment&&attachmentDescriptorFingerprint(old.attachment)===attachmentDescriptorFingerprint(attachment));
-   if(s.messages.length>=5000)return false;s.messages.push({id,peer:from,direction:'incoming',text,at:d.now(),status:attachment?'pending':'delivered',...(attachment?{attachment}: {}),...(reply?{reply}: {}),...(group?{group}: {})});s.hiddenChats=s.hiddenChats?.filter(k=>k!==(group?'group:'+group.id:from));await save(s);return true;
+   const old=s.messages.find(m=>m.id===id&&m.peer===from&&m.direction==='incoming');if(old)return old.createdAt===createdAt&&JSON.stringify(old.group)===JSON.stringify(group)&&old.text===text&&sameReply(old.reply,reply)&&(!old.attachment&&!attachment||!!old.attachment&&!!attachment&&attachmentDescriptorFingerprint(old.attachment)===attachmentDescriptorFingerprint(attachment));
+   if(s.messages.length>=5000)return false;if(createdAt!==undefined&&!(s.timestampPeers??=[]).includes(from)&&s.timestampPeers.length<500)s.timestampPeers.push(from);s.messages.push({id,peer:from,direction:'incoming',text,at:createdAt??d.now(),...(createdAt!==undefined?{createdAt}:{}),status:attachment?'pending':'delivered',...(attachment?{attachment}: {}),...(reply?{reply}: {}),...(group?{group}: {})});s.hiddenChats=s.hiddenChats?.filter(k=>k!==(group?'group:'+group.id:from));await save(s);return true;
   }),
   networkStored:(peer:string,id:string,until:number,attachment=false)=>run(async()=>{
    if(!Number.isSafeInteger(until)||until<=d.now())return;
@@ -212,7 +231,9 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    const field=attachment?'attachmentStoredUntil':'networkStoredUntil';
    if((m[field]??0)>=until)return;m[field]=until;await save(s);
   }),
-  delivered:(peer:string,id:string)=>run(async()=>{const s=await read(),groupAction=s.groupActions?.find(a=>a.id===id&&a.peer===peer&&a.direction==='outgoing');if(groupAction){groupAction.status='delivered';await save(s);return;}const packet=s.groupPackets?.find(v=>v.peer===peer&&v.id===id);if(packet){packet.status='delivered';await save(s);return;}const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(m){if(m.attachment)m.descriptorDelivered=true;else m.status='delivered';await save(s);}else{const a=s.actions?.find(a=>a.peer===peer&&a.id===id&&a.direction==='outgoing');if(a){a.status='delivered';await save(s);}}}),
+  delivered:(peer:string,id:string)=>run(async()=>{const s=await read();const request=s.profileRequests?.find(p=>p.peer===peer&&p.id===id);if(request){s.profileRequests=s.profileRequests!.filter(p=>p!==request);await save(s);return;}
+   const profile=s.ownProfile,delivery=s.profileDeliveries?.find(p=>p.peer===peer);if(profile&&delivery){for(let i=0;i<profileCount(profile.manifest);i++)if(profilePartId(d.owner,peer,profile.manifest,i)===id){if(!delivery.acked.includes(i))delivery.acked.push(i);await save(s);const next=pendingProfiles(s,d.owner).find(p=>p.peer===peer);if(next)d.queued?.(peer,next.id);return;}}
+   const groupAction=s.groupActions?.find(a=>a.id===id&&a.peer===peer&&a.direction==='outgoing');if(groupAction){groupAction.status='delivered';await save(s);return;}const packet=s.groupPackets?.find(v=>v.peer===peer&&v.id===id);if(packet){packet.status='delivered';await save(s);return;}const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(m){if(m.attachment)m.descriptorDelivered=true;else m.status='delivered';await save(s);}else{const a=s.actions?.find(a=>a.peer===peer&&a.id===id&&a.direction==='outgoing');if(a){a.status='delivered';await save(s);}}}),
   attachmentComplete:(peer:string,id:string,direction:RootChatMessage['direction'],receipt:AttachmentReceipt)=>run(async()=>{
    const s=await read(),m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction===direction);if(!m?.attachment||!await d.verifyAttachmentReceipt?.(m.attachment,receipt))return false;
    check();m.status='delivered';if(direction==='outgoing')m.descriptorDelivered=true;await save(s);return true;
@@ -221,13 +242,14 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
 }
 export const encodeRootChat=(recipient:string,id:string,text:string,reply?:RootChatReply)=>JSON.stringify(reply?['axonic-root-reply-v1',recipient,id,{text,reply}]:['axonic-root-text-v1',recipient,id,text]);
 export const encodeRootAttachment=(recipient:string,id:string,descriptor:AttachmentDescriptor,reply?:RootChatReply)=>JSON.stringify(reply?['axonic-root-attachment-reply-v1',recipient,id,{descriptor,reply}]:['axonic-root-attachment-v1',recipient,id,descriptor]);
-export const encodeRootMessage=(m:RootChatMessage)=>m.group?encodeRootGroupMessage(m):m.attachment?encodeRootAttachment(m.peer,m.id,m.attachment,m.reply):encodeRootChat(m.peer,m.id,m.text,m.reply);
+export const encodeRootMessage=(m:RootChatMessage)=>{const raw=m.group?encodeRootGroupMessage(m):m.attachment?encodeRootAttachment(m.peer,m.id,m.attachment,m.reply):encodeRootChat(m.peer,m.id,m.text,m.reply);if(m.group||m.createdAt===undefined)return raw;const a=JSON.parse(raw);a.push(m.createdAt);return JSON.stringify(a);};
 
 export const pendingRootChat=(s:RootChatState,owner?:string)=>[
  ...(s.groupPackets??[]).filter(p=>p.status==='pending').map(p=>({peer:p.peer,id:p.id,raw:p.raw})),
  ...s.messages.filter(m=>m.direction==='outgoing'&&m.status==='pending'&&!(m.attachment&&m.descriptorDelivered)&&(!m.group||!!owner&&rootGroupAllowed(s,owner,m.peer,m.group)&&s.groups?.find(g=>g.id===m.group!.id)?.accepted)).map(m=>({peer:m.peer,id:m.id,raw:encodeRootMessage(m)})),
  ...(s.groupActions??[]).filter(a=>a.direction==='outgoing'&&a.status==='pending'&&!!owner&&rootGroupAllowed(s,owner,a.peer,a.group)&&s.groups?.find(g=>g.id===a.group.id)?.accepted).map(a=>({peer:a.peer,id:a.id,raw:encodeGroupAction(a)})),
  ...(s.actions??[]).filter(a=>a.direction==='outgoing'&&a.status==='pending').map(a=>({peer:a.peer,id:a.id,raw:encodeRootAction(a)}))
+ ,...(owner?pendingProfiles(s,owner):[])
 ].filter(m=>!s.contacts.find(c=>c.account===m.peer)?.blocked);
 
 

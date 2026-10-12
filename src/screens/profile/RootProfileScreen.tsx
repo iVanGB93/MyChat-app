@@ -1,3 +1,5 @@
+import {updateSharedProfileAvatar,removeSharedProfileAvatar} from '../../modules/messaging';
+import RecoveryWordsReveal from './RecoveryWordsReveal';
 import {KeyboardFormScrollView} from '../../components/ui/KeyboardForm';
 import {appUpdates,openAppDestination} from '../../modules/maintenance';
 import Constants from 'expo-constants';
@@ -10,7 +12,7 @@ import {Ionicons} from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import * as ImagePicker from 'expo-image-picker';
 import * as Clipboard from 'expo-clipboard';
-import {readProfileAvatar,storeProfileAvatar,getAutoSaveReceivedMedia,setAutoSaveReceivedMedia,finishRootMediaCleanup} from '../../modules/storage';
+import {readProfileAvatar,getAutoSaveReceivedMedia,setAutoSaveReceivedMedia,finishRootMediaCleanup} from '../../modules/storage';
 
 import Avatar from '../../components/ui/Avatar';
 import {useTheme} from '../../contexts/ThemeContext';
@@ -60,16 +62,16 @@ export default function RootProfileScreen({account, loginName, connected, childr
     const options = {mediaTypes: ['images'] as ImagePicker.MediaType[], allowsEditing: true, aspect: [1, 1] as [number, number], quality: 0.8};
     const result = camera ? await ImagePicker.launchCameraAsync(options) : await ImagePicker.launchImageLibraryAsync(options);
     if (result.canceled || !result.assets?.[0]) return;
-    const destination = await storeProfileAvatar(account,result.assets[0].uri,avatar); setAvatar(destination);
+    const destination = await updateSharedProfileAvatar(account,result.assets[0].uri,avatar); setAvatar(destination);
   };
   const card = {backgroundColor: Colors.surface, borderColor: Colors.neonBorder};
   return <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
     <View style={[styles.card, styles.identityCard, card]}>
       <View style={styles.identityRow}>
       <View style={styles.identityAvatarColumn}>
-      <TouchableOpacity accessibilityLabel="Change profile photo" disabled={busy} onPress={() => Alert.alert('Profile photo', 'Choose a photo for this device.', [
+      <TouchableOpacity accessibilityLabel="Change profile photo" disabled={busy} onPress={() => Alert.alert('Profile photo', 'Choose a photo to share with people you chat with.', [
         {text: 'Camera', onPress: () => void run(() => chooseAvatar(true))},
-        {text: 'Photo library', onPress: () => void run(() => chooseAvatar(false))}, {text: 'Cancel', style: 'cancel'},
+        {text: 'Photo library', onPress: () => void run(() => chooseAvatar(false))}, ...(avatar?[{text:'Remove photo',style:'destructive' as const,onPress:()=>void run(async()=>{await removeSharedProfileAvatar(account);setAvatar(null);})}]:[]), {text: 'Cancel', style: 'cancel'},
       ])}>
         <Avatar name={loginName || 'Axon'} uri={avatar} size={100}/>
         <View style={[styles.avatarEditBadge, {backgroundColor: Colors.surface, borderColor: Colors.primary}]}><Ionicons name="camera" size={14} color={Colors.primary}/></View>
@@ -109,7 +111,7 @@ export default function RootProfileScreen({account, loginName, connected, childr
     <View style={[styles.card,card]}><Text style={[styles.cardTitle,{color:Colors.primary}]}>◈ PRIVACY</Text><TouchableOpacity style={styles.actionRow} onPress={()=>navigation.navigate('BlockedUsers')}><View style={styles.actionLeft}><Ionicons name="ban-outline" size={20} color={Colors.primary}/><Text style={[styles.actionLabel,{color:Colors.text}]}>BLOCKED USERS</Text></View><Ionicons name="chevron-forward" size={20} color={Colors.textTertiary}/></TouchableOpacity></View>
     <View style={[styles.card,card]}><Text style={[styles.cardTitle,{color:Colors.primary}]}>◈ AXONIC</Text>{([['privacy','PRIVACY POLICY','shield-checkmark-outline'],['website','WEBSITE','globe-outline'],['store','GOOGLE PLAY','logo-google-playstore']] as const).map(([destination,label,icon])=><TouchableOpacity key={destination} accessibilityLabel={label} disabled={busy} style={styles.actionRow} onPress={()=>void run(()=>openAppDestination(destination))}><View style={styles.actionLeft}><Ionicons name={icon} size={20} color={Colors.primary}/><Text style={[styles.actionLabel,{color:Colors.text}]}>{label}</Text></View><Ionicons name="open-outline" size={20} color={Colors.textTertiary}/></TouchableOpacity>)}<TouchableOpacity accessibilityLabel={update.status==='ready'?'Install Axonic update':'Check Axonic updates'} disabled={busy||__DEV__||update.status==='downloading'||update.status==='checking'} style={styles.actionRow} onPress={()=>void run(async()=>{if(update.status==='ready'){Alert.alert('Install update?','Axonic will restart to finish installing the update.',[{text:'Cancel',style:'cancel'},{text:'Install',onPress:()=>void run(async()=>{if(!await appUpdates.install())Alert.alert('Update postponed','Finish any call, recording, or attachment transfer, then try again.');})}]);}else await appUpdates.check(true,true);})}><View style={styles.actionLeft}><Ionicons name="download-outline" size={20} color={Colors.primary}/><View style={{flex:1}}><Text style={[styles.actionLabel,{color:Colors.text}]}>APP UPDATES</Text><Text style={[styles.toggleDesc,{color:Colors.textSecondary}]}>{updateLabel}</Text></View></View><Ionicons name="chevron-forward" size={20} color={Colors.textTertiary}/></TouchableOpacity></View>
     <Text style={[styles.versionText,{color:Colors.textTertiary}]}>Axonic · Version {Constants.expoConfig?.version ?? 'unavailable'}</Text>
-    <Modal visible={accountOpen} animationType="slide" onRequestClose={()=>setAccountOpen(false)}><View style={{flex:1,backgroundColor:Colors.background,paddingTop:insets.top}}><View style={{flexDirection:'row',alignItems:'center',padding:16,gap:16,backgroundColor:Colors.headerBg}}><TouchableOpacity accessibilityLabel="Back to profile" onPress={()=>setAccountOpen(false)}><Ionicons name="arrow-back" size={26} color={Colors.headerText}/></TouchableOpacity><Text style={{color:Colors.headerText,fontSize:18,fontWeight:'600'}}>Account and security</Text></View><KeyboardFormScrollView contentContainerStyle={{padding:16,paddingBottom:insets.bottom+24,gap:16}}>{children}</KeyboardFormScrollView></View></Modal>
+    <Modal visible={accountOpen} animationType="slide" onRequestClose={()=>setAccountOpen(false)}><View style={{flex:1,backgroundColor:Colors.background,paddingTop:insets.top}}><View style={{flexDirection:'row',alignItems:'center',padding:16,gap:16,backgroundColor:Colors.headerBg}}><TouchableOpacity accessibilityLabel="Back to profile" onPress={()=>setAccountOpen(false)}><Ionicons name="arrow-back" size={26} color={Colors.headerText}/></TouchableOpacity><Text style={{color:Colors.headerText,fontSize:18,fontWeight:'600'}}>Account and security</Text></View><KeyboardFormScrollView contentContainerStyle={{padding:16,paddingBottom:insets.bottom+24,gap:16}}><RecoveryWordsReveal account={account} visible={accountOpen}/>{children}</KeyboardFormScrollView></View></Modal>
     <Modal visible={qrOpen} animationType="fade" presentationStyle="fullScreen" onRequestClose={() => setQrOpen(false)}>
       <TouchableOpacity activeOpacity={1} accessibilityRole="button" accessibilityLabel="Close enlarged QR code" onPress={() => setQrOpen(false)} style={[styles.expandedQrScreen, {backgroundColor: Colors.background, paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24, paddingLeft: insets.left + 16, paddingRight: insets.right + 16}]}>
         <Text style={[styles.cardTitle, {color: Colors.primary}]}>YOUR AXON</Text>

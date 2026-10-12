@@ -53,7 +53,8 @@ export function createPersistentAxon(d: {
 }) {
   let stopped = false, closeReason: string | null = null, remote: string | null = null, peer: IdentityPeer | null = null;
   let deferredFrames: string[] = [], deferredBytes = 0;
-  let peerAttachments=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
+  let peerMessageTimestamps=false,peerProfileUpdates=false;
+  let peerSharedAttachments=false,peerAttachments=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
   let mediaInbound=0,mediaWaiting=0,mediaWindow=1,mediaSuccesses=0;
   let lastMediaAt=-Infinity;
   let peerBulk=false,bulkInbound=0,bulkFrames=0;
@@ -253,6 +254,8 @@ export function createPersistentAxon(d: {
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop('invalid-hello'); return; }
         peerAttachments=f.attachments===1&&d.wire.attachments!==false;
+        peerMessageTimestamps=f.messageTimestamps===1;peerProfileUpdates=f.profileUpdates===1;
+        peerSharedAttachments=peerAttachments&&f.sharedAttachments===2;
         peerMediaLane=peerAttachments&&f.mediaLane===1&&d.wire.mediaLane===true;
         peerBulk=peerMediaLane&&f.bulkAttachments===1&&d.wire.bulkAttachments===true;
         smallBatches=!peerBulk&&peerMediaLane&&f.smallAttachmentBatches===1&&d.wire.smallAttachmentBatches===true;
@@ -354,7 +357,7 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(chat?{messageTimestamps:1,profileUpdates:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
     mediaRelayPeer:()=>peerMediaRelay && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
@@ -453,6 +456,9 @@ export function createPersistentAxon(d: {
       } catch { return null; }
       finally { custodyWaiting--; }
     },
+    supportsProfileUpdates:()=>peerProfileUpdates&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
+    supportsMessageTimestamps:()=>peerMessageTimestamps&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
+    supportsSharedAttachments:()=>peerSharedAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachments:()=>peerAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachmentBulk:()=>peerBulk&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     attachmentBatchChunks:()=>smallBatches?3:128,

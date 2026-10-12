@@ -1,11 +1,11 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),ts=require('typescript');
-function harness(failConfig=false,missing=false){
+function harness(failConfig=false,missing=false,rejectCandidates=false){
   const effects=[],cleanups=[],sent=[],legacySent=[],pcs=[];
   let configReads=0,subscriptions=0,listener,closed=0,stopped=0,disconnected=0;
   const track={kind:'audio',stop(){stopped++;}},stream={getTracks:()=>[track]};
   class PC {
-    constructor(config){this.config=config;this.iceGatheringState='complete';pcs.push(this);}
+    constructor(config){this.config=config;this.iceGatheringState='complete';this.signalingState='stable';pcs.push(this);}
     addTrack(){} getStats(){return Promise.resolve(new Map());} getSenders(){return [];}
     createOffer(){return Promise.resolve({type:'offer',sdp:'v=0'});}
     createAnswer(){return Promise.resolve({type:'answer',sdp:'v=0'});}
@@ -33,7 +33,7 @@ function harness(failConfig=false,missing=false){
   return exports;
   }
   const exports=loadHook('useWebRTCCore');
-  const transport={send:async(...args)=>{sent.push(args);return true;},subscribe:fn=>{listener=fn;return()=>{listener=null;};},
+  const transport={send:async(...args)=>{sent.push(args);return !(rejectCandidates&&args[0]==='ice-candidate');},subscribe:fn=>{listener=fn;return()=>{listener=null;};},
     loadIceConfig:async()=>{if(failConfig)throw Error('unavailable');return {ice_servers:[],ice_transport_policy:'all'};}};
   const hook=exports.default({callId:'one-call',peerUserId:14,callType:'voice',isOutgoing:true,
     mediaTransport:missing?undefined:transport,onDisconnected:()=>{disconnected++;}});
@@ -66,4 +66,12 @@ test('failed neuron ICE config fails closed without Django fallback or peer crea
 
 test('missing neuron transport fails closed without creating a peer connection',async()=>{
  const h=harness(false,true);try{await settle();await h.hook.startAsOfferer();await settle();assert.equal(h.pcs.length,0);assert.equal(h.sent.length,0);assert.equal(h.counts().disconnected,1);}finally{h.unmount();}
+});
+
+test('transient ICE disconnect preserves native media and failed ICE restarts before ending',async()=>{
+ const h=harness();try{await h.hook.startAsOfferer();const pc=h.pcs[0];pc.iceConnectionState='disconnected';pc.oniceconnectionstatechange();assert.equal(h.counts().disconnected,0);assert.equal(h.counts().stopped,0);pc.iceConnectionState='connected';pc.oniceconnectionstatechange();pc.iceConnectionState='failed';pc.oniceconnectionstatechange();await settle();assert.equal(h.sent.filter(s=>s[0]==='offer').length,2);assert.equal(h.counts().disconnected,0);pc.iceConnectionState='completed';pc.oniceconnectionstatechange();}finally{h.unmount();}
+});
+
+test('failed optional trickle candidate does not tear down established media',async()=>{
+ const h=harness(false,false,true);try{await h.hook.startAsOfferer();const pc=h.pcs[0];pc.iceConnectionState='connected';pc.oniceconnectionstatechange();pc.onicecandidate({candidate:{toJSON:()=>({candidate:'late candidate'})}});await settle();assert.equal(h.sent.at(-1)[0],'ice-candidate');assert.equal(h.counts().disconnected,0);assert.equal(h.counts().stopped,0);}finally{h.unmount();}
 });

@@ -3,6 +3,10 @@ import { sanitizeCrashEvent } from './crashReportingPrivacy';
 
 let initialized = false;
 
+export function reportRenderFailure(error:Error,scope:'app'|'screens'|'calls'){
+  try { Sentry.captureException(error,{tags:{renderBoundary:scope}}); } catch { /* Reporting must not break recovery. */ }
+}
+
 /** An empty DSN disables reporting. Debug builds require explicit opt-in. */
 export function configureCrashReporting(): void {
   if (initialized) return;

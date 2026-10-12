@@ -5,11 +5,12 @@ import java.security.MessageDigest
 
 /** Read-back verification of app-owned attachment bytes; never accepts a remote path. */
 internal object AttachmentFileHash {
-  fun sha256(filesDir: File, owner: String, digest: String, completed: Boolean, expectedBytes: Long): String {
+  fun sha256(filesDir: File, owner: String, digest: String, completed: Boolean, expectedBytes: Long, staged: Boolean = false): String {
     require(owner.matches(Regex("axonic:1:[0-9a-f]{64}")) && digest.matches(Regex("[0-9a-f]{64}")))
     require(expectedBytes in 1..250L * 1024 * 1024)
     val root = filesDir.canonicalFile
-    val file = File(root, "axonic-own-attachments-v1/${owner.substring(9)}/files/$digest/${if (completed) "content" else "partial"}")
+    require(!staged || completed)
+    val file = File(root, "axonic-own-attachments-v1/${owner.substring(9)}/${if (staged) "staging" else "files"}/$digest/${if (completed) "content" else "partial"}")
     require(file.canonicalFile == file.absoluteFile && file.isFile && file.length() == expectedBytes) { "Attachment file unavailable" }
     val hash = MessageDigest.getInstance("SHA-256")
     val buffer = ByteArray(65536)

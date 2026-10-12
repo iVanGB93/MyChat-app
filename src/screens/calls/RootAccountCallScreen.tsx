@@ -1,9 +1,10 @@
+import {readSharedAvatar,subscribeSharedAvatars} from '../../modules/storage';
 import {readRootNotificationPreferences} from '../../modules/messaging/notifications';
 import {localAccount} from '../../modules/identity';
 import {shortIdentity} from '../../modules/identity';
 import {startRootCallLease,stopRootCallLease,markRootCallConnected} from '../../modules/messaging';
 import React,{useCallback,useEffect,useRef,useState} from 'react';
-import {AppState,Modal,Switch,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
+import {AppState,Modal,Platform,Switch,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {StatusBar} from 'expo-status-bar';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -29,10 +30,18 @@ export async function ensureRootCallPermissions(kind:'voice'|'video'){
 }
 export default function RootAccountCallScreen(){
  const [call,setCall]=useState<NeuronCallView<string>|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [avatarUri,setAvatarUri]=useState<string|null>(null);
+ useEffect(()=>{let active=true;setAvatarUri(null);const owner=localAccount.status().account,peer=call?.peerUser;const refresh=async()=>{if(!owner||!peer)return;const uri=await readSharedAvatar(owner,peer);if(active)setAvatarUri(uri);};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[call?.peerUser]);
  const running=useRef(false),{colors}=useTheme(),[name,setName]=useState(''),[minimizedId,setMinimizedId]=useState<string|null>(null);
  useEffect(()=>{let alive=true;const peer=call?.peerUser;if(!peer)return;setName(shortIdentity(peer));const refresh=async()=>{try{const s=await conversations().snapshot();if(alive)setName(s.contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer));}catch{if(alive)setName(shortIdentity(peer));}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{alive=false;clearInterval(timer);};},[call?.peerUser]);
  useEffect(()=>{if(call?.status!=='ringing')return;let active=true;const owner=localAccount.status().account;if(owner)void readRootNotificationPreferences(owner).then(p=>{if(active&&p.sound)playLooping(call.outgoing?'caller_ringback':'ringtone');}).catch(()=>{});return()=>{active=false;stopLooping();};},[call?.status,call?.outgoing]);
  useEffect(()=>subscribeLocalAccountCalls(v=>{setCall(v);setError('');}),[]);
+ useEffect(()=>{
+  if(!call||call.outgoing||call.status!=='ringing')return;
+  let confirmed=false,pending=false,active=true;
+  const confirm=async()=>{if(!active||confirmed||pending||AppState.currentState!=='active')return;pending=true;try{confirmed=!!await localAccountCalls()?.confirmRinging(call.id);}catch{/* Retry transient account/runtime startup without changing the incoming UI. */}finally{pending=false;}};
+  void confirm();const timer=setInterval(()=>void confirm(),1000),listener=AppState.addEventListener('change',state=>{if(state==='active')void confirm();});return()=>{active=false;clearInterval(timer);listener.remove();};
+ },[call?.id,call?.outgoing,call?.status]);
  useEffect(()=>{
   if(call?.status!=='ended')return;
   const id=call.id;
@@ -48,14 +57,14 @@ export default function RootAccountCallScreen(){
  };
  if(!call)return null;
  const ended=call.status==='ended';
- const status=ended?call.reason??'Call ended':call.status==='connecting'?'Connecting…':call.outgoing?'Ringing…':'Incoming '+call.media+' call';
+ const status=ended?call.reason??'Call ended':call.status==='finding'?'Finding…':call.status==='connecting'?'Connecting…':call.outgoing?'Ringing…':'Incoming '+call.media+' call';
  const minimized=minimizedId===call.id,minimize=()=>setMinimizedId(call.id),restore=()=>setMinimizedId(null);
  // Media owns its own presentation so closing the full-screen Modal never unmounts WebRTC.
- if(call.status==='ready'&&call.transport)return <RootMedia key={call.id} call={call} name={name} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
+ if(call.status==='ready'&&call.transport)return <RootMedia avatarUri={avatarUri} key={call.id} call={call} name={name} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
  if(minimized)return ended?null:<MinimizedCall name={name} status={status} video={call.media==='video'} restore={restore} end={end}/>;
  return <Modal visible animationType="slide" onRequestClose={()=>ended?setCall(null):minimize()}>
   <StatusBar style="light"/>
-  {!call.outgoing&&call.status==='ringing'?<IncomingCallAppearance callerName={name} isVideo={call.media==='video'} busy={busy} error={error} handleAccept={()=>void answer()} handleReject={end}/>:<CallLayout name={name} status={status} video={call.media==='video'}>
+  {!call.outgoing&&call.status==='ringing'?<IncomingCallAppearance avatarUri={avatarUri} callerName={name} isVideo={call.media==='video'} busy={busy} error={error} handleAccept={()=>void answer()} handleReject={end}/>:<CallLayout avatarUri={avatarUri} name={name} status={status} video={call.media==='video'}>
    {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
    <View style={{alignItems:'center',padding:24}}><EndButton ended={ended} onPress={()=>ended?setCall(null):end()}/></View>
   </CallLayout>}
@@ -73,7 +82,7 @@ function MinimizedCall({name,status,video,stream,restore,end}:{name:string;statu
  </View>;
 }
 
-function RootMedia({call,name,end,minimized,minimize,restore}:{call:NeuronCallView<string>;name:string;end:()=>void;minimized:boolean;minimize():void;restore():void}){
+function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:NeuronCallView<string>;name:string;avatarUri?:string|null;end:()=>void;minimized:boolean;minimize():void;restore():void}){
  useKeepAwake('root-account-call');
  const {colors}=useTheme(),styles=makeStyles(colors),[connected,setConnected]=useState(false),[speaker,setSpeaker]=useState(false),[error,setError]=useState('');
  const started=useRef(false),audioBusy=useRef(false),connectedAt=useRef<number|null>(null);
@@ -94,12 +103,16 @@ function RootMedia({call,name,end,minimized,minimize,restore}:{call:NeuronCallVi
   {remote&&local&&foreground&&<View pointerEvents="none" style={[styles.pipWrap,{top:insets.top+16,right:insets.right+16}]}>{rtc.isCameraOff?<View style={[styles.pip,{alignItems:'center',justifyContent:'center',gap:8}]}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>Camera off</Text></View>:<RTCView streamURL={local} objectFit="cover" mirror style={styles.pip} zOrder={1}/>}</View>}
  </>;
  const quality=rtc.callQuality;
- const status=connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…';
+ const status=rtc.recovering?'Reconnecting�':connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…';
  const minimizeMedia=()=>{setOptions(false);minimize();};
+ const homeWindow=Platform.OS==='android'&&!foreground;
  return <>
- {minimized&&<MinimizedCall name={name} status={status} video={video} stream={remote||localVisible} restore={restore} end={end}/>}
- <Modal visible={!minimized} animationType="slide" onRequestClose={minimizeMedia}>
- <CallLayout name={name} video={video} status={status} background={background} show={!video||controls} avatar={!video||(!remote&&!localVisible)}>
+ {homeWindow&&<View testID="axonic-system-call-window" pointerEvents="none" style={[StyleSheet.absoluteFill,{backgroundColor:'#020413',zIndex:100,elevation:20,alignItems:'center',justifyContent:'center',gap:8}]}>
+  {video&&(remote||localVisible)?<RTCView streamURL={(remote||localVisible)!} objectFit="contain" mirror={!remote} style={StyleSheet.absoluteFill} zOrder={0}/>:<><Ionicons name={video?'videocam':'call'} size={36} color={colors.primary}/><Text numberOfLines={2} style={{color:'#fff',fontSize:16,textAlign:'center',paddingHorizontal:8}}>{name}</Text><Text style={{color:'#fff',fontSize:14}}>{status}</Text></>}
+ </View>}
+ {!homeWindow&&minimized&&<MinimizedCall name={name} status={status} video={video} stream={remote||localVisible} restore={restore} end={end}/>}
+ <Modal visible={!homeWindow&&!minimized} animationType="slide" onRequestClose={minimizeMedia}>
+ <CallLayout avatarUri={avatarUri} name={name} video={video} status={status} background={background} show={!video||controls} avatar={!video||(!remote&&!localVisible)}>
   {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
   {video&&quality.level!=='unknown'&&<Text style={[styles.quality,{textAlign:'center',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}]}>{quality.level.toUpperCase()}{quality.roundTripTimeMs!=null?` • ${quality.roundTripTimeMs} ms`:''}{quality.packetLossPercent!=null?` • ${quality.packetLossPercent}% loss`:''}</Text>}
   <View style={[styles.actions,video&&{paddingHorizontal:8}]}>
@@ -112,7 +125,7 @@ function RootMedia({call,name,end,minimized,minimize,restore}:{call:NeuronCallVi
  </CallLayout>
  <Pressable accessibilityRole="button" accessibilityLabel="Minimize call" testID="axonic-minimize-call" onPress={minimizeMedia} style={{position:'absolute',top:insets.top+12,left:insets.left+12,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="chevron-down" size={28} color="#fff"/></Pressable>
  </Modal>
- <Modal visible={!minimized&&options&&video} transparent animationType="slide" onRequestClose={()=>setOptions(false)}>
+ <Modal visible={!homeWindow&&!minimized&&options&&video} transparent animationType="slide" onRequestClose={()=>setOptions(false)}>
   <View style={{flex:1,justifyContent:'flex-end',backgroundColor:'rgba(0,0,0,0.55)'}}><Pressable accessibilityLabel="Close call options" onPress={()=>setOptions(false)} style={StyleSheet.absoluteFill}/>
    <ScrollView style={{flexGrow:0,backgroundColor:colors.background,borderTopLeftRadius:24,borderTopRightRadius:24,maxHeight:'85%'}} contentContainerStyle={{padding:24,paddingLeft:insets.left+24,paddingRight:insets.right+24,paddingBottom:Math.max(insets.bottom,16)+12}}>
     <Text accessibilityRole="header" style={{color:colors.text,fontSize:22}}>Video quality</Text><Text style={{color:colors.textSecondary,marginVertical:12}}>Controls video sent by this phone. Automatic adapts to your connection.</Text>

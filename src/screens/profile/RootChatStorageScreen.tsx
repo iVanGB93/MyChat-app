@@ -1,4 +1,6 @@
-import React,{useEffect,useState} from 'react';
+import {useForegroundPoll} from '../../hooks/useForegroundPoll';
+import {useIsFocused} from '@react-navigation/native';
+import React,{useState} from 'react';
 import {ScrollView,Text,Pressable,View} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import type {NativeStackScreenProps} from '@react-navigation/native-stack';
@@ -16,13 +18,17 @@ import {ThemedAlert as Alert} from '../../components/ui/ThemedAlert';
 import {chatStorageStyles as styles} from './chat-storage-styles';
 const bytes=(n:number)=>n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?(n/1024).toFixed(1)+' KB':n+' B';
 export default function RootChatStorageScreen({route,navigation}:NativeStackScreenProps<RootAccountRoutes,'ChatStorage'>){
- const {colors}=useTheme(),owner=localAccount.status().account,[state,setState]=useState<RootChatState>({version:1,contacts:[],messages:[]}),[error,setError]=useState('');
- useEffect(()=>{let active=true;const refresh=async()=>{try{const snapshot=await conversations().snapshot();if(active&&localAccount.status().account===owner){setState(rootChatView(owner!,snapshot));setError('');}}catch{if(active)setError('Could not read chat storage');}};void refresh();const timer=setInterval(()=>void refresh(),2000);return()=>{active=false;clearInterval(timer);};},[owner]);
+ const focused=useIsFocused();
+ const {colors}=useTheme(),owner=localAccount.status().account,[state,setState]=useState<RootChatState>({version:1,contacts:[],messages:[]}),[error,setError]=useState(''),[storedSizes,setStoredSizes]=useState<Record<string,number>>({});
+ useForegroundPoll(async current=>{try{const snapshot=await conversations().snapshot();if(current()&&localAccount.status().account===owner){const next=rootChatView(owner!,snapshot),sizes:Record<string,number>={};for(const message of next.messages){if(!message.attachment||message.deleted)continue;const digest=attachmentDigest(message.attachment.manifest);if(digest in sizes)continue;try{const file=rootAttachmentFile(owner!,digest);sizes[digest]=file.exists?file.size:0;}catch{sizes[digest]=0;}}setStoredSizes(old=>JSON.stringify(old)===JSON.stringify(sizes)?old:sizes);setState(old=>JSON.stringify(old)===JSON.stringify(next)?old:next);setError('');}}catch{if(current())setError('Could not read chat storage');}},2000,focused);
+
  const peer=route.params?.peer,group=route.params?.group;
  const messages=state.messages.filter(m=>group?m.group?.id===group:peer?!m.group&&m.peer===peer:true);
  const files=messages.filter(m=>m.attachment&&!m.deleted),unique=new Map<string,typeof files[number]>();
  for(const m of files)unique.set(attachmentDigest(m.attachment!.manifest),m);
- const rows=[...unique.values()],sizes=new Map<string,number>();let total=0;for(const message of rows){try{const file=rootAttachmentFile(owner!,attachmentDigest(message.attachment!.manifest));if(file.exists){const size=file.size;sizes.set(attachmentDigest(message.attachment!.manifest),size);total+=size;}}catch{}}
+ const rows=[...unique.values()],sizes=new Map(Object.entries(storedSizes));
+ const total=rows.reduce((sum,message)=>sum+(sizes.get(attachmentDigest(message.attachment!.manifest))??0),0);
+
  const filtered=!!peer||!!group;
  return <ScrollView style={[styles.container,{backgroundColor:colors.background}]} contentContainerStyle={styles.content}>
   <View style={[styles.totalCard,{backgroundColor:colors.surface,borderColor:colors.neonBorder}]}><Text style={[styles.title,{color:colors.primary}]}>DEVICE CHAT STORAGE</Text><Text style={[styles.hint,{color:colors.textSecondary}]}>Your messages and media on this device</Text><View style={[styles.total,{backgroundColor:colors.highlight,borderColor:colors.primary}]}><Text style={[styles.totalValue,{color:colors.primary}]}>{bytes(total)}</Text><Text style={[styles.totalLabel,{color:colors.textSecondary}]}>DOWNLOADED MEDIA</Text><Text style={[styles.detail,{color:colors.textTertiary}]}>{messages.length} messages · {rows.length} attachments</Text></View></View>

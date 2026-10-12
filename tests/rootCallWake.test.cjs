@@ -24,7 +24,7 @@ function fixture(){
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootCallWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)));
  const fields={record:sender,callId:'ab'.repeat(32),caller:sender.account,callee:recipient.account,callerDevice:device.id,media:'voice',kind:'invite',invitation:null,sequence:0,issuedAt:now,expiresAt:now+60000};
  const invite=c.signCallControl(fields,seed(2),now),data=w.createCallWake(invite,recipientDevice.id,now);
- return {mod,storage,shown,cancelled,recipient,recipientDevice,data,invite,sender,
+ return {mod,native,storage,shown,cancelled,recipient,recipientDevice,data,invite,sender,
   foreground:()=>{imports['react-native'].AppState.currentState='active';},
   cancel:()=>w.createCallWake(c.signCallControl({...fields,kind:'cancel',invitation:c.callControlDigest(JSON.parse(invite)),sequence:1},seed(2),now),recipientDevice.id,now),
   block:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[{account:sender.account,blocked:true}]})),
@@ -39,6 +39,17 @@ test('verified direct incoming calls notify in background once and clear on fore
  await f.mod.syncRootCallNotification(f.recipient.account,view);await f.mod.syncRootCallNotification(f.recipient.account,view);
  assert.equal(f.shown.length,1);assert.equal(f.shown[0].android.pressAction.launchActivity,'default');
  f.foreground();await f.mod.syncRootCallNotification(f.recipient.account,view);assert.ok(f.cancelled.includes('root-call:'+view.id));
+});
+test('notification confirmation requires successful allowed presentation, never denied permission or a blocked channel',async()=>{
+ for(const mode of ['denied','blocked-channel','failed','shown']){
+  const f=fixture();await f.init();const native=f.mod;
+  // Fixture exposes the same Notifee object used by the production notification adapter.
+  f.native.getNotificationSettings=async()=>({authorizationStatus:mode==='denied'?0:1});
+  f.native.getChannel=async()=>({blocked:mode==='blocked-channel'});
+  if(mode==='failed')f.native.displayNotification=async()=>{throw Error('OS notification failed');};
+  const work=native.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing'});
+  if(mode==='failed')await assert.rejects(work);else assert.equal(await work,mode==='shown',mode);
+ }
 });
 test('direct call notifications obey blocking, preferences, and local identity',async()=>{
  for(const mode of ['blocked','disabled','wrong-owner','outgoing','ended']){

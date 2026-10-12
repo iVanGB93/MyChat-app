@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const stream = require('./patch-webrtc-stream.cjs');
 const root = path.resolve(__dirname, '..');
 const pkg = path.join(root, 'node_modules/react-native-webrtc');
 const dir = path.join(pkg, 'android/src/main/java/com/oney/WebRTCModule');
@@ -36,7 +37,7 @@ const hook = `        // Axonic identity bridge guard v1
 `;
 function patch(source, version) {
     if (version !== '124.0.7') throw Error('Review the identity bridge guard for this react-native-webrtc version');
-    const normalized = source.replace(/\r\n/g, '\n');
+    const normalized = stream.strip(source.replace(/\r\n/g, '\n'),'DataChannelWrapper.java');
     const original = normalized.replace(authenticatedMethod, '').replace(fields, '').replace(hook, '')
         .replace('DataChannel dataChannel, boolean axonicIdentity)', 'DataChannel dataChannel)')
         .replace('        this.axonicIdentity = axonicIdentity;\n', '');
@@ -50,7 +51,7 @@ function patch(source, version) {
         .replace('    public void onMessage(DataChannel.Buffer buffer) {\n',
             '    public void onMessage(DataChannel.Buffer buffer) {\n' + hook);
     if (normalized !== original && normalized !== expected && normalized !== expected.replace(authenticatedMethod,'')) throw Error('Partial identity guard patch; review before building');
-    return expected;
+    return stream.apply(expected,'DataChannelWrapper.java');
 }
 const observerGuard = `        // Axonic: reject unexpected/extra channels before registering a bridge observer.
         if (axonicIdentityGuard && (!"axonic-identity-v1".equals(dataChannel.label()) || !dataChannels.isEmpty())) {
@@ -81,14 +82,14 @@ const edits = {
 };
 function patchPeer(source, name) {
     const spec=edits[name]; if(!spec)throw Error('Unknown native source');
-    const normalized=source.replace(/\r\n/g,'\n');let original=normalized;
+    const normalized=stream.strip(source.replace(/\r\n/g,'\n'),name);let original=normalized;
     for(const [old,next] of [...spec.changes].reverse())original=original.split(next).join(old);
     if(crypto.createHash('sha256').update(original).digest('hex')!==spec.hash)throw Error('Unexpected WebRTC peer source: '+name);
     let expected=original;for(const [old,next] of spec.changes)expected=expected.split(old).join(next);
     let previous=original;const supported=[original,expected];
     for(let i=0;i<spec.changes.length;i++){const [old,next]=spec.changes[i];previous=previous.split(old).join(next);if((name==='PeerConnectionObserver.java'&&[2,4].includes(i))||(name==='WebRTCModule.java'&&i===1))supported.push(previous);}
     if(!supported.includes(normalized))throw Error('Partial native peer guard patch');
-    return expected;
+    return stream.apply(expected,name);
 }
 if (require.main === module) {
     const source = fs.readFileSync(file, 'utf8');
@@ -100,6 +101,7 @@ if (require.main === module) {
     if (source !== patched) fs.writeFileSync(file, patched);
     for(const peer of peers)if(fs.readFileSync(path.join(dir,peer.name),'utf8')!==peer.source)fs.writeFileSync(path.join(dir,peer.name),peer.source);
     if (!fs.existsSync(target) || fs.readFileSync(target, 'utf8') !== guard) fs.writeFileSync(target, guard);
+    fs.copyFileSync(path.join(__dirname,'native/AxonicStreamDataGuard.java'),path.join(dir,'AxonicStreamDataGuard.java'));
     console.log('Android identity channel receive guard applied');
 }
 module.exports = { patch, patchPeer };

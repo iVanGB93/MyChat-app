@@ -7,7 +7,7 @@ import {Font,Spacing} from '../../theme';
 import Avatar from '../../components/ui/Avatar';
 import {useTheme} from '../../contexts/ThemeContext';
 /** Original incoming-call presentation; transport and permissions belong to the caller. */
-export default function IncomingCallAppearance({callerName,isVideo,localPreviewUrl=null,busy=false,error,handleAccept,handleReject}:{callerName:string;isVideo:boolean;localPreviewUrl?:string|null;busy?:boolean;error?:string;handleAccept:()=>void;handleReject:()=>void}){
+export default function IncomingCallAppearance({callerName,avatarUri,isVideo,localPreviewUrl=null,busy=false,error,handleAccept,handleReject}:{callerName:string;avatarUri?:string|null;isVideo:boolean;localPreviewUrl?:string|null;busy?:boolean;error?:string;handleAccept:()=>void;handleReject:()=>void}){
  const {colors:Colors}=useTheme(),styles=makeStyles(Colors),insets=useSafeAreaInsets();
  const pulse=useRef(new Animated.Value(0)).current,sweep=useRef(new Animated.Value(0)).current;
  useEffect(()=>{
@@ -72,7 +72,7 @@ export default function IncomingCallAppearance({callerName,isVideo,localPreviewU
                 ]}
               />
               <View style={styles.avatarWrap}>
-                <Avatar name={callerName} size={140} />
+                <Avatar uri={avatarUri} name={callerName} size={140} />
               </View>
             </View>
           </>

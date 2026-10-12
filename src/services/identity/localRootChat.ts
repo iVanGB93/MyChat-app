@@ -1,3 +1,4 @@
+import {storeSharedAvatarPart} from '../../modules/storage/sharedProfileStore';
 import {publishRootMessageFeedback} from './rootMessageFeedback';
 import {ownChatStore} from '../../modules/storage/chatStore';
 import { localAccount } from './localAccount';
@@ -18,6 +19,7 @@ export function localRootChat(){
     const muted=m.group?state.groups?.find(g=>g.id===m.group!.id)?.muted:state.contacts.find(c=>c.account===m.peer)?.muted;
     publishRootMessageFeedback({owner,peer:m.peer,id:m.group?.messageId??m.id,direction:m.direction,...(m.group?{group:m.group.id}:{}),muted});
    },
+   receiveProfile:(peer,id,part)=>storeSharedAvatarPart(owner,peer,id,part,()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner),
    signGroup:group=>localAccount.signGroup(group),
    queued:(peer,id)=>{for(const listener of queuedListeners){try{listener(owner,peer,id);}catch{/* Durable outbox retries on its normal timer. */}}},
    verifyAttachment:async(descriptor,direction)=>{const m=descriptor.manifest,record=direction==='outgoing'?localAccount.publicRecord():await createMobileIdentityRecordStore(Date.now).read(m.sender);

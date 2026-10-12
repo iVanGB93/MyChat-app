@@ -9,8 +9,9 @@ export const ATTACHMENT_CHUNK_BYTES=4096;
 export const ATTACHMENT_MAX_BYTES=250*1024*1024;
 export const ATTACHMENT_TTL=24*60*60*1000;
 export interface AttachmentManifest {
- version:1;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;
+ version:1|2;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;
  created:number;expires:number;bytes:number;root:string;signature:string;
+ shared?:{id:string;count:number;slot:number};
 }
 export interface AttachmentChunk {index:number;ciphertext:string;proof:string[]}
 /** Trusted local SHA-256 implementation over the exact ASCII leaf serialization. */
@@ -20,11 +21,14 @@ const hex=(v:unknown,n:number):v is string=>typeof v==='string'&&v.length===n*2&
 const encode=(v:unknown[])=>utf8ToBytes(JSON.stringify(v));
 const hash=(v:unknown[])=>bytesToHex(sha256(encode(v)));
 const count=(bytes:number)=>Math.ceil(bytes/ATTACHMENT_CHUNK_BYTES);
-const body=(m:AttachmentManifest)=>encode(['axonic-attachment-v1',m.version,m.id,m.sender,m.senderDevice,m.recipient,m.recipientDevice,m.created,m.expires,m.bytes,m.root]);
+const body=(m:AttachmentManifest)=>encode([m.version===2?'axonic-attachment-v2':'axonic-attachment-v1',m.version,m.id,m.sender,m.senderDevice,m.recipient,m.recipientDevice,m.created,m.expires,m.bytes,m.root,...(m.version===2?[m.shared!.id,m.shared!.count,m.shared!.slot]:[])]);
 export const attachmentDigest=(m:AttachmentManifest)=>hash([bytesToHex(body(m)),m.signature]);
+/** Ciphertext address only; access always requires a separately verified recipient grant. */
+export const attachmentContentDigest=(m:AttachmentManifest)=>m.version===2?hash(['axonic-attachment-content-v2',m.sender,m.senderDevice,m.shared!.id,m.shared!.count,m.created,m.expires,m.bytes,m.root]):attachmentDigest(m);
+const validShared=(m:Pick<AttachmentManifest,'version'|'shared'>)=>m.version===1?m.shared===undefined:m.version===2&&!!m.shared&&Object.keys(m.shared).sort().join(',')==='count,id,slot'&&hex(m.shared.id,32)&&Number.isSafeInteger(m.shared.count)&&m.shared.count>=1&&m.shared.count<=9&&Number.isSafeInteger(m.shared.slot)&&m.shared.slot>=0&&m.shared.slot<m.shared.count;
 export function validAttachmentManifest(m:unknown,now:number):m is AttachmentManifest {
  const a=m as AttachmentManifest;
- return !!a&&Number.isSafeInteger(now)&&now>=0&&a.version===1&&hex(a.id,32)&&validAccountId(a.sender)&&validAccountId(a.recipient)&&a.sender!==a.recipient
+ return !!a&&Number.isSafeInteger(now)&&now>=0&&validShared(a)&&hex(a.id,32)&&validAccountId(a.sender)&&validAccountId(a.recipient)&&a.sender!==a.recipient
   &&hex(a.senderDevice,32)&&hex(a.recipientDevice,32)&&hex(a.root,32)&&hex(a.signature,64)
   &&Number.isSafeInteger(a.bytes)&&a.bytes>0&&a.bytes<=ATTACHMENT_MAX_BYTES
   &&Number.isSafeInteger(a.created)&&a.created>=0&&a.created<=now+30000&&Number.isSafeInteger(a.expires)
@@ -43,20 +47,27 @@ export function verifyAttachmentManifest(m:unknown,record:IdentityRecord,now:num
   const d=record.devices.find(d=>d.id===m.senderDevice);return !!d&&verifyPublicSignature(hexToBytes(m.signature),body(m),hexToBytes(d.signing),{zip215:false});
  }catch{return false;}
 }
-type ChunkContext=Pick<AttachmentManifest,'id'|'sender'|'recipient'|'recipientDevice'|'bytes'>;
+type ChunkContext=Pick<AttachmentManifest,'id'|'sender'|'recipient'|'recipientDevice'|'bytes'>&Partial<Pick<AttachmentManifest,'version'|'shared'|'senderDevice'>>;
 function chunkLength(m:ChunkContext,index:number){
  if(!hex(m.id,32)||!validAccountId(m.sender)||!validAccountId(m.recipient)||m.sender===m.recipient||!hex(m.recipientDevice,32)
   ||!Number.isSafeInteger(m.bytes)||m.bytes<1||m.bytes>ATTACHMENT_MAX_BYTES||!Number.isSafeInteger(index)||index<0||index>=count(m.bytes))throw Error('Invalid attachment chunk');
  return Math.min(ATTACHMENT_CHUNK_BYTES,m.bytes-index*ATTACHMENT_CHUNK_BYTES);
 }
 function chunkContext(m:ChunkContext,index:number){
- const length=chunkLength(m,index),aad=encode(['axonic-attachment-chunk-v1',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
+ const length=chunkLength(m,index);
+ if(m.version===2&&(!validShared({version:2,shared:m.shared})||!hex(m.senderDevice,32)))throw Error('Invalid shared attachment');
+ if(m.version!==2&&m.shared!==undefined)throw Error('Invalid attachment version');
+ const aad=m.version===2?encode(['axonic-attachment-chunk-v2',m.shared!.id,m.sender,m.senderDevice,m.shared!.count,m.bytes,index]):encode(['axonic-attachment-chunk-v1',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
  return {aad,nonce:sha256(aad).slice(0,24),length};
 }
 /** A fresh random key per attachment is carried only inside the encrypted chat descriptor. */
 export function encryptAttachmentChunk(m:ChunkContext,index:number,plain:Uint8Array,key:Uint8Array){
+ return bytesToHex(encryptAttachmentChunkBytes(m,index,plain,key));
+}
+/** File preparation keeps ciphertext binary; the wire format still uses hex. */
+export function encryptAttachmentChunkBytes(m:ChunkContext,index:number,plain:Uint8Array,key:Uint8Array){
  const c=chunkContext(m,index);if(key.length!==32||plain.length!==c.length)throw Error('Invalid attachment bytes');
- return bytesToHex(xchacha20poly1305(key,c.nonce,c.aad).encrypt(plain));
+ return xchacha20poly1305(key,c.nonce,c.aad).encrypt(plain);
 }
 export function decryptAttachmentChunk(m:AttachmentManifest,chunk:AttachmentChunk,key:Uint8Array,hashLeaf?:AttachmentLeafHash){
  if(!verifyAttachmentChunk(m,chunk,hashLeaf)||key.length!==32)throw Error('Invalid attachment proof');

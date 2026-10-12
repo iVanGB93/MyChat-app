@@ -24,3 +24,12 @@ test('native peer policy is pinned, repeatable and gates unknown channels before
     assert.throws(()=>patchPeer(result+'\n// drift',name),/Unexpected/);
   }
 });
+test('stream bridge has separate bounded admission and exact-slice copy',()=>{
+ const result=patch(installed(),'124.0.7');
+ assert(result.indexOf('axonicStream.receive')<result.indexOf('byte[] admitted'));
+ assert(result.includes('buffer.data.asReadOnlyBuffer().get(admitted)'));
+ assert.throws(()=>patch(result.replace('axonicStream.receive','axonicStream.bypass'),'124.0.7'),/Partial|Unexpected/);
+ const name='PeerConnectionObserver.java',source=fs.readFileSync('node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/'+name,'utf8');
+ assert(patchPeer(source,name).includes('axonicStreamPeerAuthenticated && dataChannels.size() == 1'));
+ assert.throws(()=>patchPeer(source.replace('dataChannels.size() == 1','dataChannels.size() < 99'),name),/Partial|Unexpected|anchor missing/);
+});

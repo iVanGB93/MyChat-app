@@ -9,6 +9,22 @@ import org.junit.Test
 class AttachmentFileHashTest {
   private val owner = "axonic:1:" + "a".repeat(64)
   private val digest = "b".repeat(64)
+  @Test fun stagedHashReadsOnlyThePrivateContentCopy() {
+    val root = Files.createTempDirectory("attachment-staged-hash").toFile()
+    try {
+      val dir = File(root,"axonic-own-attachments-v1/${owner.substring(9)}/staging/$digest")
+      dir.mkdirs()
+      File(dir,"source").writeBytes(byteArrayOf(9))
+      val bytes = ByteArray(65537) { (it % 251).toByte() }
+      File(dir,"content").writeBytes(bytes)
+      val expected = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+      assertEquals(expected,AttachmentFileHash.sha256(root,owner,digest,true,bytes.size.toLong(),staged=true))
+      assertThrows(IllegalArgumentException::class.java) { AttachmentFileHash.sha256(root,owner,digest,true,1,staged=true) }
+      assertThrows(IllegalArgumentException::class.java) { AttachmentFileHash.sha256(root,owner,digest,false,1,staged=true) }
+      assertThrows(IllegalArgumentException::class.java) { AttachmentFileHash.sha256(root,owner,"../outside",true,1,staged=true) }
+      assertThrows(IllegalArgumentException::class.java) { AttachmentFileHash.sha256(root,owner,digest,true,bytes.size.toLong()) }
+    } finally { root.deleteRecursively() }
+  }
   @Test fun streamsExactFileAcrossBufferBoundaries() {
     val root = Files.createTempDirectory("attachment-hash").toFile()
     try {

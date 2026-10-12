@@ -91,7 +91,7 @@ import {pickRootMedia} from '../modules/ui/mediaPicker';
 
 import * as Clipboard from 'expo-clipboard';
 
-import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
+import React,{useCallback,useMemo,useEffect,useLayoutEffect,useRef,useState} from 'react';
 
 import {AppState,BackHandler,Keyboard,FlatList,Pressable,ScrollView,Share,Text,TouchableOpacity,View} from 'react-native';
 
@@ -117,7 +117,7 @@ import {chatListStyles as listStyles} from '../components/chat/chat-list-styles'
 
 import {chatRoomStyles as roomStyles} from '../components/chat/chat-room-styles';
 
-import {messageBubbleStyles as bubbleStyles} from '../components/chat/message-bubble-styles';
+import {CHAT_STICKER_SIZE,messageBubbleStyles as bubbleStyles} from '../components/chat/message-bubble-styles';
 
 import Avatar from '../components/ui/Avatar';
 
@@ -167,13 +167,15 @@ function ChatList({navigation}:Screen<'Tabs'>){
 
  const {colors}=useTheme(),{state,error}=useOwnChat(),[avatarPeer,setAvatarPeer]=useState<string|null>(null),[selected,setSelected]=useState<Set<string>>(new Set());
 
- const toggle=(peer:string)=>setSelected(old=>{const next=new Set(old);next.has(peer)?next.delete(peer):next.add(peer);return next;});
+ const toggle=useCallback((peer:string)=>setSelected(old=>{const next=new Set(old);next.has(peer)?next.delete(peer):next.add(peer);return next;}),[]);
 
  useEffect(()=>{if(!selected.size)return;const listener=BackHandler.addEventListener('hardwareBackPress',()=>{setSelected(new Set());return true;});return()=>listener.remove();},[selected.size]);
 
  function deleteSelected(){const chats=[...selected],owner=localAccount.status().account;Alert.alert(chats.length===1?'Delete chat?':'Delete chats?','Remove these conversations and their messages from this device only. A new message will make a chat reappear. Saved contact decisions are kept.',[{text:'Cancel',style:'cancel'},{text:'Delete',style:'destructive',onPress:()=>void messaging.deleteChats(chats,owner).then(()=>setSelected(new Set())).catch(report)}]);}
 
- async function markRead(peers:string[]){await messaging.markRead(peers);setSelected(new Set());}
+ const markRead=useCallback(async(peers:string[])=>{await messaging.markRead(peers);setSelected(new Set());},[]);
+ const openChat=useCallback((peer:string)=>peer.startsWith('group:')?navigation.navigate('GroupRoom',{id:peer.slice(6)}):navigation.navigate('ChatRoom',{peer}),[navigation]);
+ const markOneRead=useCallback((peer:string)=>void markRead([peer]).catch(report),[markRead]);
 
  const latest=new Map<string,RootChatMessage>();for(const m of state.messages.filter(m=>!m.group)){const old=latest.get(m.peer);if(!old||m.at>=old.at)latest.set(m.peer,m);}
 
@@ -193,15 +195,15 @@ function ChatList({navigation}:Screen<'Tabs'>){
 
    ItemSeparatorComponent={()=><View style={[listStyles.separator,{backgroundColor:colors.divider}]}/>}
 
-   renderItem={({item:c})=>{const m=latest.get(c.account);return <ChatListRow roomId={c.account} displayName={c.alias||shortIdentity(c.account)} avatarUri={c.account.startsWith('group:')?groupPhotoUri(state,c.account.slice(6),localAccount.status().account):null} isDirect={!c.account.startsWith('group:')} isOnline={activity.online.includes(c.account)}
+   renderItem={({item:c})=>{const m=latest.get(c.account);return <ChatListRow roomId={c.account} displayName={c.alias||shortIdentity(c.account)} avatarUri={c.account.startsWith('group:')?groupPhotoUri(state,c.account.slice(6),localAccount.status().account):state.avatarUris[c.account]} isDirect={!c.account.startsWith('group:')} isOnline={activity.online.includes(c.account)}
 
     lastMsgContent={c.blocked?'Blocked':!c.accepted?(c.account.startsWith('group:')?'Group invitation':'Message request'):m?.attachment?(m.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':m.attachment.caption||m.attachment.name):parseSticker(m?.text??'')?'Sticker':m?.text??null} lastMsgTime={m?formatHistoryTime(m.at):null}
 
     lastMsgFromMe={m?.direction==='outgoing'} lastMsgStatus={m?rootMessageStatus(m):undefined} unread={state.messages.filter(m=>(c.account.startsWith('group:')?m.group?.id===c.account.slice(6):!m.group&&m.peer===c.account)&&m.direction==='incoming'&&!m.read&&!m.deleted).length} typingLabel={activity.typing.includes(c.account)?'Typing…':null} isMuted={c.account.startsWith('group:')?state.groups?.find(g=>g.id===c.account.slice(6))?.muted===true:state.contacts.find(contact=>contact.account===c.account)?.muted===true} selectionMode={selected.size>0} selected={selected.has(c.account)} Colors={colors}
 
-    onOpen={peer=>peer.startsWith('group:')?navigation.navigate('GroupRoom',{id:peer.slice(6)}):navigation.navigate('ChatRoom',{peer})} onAvatarPress={setAvatarPeer} onLongPress={toggle} onToggleSelection={toggle} onMarkRead={peer=>void markRead([peer]).catch(report)}/>;}}/>
+    onOpen={openChat} onAvatarPress={setAvatarPeer} onLongPress={toggle} onToggleSelection={toggle} onMarkRead={markOneRead}/>;}}/>
 
-  {avatarPeer&&<ChatAvatarActionModal visible name={contacts.find(c=>c.account===avatarPeer)?.alias||shortIdentity(avatarPeer)} subtitle={avatarPeer.startsWith('group:')?null:shortIdentity(avatarPeer)} isGroup={avatarPeer.startsWith('group:')} onClose={()=>setAvatarPeer(null)} onMessage={()=>{setAvatarPeer(null);avatarPeer.startsWith('group:')?navigation.navigate('GroupRoom',{id:avatarPeer.slice(6)}):navigation.navigate('ChatRoom',{peer:avatarPeer});}} onCall={avatarPeer.startsWith('group:')?undefined:()=>{setAvatarPeer(null);navigation.navigate('OutgoingCall',{peer:avatarPeer,kind:'voice'});}} onDetails={()=>{setAvatarPeer(null);avatarPeer.startsWith('group:')?navigation.navigate('GroupInfo',{id:avatarPeer.slice(6)}):navigation.navigate('Contact',{peer:avatarPeer});}}/>}
+  {avatarPeer&&<ChatAvatarActionModal visible avatarUri={avatarPeer.startsWith('group:')?groupPhotoUri(state,avatarPeer.slice(6),localAccount.status().account):state.avatarUris[avatarPeer]} name={contacts.find(c=>c.account===avatarPeer)?.alias||shortIdentity(avatarPeer)} subtitle={avatarPeer.startsWith('group:')?null:shortIdentity(avatarPeer)} isGroup={avatarPeer.startsWith('group:')} onClose={()=>setAvatarPeer(null)} onMessage={()=>{setAvatarPeer(null);avatarPeer.startsWith('group:')?navigation.navigate('GroupRoom',{id:avatarPeer.slice(6)}):navigation.navigate('ChatRoom',{peer:avatarPeer});}} onCall={avatarPeer.startsWith('group:')?undefined:()=>{setAvatarPeer(null);navigation.navigate('OutgoingCall',{peer:avatarPeer,kind:'voice'});}} onDetails={()=>{setAvatarPeer(null);avatarPeer.startsWith('group:')?navigation.navigate('GroupInfo',{id:avatarPeer.slice(6)}):navigation.navigate('Contact',{peer:avatarPeer});}}/>}
 
   <TouchableOpacity accessibilityLabel="New chat" style={[listStyles.fab,{backgroundColor:colors.surface,borderColor:colors.primary,shadowColor:colors.primary}]} onPress={()=>navigation.navigate('NewChat')}><Ionicons name="add" size={32} color={colors.primary}/></TouchableOpacity>
 
@@ -234,7 +236,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  const [busy,setBusy]=useState(false),[transfers,setTransfers]=useState<Awaited<ReturnType<typeof rootAttachmentProgress>>>({jobs:[],selections:[]});
 
- const name=nickname(state,peer),contact=state.contacts.find(c=>c.account===peer),messages=state.messages.filter(m=>m.peer===peer&&!m.group).slice().reverse();
+ const name=nickname(state,peer),contact=state.contacts.find(c=>c.account===peer),messages=useMemo(()=>state.messages.filter(m=>m.peer===peer&&!m.group).slice().reverse(),[state.messages,peer]);
 
  const composer=useRef<NativeTextInput>(null);
  useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
@@ -270,11 +272,11 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  useEffect(()=>{if(!focused||!foreground)return;let active=true,running=false,last='';const refresh=async()=>{if(running)return;running=true;try{const v=await rootAttachmentProgress(),raw=JSON.stringify(v);if(active&&raw!==last){last=raw;setTransfers(v);}}catch{}finally{running=false;}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{active=false;clearInterval(timer);};},[focused,foreground]);
 
- useLayoutEffect(()=>{navigation.setOptions({headerTitleAlign:'left',headerBackVisible:false,headerTitle:'',headerLeft:()=> <ChatHeaderIdentity onBack={()=>navigation.goBack()} title={name} syncing={false} color={colors.headerText} avatarUri={null} isGroup={false} isOnline={activity.online.includes(peer)} onPress={()=>navigation.navigate('Contact',{peer})}/>,headerRight:()=> <View style={{flexDirection:'row',gap:8,marginRight:8}}>
+ useLayoutEffect(()=>{navigation.setOptions({headerTitleAlign:'left',headerBackVisible:false,headerTitle:'',headerLeft:()=> <ChatHeaderIdentity onBack={()=>navigation.goBack()} title={name} syncing={false} color={colors.headerText} avatarUri={state.avatarUris[peer]} isGroup={false} isOnline={activity.online.includes(peer)} onPress={()=>navigation.navigate('Contact',{peer})}/>,headerRight:()=> <View style={{flexDirection:'row',gap:8,marginRight:8}}>
 
   <TouchableOpacity accessibilityLabel={contact?.muted?'Unmute notifications':'Mute notifications'} onPress={()=>void conversations().configure(peer,{muted:!contact?.muted}).catch(report)} style={{width:36,height:36,borderRadius:18,backgroundColor:contact?.muted?'rgba(255,80,80,0.15)':'rgba(0,229,255,0.10)',borderWidth:1,borderColor:contact?.muted?'rgba(255,80,80,0.35)':'rgba(0,229,255,0.30)',alignItems:'center',justifyContent:'center'}}><Ionicons name={contact?.muted?'notifications-off-outline':'notifications-outline'} size={18} color={contact?.muted?'#FF5050':'#00E5FF'}/></TouchableOpacity>
 
-  {(['video','voice'] as const).map(kind=><TouchableOpacity key={kind} testID={kind==='voice'?'axonic-voice-call':'axonic-video-call'} accessibilityLabel={kind==='voice'?'Start voice call':'Start video call'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind})} style={{width:36,height:36,borderRadius:18,backgroundColor:'rgba(0,229,255,0.10)',borderWidth:1,borderColor:'rgba(0,229,255,0.30)',alignItems:'center',justifyContent:'center',opacity:contact?.blocked?0.4:1}}><Ionicons name={kind==='voice'?'call-outline':'videocam-outline'} size={18} color="#00E5FF"/></TouchableOpacity>)}</View>});},[navigation,peer,name,colors,contact?.blocked,contact?.muted,activity.online.join()]);
+  {(['video','voice'] as const).map(kind=><TouchableOpacity key={kind} testID={kind==='voice'?'axonic-voice-call':'axonic-video-call'} accessibilityLabel={kind==='voice'?'Start voice call':'Start video call'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind})} style={{width:36,height:36,borderRadius:18,backgroundColor:'rgba(0,229,255,0.10)',borderWidth:1,borderColor:'rgba(0,229,255,0.30)',alignItems:'center',justifyContent:'center',opacity:contact?.blocked?0.4:1}}><Ionicons name={kind==='voice'?'call-outline':'videocam-outline'} size={18} color="#00E5FF"/></TouchableOpacity>)}</View>});},[navigation,peer,name,colors,contact?.blocked,contact?.muted,activity.online.join(),state.avatarUris[peer]]);
 
  async function send(){
  composer.current?.focus();if(busy||!text.trim()||contact?.blocked)return;const value=text,selection=replyTo;setBusy(true);try{if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;if(editing){await messaging.act(peer,{id:editing.id,author:owner!},'edit',value,owner);setEditing(undefined);}else await messaging.sendText(peer,value,selection?{id:selection.id,author:selection.direction==='outgoing'?owner!:peer}:undefined,owner);setReplyTo(current=>current===selection?undefined:current);setText(current=>current===value?'':current);list.current?.scrollToOffset({offset:0,animated:true});}catch(e){report(e);}finally{setBusy(false);}}
@@ -285,6 +287,20 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  async function attach(source:'camera'|'library'|'files'){setAttachOpen(false);if(busy||contact?.blocked)return;setBusy(true);try{const selection=source==='files'?await pickRootAttachment(peer,replyReference,attachmentPreview.confirm):await pickRootMedia(peer,source,replyReference,undefined,attachmentPreview.confirm);if(selection)setReplyTo(undefined);}catch(e){report(e);}finally{setBusy(false);}}
 
+ const messageList=useMemo(()=>(<FlatList ref={list} inverted data={messages} keyExtractor={m=>m.direction+':'+m.id} style={roomStyles.messageList} contentContainerStyle={roomStyles.messagesList} keyboardShouldPersistTaps="handled"
+
+   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
+
+    {!m.deleted&&m.reply&&<View style={{borderLeftWidth:3,borderLeftColor:colors.primary,padding:8,marginBottom:6}}><Text style={{color:colors.primary,fontWeight:'600'}}>{m.reply.author===owner?'You':name}</Text><Text numberOfLines={2} style={{color:colors.textSecondary}}>{quoted?(quoted.attachment?(quoted.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':quoted.attachment.name):parseSticker(quoted.text)?'Sticker':quoted.text):'Original message unavailable on this device'}</Text></View>}
+
+    {m.deleted?<Text style={{color:colors.textSecondary,fontStyle:'italic'}}>Message deleted</Text>:m.attachment?<RootAttachmentBubble onLongPress={event=>{setMenuY(event.nativeEvent.pageY);setMenu(m);}} message={m} progress={transfers.jobs.find(j=>j.digest===attachmentDigest(m.attachment!.manifest))} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:<SmartMessageText style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary}>{m.text}</SmartMessageText>}
+
+
+
+    <View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>
+
+   </Pressable></RootMessageReactions></View></ReplySwipe>;}}/>),[messages,state.messages,peer,owner,name,colors,contact?.blocked,transfers.jobs]);
+
  return <KeyboardAvoidingScreen style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={header}>
   <ChatConnectionBar peer={peer}/>
 
@@ -292,19 +308,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   {contact?.blocked?<Pressable onPress={()=>navigation.navigate('Contact',{peer})}><Text style={{color:colors.error,padding:12}}>This identity is blocked. Tap to manage.</Text></Pressable>:contact&&!contact.accepted&&messages.some(m=>m.direction==='incoming')?<View style={[roomStyles.requestBanner,{backgroundColor:colors.surface,borderColor:colors.neonBorder}]}><Text style={{color:colors.text,flex:1}}>Message request</Text><Pressable accessibilityLabel="Accept message request" onPress={()=>void conversations().configure(peer,{accepted:true}).catch(report)}><Text style={{color:colors.primary}}>Accept</Text></Pressable><Pressable accessibilityLabel="Reject message request" accessibilityHint="Block this identity. You can unblock it in user details." onPress={()=>void conversations().configure(peer,{accepted:false,blocked:true}).catch(report)} style={{marginLeft:16}}><Text style={{color:colors.error}}>Reject</Text></Pressable></View>:null}
 
-  <FlatList ref={list} inverted data={messages} keyExtractor={m=>m.direction+':'+m.id} style={roomStyles.messageList} contentContainerStyle={roomStyles.messagesList} keyboardShouldPersistTaps="handled"
-
-   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
-
-    {!m.deleted&&m.reply&&<View style={{borderLeftWidth:3,borderLeftColor:colors.primary,padding:8,marginBottom:6}}><Text style={{color:colors.primary,fontWeight:'600'}}>{m.reply.author===owner?'You':name}</Text><Text numberOfLines={2} style={{color:colors.textSecondary}}>{quoted?(quoted.attachment?(quoted.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':quoted.attachment.name):parseSticker(quoted.text)?'Sticker':quoted.text):'Original message unavailable on this device'}</Text></View>}
-
-    {m.deleted?<Text style={{color:colors.textSecondary,fontStyle:'italic'}}>Message deleted</Text>:m.attachment?<RootAttachmentBubble onLongPress={event=>{setMenuY(event.nativeEvent.pageY);setMenu(m);}} message={m} progress={transfers.jobs.find(j=>j.digest===attachmentDigest(m.attachment!.manifest))} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={150}/></Pressable>:<SmartMessageText style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary}>{m.text}</SmartMessageText>}
-
-
-
-    <View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>
-
-   </Pressable></RootMessageReactions></View></ReplySwipe>;}}/>
+  {messageList}
 
   {activity.typing.includes(peer)&&<Text style={{color:colors.primary,paddingHorizontal:16,paddingVertical:4}}>{name} is typing…</Text>}
 
@@ -372,7 +376,7 @@ function Contact({route,navigation}:Screen<'Contact'>){
 
   <View style={[infoStyles.hero,section]}>
 
-   <Avatar name={name} size={112}/><Text selectable style={[infoStyles.name,{color:colors.text}]}>{name}</Text>
+   <Avatar name={name} uri={state.avatarUris[peer]} size={112}/><Text selectable style={[infoStyles.name,{color:colors.text}]}>{name}</Text>
 
    {!!contact?.alias&&<Text selectable style={[infoStyles.username,{color:colors.textSecondary}]}>{identity}</Text>}
 
@@ -428,14 +432,14 @@ function Contact({route,navigation}:Screen<'Contact'>){
 
 function NewChat({navigation,route}:Screen<'NewChat'>){
 
- const {colors}=useTheme(),{state}=useOwnChat(),[peer,setPeer]=useState(route.params?.identity??''),[busy,setBusy]=useState(false);
+ const {colors}=useTheme(),[peer,setPeer]=useState(route.params?.identity??''),[busy,setBusy]=useState(false);
 
  useEffect(()=>{if(route.params?.identity)setPeer(route.params.identity);},[route.params?.identity]);
 
  async function open(value=peer){if(busy)return;setBusy(true);try{const account=parseIdentityInput(value);if(!account||account===localAccount.status().account)throw Error('Paste another person’s complete identity code or identity link');await conversations().configure(account,{accepted:true});navigation.replace('ChatRoom',{peer:account});}catch(e){report(e);}finally{setBusy(false);}}
 
- const query=peer.toLowerCase(),contacts=state.contacts.filter(c=>!c.blocked&&(!query||c.alias.toLowerCase().includes(query)||displayIdentity(c.account).toLowerCase().includes(query)));
  const identity=parseIdentityInput(peer),ownIdentity=identity===localAccount.status().account;
+ const canStart=!!identity&&!ownIdentity;
 
  return <KeyboardAvoidingScreen style={[contactStyles.container,{backgroundColor:colors.background}]}>
 
@@ -443,9 +447,12 @@ function NewChat({navigation,route}:Screen<'NewChat'>){
 
   {!peer.length&&<TouchableOpacity style={[contactStyles.item,{borderBottomWidth:1,borderBottomColor:colors.divider}]} onPress={()=>navigation.navigate('GroupCreate')}><Ionicons name="people-outline" size={26} color={colors.primary}/><Text style={[contactStyles.name,{color:colors.primary,marginLeft:Spacing.md}]}>New group</Text></TouchableOpacity>}
 
-  <View style={{padding:Spacing.md,gap:8}}>{!!peer.trim()&&(!identity||ownIdentity)&&<Text accessibilityRole="alert" style={{color:colors.error}}>{ownIdentity?'This is your identity. Paste someone else’s ID.':'Paste the full identity code or link. Shortened IDs with … cannot start a chat.'}</Text>}<Button title="START CHAT" disabled={busy||!identity||ownIdentity} onPress={()=>void open()}/></View>
-
-  <FlatList keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" data={contacts} keyExtractor={c=>c.account} contentContainerStyle={!contacts.length?contactStyles.emptyContainer:contactStyles.list} ListEmptyComponent={<EmptyState iconName="people-outline" title="No contacts" subtitle="Scan a QR code or paste an identity to start a chat"/>} renderItem={({item:c})=><TouchableOpacity style={contactStyles.item} onPress={()=>void open(displayIdentity(c.account))}><Avatar name={c.alias||shortIdentity(c.account)} size={46}/><View style={contactStyles.info}><Text numberOfLines={1} style={[contactStyles.name,{color:colors.text}]}>{c.alias||shortIdentity(c.account)}</Text><Text numberOfLines={1} style={[contactStyles.sub,{color:colors.textSecondary}]}>{shortIdentity(c.account)}</Text></View><Ionicons name="chatbubble-outline" size={22} color={colors.primary}/></TouchableOpacity>} ItemSeparatorComponent={()=><View style={[contactStyles.separator,{backgroundColor:colors.divider}]}/>}/>
+  {canStart?<View style={{padding:Spacing.md}}><Button title="START CHAT" loading={busy} onPress={()=>void open()}/></View>:<View style={{flex:1,alignItems:'center',justifyContent:'center',padding:Spacing.lg,gap:12}}>
+   <Ionicons name="chatbubble-ellipses-outline" size={42} color={colors.textTertiary}/>
+   <Text style={{color:colors.text,fontSize:18,fontWeight:'600',textAlign:'center'}}>Start a new conversation</Text>
+   <Text style={{color:colors.textSecondary,fontSize:14,lineHeight:22,textAlign:'center',maxWidth:320}}>Ask the person to share their Axonic ID or identity link. Paste it above, or tap the QR button to scan their identity.</Text>
+   {ownIdentity&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>This is your identity. Paste someone else’s ID.</Text>}
+  </View>}
 
  </KeyboardAvoidingScreen>;
 
@@ -459,11 +466,11 @@ function Calls({navigation}:Screen<'Tabs'>){
 
  useEffect(()=>{let active=true;const refresh=async()=>{const owner=localAccount.status().account;if(!owner)return;try{const result=await listOwnCallHistory(owner);if(active){setRows(result);setError('');}}catch{if(active)setError('Unable to read call history');}};void refresh();const timer=setInterval(()=>void refresh(),3000);return()=>{active=false;clearInterval(timer);};},[]);
 
- return <View style={[callStyles.container,{backgroundColor:colors.background}]}>{!!error&&<Text accessibilityRole="alert" style={{color:colors.error,padding:12}}>{error}</Text>}<FlatList data={rows} keyExtractor={r=>r.id} contentContainerStyle={rows.length?callStyles.list:callStyles.emptyContainer} ListEmptyComponent={<EmptyState iconName="call-outline" title="No call history" subtitle="Start a call from a chat conversation"/>} ItemSeparatorComponent={()=><View style={[callStyles.separator,{backgroundColor:colors.divider}]}/>} renderItem={({item:r})=><TouchableOpacity accessibilityLabel={`Call ${nickname(state,r.peer)}`} onPress={()=>navigation.navigate('OutgoingCall',{peer:r.peer,kind:r.media})} activeOpacity={0.7} style={[callStyles.callItem,{borderColor:colors.neonBorder}]}><View style={[callStyles.accentBar,{backgroundColor:colors.primary}]}/><Avatar name={nickname(state,r.peer)} size={46}/><View style={callStyles.callInfo}><Text numberOfLines={1} style={[callStyles.callName,{color:colors.text}]}>{nickname(state,r.peer).toUpperCase()}</Text><View style={callStyles.callMeta}><Text style={[callStyles.directionTag,{color:colors.primary,borderColor:colors.primary}]}>{r.outgoing?'OUT':'IN'}</Text><Text style={[callStyles.callType,{color:colors.textSecondary}]}>{r.media==='video'?'VIDEO':'AUDIO'}</Text></View></View><View style={callStyles.callRight}><Text style={[callStyles.callTime,{color:colors.primary}]}>{formatHistoryTime(r.at)}</Text><View style={[callStyles.callbackBtn,{borderColor:colors.primary}]}><Ionicons name={r.media==='video'?'videocam-outline':'call-outline'} size={16} color={colors.primary}/></View></View></TouchableOpacity>}/></View>;
+ return <View style={[callStyles.container,{backgroundColor:colors.background}]}>{!!error&&<Text accessibilityRole="alert" style={{color:colors.error,padding:12}}>{error}</Text>}<FlatList data={rows} keyExtractor={r=>r.id} contentContainerStyle={rows.length?callStyles.list:callStyles.emptyContainer} ListEmptyComponent={<EmptyState iconName="call-outline" title="No call history" subtitle="Start a call from a chat conversation"/>} ItemSeparatorComponent={()=><View style={[callStyles.separator,{backgroundColor:colors.divider}]}/>} renderItem={({item:r})=><TouchableOpacity accessibilityLabel={`Call ${nickname(state,r.peer)}`} onPress={()=>navigation.navigate('OutgoingCall',{peer:r.peer,kind:r.media})} activeOpacity={0.7} style={[callStyles.callItem,{borderColor:colors.neonBorder}]}><View style={[callStyles.accentBar,{backgroundColor:colors.primary}]}/><Avatar name={nickname(state,r.peer)} uri={state.avatarUris[r.peer]} size={46}/><View style={callStyles.callInfo}><Text numberOfLines={1} style={[callStyles.callName,{color:colors.text}]}>{nickname(state,r.peer).toUpperCase()}</Text><View style={callStyles.callMeta}><Text style={[callStyles.directionTag,{color:colors.primary,borderColor:colors.primary}]}>{r.outgoing?'OUT':'IN'}</Text><Text style={[callStyles.callType,{color:colors.textSecondary}]}>{r.media==='video'?'VIDEO':'AUDIO'}</Text></View></View><View style={callStyles.callRight}><Text style={[callStyles.callTime,{color:colors.primary}]}>{formatHistoryTime(r.at)}</Text><View style={[callStyles.callbackBtn,{borderColor:colors.primary}]}><Ionicons name={r.media==='video'?'videocam-outline':'call-outline'} size={16} color={colors.primary}/></View></View></TouchableOpacity>}/></View>;
 
 }
 
-function BlockedUsers(){const {colors}=useTheme(),{state}=useOwnChat();return <FlatList style={{flex:1,backgroundColor:colors.background}} data={state.contacts.filter(c=>c.blocked)} keyExtractor={c=>c.account} contentContainerStyle={state.contacts.some(c=>c.blocked)?contactStyles.list:contactStyles.emptyContainer} ListEmptyComponent={<EmptyState iconName="ban-outline" title="No blocked users"/>} renderItem={({item:c})=><View style={contactStyles.item}><Avatar name={c.alias||shortIdentity(c.account)} size={46}/><View style={contactStyles.info}><Text style={[contactStyles.name,{color:colors.text}]}>{c.alias||shortIdentity(c.account)}</Text><Text style={[contactStyles.sub,{color:colors.textSecondary}]}>{shortIdentity(c.account)}</Text></View><TouchableOpacity accessibilityLabel="Unblock user" onPress={()=>Alert.alert('Unblock user?',`Unblock ${c.alias||shortIdentity(c.account)}? They will be able to message and call you again.`,[{text:'Cancel',style:'cancel'},{text:'Unblock',onPress:()=>void conversations().configure(c.account,{blocked:false}).catch(report)}])}><Text style={{color:colors.primary}}>Unblock</Text></TouchableOpacity></View>}/>;}
+function BlockedUsers(){const {colors}=useTheme(),{state}=useOwnChat();return <FlatList style={{flex:1,backgroundColor:colors.background}} data={state.contacts.filter(c=>c.blocked)} keyExtractor={c=>c.account} contentContainerStyle={state.contacts.some(c=>c.blocked)?contactStyles.list:contactStyles.emptyContainer} ListEmptyComponent={<EmptyState iconName="ban-outline" title="No blocked users"/>} renderItem={({item:c})=><View style={contactStyles.item}><Avatar name={c.alias||shortIdentity(c.account)} uri={state.avatarUris[c.account]} size={46}/><View style={contactStyles.info}><Text style={[contactStyles.name,{color:colors.text}]}>{c.alias||shortIdentity(c.account)}</Text><Text style={[contactStyles.sub,{color:colors.textSecondary}]}>{shortIdentity(c.account)}</Text></View><TouchableOpacity accessibilityLabel="Unblock user" onPress={()=>Alert.alert('Unblock user?',`Unblock ${c.alias||shortIdentity(c.account)}? They will be able to message and call you again.`,[{text:'Cancel',style:'cancel'},{text:'Unblock',onPress:()=>void conversations().configure(c.account,{blocked:false}).catch(report)}])}><Text style={{color:colors.primary}}>Unblock</Text></TouchableOpacity></View>}/>;}
 
 function MessageInfo({route}:Screen<'MessageInfo'>){const {colors}=useTheme(),{state}=useOwnChat(),message=state.messages.find(m=>m.peer===route.params.peer&&m.id===route.params.id&&m.direction===route.params.direction),insets=useSafeAreaInsets();return <ScrollView style={{flex:1,backgroundColor:colors.background}} contentContainerStyle={{padding:18,paddingBottom:insets.bottom+24,gap:20}}>{message?<><View style={{padding:16,borderRadius:18,backgroundColor:colors.surface,gap:14}}><Text selectable style={{color:colors.text,fontSize:17}}>{message.deleted?'This message was deleted.':message.attachment?.name||message.text}</Text><Text style={{color:colors.textSecondary}}>From</Text><Text style={{color:colors.text}}>{message.direction==='outgoing'?'You':nickname(state,message.peer)}</Text><Text style={{color:colors.textSecondary}}>Created</Text><Text style={{color:colors.text}}>{new Date(message.at).toLocaleString()}</Text><Text style={{color:colors.textSecondary}}>Type</Text><Text style={{color:colors.text}}>{message.attachment?.mime||'Text'}</Text></View><Text style={{color:colors.primary,fontSize:18,fontWeight:'700'}}>{message.read?'Read':message.status==='delivered'?'Delivered':'Pending'}</Text><Text style={{color:colors.textSecondary}}>{message.direction==='outgoing'?'Confirmed by the receiving device; exact receipt times are not recorded.':'Stored on this device.'}</Text></>:<Text style={{color:colors.textSecondary}}>This message is no longer stored on this phone.</Text>}</ScrollView>;}
 
@@ -494,11 +501,11 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
   let alive=true,opening=false;
 
-  const open=async()=>{if(opening||!alive||!ref.isReady()||localAccount.status().state!=='unlocked')return;opening=true;
+  const open=async()=>{if(AppState.currentState!=='active'||opening||!alive||!ref.isReady()||localAccount.status().state!=='unlocked')return;opening=true;
 
-   try{const link=takeIdentityLink();if(link&&link!==localAccount.status().account){ref.navigate('NewChat',{identity:displayIdentity(link)});return;}const account=localAccount.status().account!,target=await pendingRootNotificationOpen(account);if(!target||!alive||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
+   try{const link=takeIdentityLink();if(link&&link!==localAccount.status().account){ref.navigate('NewChat',{identity:displayIdentity(link)});return;}const account=localAccount.status().account!,target=await pendingRootNotificationOpen(account);if(!target||!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
 
-    const state=await conversations().snapshot();if(!alive||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
+    const state=await conversations().snapshot();if(!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
 
     if(target.group&&state.groups?.some(g=>g.id===target.group))ref.navigate('GroupRoom',{id:target.group});else ref.navigate('ChatRoom',{peer:target.sender});
 
@@ -510,7 +517,7 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
   void notifee.getInitialNotification().then(initial=>initial?queueRootNotificationOpen(initial.notification.data):undefined).then(open).catch(()=>{});
 
-  const timer=setInterval(()=>void open(),600);return()=>{alive=false;clearInterval(timer);stop();setRootVisibleConversation(null);};
+  let timer:ReturnType<typeof setInterval>|undefined;const resume=()=>{if(timer!==undefined)clearInterval(timer);timer=undefined;if(AppState.currentState==='active'){void open();timer=setInterval(()=>void open(),600);}};const appState=AppState.addEventListener('change',resume);resume();return()=>{alive=false;if(timer!==undefined)clearInterval(timer);appState.remove();stop();setRootVisibleConversation(null);};
 
  },[ref]);
 

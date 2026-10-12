@@ -1,3 +1,4 @@
+import {deliverCallSignal} from '../services/callSignalRetry';
 /* ------------------------------------------------------------------ */
 /*  useWebRTC — peer-to-peer audio/video using react-native-webrtc    */
 /*  Mirrors the web app's signaling flow exactly:                      */
@@ -24,6 +25,7 @@ import {
 } from 'react-native-webrtc';
 
 
+import { createCallRecovery } from '../services/callRecovery';
 import { debugLog } from '../services/diagnostics';
 import { readCallSignal } from '../services/call-signal';
 import { videoQualityParameters, type VideoQualityMode } from '../services/video-quality';
@@ -75,14 +77,20 @@ export default function useWebRTCCore({
   onConnected,
   onDisconnected,
 }: UseWebRTCOptions) {
+  const recoveryRef = useRef<ReturnType<typeof createCallRecovery> | null>(null);
+  const [recovering, setRecovering] = useState(false);
   const disconnectedRef = useRef(onDisconnected);
   disconnectedRef.current = onDisconnected;
+  const signalVersions = useRef<Record<string,number>>({});
+  const signalWaits = useRef(new Map<ReturnType<typeof setTimeout>,()=>void>());
   const sendSignal = useCallback((_userId: number | string, type: string, data: any) => {
     if (cleanedUp.current) return;
     if (!mediaTransport) { disconnectedRef.current?.(); return; }
-    void mediaTransport.send(type, data).then(sent => {
-        if (!sent && !cleanedUp.current) disconnectedRef.current?.();
-      }).catch(() => { if (!cleanedUp.current) disconnectedRef.current?.(); });
+    const version=(signalVersions.current[type]??0)+1;signalVersions.current[type]=version;
+    const current=()=>!cleanedUp.current&&(type==='ice-candidate'||signalVersions.current[type]===version);
+    void deliverCallSignal({kind:type,current,now:Date.now,send:()=>mediaTransport.send(type,data),
+      wait:ms=>new Promise<void>(resolve=>{const timer=setTimeout(()=>{signalWaits.current.delete(timer);resolve();},ms);signalWaits.current.set(timer,resolve);}),
+    }).then(sent=>{if(!sent&&type!=='ice-candidate'&&current())disconnectedRef.current?.();});
   }, [mediaTransport]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
@@ -392,31 +400,40 @@ export default function useWebRTCCore({
         }
       };
 
-      // Connection state
+      recoveryRef.current?.stop();
+      const recovery = createCallRecovery({
+        outgoing: isOutgoing,
+        recovering: setRecovering,
+        ended: () => { if (!cleanedUp.current && pcRef.current === pc) disconnectedRef.current?.(); },
+        restart: () => {
+          const operation = signalQueue.current.then(async () => {
+            if (cleanedUp.current || pcRef.current !== pc || !recovery.active()) return;
+            // Avoid overlapping an outstanding initial offer or remote negotiation.
+            if (pc.signalingState !== 'stable') return;
+            fullDescriptionSent.current = false;
+            const offer = await pc.createOffer({iceRestart: true} as any);
+            if (cleanedUp.current || pcRef.current !== pc) return;
+            await pc.setLocalDescription(offer);
+            await waitForIceGathering(pc);
+            if (!cleanedUp.current && pcRef.current === pc && pc.localDescription) {
+              sendSignal(peerUserId, 'offer', pc.localDescription.toJSON());
+              fullDescriptionSent.current = true;
+            }
+          });
+          signalQueue.current = operation.catch(() => {});
+          return operation;
+        },
+      });
+      recoveryRef.current = recovery;
       (pc as any).oniceconnectionstatechange = () => {
+        if (cleanedUp.current || pcRef.current !== pc) return;
         const state = pc.iceConnectionState;
-        debugLog('[WebRTC] ICE state:', state);
-
+        recovery.state(state);
         if (state === 'connected' || state === 'completed') {
           onConnected?.();
-          // Detect whether we ended up P2P or relayed
-          detectConnectionType(pc);
+          void detectConnectionType(pc);
         } else if (state === 'disconnected' || state === 'failed') {
           setConnectionType('connecting');
-          onDisconnected?.();
-          if (state === 'failed' && isOutgoing) {
-            debugLog('[WebRTC] ICE failed, attempting restart');
-            pc.createOffer({ iceRestart: true } as any)
-              .then((offer: any) => pc.setLocalDescription(offer))
-              .then(() => waitForIceGathering(pc))
-              .then(() => {
-                if (pc.localDescription && !cleanedUp.current) {
-                  sendSignal(peerUserId, 'offer', pc.localDescription.toJSON());
-                  fullDescriptionSent.current = true;
-                }
-              })
-              .catch(() => {});
-          }
         }
       };
 
@@ -601,6 +618,10 @@ export default function useWebRTCCore({
   const cleanup = useCallback(() => {
     debugLog('[WebRTC] cleanup');
     cleanedUp.current = true;
+    recoveryRef.current?.stop();
+    recoveryRef.current = null;
+    for(const [timer,resolve] of signalWaits.current){clearTimeout(timer);resolve();}
+    signalWaits.current.clear();
 
     if (qualityTimerRef.current) {
       clearInterval(qualityTimerRef.current);
@@ -630,6 +651,7 @@ export default function useWebRTCCore({
   }, [cleanup]);
 
   return {
+    recovering,
     localStream,
     remoteStream,
     isMuted,

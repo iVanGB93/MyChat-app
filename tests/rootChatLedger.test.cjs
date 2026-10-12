@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
-const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootChatLedger.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,()=>({validAccountId:s=>/^axonic:1:[a-f0-9]{64}$/.test(s)}));
+const out=require('./helpers/attachment.cjs').load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),id='1'.repeat(64);
 function fixture(owner=a){let raw=null,active=true,fail=false;const ledger=out.createRootChatLedger({owner,now:()=>100000,current:()=>active,read:async()=>raw,write:async v=>{if(fail)throw Error('disk');raw=v;}});return {ledger,lock:()=>active=false,fail:()=>fail=true,corrupt:()=>raw='broken'};}
 test('identity-addressed text persists before acknowledgement and deduplicates retries',async()=>{const f=fixture(),wire=out.encodeRootChat(a,id,'hello');assert.equal(await f.ledger.receive(b,id,wire),true);assert.equal(await f.ledger.receive(b,id,wire),true);const s=await f.ledger.snapshot();assert.equal(s.messages.length,1);assert.equal(s.contacts[0].accepted,false);assert.equal(await f.ledger.receive(b,id,out.encodeRootChat(a,id,'changed')),false);});

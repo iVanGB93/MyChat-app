@@ -3,6 +3,7 @@ interface NearbyModule {
   notificationReadActionInShade?(id:string):Promise<boolean>;
   attachmentSha256?(value:string):string;
   attachmentFileSha256?(owner:string,digest:string,completed:boolean,bytes:number):Promise<string>;
+  attachmentStagedFileSha256?(owner:string,id:string,bytes:number):Promise<string>;
   axonMessageWake?(milliseconds:number):void;
   axonMessageWait?(milliseconds:number):Promise<void>;
   axonConnectedCall?(enabled: boolean): void;

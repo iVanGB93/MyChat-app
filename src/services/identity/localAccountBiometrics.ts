@@ -6,13 +6,19 @@ export function createLocalAccountBiometrics(d: {
 }) {
   let epoch = 0, busy = false;
   const current = (e: number) => { if (epoch !== e) throw Error('Account operation interrupted'); };
-  async function run(work: (e: number) => Promise<void>) {
+  async function run<T>(work: (e: number) => Promise<T>) {
     if (busy) throw Error('An account operation is already running');
     busy = true; const e = epoch;
-    try { await work(e); } finally { busy = false; }
+    try { return await work(e); } finally { busy = false; }
   }
   return {
     available: d.available,
+    authenticate<T>(work:(password:string)=>Promise<T>){return run(async e=>{
+      if(!d.available())throw Error('Biometrics unavailable. Use your password.');
+      const password=await d.read();current(e);
+      if(!password)throw Error('Biometric credential unavailable. Use your password or enable biometric unlock first.');
+      const result=await work(password);current(e);return result;
+    });},
     enroll(password: string) { return run(async e => {
       if (!d.available()) throw Error('Set up biometrics in device settings first');
       await d.identity.unlock(password); current(e);

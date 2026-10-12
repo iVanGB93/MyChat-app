@@ -1,3 +1,7 @@
+import {migrateSharedProfileAvatar} from '../modules/messaging/profile';
+import {createProfileRecovery} from '../services/identity/profileRecovery';
+import {profileAudience,knownProfileReceipt} from '../services/identity/rootProfileSharing';
+import {sharedAvatarHash} from '../modules/storage/sharedProfileStore';
 import {createChatActivity} from '../services/identity/chatActivity';
 import {createGroupRecovery} from '../services/identity/groupRecovery';
 // Composition root: joins module ports and owns foreground/background leases.
@@ -80,9 +84,9 @@ function createLocalAccountNetwork() {
           const view=calls?.runtime.coordinator.snapshot();
           return finishRootCallWake(account,id,AppState.currentState!=='active'&&view?.id===id&&!view.outgoing&&view.status==='ringing');
         }},
-        changed:view=>{void syncRootCallNotification(account,view).catch(()=>{});for(const listener of callListeners)listener(view);}});
+        changed:view=>{void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&calls?.account===account)return calls.runtime.coordinator.confirmRinging(view.id);}).catch(()=>{});for(const listener of callListeners)listener(view);}});
       calls={account,runtime:callRuntime};activeCalls=callRuntime;
-      const noticeLifecycle=AppState.addEventListener('change',()=>{void syncRootCallNotification(account,callRuntime.coordinator.snapshot()).catch(()=>{});});
+      const noticeLifecycle=AppState.addEventListener('change',()=>{const view=callRuntime.coordinator.snapshot();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view)return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});});
       stopCallNotice=()=>noticeLifecycle.remove();
       const device=localAccount.callDevice()!;
       push=startRootPushRegistration(()=>owner()===account,(peer,raw)=>runtime.pushRequest(peer,raw));
@@ -123,7 +127,7 @@ function createLocalAccountNetwork() {
     if(accepted&&!seen){
       const state=rootChatView(account,await localRootChat().snapshot()),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
       const contact=state.contacts.find(c=>c.account===message.from),group=m?.group&&state.groups?.find(g=>g.id===m.group!.id);
-      const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),senderName:contact?.alias||shortIdentity(message.from),text:m.attachment?m.attachment.name:parseSticker(m.text)?'Sticker':m.text,at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id}:{})}:undefined;
+      const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),senderName:contact?.alias||shortIdentity(message.from),text:m.attachment?m.attachment.name:parseSticker(m.text)?'Sticker':m.text,at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id,orderId:m.group.messageId}:{})}:undefined;
       await finishRootMessageWake(account,message.from,message.id,preview).catch(()=>{});
     }
     return accepted;
@@ -149,6 +153,9 @@ function createLocalAccountNetwork() {
     onChatMessage: async message => { try { const hint=await activity.receive(message.from,message.text);return hint===null?await receiveMessage(message):hint; } catch { return false; } },
     rtc: Platform.OS==='android'&&NativeModules.WebRTCModule?.axonicIdentityGuardVersion?.()===1?{
       mediaLane:typeof Native?.axonEnableMediaLane==='function',
+      streamCredit:NativeModules.WebRTCModule?.axonicStreamGuardVersion?.()===1?async(channel,value,authorize)=>
+        typeof channel._peerConnectionId==='number'&&typeof channel._reactTag==='string'&&
+        await NativeModules.WebRTCModule.axonicStreamCredit(channel._peerConnectionId,channel._reactTag,value,authorize)===true:undefined,
       wait: Native?.axonMessageWait ? milliseconds => Native!.axonMessageWait!(milliseconds) : undefined,
       authenticated:NativeModules.WebRTCModule?.axonicIdentityAuthenticated?channel=>{
         if(typeof channel._peerConnectionId==='number'&&typeof channel._reactTag==='string')NativeModules.WebRTCModule.axonicIdentityAuthenticated(channel._peerConnectionId,channel._reactTag);
@@ -166,7 +173,7 @@ function createLocalAccountNetwork() {
     held:envelope=>localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires),
     confirmReceipt:async(receipt,current)=>{
       if(!current())return false;const ledger=localRootChat(),state=await ledger.snapshot();
-      if(!current()||![...state.messages,...(state.actions??[]),...(state.groupActions??[])].some(m=>m.id===receipt.id&&m.peer===receipt.recipient&&m.direction==='outgoing')&&!state.groupPackets?.some(m=>m.id===receipt.id&&m.peer===receipt.recipient))return false;
+      if(!current()||![...state.messages,...(state.actions??[]),...(state.groupActions??[])].some(m=>m.id===receipt.id&&m.peer===receipt.recipient&&m.direction==='outgoing')&&!state.groupPackets?.some(m=>m.id===receipt.id&&m.peer===receipt.recipient)&&!knownProfileReceipt(state,owner()!,receipt.recipient,receipt.id))return false;
       await ledger.delivered(receipt.recipient,receipt.id);return current();
     },
   });
@@ -178,15 +185,16 @@ function createLocalAccountNetwork() {
     send:runtime.sendChatMessage,resolve:peerResolver.resolve,deposit:(...args)=>courier.deposit(...args)});
   const unqueue=subscribeRootChatQueued((account,peer,id)=>{if(owner()===account)delivery.wake(peer,id);});
   const groupRecovery=createGroupRecovery({owner,now:Date.now,peers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),random:()=>Native!.identityRandomBytes!(32),recover:(peer,id)=>localRootChat().recoverGroupsForPeer(peer,id)});
-  const pump = () => { loadRemembered(); runtime.tick(); service();void groupRecovery.tick().catch(()=>{});void custody?.wake.tick(); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
+  const profileRecovery=createProfileRecovery({owner,now:Date.now,peers:async()=>profileAudience(await localRootChat().snapshot(),owner()!).filter(p=>runtime.profilePeers().includes(p)),known:peer=>sharedAvatarHash(owner()!,peer),request:(peer,id,known)=>localRootChat().requestProfile(peer,id,known),random:()=>Native!.identityRandomBytes!(32)});
+  const pump = () => { void migrateSharedProfileAvatar().catch(()=>{}); if(owner())void localRootChat().rememberProfilePeers(runtime.profilePeers()).catch(()=>{});if(owner())void localRootChat().rememberTimestampPeers(runtime.timestampPeers()).catch(()=>{});loadRemembered(); runtime.tick(); service();void groupRecovery.tick().catch(()=>{});void profileRecovery.tick().catch(()=>{});void custody?.wake.tick(); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
   const tick = setInterval(pump, 1000);
   let sweeping = false;
   const sweep = setInterval(() => { if (sweeping) return; const current = service(); if (!current) return;
     sweeping = true; void Promise.all([current.sweep(),attachmentService()?.sweep()]).catch(() => {}).finally(() => { sweeping = false; }); }, 60_000);
   runtime.tick(); inspectDirectory = directory.snapshot; activeLookup = directory.lookup; activeSnapshot = runtime.snapshot;
   activePeerResolver=peerResolver.resolve;
-  const attachmentApi={peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
-  ownAttachments=startRootAttachmentRuntime({...attachmentApi,lookup:peerResolver.resolve});
+  const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
+  ownAttachments=startRootAttachmentRuntime({...attachmentApi,streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
   return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume: runtime.resume, tick:pump, stop() { activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
 }
 

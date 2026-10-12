@@ -148,6 +148,18 @@ function createDurableCallControl(store: CallJournalStore, owner: string, callId
       }
       throw Error('Call state changed concurrently');
     },
+    /** Only a durably admitted, signed callee ringing event proves presentation; delivery receipts do not. */
+    async ringingAcknowledged(now:number):Promise<boolean>{
+      const raw=await store.read(owner,callId);if(raw===null)return false;
+      const {journal,state}=restore(raw,owner,callId,recipientDevice);now=clock?.()??now;
+      if(!Number.isSafeInteger(now)||now<journal.observedAt||state.snapshot(now).status!=='ringing')return false;
+      const ringing=new Set<string>();
+      for(const entry of journal.entries){const event=JSON.parse(entry.raw) as import('./callControlProtocol.ts').CallControl;
+        if(event.kind==='ringing')ringing.add(event.device);
+        if(event.kind==='reject'||event.kind==='busy')ringing.delete(event.device);
+      }
+      return ringing.size>0;
+    },
     /** An expired/empty outbox is not evidence that the recipient confirmed selection. */
     async selectionAcknowledged(device: string, now: number): Promise<boolean> {
       if (recipientDevice) return false;

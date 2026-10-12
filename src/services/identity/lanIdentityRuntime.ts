@@ -12,7 +12,7 @@ export interface NativeAxonLan extends NativeAxonTransport {
 type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'> & {
   remembered?():import('./neuronConnections').NeuronCandidate[];
   native: NativeAxonLan;
-  rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait' | 'mediaLane'>;
+  rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait' | 'mediaLane' | 'streamCredit'>;
   internet?: { connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
     peers: { account: string; endpoint: string }[] };
 };
@@ -130,7 +130,10 @@ export function createLanIdentityRuntime(d: Dependencies) {
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,
     custodyRequest: network.custodyRequest,
-    attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
+    attachmentStreams:{available:(account:string,device:string)=>rtc?.canStream(account,device)??false,
+      open:(account:string,device:string)=>{if(!rtc)throw Error('RTC unavailable');return rtc.openStream(account,device);},
+      listen:(handler:Parameters<NonNullable<typeof rtc>['listenStreams']>[0])=>rtc?.listenStreams(handler)??(()=>{})},
+    profilePeers:network.profilePeers,timestampPeers:network.timestampPeers,sharedAttachmentPeers:network.sharedAttachmentPeers,attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
     attachmentBulkPeers:network.attachmentBulkPeers,attachmentBulkRequest:network.attachmentBulkRequest,
     attachmentBatchChunks:network.attachmentBatchChunks,
     attachmentBatchWindow:network.attachmentBatchWindow,

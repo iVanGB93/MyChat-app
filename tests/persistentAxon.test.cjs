@@ -674,6 +674,27 @@ test('signaling cannot queue for offline peers, survive locks, accept oversized 
 });
 
 const { createRtcAxonTransport, validAxonSdp } = load('rtcAxonTransport');
+test('RTC stream is pinned to authenticated device and closes independently of chat',async t=>{
+ const {PC}=rtcFixture(),ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+ const transports=[],sessions=[];let receivedLane,observed;
+ const attach=(i,wire)=>{sessions[i]=createPersistentAxon({...ids[i],store:store(),instance:random(32),random:async n=>random(n),now:()=>now,current:()=>true,
+  expectedAccount:ids[1-i].record.account,wire,onAttachment:async()=>null,onClosed(){}});};
+ for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,random:async()=>Buffer.from(random(32)).toString('hex'),
+  authenticated:()=>{},streamCredit:async()=>true,createConnection:()=>new PC(),
+  sign:(target,session,kind,sdp)=>JSON.stringify({target,session,kind,sdp,device:ids[i].record.devices[0].id,record:ids[i].record,expiresAt:now+30000}),
+  send:(_via,raw)=>{queueMicrotask(()=>transports[1-i].receive(JSON.parse(raw),'relay'));return true;},accept:(_candidate,wire)=>{attach(i,wire);return true;}});
+ t.after(()=>transports.forEach(x=>x.stop()));
+ assert.equal(transports[0].canStream(ids[1].record.account,ids[1].record.devices[0].id),false);
+ attach(0,await transports[0].connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}}));
+ await settle(()=>sessions.length===2);await Promise.all(sessions.map(s=>s.ready));
+ assert.equal(transports[0].canStream(ids[1].record.account,'wrong-device'),false);
+ transports[1].listenStreams((account,device,lane)=>{assert.equal(account,ids[0].record.account);assert.equal(device,ids[0].record.devices[0].id);receivedLane=lane;lane.listen(data=>observed=data,()=>{});return true;});
+ const lane=transports[0].openStream(ids[1].record.account,ids[1].record.devices[0].id);lane.listen(()=>{},()=>{});await lane.ready();
+ assert.equal(transports[0].canStream(ids[1].record.account,ids[1].record.devices[0].id),false,'one lane per RTC peer');
+ lane.send(new Uint8Array([1,2,3]));await settle(()=>observed);assert.deepEqual(observed,new Uint8Array([1,2,3]));
+ lane.close();assert.equal(receivedLane.live(),false);assert(sessions.every(s=>s.snapshot().state==='connected'));
+ assert.equal(transports[0].canStream(ids[1].record.account,ids[1].record.devices[0].id),true);
+});
 test('RTC path diagnostics expose only selected route metrics, never addresses or IDs',()=>{
  const {rtcPathSummary}=load('rtcAxonTransport');
  const reports=new Map([
@@ -706,7 +727,10 @@ function rtcFixture() {
     remoteDescriptions=[];
     id=++sequence;localDescription=null;iceGatheringState='complete';connectionState='new';
     constructor(){super();pcs.set(this.id,this);}
-    createDataChannel(){this.channel=new Channel();return this.channel;}
+    createDataChannel(label='axonic-identity-v1'){
+      if(label==='axonic-stream-v1'&&this.other){const local=new Channel(),remote=new Channel();local.label=remote.label=label;local.protocol=remote.protocol=label;
+       local.other=remote;remote.other=local;queueMicrotask(()=>{local.readyState=remote.readyState='open';this.other.emit('datachannel',{channel:remote});local.emit('open');remote.emit('open');});return local;}
+      this.channel=new Channel();return this.channel;}
     async createOffer(options){this.offerOptions=options;return {type:'offer',sdp:sdp(this.id)};}
     async createAnswer(){return {type:'answer',sdp:sdp(this.id)};}
     async setLocalDescription(d){this.localDescription=d;}
@@ -784,9 +808,9 @@ test('RTC data channels carry independent mutual identity authentication and clo
   const { PC } = rtcFixture(), ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
   const transports=[],sessions=[], wires=[], admitted=[0,0];
   const attach=(i,wire)=>{wires[i]=wire;sessions[i]=createPersistentAxon({...ids[i],store:store(),instance:random(32),random:async n=>random(n),
-    now:()=>now,current:()=>true,expectedAccount:ids[1-i].record.account,wire,onClosed(){}});};
+    now:()=>now,current:()=>true,expectedAccount:ids[1-i].record.account,wire,onAttachment:async()=>null,onClosed(){}});};
   for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,random:async()=>Buffer.from(random(32)).toString('hex'),
-    authenticated:()=>{assert.equal(sessions[i].snapshot().state,'connected');admitted[i]++;},
+    mediaLane:true,authenticated:()=>{assert.equal(sessions[i].snapshot().state,'connected');admitted[i]++;},
     createConnection:()=>new PC(),sign:(target,session,kind,sdp)=>JSON.stringify({target,session,kind,sdp,record:ids[i].record,expiresAt:now+30000}),
     send:(_via,raw)=>{queueMicrotask(()=>transports[1-i].receive(JSON.parse(raw),'relay'));return true;},
     accept:(_candidate,wire)=>{attach(i,wire);return true;}});
@@ -795,6 +819,7 @@ test('RTC data channels carry independent mutual identity authentication and clo
   await settle(()=>sessions.length===2);await Promise.all(sessions.map(s=>s.ready));
   assert.ok(sessions.every(s=>s.snapshot().state==='connected'));
   assert.deepEqual(admitted,[1,1]);
+  assert(sessions.every(s=>s.supportsAttachmentBulk()&&s.attachmentBatchChunks()===3&&s.attachmentBatchWindow()===2));
   transports[0].stop();assert.ok(sessions.every(s=>s.snapshot().state==='closed'));
   assert.deepEqual(transports.map(t=>t.snapshot()),[[],[]]);
 });
@@ -1073,6 +1098,22 @@ test('remembered locator callback follows mutual authentication and excludes inb
  assert(A.offer(candidate));A.tick();assert.equal(left.length,0);assert.equal(right.length,0);
  await settle(()=>A.snapshot().pool.connections.some(c=>c.state==='connected')&&B.snapshot().pool.connections.some(c=>c.state==='connected'));
  assert.deepEqual(left,[candidate]);assert.deepEqual(right,[]);
+});
+
+test('network routes signed call media to the connected recipient without requiring a relay neuron',async t=>{
+ const a=await controller(),b=await controller(),received=[];
+ const listeners=[],queues=[[],[]],closed=[];let dead=false;
+ const wire=i=>({listen(fn,end){listeners[i]=fn;closed[i]=end;for(const raw of queues[i])queueMicrotask(()=>!dead&&fn(raw));queues[i]=[];return()=>{listeners[i]=null;};},send(raw){queueMicrotask(()=>{if(dead)return;if(listeners[1-i])listeners[1-i](raw);else queues[1-i].push(raw);});},close(){if(dead)return;dead=true;for(const end of closed)end?.();}});
+ const A=createIdentityNetwork({identity:a,store:store(),now:()=>now,connect:async()=>wire(0)});
+ const B=createIdentityNetwork({identity:b,store:store(),now:()=>now,onRelayedCallMedia:async raw=>{const e=load('callMediaProtocol').verifyCallMediaSignal(raw,a.publicRecord(),now);if(!e)return false;received.push(raw);return true;},connect:async()=>{throw Error('No dial');}});
+ t.after(()=>{A.stop();B.stop();a.lock();b.lock();});
+ B.accept({account:a.status().account,endpoint:'axon-lan://10.0.0.1:49152',route:'lan',expiresAt:now+60000},wire(1));
+ A.offer({account:b.status().account,endpoint:'axon-lan://10.0.0.2:18080',route:'lan',expiresAt:now+60000});A.tick();
+ await settle(()=>A.snapshot().pool.connections.some(c=>c.state==='connected')&&B.snapshot().pool.connections.some(c=>c.state==='connected'));
+ const raw=a.signCallMedia({callId:'1'.repeat(64),invitation:'2'.repeat(64),acceptance:'3'.repeat(64),target:b.status().account,targetDevice:b.publicRecord().devices[0].id,sourceInstance:'4'.repeat(64),targetInstance:'5'.repeat(64),sequence:1,issuedAt:now,expiresAt:now+30000,kind:'offer',data:{type:'offer',sdp:'v=0'}});
+ assert.equal(await A.sendRelayedMedia(raw),true);assert.deepEqual(received,[raw]);
+ assert.equal(await A.sendRelayedMedia(JSON.stringify({...JSON.parse(raw),targetDevice:'0'.repeat(64)})),false);
+ assert.equal(await A.sendRelayedMedia(JSON.stringify({...JSON.parse(raw),signature:'0'.repeat(128)})),false);assert.equal(received.length,1);
 });
 
 test('waiting push registration prevents new poll reservations from starving it',async t=>{

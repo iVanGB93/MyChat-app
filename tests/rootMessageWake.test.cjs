@@ -217,3 +217,10 @@ test('decrypted preview updates the same hint without sounding twice; a later me
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'ef'.repeat(32),{name:'Peer',text:'next',at:Date.now()+1});
  assert.equal(f.shown.at(-1).android.onlyAlertOnce,false);
 });
+
+test('equal-time group notification previews use the shared message ID rather than recipient delivery ID',async t=>{
+ const f=await fixture(t),at=Date.now(),group='a'.repeat(64);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'ff'.repeat(32),{name:'Group',text:'first',at,group,orderId:'11'.repeat(32)});
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'00'.repeat(32),{name:'Group',text:'second',at,group,orderId:'22'.repeat(32)});
+ assert.deepEqual(f.shown.at(-1).android.style.messages.map(m=>m.text),['first','second']);assert.equal(f.shown.at(-1).body,'second');
+});

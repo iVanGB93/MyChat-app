@@ -1,3 +1,4 @@
+import {compareRootMessages} from './rootChatTypes.ts';
 import type { RootChatReply, RootChatState, RootChatMessage } from './rootChatTypes.ts';
 import type {RootActionKind,RootChatAction} from './rootChatActionTypes.ts';
 export type {RootActionKind,RootChatAction} from './rootChatActionTypes.ts';
@@ -40,5 +41,5 @@ export function rootChatView(owner: string, state: RootChatState): RootChatState
   }
   return {...m,text:deleted?'Message deleted':!m.attachment&&edit?edit.text:m.text,deleted,edited:!!edit&&!deleted,
    read:m.group?(m.direction==='incoming'?m.read:events.some(a=>a.kind==='read'&&a.direction==='incoming'&&a.peer===m.peer)):events.some(a => a.kind === 'read'),reactions:deleted?[]:[...choices].filter(([,a]) => a.text).map(([author,a]) => ({author,text:a.text}))} as RootChatMessage;
- })};
+ }).sort((a,b)=>compareRootMessages(a,b,owner))};
 }

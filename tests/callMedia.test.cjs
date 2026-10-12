@@ -95,26 +95,45 @@ test('bounded queue serializes simultaneous duplicate signals',async()=>{
 });
 
 async function coordinatedPair(routed=false,preserveIncoming=()=>false,routeAvailable=()=>true){
-  const f=await fixture(),stores=[0,1].map(()=>{let v=null;return {read:async()=>v,compareAndSet:async(o,id,b,a)=>{if(v!==b)return false;v=a;return true;}};});
+  let clock=now;const f=await fixture(),stores=[0,1].map(()=>{let v=null;return {read:async()=>v,compareAndSet:async(o,id,b,a)=>{if(v!==b)return false;v=a;return true;}};});
   const control=load('callControlRuntime'),delivery=load('callControlDelivery'),coordinator=load('neuronCallCoordinator');
   const peers=f.records.map((r,i)=>({account:r.account,device:f.devices[i].id,instance:String(i+1).repeat(64),expiresAt:now+60000}));
   const runtimes=[],coords=[],views=[null,null],contexts=peers.map((_,i)=>[{peer:peers[1-i],instance:peers[i].instance}]);
   const readRecord=async account=>f.records.find(r=>r.account===account)??null;
   for(let i=0;i<2;i++)runtimes.push(control.createCallControlRuntime({account:peers[i].account,device:peers[i].device,
-    store:stores[i],records:{read:readRecord},now:()=>now,current:()=>true,blocked:()=>false,
-    signReceipt:async e=>delivery.signCallControlReceipt(e,f.records[i],seed(i?5:2),now),
+    store:stores[i],records:{read:readRecord},now:()=>clock,current:()=>true,blocked:()=>false,
+    signReceipt:async e=>delivery.signCallControlReceipt(e,f.records[i],seed(i?5:2),clock),
     send:async(a,d,raw)=>{const receipt=await runtimes[1-i].receive(raw,peers[i]);if(receipt)await coords[1-i].observe(JSON.parse(raw));return receipt;}}));
-  const make=i=>coordinator.createNeuronCallCoordinator({account:peers[i].account,device:peers[i].device,store:stores[i],now:()=>now,current:()=>true,
+  const make=i=>coordinator.createNeuronCallCoordinator({account:peers[i].account,device:peers[i].device,store:stores[i],now:()=>clock,current:()=>true,
     preserveIncoming,busy:()=>false,blocked:()=>false,lookup:()=>({user:1-i,name:'Test peer'}),resolve:async()=>({account:peers[1-i].account,name:'Test peer'}),
     readRecord,list:async()=>{const raw=await stores[i].read();return raw?[JSON.parse(JSON.parse(raw).entries[0].raw)]:[];},
-    random:async()=>seed(31),sign:input=>c.signCallControl({...input,record:f.records[i]},seed(i?5:2),now),submit:runtimes[i].submit,
-    signMedia:input=>m.signCallMediaSignal({...input,record:f.records[i]},seed(i?5:2),now),contexts:()=>contexts[i],
+    random:async()=>seed(31),sign:input=>c.signCallControl({...input,record:f.records[i]},seed(i?5:2),clock),submit:runtimes[i].submit,
+    signMedia:input=>m.signCallMediaSignal({...input,record:f.records[i]},seed(i?5:2),clock),contexts:()=>contexts[i],
     ...(routed?{callRoute:()=>routeAvailable()?({expiresAt:now+60000}):null,sendRoutedMedia:raw=>coords[1-i].receiveRoutedMedia(raw)}:{}),
     sendMedia:(a,d,raw)=>coords[1-i].receiveMedia(raw,peers[i],peers[1-i].instance),changed:v=>{views[i]=v;}});
   coords.push(make(0),make(1));
   const drain=async i=>{const raw=await stores[i].read();return runtimes[i].drain(JSON.parse(JSON.parse(raw).entries[0].raw),peers[1-i]);};
-  return {f,stores,coords,views,contexts,drain,reopen:i=>{coords[i].stop();coords[i]=make(i);}};
+  return {f,stores,coords,views,contexts,drain,advance:ms=>{clock+=ms;},reopen:i=>{coords[i].stop();coords[i]=make(i);}};
 }
+test('call stays finding after delivery admission and rings only after signed presentation confirmation',async()=>{
+ const x=await coordinatedPair(),id=await x.coords[0].start(1,'voice');assert.equal(x.views[0].status,'finding');
+ await x.drain(0);assert.equal(x.views[1].status,'ringing');assert.equal(x.views[0].status,'finding');
+ assert.equal(await x.coords[0].confirmRinging(id),false);assert.equal(await x.coords[1].confirmRinging('wrong-id'),false);
+ assert.equal(await x.coords[1].confirmRinging(id),true);assert.equal(await x.coords[1].confirmRinging(id),true);
+ const entries=JSON.parse(await x.stores[1].read()).entries.map(e=>JSON.parse(e.raw));assert.equal(entries.filter(e=>e.kind==='ringing').length,1);
+ await x.drain(1);assert.equal(x.views[0].status,'ringing');
+ await x.coords[1].accept(id);await x.drain(1);assert.equal(x.views[0].status,'connecting');
+});
+test('offline finding calls expire as unavailable and cannot be revived by an unadmitted announcement',async()=>{
+ const x=await coordinatedPair(),id=await x.coords[0].start(1,'voice');
+ const invite=JSON.parse(JSON.parse(await x.stores[0].read()).entries[0].raw);
+ await x.coords[0].observe({...invite,kind:'ringing',record:x.f.records[1],device:x.f.devices[1].id});assert.equal(x.views[0].status,'finding');
+ x.advance(60001);await x.coords[0].tick();assert.equal(x.views[0].status,'ended');assert.equal(x.views[0].reason,'Peer unavailable');
+});
+test('late presentation cannot announce ringing after cancellation',async()=>{
+ const x=await coordinatedPair(),id=await x.coords[0].start(1,'voice');await x.drain(0);await x.coords[0].end(id);await x.drain(0);
+ assert.equal(await x.coords[1].confirmRinging(id),false);assert.equal(x.views[0].status,'ended');
+});
 test('coordinator waits for selected receipt, exchanges media and ends both sides without Django',async()=>{
   const x=await coordinatedPair(),id=await x.coords[0].start(1,'voice');
   await x.drain(0);assert.equal(x.views[1].status,'ringing');
@@ -153,7 +172,7 @@ test('decline ends ringing only when no other connected recipient device remains
  await x.coords[1].end(id);await x.drain(1);assert.equal(x.views[0].status,'ended');
  const y=await coordinatedPair(),id2=await y.coords[0].start(1,'voice');await y.drain(0);
  y.contexts[0].push({...y.contexts[0][0],peer:{...y.contexts[0][0].peer,device:y.f.devices[2].id}});
- await y.coords[1].end(id2);await y.drain(1);assert.equal(y.views[0].status,'ringing');
+ await y.coords[1].end(id2);await y.drain(1);assert.equal(y.views[0].status,'finding');
 });
 
 test('call-bound routed signaling works without a direct axon and remains terminal after hangup',async()=>{
@@ -175,10 +194,10 @@ test('media courier forwards only sender-owned signed signals and rejects expire
  assert.equal(await relay(f.raw(0),{...peer,expiresAt:now}),false);
 });
 
-test('a relayed decline leaves another authorized recipient device ringing',async()=>{
+test('a relayed decline keeps finding another authorized device until it confirms ringing',async()=>{
  const x=await coordinatedPair(true);x.contexts[0]=[];x.contexts[1]=[];
  const id=await x.coords[0].start(1,'voice');await x.drain(0);await x.coords[1].end(id);await x.drain(1);
- assert.equal(x.views[0].status,'ringing');
+ assert.equal(x.views[0].status,'finding');
 });
 
 test('cached cryptographic success cannot authorize changed bytes, devices or expired records',async()=>{
@@ -207,6 +226,7 @@ test('call-bound media survives a transient relay route gap',async()=>{
  await x.drain(0);await x.coords[1].accept(id);await x.drain(1);await x.drain(0);await x.coords[0].tick();
  const transport=x.views[0].transport;available=false;await x.coords[0].tick();assert.equal(x.views[0].status,'ready');
  assert.equal(await transport.send('offer',{type:'offer',sdp:'v=0'}),false);
+ x.advance(15000);await x.coords[0].tick();assert.equal(x.views[0].status,'ready','route gap must not preempt media recovery');
  available=true;await x.coords[0].tick();assert.equal(x.views[0].transport,transport);
 });
 

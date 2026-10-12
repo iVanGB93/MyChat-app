@@ -1,5 +1,66 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),{DatabaseSync}=require('node:sqlite');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer}=load('attachmentTransfer');
+function directContext(t,overrides={}){
+ const f=context(t),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
+ const peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
+ const receiver=createAttachmentTransfer({...base,peers:()=>[f.ids[0].record.account],
+  request:(_p,raw)=>sender.receive(raw,peer),...overrides(f,base)});
+ return {...f,sender,receiver,begin:async()=>{await sender.enqueue(f.descriptor,'outgoing');await receiver.enqueue(f.descriptor,'incoming');}};
+}
+test('direct stream uses normal file verification and signed delivery receipt',async t=>{
+ const events=[];const f=directContext(t,(f,base)=>({directStream:async(job,live)=>{
+  assert(await live());assert.equal(job.descriptor.checksum,f.descriptor.checksum);
+  f.written.push(f.plain.slice());events.push('stream');return true;
+ },commitFile:async(...args)=>{await base.commitFile(...args);events.push('verify');},
+ signReceipt:async m=>{events.push('receipt');return base.signReceipt(m);}}));
+ await f.begin();await f.receiver.tick();await f.receiver.tick();
+ assert.deepEqual(events,['stream','verify','receipt']);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+});
+for(const failure of ['unavailable','disconnect'])test(`direct stream ${failure} falls back to encrypted chunks`,async t=>{
+ let attempts=0;const f=directContext(t,()=>({directStream:async()=>{attempts++;if(failure==='disconnect')throw Error('lost channel');return false;}}));
+ await f.begin();for(let n=0;n<8;n++)await f.receiver.tick();
+ assert.equal(attempts,1);assert.equal((await f.job(1)).phase,'complete');assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
+});
+test('corrupt streamed file never produces a receipt',async t=>{
+ let signed=0;const f=directContext(t,(f,base)=>({directStream:async()=>{f.written.push(new Uint8Array(f.plain.length));return true;},
+ signReceipt:async m=>{signed++;return base.signReceipt(m);}}));
+ await f.begin();await f.receiver.tick();assert.equal(signed,0);assert.equal((await f.job(1)).receipt,null);assert.notEqual((await f.job(1)).phase,'complete');
+});
+test('cancelling a direct transfer invalidates its lease and prevents publication',async t=>{
+ let release,entered=false,lease;const gate=new Promise(r=>release=r);
+ const f=directContext(t,()=>({directStream:async(_job,live)=>{lease=live;entered=true;await gate;return true;}}));
+ await f.begin();const pending=f.receiver.tick();while(!entered)await new Promise(setImmediate);
+ await f.receiver.cancel(a.attachmentDigest(f.manifest));assert.equal(await lease(),false);release();await pending;
+ assert.equal((await f.job(1)).phase,'cancelled');assert.equal((await f.job(1)).receipt,null);assert.equal(f.complete.length,0);
+});
+test('custodian downloads never invoke plaintext direct stream',async t=>{
+ const f=context(t);let attempts=0;const sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ for(let n=0;n<5;n++)await sender.tick();
+ const receiver=createAttachmentTransfer({...f.deps(1),directStream:async()=>{attempts++;return true;}});
+ await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<8;n++)await receiver.tick();
+ assert.equal(attempts,0);assert.equal((await f.job(1)).phase,'complete');
+});
+test('direct stream serving requires the exact recipient device and revokes on cancellation',async t=>{
+ const f=context(t);let calls=0,lease;
+ const sender=createAttachmentTransfer({...f.deps(0),serveStream:async(_job,live)=>{calls++;lease=live;return true;}});
+ const job=await sender.enqueue(f.descriptor,'outgoing'),raw=JSON.stringify({version:1,operation:'direct-stream',digest:job.digest});
+ const peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
+ assert.equal(JSON.parse(await sender.receive(raw,{...peer,device:f.ids[2].device.id})).status,'rejected');assert.equal(calls,0);
+ assert.equal(JSON.parse(await sender.receive(raw,peer)).status,'streaming');assert.equal(calls,1);assert(await lease());
+ await sender.cancel(job.digest);assert.equal(await lease(),false);
+ assert.equal(JSON.parse(await sender.receive(raw,peer)).status,'unavailable');assert.equal(calls,1);
+});
+test('older attachment adapters reject stream requests without changing the job',async t=>{
+ const f=context(t),sender=createAttachmentTransfer(f.deps(0)),job=await sender.enqueue(f.descriptor,'outgoing');
+ const result=await sender.receive(JSON.stringify({version:1,operation:'direct-stream',digest:job.digest}),{account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000});
+ assert.equal(JSON.parse(result).status,'unavailable');assert.equal((await f.job(0)).revision,0);
+});
+test('a newly connected sender can stream a partially downloaded attachment',async t=>{
+ let receivedCursor=-1;const f=directContext(t,(f)=>({directStream:async(job)=>{receivedCursor=job.cursor;f.written.splice(0,f.written.length,f.plain.slice());return true;}}));
+ await f.begin();const j=await f.job(1);f.written.push(f.plain.slice(0,4096));
+ await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
+ await f.receiver.tick();await f.receiver.tick();assert.equal(receivedCursor,1);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+});
 test('reused journal writer hides uncommitted checkpoints, rolls back on lock, and preserves compare-and-set',async t=>{
  const path=require('node:path'),os=require('node:os'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'axonic-journal-'));
  const connections=[];let gate=null,entered=false;
@@ -104,14 +165,25 @@ test('RTC pipeline replenishes a verified batch before a slower adjacent batch c
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
 
-test('direct 512 KiB batches deliver a larger file with two requests and a verified receipt',async t=>{
- const f=context(t,787252),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+test('direct 512 KiB batches deliver a larger file with two batch reads and a verified receipt',async t=>{
+ const f=context(t,787252),baseSender=f.deps(0);let reads=0;
+ const sender=createAttachmentTransfer({...baseSender,readChunk:()=>{throw Error('Single read used');},readChunks:async(job,index,count)=>{reads++;return Promise.all(Array.from({length:count},(_,n)=>baseSender.readChunk(job,index+n)));}});await sender.enqueue(f.descriptor,'outgoing');
  const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let batches=0;
  const base=f.deps(1),receiver=createAttachmentTransfer({...base,peers:()=>[source],bulkPeers:()=>[source],
   request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:(_p,raw)=>{batches++;return sender.receive(raw,peer);}});
  await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<8&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
- assert.equal(batches,2);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.equal(batches,2);assert.equal(reads,2);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
+});
+
+for(const mode of ['short','tampered','locked'])test('batch read fails closed: '+mode,async t=>{
+ const f=context(t,16384),base=f.deps(0);
+ const sender=createAttachmentTransfer({...base,readChunks:async(job,index,count)=>{
+  const chunks=await Promise.all(Array.from({length:count},(_,n)=>base.readChunk(job,index+n)));
+  if(mode==='short')chunks.pop();if(mode==='tampered')chunks[0]={...chunks[0],ciphertext:'00'.repeat(chunks[0].ciphertext.length/2)};if(mode==='locked')f.lock();return chunks;
+ }});const job=await sender.enqueue(f.descriptor,'outgoing');
+ const response=JSON.parse(await sender.receive(JSON.stringify({version:1,operation:'direct-get-batch',digest:job.digest,index:0,count:3}),{account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000}));
+ assert.notEqual(response.status,'ok');assert.equal(response.data,undefined);
 });
 
 test('tampered bulk tail preserves only verified prefix and resumes after worker recreation',async t=>{

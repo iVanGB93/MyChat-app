@@ -1,4 +1,5 @@
-import {createOrderedReadAhead} from './orderedReadAhead';
+import {createOrderedReadAhead} from './orderedReadAhead.ts';
+import type {DirectAttachmentExpectation} from './directAttachmentStream.ts';
 import {hexToBytes} from '@noble/hashes/utils.js';
 import {attachmentDigest,validAttachmentManifest,verifyAttachmentManifest,verifyAttachmentChunk,decryptAttachmentChunk,
  verifyAttachmentReceipt,ATTACHMENT_CHUNK_BYTES,type AttachmentManifest,type AttachmentChunk,type AttachmentReceipt,type AttachmentLeafHash} from './attachmentProtocol.ts';
@@ -30,7 +31,7 @@ const terminal=(phase:AttachmentPhase)=>['complete','expired','cancelled'].inclu
 const total=(job:AttachmentJob)=>Math.ceil(job.descriptor.manifest.bytes/ATTACHMENT_CHUNK_BYTES);
 export function validAttachmentDescriptor(value:unknown):value is AttachmentDescriptor {
  const d=value as AttachmentDescriptor;
- return !!d&&(Object.keys(d).sort().join(',')==='checksum,key,manifest,mime,name'||Object.keys(d).sort().join(',')==='caption,checksum,key,manifest,mime,name'&&typeof d.caption==='string'&&new TextEncoder().encode(d.caption).length<=1600)&&validAttachmentManifest(d.manifest,d.manifest?.expires-1)&&Object.keys(d.manifest).length===11&&typeof d.key==='string'&&/^[a-f0-9]{64}$/.test(d.key)
+ return !!d&&(Object.keys(d).sort().join(',')==='checksum,key,manifest,mime,name'||Object.keys(d).sort().join(',')==='caption,checksum,key,manifest,mime,name'&&typeof d.caption==='string'&&new TextEncoder().encode(d.caption).length<=1600)&&validAttachmentManifest(d.manifest,d.manifest?.expires-1)&&Object.keys(d.manifest).length===(d.manifest.version===2?12:11)&&typeof d.key==='string'&&/^[a-f0-9]{64}$/.test(d.key)
   &&typeof d.checksum==='string'&&/^[a-f0-9]{64}$/.test(d.checksum)&&typeof d.name==='string'&&d.name.length>0&&d.name.length<=120
   &&!/[\x00-\x1f\x7f/\\]/.test(d.name)&&typeof d.mime==='string'&&d.mime.length<=100&&/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(d.mime);
 }
@@ -56,12 +57,21 @@ export function createAttachmentTransfer(d:{
  downloadWindow?:number;
  uploadWindow?:number;
  record(account:string):Promise<IdentityRecord|null>;peers():string[];allowed(peer:string):boolean;allowedJob?(job:AttachmentJob):boolean;
+ sharedPeers?():string[];
  request(peer:string,raw:string):Promise<string|null>;
   bulkPeers?():string[];
   batchChunks?(peer:string):number;
   batchWindow?(peer:string):number;
  bulkRequest?(peer:string,raw:string):Promise<string|null>;
+ /** Optional authenticated DTLS lane to the manifest sender/device only. It must
+  * check live before every write and remove its own partial file before returning
+  * false/throwing. True means a complete private file, not a delivery receipt:
+  * commitFile below still verifies and publishes it. Never offered to custodians.
+  */
+ directStream?(job:AttachmentJob,live:()=>Promise<boolean>,expected:DirectAttachmentExpectation):Promise<boolean>;
+ serveStream?(job:AttachmentJob,live:()=>Promise<boolean>):Promise<boolean>;
  readChunk(job:AttachmentJob,index:number):Promise<AttachmentChunk>;
+ readChunks?(job:AttachmentJob,index:number,count:number):Promise<AttachmentChunk[]>;
  /** Persist exact bytes at index; repeating a chunk must be idempotent. Never use the remote name as a path. */
  writeChunk(job:AttachmentJob,index:number,plain:Uint8Array,current:()=>boolean):Promise<void>;
  /** Read back the complete durable file, verify its size and descriptor.checksum, then publish it atomically. */
@@ -77,6 +87,7 @@ export function createAttachmentTransfer(d:{
  let stopped=false,busy=false,generation=0,cursor=0,requests=0,bulkRequests=0;
  const unavailable=new Map<string,number>();
  const directWaiting=new Map<string,number>();
+ const streamRetry=new Map<string,number>();
  const published=new Set<string>();
  async function publish(job:AttachmentJob,current:()=>boolean){
   const key=job.owner+':'+job.direction+':'+job.digest;
@@ -136,7 +147,7 @@ export function createAttachmentTransfer(d:{
     if(r.status!=='completed')throw Error('Attachment receipt not accepted');
     const acknowledged=[...job.acknowledged,relay];await save({acknowledged,phase:acknowledged.length===job.custodians.length?'complete':'confirming',next:0,failures:0});return;
    }
-   const peers=d.peers().filter(p=>validAccountId(p)&&p!==job.owner&&(job.direction==='incoming'||p!==peer)&&(unavailable.get(job.digest+':'+p)??0)<=d.now()).sort((a,b)=>Number(b===peer)-Number(a===peer)).slice(0,10);
+   const peers=d.peers().filter(p=>(manifest.version!==2||d.sharedPeers?.().includes(p))&&validAccountId(p)&&p!==job.owner&&(job.direction==='incoming'||p!==peer)&&(unavailable.get(job.digest+':'+p)??0)<=d.now()).sort((a,b)=>Number(b===peer)-Number(a===peer)).slice(0,10);
    if(!job.relay||!peers.includes(job.relay)||job.direction==='incoming'&&peers[0]===peer&&job.relay!==peer){
     if(!peers.length)return;
     await save({relay:peers[0],phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'?0:job.cursor});
@@ -148,9 +159,18 @@ export function createAttachmentTransfer(d:{
      if(!['held','completed'].includes(r.status))throw Error('Attachment custodian refused');
      const custodians=job.custodians.includes(relay)?job.custodians:[...job.custodians,relay];
      if(custodians.length>9)throw Error('Too many attachment custodians');
-     await save({phase:r.status==='completed'?'confirming':'uploading',custodians,failures:0,next:0});return;
+     const received=manifest.version===2&&Number.isSafeInteger(r.received)&&r.received>=0&&r.received<=total(job)?r.received:0;
+     if(received===total(job)&&r.status==='held')await d.stored?.(job,current);
+     await save({phase:r.status==='completed'||received===total(job)?'confirming':'uploading',cursor:received,custodians,failures:0,next:0});return;
     }
     if(job.phase==='uploading'&&job.cursor<total(job)){
+     // Another recipient's job may already have uploaded this shared prefix.
+     if(manifest.version===2){const held=await request(relay,'status',job);if(!await live())return;
+      if(held.status==='held'&&Number.isSafeInteger(held.received)&&held.received>job.cursor&&held.received<=total(job)){
+       if(held.received===total(job))await d.stored?.(job,current);
+       await save({cursor:held.received,phase:held.received===total(job)?'confirming':'uploading',next:0,failures:0});return;
+      }
+     }
      const start=job.cursor,count=Math.min(uploadWindow,total(job)-start);
      const results=await Promise.allSettled(Array.from({length:count},async(_,offset)=>{
       const index=start+offset,chunk=await d.readChunk(job,index);
@@ -179,6 +199,23 @@ export function createAttachmentTransfer(d:{
     if(!await live())return;
     await publish({...job,receipt:r.receipt},current);if(!await live())return;
     await save({receipt:r.receipt,phase:'complete',next:0,failures:0});return;
+   }
+   if(job.cursor<total(job)&&relay===manifest.sender&&d.directStream
+     &&(streamRetry.get(job.digest)??0)<=d.now()){
+    // A sender can connect after custody download has begun. Stream into an
+    // isolated temporary file; failure must preserve the verified chunk prefix.
+    // A failed stream must not loop ahead of the reliable encrypted fallback.
+    if(streamRetry.size>=128)streamRetry.clear();streamRetry.set(job.digest,d.now()+60000);
+    let received=false;
+    try{received=await d.directStream(job,async()=>manifest.expires>d.now()&&await live(),
+     {digest:job.digest,bytes:manifest.bytes,checksum:job.descriptor.checksum});}catch{}
+    if(!await live())return;
+    if(received){
+     const custodians=[...new Set([...job.custodians,relay])];
+     if(custodians.length>10)throw Error('Too many attachment sources');
+     // A crash here is safe: the normal final hash check runs again after restart.
+     await save({cursor:total(job),custodians,next:0,failures:0});
+    }
    }
    if(job.cursor<total(job)){
     // Fetch a bounded window concurrently, but commit only a verified contiguous prefix.
@@ -250,7 +287,7 @@ export function createAttachmentTransfer(d:{
   /** Own-file requests are scoped to the authenticated intended endpoint, never arbitrary peers. */
   async receive(raw:string,peer:IdentityPeer):Promise<string|null>{
    let input;try{if(raw.length>13000)return null;input=JSON.parse(raw);}catch{return null;}
-   if(!['direct-status','direct-get','direct-get-batch','direct-receipt'].includes(input?.operation))return null;
+   if(!['direct-status','direct-get','direct-get-batch','direct-receipt','direct-stream'].includes(input?.operation))return null;
    const bulk=input.operation==='direct-get-batch';if(bulk&&bulkRequests>=4)return JSON.stringify({status:'unavailable'});
    const reply=(status:string,extra:object={})=>JSON.stringify({status,...extra});
    let admittedJob:AttachmentJob|null=null;
@@ -263,10 +300,22 @@ export function createAttachmentTransfer(d:{
     if(!sender||!recipient||!verifyAttachmentManifest(m,sender,d.now())||!current())return reply('rejected');
     if(input.operation==='direct-status')return job.direction==='incoming'&&peer.account===m.sender&&peer.device===m.senderDevice&&d.device()===m.recipientDevice&&job.failures===0?reply('ready'):reply('unavailable');
     if(job.direction!=='outgoing'||peer.account!==m.recipient||peer.device!==m.recipientDevice||d.device()!==m.senderDevice)return reply('rejected');
+    if(input.operation==='direct-stream'){
+     if(Object.keys(input).sort().join(',')!=='digest,operation,version'||!d.serveStream)return reply('unavailable');
+     const fingerprint=attachmentDescriptorFingerprint(job.descriptor);
+     const live=async()=>{
+      if(!current()||m.expires<=d.now()||d.device()!==m.senderDevice)return false;
+      const saved=await d.store.get(owner,input.digest);
+      return current()&&!!saved&&!['cancelled','expired'].includes(saved.phase)&&
+       attachmentDescriptorFingerprint(saved.descriptor)===fingerprint&&(d.allowedJob?.(saved)??true);
+     };
+     return await live()&&await d.serveStream(job,live)?reply('streaming'):reply('unavailable');
+    }
     if(bulk){
      if(!validAttachmentRange(m,input.index,input.count))return reply('rejected');
-     const chunks:AttachmentChunk[]=[];
-     for(let offset=0;offset<input.count;offset++){
+     const chunks:AttachmentChunk[]=d.readChunks?await d.readChunks(job,input.index,input.count):[];
+     if(d.readChunks&&chunks.length!==input.count)return reply('unavailable');
+     for(let offset=0;!d.readChunks&&offset<input.count;offset++){
       if(!current()||m.expires<=d.now())return reply('unavailable');
       chunks.push(await d.readChunk(job,input.index+offset));
       if((offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));

@@ -1,4 +1,5 @@
 import { createAxonSignaling, type AxonSignal } from './axonSignaling';
+import {routeCallMedia} from './callMediaRouting';
 import { createIntroductionDirectory } from './identityIntroductions';
 import type { TestMessageHandler } from './axonTestMessages';
 import type { createLocalIdentityController } from './localIdentityController';
@@ -103,8 +104,14 @@ export function createIdentityNetwork(d: {
     },
     mediaRelayPeers:()=>[...sessions].flatMap(s=>{const p=s.mediaRelayPeer();return p?[p]:[];}),
     async sendRelayedMedia(raw:string) {
-      for(const session of sessions)if(session.mediaRelayPeer()&&await session.mediaRelayRequest(raw))return true;
-      return false;
+      const epoch=generation,own=account,current=()=>!!own&&account===own&&generation===epoch&&!disposed&&d.identity.status().state==='unlocked';
+      return routeCallMedia(raw,{current,direct:async(target,device,body)=>{
+        const session=[...sessions].find(s=>{const peer=s.mediaForwardPeer();return peer?.account===target&&peer.device===device;});
+        return session?.mediaRelayRequest(body,true)??false;
+      },relay:async body=>{
+        for(const session of sessions){if(!current())return false;if(session.mediaRelayPeer()&&await session.mediaRelayRequest(body))return true;}
+        return false;
+      }});
     },
     forwardMedia(account:string,device:string,raw:string) {
       const session=[...sessions].find(s=>s.mediaForwardPeer()?.account===account&&s.mediaForwardPeer()?.device===device);
@@ -140,6 +147,9 @@ export function createIdentityNetwork(d: {
       return (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && [...sessions].some(s => s.snapshot().account === c.account && s.supportsCustody()))
         .sort((a, b) => ranks[a.route] - ranks[b.route]).map(c => c.account);
     },
+    profilePeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsProfileUpdates()).map(s=>s.snapshot().account!).filter(Boolean),
+    timestampPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsMessageTimestamps()).map(s=>s.snapshot().account!).filter(Boolean),
+    sharedAttachmentPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsSharedAttachments()).map(s=>s.snapshot().account!).filter(Boolean),
     attachmentPeers(){const ranks={lan:0,private:1,internet:2};return (pool?.snapshot().connections??[]).filter(c=>c.state==='connected'&&[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).sort((a,b)=>ranks[a.route]-ranks[b.route]).map(c=>c.account);},
     attachmentRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.snapshot().state==='connected')?.attachmentRequest(raw)??Promise.resolve(null);},
     attachmentBulkPeers(){return [...sessions].filter(s=>s.supportsAttachmentBulk()).map(s=>s.snapshot().account!);},

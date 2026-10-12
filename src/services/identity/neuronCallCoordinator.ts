@@ -9,7 +9,7 @@ import type { CallMediaTransport } from './callMediaTransport.ts';
 
 export interface NeuronCallView<Peer = number> {
   id: string; peerUser: Peer; peerName: string; outgoing: boolean; media: 'voice' | 'video';
-  status: 'ringing' | 'connecting' | 'ready' | 'ended'; reason?: string;
+  status: 'finding' | 'ringing' | 'connecting' | 'ready' | 'ended'; reason?: string;
   transport?: CallMediaTransport;
 }
 type ControlInput = Omit<CallControl, 'version' | 'record' | 'device' | 'signature'>;
@@ -46,7 +46,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     : createDurableRecipientCallControl(d.store,d.account,e.callId,d.device,d.now);
   const remote = (e:CallControl) => e.caller===d.account?e.callee:e.caller;
   const emit = () => d.changed(view ? {...view} : null);
-  const finish = (reason:string) => { media?.stop();media=null;if(view){view={...view,status:'ended',reason,transport:undefined};emit();} };
+  const finish = (reason:string) => { awaitingRouteSince=null;media?.stop();media=null;if(view){view={...view,status:'ended',reason,transport:undefined};emit();} };
   async function control(e:CallControl,kind:CallControl['kind'],extra:Partial<ControlInput>={}) {
     const raw=await d.store.read(d.account,e.callId);if(!raw||!current())return false;
     const events=JSON.parse(raw).entries.map((entry:{raw:string})=>JSON.parse(entry.raw) as CallControl);
@@ -130,8 +130,13 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     if(!active||!view||view.status==='ended'||!current())return;
     const e=active,s=await state(e).snapshot(d.now());
     if(!current())return;
-    if(!s||!['ringing','accepted'].includes(s.status)){finish(s?.status??'Call unavailable');return;}
+    if(!s||!['ringing','accepted'].includes(s.status)){finish(s?.status==='expired'?(view.status==='finding'?'Peer unavailable':'No answer'):s?.status??'Call unavailable');return;}
     if(d.blocked(remote(e))){await terminate(e);finish('Contact blocked');return;}
+    if(view.outgoing&&s.status==='ringing'){
+      const confirmed=await state(e).ringingAcknowledged(d.now());if(!current())return;
+      const status=confirmed?'ringing':'finding';if(view.status!==status){view={...view,status};emit();}
+    }
+    if(s.status==='accepted'&&(view.status==='finding'||view.status==='ringing')){view={...view,status:'connecting'};emit();}
     if(s.status==='accepted'&&!s.confirmed&&view.outgoing&&s.selectedDevice&&s.acceptance){
       await control(e,'selected',{selectedDevice:s.selectedDevice,acceptance:s.acceptance});return;
     }
@@ -144,7 +149,9 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     // A changed direct session still fails closed; no signaling is accepted during a route gap.
     if(!context&&(!media||d.callRoute)){
       awaitingRouteSince ??= d.now();
-      if(d.now()-awaitingRouteSince<10000)return;
+      // Keep routed signaling alive longer than the media recovery window.
+      // A relay reconnect must not kill an independently connected media stream.
+      if(d.now()-awaitingRouteSince<(media?45000:10000))return;
     }else awaitingRouteSince=null;
     if(!context || media&&(context.instance!==media.context.instance||context.peer.instance!==media.context.peer.instance)){
       await terminate(e);finish('Peer disconnected');return;
@@ -183,7 +190,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
       const issuedAt=d.now(),raw=d.sign({callId:bytesToHex(bytes),caller:d.account,callee:target.account,callerDevice:d.device,
         media:kind,kind:'invite',invitation:null,sequence:0,issuedAt,expiresAt:issuedAt+60000});
       if(!await d.submit(raw)||!current())throw Error('Could not save the call invitation.');
-      declined.clear();active=JSON.parse(raw);view={id:active!.callId,peerUser:user,peerName:target.name,outgoing:true,media:kind,status:'ringing'};emit();return view.id;
+      declined.clear();active=JSON.parse(raw);view={id:active!.callId,peerUser:user,peerName:target.name,outgoing:true,media:kind,status:'finding'};emit();return view.id;
     });},
     observe(event:CallControl){return serial(async()=>{
       await recover();if(!current())return;
@@ -204,6 +211,12 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
         }
       }
       if(event.callId===active?.callId)await update();
+    });},
+    confirmRinging(id:string){return serial(async()=>{
+      if(!active||view?.id!==id||view.outgoing||view.status!=='ringing'||!current())return false;
+      const call=state(active);
+      if(await call.ringingAcknowledged(d.now()))return true;
+      return control(active,'ringing');
     });},
     accept(id:string){return serial(async()=>{
       if(!active||view?.id!==id||view.outgoing||view.status!=='ringing'||!current())return false;

@@ -16,7 +16,7 @@ export function conversations() {
   return {snapshot: ledger.snapshot, configure: ledger.configure, configureGroup: ledger.configureGroup, markGroupRead: ledger.markGroupRead};
 }
 /** Active-call controls only; initiation must go through calling.start. */
-export function localAccountCalls(): Pick<NonNullable<ReturnType<typeof activeCallSession>>, 'snapshot' | 'accept' | 'end'> | null {
+export function localAccountCalls(): Pick<NonNullable<ReturnType<typeof activeCallSession>>, 'snapshot' | 'accept' | 'end' | 'confirmRinging'> | null {
   return activeCallSession();
 }
 export {subscribeLocalAccountCalls} from '../../composition/neuronRuntime';
@@ -37,3 +37,5 @@ export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../se
 export {peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';
 
 export {groupMessageInfo} from './groupMessageInfo';
+
+export {updateSharedProfileAvatar,removeSharedProfileAvatar} from './profile';
