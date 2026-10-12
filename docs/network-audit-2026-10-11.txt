@@ -1,0 +1,332 @@
+AXONIC NETWORK AUDIT — 2026-10-11
+
+Scope and conclusion
+Reviewed mobile connection ownership, LAN discovery, RTC setup/recovery,
+connection-pool limits, authenticated session timers, direct and custody message
+routing, attachment scheduling/checkpoints, push registration and wake handling.
+Ran the full app check and native RTC identity-guard tests. Exercised both real
+Axonic Dev phones and queried both AoN releases/health. This is a network audit,
+not a claim that every app feature or every deployment condition is validated.
+No production build, installation, data reset, deployment, commit or push.
+No runtime source edits in this audit; preceding timeout fix remains loaded.
+
+Validation
+- npm run check: 818 tests, 815 passed, 3 skipped, 0 failed.
+  TypeScript, service cycles, module boundaries and consolidation passed.
+- npm run test:rtc-native: byte limits, UTF-8, direct/sliced buffers,
+  permanent rejection and rate limits passed.
+- Both AoNs authenticated API checks: network active, package0.2.0,
+  runtime5d2cc2beff4f67499cda571e07e618c3db2d6a126748a6d203442305bc66e17d.
+  Matching deployed AoNs does not mean they include the latest unshipped mobile
+  scheduling changes. No outage inferred from the previously reported browser error.
+- Physical phones R3GYC0H7PMY and R3GL10CNS1K; com.axonic.dev only.
+  Both identities preserved. Direct route classified internet, not LAN.
+- Fresh 1MiB foreground reverse transfer: receiver first observed verified at
+  19.065s; sender verified20.565s. SHA256 both:
+  631b84027d6b9e52b539c4e8373622d23032dfadc64d60af87339c9037e4f769.
+- Earlier transfer this audit began while receiver was backgrounded on launcher.
+  Sender uploaded256chunks to custody; recipient had pending message without
+  active download job. ADB confirmed launcher foreground, phone awake/unlocked.
+  After bringing Dev foreground, existing job resumed and both files verified:
+  receiver129.425s and sender130.726s from original enqueue. Includes background
+  time, so NOT a throughput result. No FCM delivery claim can be made from this.
+- Measurement helper and diagnostic helper overlapped once; both use one global
+  CDP task slot. Resulting CDP timeout is a harness limitation, not proof of an
+  app crash. Stopped overlapping polls; subsequent measurement ran in isolation.
+- Earlier same-session results: 256KiB forward20.199s/reverse7.254s;
+  1MiB forward59.062s. These are different directions and conditions, not a
+  controlled before/after percentage improvement. Polling gives upper bounds.
+
+Priorities / evidence / proposed work
+
+1. HIGH: background delivery needs a dedicated acceptance gate.
+Evidence: fresh backgrounded Dev receiver resumed attachment on foreground.
+rootPushRegistration.ts always requests FIRST_NEURON.account; push token
+registration is not distributed across arbitrary connected neurons. This is an
+explicit transitional dependency, even though custody can use other peers.
+The audit did not establish whether an FCM wake was sent/received for this test.
+Next: correlate one test's deposit, signed wake, gateway acceptance, Android
+receipt, recovery and visible notification with timestamps. Test screen-off and
+process-restart separately. Keep content arrival distinct from notification.
+Do not claim AoN gateway ACK proves phone delivery or silently change gateways.
+
+2. HIGH: attachment preparation can starve ready transfer work (source finding).
+rootAttachmentRuntime.ts tick processes a selected outgoing item before the loop
+that enqueues incoming messages and before worker.tick. Missing peer record
+awaits lookup then returns; preparation success/error also returns. An unresolved
+selection can repeat indefinitely, and a batch of preparations delays existing
+transfers. This control-flow risk is separate from the background trial and has
+NOT been established as the cause of that trial.
+Next: independent bounded preparation and transfer scheduling; single-flight
+lookup with backoff. Regression: one unresolved outbound selection must not stop
+an unrelated valid incoming file, cancellation or receipt handling.
+
+3. HIGH: RTC transfer waits are the main measured speed opportunity.
+Current RTC frames remain20KB; small batches carry3x4KiB chunks, two batches in
+flight (24KiB payload window). Worker waits for the entire window to settle,
+verifies/writes/checkpoints it, then requests the next window. Prior device timing
+shows network waits dominate file reads/writes and signature lookup work.
+Increasing to four batches did not establish improvement; advertisement remains
+disabled. Do not re-enable by default from unit results alone.
+Next: bounded sliding receive window with ordered commits and backpressure;
+control-frame reserve; preserve cancellation, replay bounds, integrity checks,
+legacy negotiation and fairness. Measure matched same-route trials and p50/p95.
+
+4. MEDIUM: transport capacity differs from the user-visible axon limit.
+rtcAxonTransport.ts make() rejects at entries.size>=5. Mobile pool allows up to10.
+Thus ten allowed axons does not mean ten simultaneous RTC peer channels; mixed
+LAN/AoN links can still fill the pool. A cap is sensible but should be explicit
+or derived from a separate resource budget. Do not blindly raise it: memory,
+concurrent handshakes and battery need measurement. No >5-real-peer load test here.
+
+5. MEDIUM: LAN compatibility and route recovery need broader hardware coverage.
+AxonLan.kt requires Android API33+ and a private IPv4 Wi-Fi address. It binds NSD
+and local listener to Wi-Fi, without requiring validated internet. Guest isolation,
+blocked multicast and IPv6-only networks are not covered by this path.
+lanIdentityRuntime.ts defers failed LAN peers120s, while foreground resume clears
+that deferral. This protects against stale discovery loops but can temporarily
+retain a slower route after a transient failure. Measure recovery before tuning.
+The two-brand-new-identities/no-internet scenario was NOT run in this audit.
+
+6. MEDIUM: repeated polling and full-history work grow with history/peer count.
+Runtime ticks once/sec; custody polls each connected relay every5s (bounded four
+packets/pass); discovery/renewal share control exchanges. Attachment pump idle
+poll is200ms and reads ledger/queued selections; active steps scan pending messages.
+This is bounded by connection limits but not a demonstration of large-history
+performance. Next: change notifications/revision-indexed pending work, adaptive
+idle polling and runtime counters for request latency, queue age and retries.
+Do not interpret 815 passing tests as thousands-of-users load validation.
+
+Confirmed safeguards retained
+- Account lock/lifecycle invalidates active sessions and work; aborts reserve
+  pending connection capacity until cleanup finishes.
+- Signed authentication and expiry enforced; discovery grace bounded15s and
+  capped at peer expiry; initial handshake remains bounded.
+- LAN route upgrades keep working connection until replacement authenticates.
+- Retry backoff, request/frame/queue limits, identity checks and checksum/receipt
+  verification remain present.
+- Custody acceptance is distinct from delivered/read; retries preserve durable
+  checkpoints and receipts; no cloud upload was mistaken for delivery.
+
+Recommended implementation order
+A. Prove and fix preparation/transfer scheduling isolation with a regression test.
+B. Background wake/recovery acceptance tests using Dev, with end-to-end evidence.
+C. Sliding RTC media window with measured backpressure, then matched device trials.
+D. Capacity/polling scalability and disconnected-LAN/new-identity hardware matrix.
+
+Evidence files
+Mobile builds/network-full-audit-check.log; builds/network-audit-native.log.
+Backend builds/two-dev-measurements-audit-1mb-reverse.jsonl (background + harness
+interruption), audit-1mb-resume.jsonl, audit-1mb-foreground.jsonl.
+Source: src/services/identity/{rtcAxonTransport,neuronConnections,
+lanIdentityRuntime,persistentAxon,attachmentTransfer,rootAttachmentRuntime,
+rootPushRegistration,rootMessageWake,custodyCourier,custodyWakeForwarder}.ts;
+src/modules/messaging/delivery.ts; src/composition/neuronRuntime.ts;
+modules/axonic-nearby/android/src/main/java/expo/modules/axonicnearby/AxonLan.kt.
+
+Implementation follow-up — 2026-10-11
+Attachment scheduling: rootAttachmentRuntime now runs selection preparation and
+identity lookup in a separate single flight from the transfer/receipt pump.
+Lookup retries back off5s from completion. Queue removals prune lookup state;
+local ownership/epoch checks prevent publication after lock or account change.
+Three new behavioral tests prove stalled lookup and encryption do not block
+incoming enqueue/worker ticks or duplicate preparation, lookup retry backoff,
+and no publication/removal after lock. Full check818passed,3skipped,0failed;
+TypeScript and architecture checks passed. No production build or deployment.
+Loaded Dev on both phones. 256KiB reverse delivered/checksum verified receiver
+7.393s, sender8.662s (polling upper bounds; not a percentage speed claim).
+
+Background acceptance: first Dev push status registered before HOME. Second Dev
+sent labeled [DEV TEST] Background recovery audit. Sender status delivered at
+15.383s observation. ADB still showed launcher foreground; Android notification
+record for com.axonic.dev matched that exact test message/text, verified in-memory
+without logging unrelated contents. This proves home-screen delivery/notification,
+not a screen-off/process-death or forced-FCM-path test; direct transport may persist.
+Evidence backend builds/dev-background-audit-state.json (public ID/timestamp only).
+
+RTC experiment after discovery fix: briefly advertised negotiated four batches
+on both Dev apps; 256KiB reverse7.194s and1MiB18.277s(receiver),19.480s(sender),
+all hashes matched. Persistent protocol focused suite passed. Difference versus
+recent two-batch results7.393s and19.065s is below reliable inference given sparse
+samples/coarse polling and uncontrolled mobile-data conditions. Restored two-batch
+advertisement default and reloaded Dev. Four-batch capability remains dormant.
+Next: real sliding-window/backpressure design, screen-off/cold recovery matrix,
+and scale/polling work. Push gateway dependency and RTC five-peer cap unchanged.
+
+Screen-off, restart and RTC pipeline follow-up — 2026-10-11
+Screen-off: initial attempts were inconclusive (device woke before checking).
+After user agreed to leave both phones untouched, repeated from HOME then SLEEP.
+Receiver push status registered before send. Both phones stayed Dozing in all six
+ADB samples across ~27s; exact test notification present from first observation
+(~13s after send) and decrypted labeled preview independently confirmed. Neither
+app was foregrounded to inspect receipt. USB/Metro present: this does not prove
+long-duration deep Doze, OS process eviction or FCM-only delivery.
+Evidence backend builds/dev-screen-off-evidence.json.
+
+Restart: force-stopped ONLY com.axonic.dev on receiver; sent a new labeled test
+from other Dev identity; launched receiver. Expo DevLauncher needed existing
+Metro URI before JS loaded. Once attached, original identity remained unlocked,
+network rejoined, message marked delivered at72.048s from enqueue. This includes
+manual DevLauncher recovery and is NOT production cold-start latency. No account
+reset/reinstall. Android force-stop wake restrictions are not treated as failures
+or bypassed: recovery measured after explicit relaunch.
+
+RTC: receiver now pipelines up to four bounded windows per turn, replenishing a
+verified batch before a slower adjacent batch finishes. Still TWO concurrent
+requests with current RTC negotiation,3chunks/batch,20KB wire frame limit.
+Four-batch transport advertisement remains off. Verified contiguous writes and
+checkpointing retained; all launched requests drain in finally on failure/lock;
+bounded burst then yields to other jobs. At default RTC settings max24chunks
+(96KiB plain payload) per burst. Existing larger LAN batches stay one batch/turn.
+New regression holds second response and proves third request starts after first
+is verified, never above2 in flight, and final bytes match. Existing tampering,
+lock, partial-failure and resumed-byte tests also pass.
+Full npm run check819passed,3skipped,0failed, all static checks passed.
+Device 1MiB trials: reverse receiver17.828s(sender15.326s observed verified earlier
+because polls sequential); forward receiver26.481s, sender28.950s. Hashes both
+631b84027d6b9e52b539c4e8373622d23032dfadc64d60af87339c9037e4f769 matched.
+Results are observation bounds; sparse uncontrolled mobile-data samples do not
+support a general percentage speedup. Prior forward59s/reverse19s are context,
+not matched A/B baselines. No production or AoN deployment this iteration.
+Evidence backend builds/two-dev-measurements-rtc-pipeline-1mb-{forward,reverse}.jsonl;
+mobile builds/rtc-pipeline-check.log.
+Both phone screens left off at user's request.
+
+Longer sleep and RTC read-ahead follow-up — 2026-10-11 (tests in progress)
+User explicitly approved temporary device-wide forced idle and restoration.
+USB charging keeps natural Android idle ACTIVE even when screen is dozing.
+First controlled run: receiver remained IDLE/screenOff at0/30/60/90/120/150s,
+but at180s sender was no longer attached to Metro, so no test message was sent.
+Test finally restored mForceIdle=false. This was a harness failure, not a
+notification failure. Repeat uses tagged Expo keep-awake only on sender Dev;
+receiver stays untouched. Keep-awake must be released after run.
+
+RTC change: bounded ordered read-ahead replenishes whichever network request
+finishes first. Previous pipeline waited for ordered consumption before refilling.
+Consumer still verifies/decrypts/writes strictly in order. First request failure
+stops new dispatch; stop drains in-flight requests; remaining waiters resolve as
+rejected. New reads check owner/generation and attachment expiry. No new protocol,
+wire size, cryptographic format, negotiated concurrency or burst budget changes.
+Default2 in flight; max8 batches/96KiB payload buffered per RTC burst. The generic
+helper validates <=32 entries and <=4 concurrent requests. Larger LAN batch path
+remains single request per turn. No production build/deployment.
+Full check823passed,3skipped,0failed; type/cycle/module/consolidation passed.
+Benchmark alternating execution order5rounds:8reads,2inflight, first response80ms,
+others10ms: previous median111ms vs read-ahead80ms. Data/order/concurrency checked.
+This is a synthetic tail-delay benchmark, not a mobile throughput percentage.
+Evidence mobile builds/rtc-read-ahead-check.log and rtc-read-ahead-benchmark.json.
+
+Longer sleep test result
+Repeat completed303.6s. Receiver screenOff/Dozing and mState=IDLE at every
+sample. Sent labeled Dev message after182s; no matching notification or decrypted
+preview at182/212/242/273/303s. Sender still pending144.8s after enqueue, shortly
+after idle restored. Read-only FirstNeuron correlation found1 custody envelope,
+1 unexpired recipient push registration, and wake receipt status forwarded.
+This establishes a deep-idle delivery gap; not proof that FCM reached Android.
+Automatic cleanup confirmed mForceIdle=false. Sender keep-awake tag released.
+User explicitly approved device-wide idle test. No account data/official app
+installation changed. Five minutes forced idle is not an overnight natural-Doze
+or battery-consumption validation. Dev/Metro remain a test-environment limitation.
+Evidence backend builds/dev-deep-idle-20261011.json. The earlier failed harness
+run is documented above; this file contains the completed repeat only.
+
+Completed follow-up observations
+Idle-test message eventually delivered after receiver foregrounded; sender status
+observed delivered212.882s after enqueue. No data reset was needed. Receiver wake
+logs (Dev PID5304) showed context18:33:13.250 and recovery18:33:13.367, versus test
+send18:33:10.838 America/New_York. No notification during controlled idle window.
+Stage logs omit message IDs, so this is strong timing correlation, not exact
+message-level proof. Investigate waitForRecovery/background timer behavior and
+notification publication before changing FCM gateways. Later stages from another
+PID must not be attributed to Dev without mapping; official app untouched.
+
+Read-ahead physical trials,1MiB, original two-request limit:
+reverse receiver18.180s/sender19.378s; forward receiver42.608s/sender41.421s.
+Both endpoints verified SHA256631b84027d6b9e52b539c4e8373622d23032dfadc64d60af87339c9037e4f769.
+These do NOT establish an overall real-phone speed gain: previous pipeline trials
+were17.828s reverse/26.481s forward. Network variability uncontrolled; synthetic
+head-of-line benefit remains established separately. Code tested only on Dev;
+no production/AoN rollout, no production readiness claim.
+Evidence backend builds/two-dev-measurements-rtc-read-ahead-1mb-{forward,reverse}.jsonl.
+Normal idle policy restored, sender keep-awake released, both screens left off.
+Remaining highest-priority issue: authenticated wake enters recovery but does not
+produce a timely notification under sustained deep idle. Overnight natural idle
+and production cold-start remain unverified.
+
+Deep-idle notification correction (subsequent run)
+rootMessageWake now uses the existing Android axonMessageWait completion for
+background recovery deadlines, in <=1000ms slices. Foreground/unsupported builds
+retain the JS timer fallback. Winning recovery stops further native scheduling;
+at most one already-scheduled slice remains. Signed-wake validation, preview
+priority, mute/block/dedupe and local lock policy are unchanged.
+Two regression tests cover suspended JS timers and a fast decrypted preview.
+Full check: 825 passed, 3 skipped, 0 failed; type/cycle/module/consolidation passed.
+Evidence: builds/deep-idle-notification-check.log.
+
+Both physical Dev apps reloaded through Metro; no release build or installation.
+Repeated authorized forced-idle run lasted303.7s, receiver R3GYC0H7PMY.
+At the initial sample screenOn was transiently true while power already Dozing;
+every subsequent30s sample showed screenOn=false, power Dozing, mState=IDLE.
+Sent labeled Dev-only message from R3GL10CNS1K after182s asleep. Exact message ID
+notification and plaintext preview were present at212.5/242.9/273.3/303.7s while
+still IDLE. Sender reported delivered65.856s after enqueue (poll upper bound).
+Dev PID5304 logs: wake context18:44:37.729, recovery18:44:37.803,
+preview18:44:40.630 America/New_York. Stage logs omit message ID; exact-ID native
+notification inspection supplies the separate message-specific evidence.
+Recovery released18:45:57.696 (~80s wall clock after grant), so a native scheduled
+completion is not a hard CPU wake guarantee under Doze. No continued recovery
+work is permitted after the existing absolute lease/deadline checks expire.
+Automatic unforce completed; independently verified mForceIdle=false. Sender
+test keep-awake tag removed; both screens off, accounts/chats preserved.
+Evidence backend builds/dev-deep-idle-fixed-20261011.json. The generic harness
+output dev-deep-idle-20261011.json now contains this successful repeat.
+This establishes one successful controlled Dev deep-idle notification/delivery
+run, not overnight natural-Doze, cold-process, battery or production validation.
+The fix is not installed in the Play Store app and no AoN change was required.
+
+Cold-process test, initial Metro-only Dev client
+Android am kill stopped only com.axonic.dev (PID5304 absent before send). FCM
+restarted it as PID23232, but native ReactHost reported Unable to load script /
+missing index.android.bundle before any JS wake stage. No exact-ID notice through
+78.8s asleep. At~90s the app was deliberately reopened to recover the Dev runtime;
+the94.2s sample was foreground and is excluded from cold-start evidence.
+Sender remained pending at95.337s. This is a Dev runtime packaging blocker, not
+proof of production cold-start failure. Evidence backend
+builds/dev-cold-sleep-20261011.json (initial run; preserve before repeat).
+Prepared a debug-only embedded JS asset using Expo export:embed index.ts and
+temporary builds/cold-dev.gradle sourceSets.debug assets/res directories.
+Gradle assembleDebug -PaxonicSideBySide=true -PreactNativeArchitectures=arm64-v8a
+compiled successfully; aapt confirms com.axonic.dev, label Axonic Dev, v1.1.9/code1,
+assets/index.android.bundle4937668bytes. No release/production build requested.
+The first build attempt's init script also reached included Gradle projects;
+fixed by guarding absent :app projects. No production source/config edit needed.
+
+Longer-idle and bundled-Dev cold-start results
+Ten-minute forced-idle test completed611.8s. Every sample confirmed IDLE,
+screenOn=false and power Dozing. Enqueued a labeled Dev message after8minutes;
+exact-ID notification and decrypted preview were present at490.0s and remained
+through611.8s. Dev PID23232 logs: context18:58:37.476, preview18:58:39.678;
+enqueue18:58:33.322 =>6.356s to preview by correlated logs. Sender receipt checked
+delivered37.892s after enqueue (poll upper bound). Idle automatically restored.
+Evidence backend builds/dev-long-sleep-20261011.json.
+
+Installed bundled debug APK only on receiver R3GYC0H7PMY using adb install -r.
+Existing chats/identity reopened; no reset. Sender remained on its existing Dev
+build. am kill then confirmed receiver PID28959 absent. A new labeled message
+caused FCM to start PID30977. With screen off throughout, exact-ID generic notice
+observed21.8s after start of harness, decrypted preview37.2s, maintained98.7s.
+Logs: enqueue19:02:07.933, JS context19:02:19.768, generic19:02:29.042,
+preview19:02:30.242 (~22.309s from enqueue). Recovery released19:02:48.562.
+Sender confirmed delivered65.204s after enqueue (poll upper bound).
+Evidence backend builds/dev-cold-bundled-20261011.json; initial missing-bundle
+failure separately saved as dev-cold-metro-only-20261011.json.
+
+Both phones verified mForceIdle=false; sender keep-awake removed and screens off.
+No official app installation/data changed. No AoN changes, commits or deployments.
+These establish a ten-minute forced-idle test and a separate screen-off cold
+process test, NOT an overnight natural-Doze or combined cold-process/deep-idle
+validation. Force-stop (user-stopped package) is a different case and was not used.
+Receiver Dev now contains a bundled snapshot of current JavaScript for cold-start
+testing; subsequent code edits require refreshing that asset and the Dev APK to
+test headless cold-start. Temporary Gradle init and bundle are under ignored builds,
+not production sourceSets; ordinary Dev builds do not automatically include them.

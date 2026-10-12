@@ -3,7 +3,9 @@ import {Font,Spacing,Radius} from '../../theme';
 export const chatRoomStyles = StyleSheet.create({
   container: { flex: 1 },
 
-  headerIdentity: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 172, marginLeft: Platform.OS === 'android' ? -8 : 0 },
+  headerNavigation: { flexDirection: 'row', alignItems: 'center', flexShrink: 1 },
+  headerBack: { width: 36, height: 44, alignItems: 'center', justifyContent: 'center' },
+  headerIdentity: { flexDirection: 'row', alignItems: 'center', gap: 6, maxWidth: 172, flexShrink: 1 },
   syncHeaderTitle: { flexDirection: 'row', alignItems: 'center', maxWidth: 130, flexShrink: 1 },
   syncLetters: { flexDirection: 'row', flexShrink: 1 },
   syncHeaderLetter: { fontSize: Font.size.md, fontWeight: '800', letterSpacing: 0.7 },
@@ -43,6 +45,7 @@ export const chatRoomStyles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
   },
+  stickerBtn: { padding: 4 },
   textInput: {
     flex: 1,
     fontSize: Font.size.md,

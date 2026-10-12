@@ -17,6 +17,9 @@ import {createAttachmentTransfer,type AttachmentJob} from './attachmentTransfer'
 import {createMobileAttachmentJobs} from './mobileAttachmentJobs';
 import {stageRootAttachmentSource,prepareRootAttachment,readRootAttachmentChunk,writeRootAttachmentChunk,commitRootAttachmentFile,rootAttachmentFile,removeRootAttachmentSource} from './rootAttachmentFiles';
 type Selection={id:string;peer:string;name:string;mime:string;caption?:string;failed:boolean;reply?:RootChatReply;group?:RootGroupContext};
+let activeTimings:(()=>{startedAt:number;observedAt:number;stages:ReturnType<ReturnType<typeof createAttachmentTiming>['snapshot']>})|null=null;
+/** Local aggregate diagnostics; no identities, paths or payloads. */
+export const rootAttachmentTimings=()=>localAccount.status().state==='unlocked'?activeTimings?.()??null:null;
 let activeControls:{cancel(digest:string):Promise<void>;retry(digest:string):Promise<void>}|null=null;
 export async function controlRootAttachment(digest:string,action:'pause'|'retry'){
  if(!activeControls||localAccount.status().state!=='unlocked')throw Error('Unlock your account and wait for the network');
@@ -78,8 +81,10 @@ export async function rootAttachmentProgress(){const owner=localAccount.status()
 export async function retryRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const row=rows.find(r=>r.id===id);if(row)row.failed=false;});}
 export async function removeRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const i=rows.findIndex(r=>r.id===id&&r.failed);if(i>=0){removeRootAttachmentSource(owner,id);rows.splice(i,1);}});}
 /** Own transfer jobs are separate from the temporary ciphertext this device holds for other people. */
-export function startRootAttachmentRuntime(network:{peers():string[];request(peer:string,raw:string):Promise<string|null>;bulkPeers?():string[];batchChunks?(peer:string):number;bulkRequest?(peer:string,raw:string):Promise<string|null>;lookup?(peer:string):Promise<unknown>}){
- const timingEnabled=process.env.EXPO_PUBLIC_ATTACHMENT_TIMING==='1',timing=createAttachmentTiming(timingEnabled);
+export function startRootAttachmentRuntime(network:{peers():string[];request(peer:string,raw:string):Promise<string|null>;bulkPeers?():string[];batchChunks?(peer:string):number;batchWindow?(peer:string):number;bulkRequest?(peer:string,raw:string):Promise<string|null>;lookup?(peer:string):Promise<unknown>}){
+ const timingEnabled=(typeof __DEV__!=='undefined'&&__DEV__)||process.env.EXPO_PUBLIC_ATTACHMENT_TIMING==='1',timing=createAttachmentTiming(timingEnabled);
+ const timingStarted=Date.now(),snapshotTimings=()=>({startedAt:timingStarted,observedAt:Date.now(),stages:timing.snapshot()});
+ if(timingEnabled)activeTimings=snapshotTimings;
  const records=createMobileIdentityRecordStore(Date.now),journal=createMobileAttachmentJobs();
  const store={...journal,save:(...args:Parameters<typeof journal.save>)=>timing.measure('checkpoint',()=>journal.save(...args))};let stopped=false,busy=false,epoch=0,selectionCursor=0;
  const accepted=new Set<string>();const owner=()=>!stopped&&localAccount.status().state==='unlocked'&&!localAccount.status().busy?localAccount.status().account:null;
@@ -87,7 +92,7 @@ export function startRootAttachmentRuntime(network:{peers():string[];request(pee
  // Updated peers pipeline the bounded window; older peers serialize it safely.
  const worker=createAttachmentTransfer({downloadWindow:4,uploadWindow:4,owner,device:()=>localAccount.callDevice(),now:Date.now,store,
   hashLeaf:Native?.attachmentSha256?value=>Native!.attachmentSha256!(value):undefined,
-  bulkPeers:network.bulkPeers,batchChunks:network.batchChunks,bulkRequest:network.bulkRequest?(...args)=>timing.measure('network',()=>network.bulkRequest!(...args)):undefined,
+  bulkPeers:network.bulkPeers,batchChunks:network.batchChunks,batchWindow:network.batchWindow,bulkRequest:network.bulkRequest?(...args)=>timing.measure('network',()=>network.bulkRequest!(...args)):undefined,
   record:async account=>account===owner()?localAccount.publicRecord():records.read(account),peers:network.peers,request:(...args)=>timing.measure('network',()=>network.request(...args)),allowed:peer=>accepted.has(peer),
   allowedJob:job=>allowedJob(job),
   readChunk:(...args)=>timing.measure('readFile',()=>readRootAttachmentChunk(...args)),
@@ -105,17 +110,20 @@ export function startRootAttachmentRuntime(network:{peers():string[];request(pee
  const mediaExport=startRootMediaExport();
  activeControls=worker;
  const unsubscribe=localAccount.subscribe(()=>{epoch++;worker.invalidate();accepted.clear();allowedJob=()=>false;});
- async function tick(){const account=owner(),generation=epoch;if(!account||busy)return;busy=true;
-  const current=()=>!stopped&&epoch===generation&&owner()===account;
-  try{
-   await store.retire?.(account,current);if(!current())return;
-   const ledger=localRootChat(),snapshot=await ledger.snapshot();if(!current())return;allowedJob=indexAttachmentPolicy(snapshot,account);accepted.clear();for(const c of snapshot.contacts)if(c.accepted&&!c.blocked)accepted.add(c.account);
-   for(const g of snapshot.groups??[])if(g.accepted&&!g.blocked&&g.members.includes(account))for(const peer of g.members)if(!snapshot.contacts.some(c=>c.account===peer&&c.blocked))accepted.add(peer);
-   const queued=await selections(account),removed=queued.filter(s=>snapshot.hiddenChats?.includes(s.group?'group:'+s.group.id:s.peer));
+ let preparing=false;
+ const lookupAfter=new Map<string,number>();
+ async function prepareSelection(account:string,snapshot:Awaited<ReturnType<ReturnType<typeof localRootChat>['snapshot']>>,current:()=>boolean){
+   const ledger=localRootChat();
+   const queued=await selections(account);if(!current())return;const removed=queued.filter(s=>snapshot.hiddenChats?.includes(s.group?'group:'+s.group.id:s.peer));
    if(removed.length){await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(removed.some(r=>r.id===rows[i].id))rows.splice(i,1);});for(const row of removed)removeRootAttachmentSource(account,row.id);}
+   for(const peer of lookupAfter.keys())if(!queued.some(s=>s.peer===peer))lookupAfter.delete(peer);
    const eligible=queued.filter(s=>!removed.includes(s)&&!s.failed&&!snapshot.contacts.find(c=>c.account===s.peer)?.blocked);
    const pending=eligible.length?eligible[selectionCursor++%eligible.length]:null;
-   if(pending){const record=await records.read(pending.peer);if(!record||!verifyRecord(record,Date.now())){await network.lookup?.(pending.peer);return;}if(!current())return;
+   if(pending){const record=await records.read(pending.peer);if(!current())return;if(!record||!verifyRecord(record,Date.now())){
+     if((lookupAfter.get(pending.peer)??0)<=Date.now()){
+      lookupAfter.set(pending.peer,Date.now()+5000);
+      try{await network.lookup?.(pending.peer);}finally{if(current())lookupAfter.set(pending.peer,Date.now()+5000);}
+     }return;}if(!current())return;
     if(pending.group&&(!rootGroupAllowed(snapshot,account,pending.peer,pending.group)||!snapshot.groups?.find(g=>g.id===pending.group!.id)?.accepted)){await changeSelections(account,rows=>{const row=rows.find(r=>r.id===pending.id);if(row)row.failed=true;});return;}
     try{const descriptor=await timing.measure('prepare',()=>prepareRootAttachment({...pending,recipient:record,current}));if(!current())return;
      await ledger.enqueueAttachment(descriptor,pending.reply,pending.group);await worker.enqueue(descriptor,'outgoing');if(!current())return;
@@ -123,6 +131,17 @@ export function startRootAttachmentRuntime(network:{peers():string[];request(pee
      return true;
     }catch{if(current())await changeSelections(account,rows=>{const row=rows.find(r=>r.id===pending.id);if(row)row.failed=true;});}return;
    }
+ }
+ async function tick(){const account=owner(),generation=epoch;if(!account||busy)return;busy=true;
+  const current=()=>!stopped&&epoch===generation&&owner()===account;
+  try{
+   await store.retire?.(account,current);if(!current())return;
+   const ledger=localRootChat(),snapshot=await ledger.snapshot();if(!current())return;allowedJob=indexAttachmentPolicy(snapshot,account);accepted.clear();for(const c of snapshot.contacts)if(c.accepted&&!c.blocked)accepted.add(c.account);
+   for(const g of snapshot.groups??[])if(g.accepted&&!g.blocked&&g.members.includes(account))for(const peer of g.members)if(!snapshot.contacts.some(c=>c.account===peer&&c.blocked))accepted.add(peer);
+   // Preparation/identity lookup has its own single flight. Slow remote lookups
+   // and local encryption must not hold the download/receipt worker hostage.
+   if(!preparing){preparing=true;void prepareSelection(account,snapshot,current)
+    .catch(()=>{/* Durable selections remain retryable. */}).finally(()=>{preparing=false;});}
    for(const message of snapshot.messages){if(!current())return;if(message.attachment&&message.status==='pending'&&accepted.has(message.peer)&&(!message.group||rootGroupAllowed(snapshot,account,message.peer,message.group))){
     const m=message.attachment.manifest;if(m.expires>Date.now())await worker.enqueue(message.attachment,message.direction);
    }}
@@ -134,6 +153,6 @@ export function startRootAttachmentRuntime(network:{peers():string[];request(pee
  let timer:ReturnType<typeof setTimeout>;
  async function pump(){let progressed=false;try{progressed=!!await tick();}finally{if(!stopped)timer=setTimeout(()=>void pump(),progressed?0:200);}}
  timer=setTimeout(()=>void pump(),0);
- return {receive:worker.receive,stop(){if(activeControls===worker)activeControls=null;stopped=true;mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
+ return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',()=>worker.receive(...args)),stop(){if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
 }
 

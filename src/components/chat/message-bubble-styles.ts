@@ -22,6 +22,9 @@ export const messageBubbleStyles = StyleSheet.create({
     elevation: 2,
   },
   bubbleSent: { borderBottomRightRadius: Radius.xs ?? 4 },
+  mediaBubble: { paddingHorizontal: 2, paddingTop: 2, paddingBottom: 2 },
+  voiceBubble: { paddingHorizontal: 8, paddingTop: 6, paddingBottom: 6 },
+  photoBubble: { minWidth: 0, width: 226, borderRadius: Radius.sm + 3 },
   bubbleReceived: { borderBottomLeftRadius: Radius.xs ?? 4 },
   senderName: {
     fontSize: Font.size.xs,
@@ -38,9 +41,16 @@ export const messageBubbleStyles = StyleSheet.create({
     gap: 4,
   },
   timeText: { fontSize: 10, letterSpacing: 0.3 },
+  mediaSize: { marginRight: 'auto', marginLeft: 2 },
   imageBubble: {
     width: 220,
     height: 220,
+    borderRadius: Radius.sm,
+    backgroundColor: '#0002',
+  },
+  videoBubble: {
+    width: 220,
+    aspectRatio: 16 / 9,
     borderRadius: Radius.sm,
     backgroundColor: '#0002',
   },
@@ -51,6 +61,9 @@ export const messageBubbleStyles = StyleSheet.create({
     maxWidth: 280,
     borderWidth: 1,
     borderRadius: Radius.sm,
+    // Follow the outer bubble's curve across its 1-point border and 2-point inset.
+    borderTopLeftRadius: Radius.lg - 3,
+    borderTopRightRadius: Radius.lg - 3,
     padding: Spacing.sm,
   },
   sharedFileIcon: {

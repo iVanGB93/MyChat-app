@@ -1,3 +1,4 @@
+import {createOrderedReadAhead} from './orderedReadAhead';
 import {hexToBytes} from '@noble/hashes/utils.js';
 import {attachmentDigest,validAttachmentManifest,verifyAttachmentManifest,verifyAttachmentChunk,decryptAttachmentChunk,
  verifyAttachmentReceipt,ATTACHMENT_CHUNK_BYTES,type AttachmentManifest,type AttachmentChunk,type AttachmentReceipt,type AttachmentLeafHash} from './attachmentProtocol.ts';
@@ -58,6 +59,7 @@ export function createAttachmentTransfer(d:{
  request(peer:string,raw:string):Promise<string|null>;
   bulkPeers?():string[];
   batchChunks?(peer:string):number;
+  batchWindow?(peer:string):number;
  bulkRequest?(peer:string,raw:string):Promise<string|null>;
  readChunk(job:AttachmentJob,index:number):Promise<AttachmentChunk>;
  /** Persist exact bytes at index; repeating a chunk must be idempotent. Never use the remote name as a path. */
@@ -184,25 +186,29 @@ export function createAttachmentTransfer(d:{
     const start=job.cursor,bulk=relay===manifest.sender&&!!d.bulkRequest&&d.bulkPeers?.().includes(relay);
     const negotiated=bulk?(d.batchChunks?.(relay)??ATTACHMENT_BATCH_CHUNKS):downloadWindow;
     if(!Number.isSafeInteger(negotiated)||negotiated<1||negotiated>ATTACHMENT_BATCH_CHUNKS)throw Error('Invalid negotiated batch size');
-    const count=Math.min(bulk&&negotiated<=3?2*negotiated:negotiated,total(job)-start);
-    let results:PromiseSettledResult<any>[];
-    if(bulk){
-     const batches=await Promise.allSettled(Array.from({length:Math.ceil(count/negotiated)},async(_,batch)=>{
+    const window=bulk&&negotiated<=3?(d.batchWindow?.(relay)??2):1;
+    if(!Number.isSafeInteger(window)||window<1||window>4)throw Error('Invalid negotiated batch window');
+    const pipeline=bulk&&negotiated<=3;
+    // At most four windows per turn; keep the negotiated request count in flight.
+    const count=Math.min(window*negotiated*(pipeline?4:1),total(job)-start);
+    let results:PromiseSettledResult<any>[]=[];
+    const reads=bulk?createOrderedReadAhead(Math.ceil(count/negotiated),window,async batch=>{
+      if(!current()||manifest.expires<=d.now())throw Error('Attachment unavailable');
       const index=start+batch*negotiated,length=Math.min(negotiated,count-batch*negotiated);
       const raw=await d.bulkRequest!(relay,JSON.stringify({version:1,operation:'direct-get-batch',digest:job.digest,index,count:length}));
       if(!raw||raw.length>ATTACHMENT_BULK_FRAME_BYTES-1024)throw Error('Attachment batch unavailable');
       const response=JSON.parse(raw);if(response.status!=='ok'||response.index!==index||response.count!==length)throw Error('Attachment batch unavailable');
-      return unpackAttachmentBatch(manifest,index,length,response.data).map(chunk=>({status:'fulfilled' as const,value:{status:'ok',chunk,custodians:response.custodians}}));
-     }));
-     results=batches.flatMap<PromiseSettledResult<any>>(batch=>batch.status==='fulfilled'?batch.value:[{status:'rejected',reason:batch.reason}]);
-    }else results=await Promise.allSettled(Array.from({length:count},(_,offset)=>
+      return unpackAttachmentBatch(manifest,index,length,response.data).map(chunk=>({status:'ok',chunk,custodians:response.custodians}));
+    }):null;
+    if(!bulk)results=await Promise.allSettled(Array.from({length:count},(_,offset)=>
      request(relay,relay===manifest.sender?'direct-get':'get',job,{index:start+offset})));
     let verifiedCursor=start,custodians=job.custodians;
-    try{for(let offset=0;offset<results.length;offset++){
+    try{for(let offset=0;offset<count;offset++){
      if(!await live())return;
      if(manifest.expires<=d.now())throw Error('Attachment expired');
-     const result=results[offset];if(result.status==='rejected')throw result.reason;
-     const r=result.value,index=start+offset;
+     const index=start+offset;let r:any;
+     if(reads){const batch=await reads.get(Math.floor(offset/negotiated));if(batch.status==='rejected')throw batch.reason;r=batch.value[offset%negotiated];}
+     else {const result=results[offset];if(result.status==='rejected')throw result.reason;r=result.value;}
      // decryptAttachmentChunk verifies the complete Merkle proof before decrypting.
      // Keep the requested-index check here; do not hash the same proof twice.
      if(r.status!=='ok'||!r.chunk||r.chunk.index!==index)throw Error('Attachment chunk unavailable');
@@ -216,7 +222,8 @@ export function createAttachmentTransfer(d:{
      if(bulk&&(offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
     }}finally{
      // Files are written at fixed offsets. A crash before this checkpoint safely
-     // replays at most one bounded window; a failed chunk preserves its verified prefix.
+     // replays at most one bounded burst; a failed chunk preserves its verified prefix.
+     await reads?.stop();
      if(verifiedCursor>start&&await live())await save({cursor:verifiedCursor,custodians,next:0,failures:0});
     }
     // Finish a fully written file in this turn instead of waiting for another
@@ -244,7 +251,7 @@ export function createAttachmentTransfer(d:{
   async receive(raw:string,peer:IdentityPeer):Promise<string|null>{
    let input;try{if(raw.length>13000)return null;input=JSON.parse(raw);}catch{return null;}
    if(!['direct-status','direct-get','direct-get-batch','direct-receipt'].includes(input?.operation))return null;
-   const bulk=input.operation==='direct-get-batch';if(bulk&&bulkRequests>=2)return JSON.stringify({status:'unavailable'});
+   const bulk=input.operation==='direct-get-batch';if(bulk&&bulkRequests>=4)return JSON.stringify({status:'unavailable'});
    const reply=(status:string,extra:object={})=>JSON.stringify({status,...extra});
    let admittedJob:AttachmentJob|null=null;
    const owner=d.owner(),epoch=generation,current=()=>!stopped&&generation===epoch&&d.owner()===owner&&d.allowed(peer.account)&&peer.expiresAt>d.now()&&(!admittedJob||(d.allowedJob?.(admittedJob)??true));

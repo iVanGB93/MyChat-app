@@ -133,6 +133,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
     attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
     attachmentBulkPeers:network.attachmentBulkPeers,attachmentBulkRequest:network.attachmentBulkRequest,
     attachmentBatchChunks:network.attachmentBatchChunks,
+    attachmentBatchWindow:network.attachmentBatchWindow,
     pushRequest: network.pushRequest,
     pushPeers: network.pushPeers,
     mediaRelayPeers:network.mediaRelayPeers,

@@ -13,7 +13,7 @@ export function CallLayout({name,status,video,children,background,show=true,avat
  const {colors}=useTheme(),insets=useSafeAreaInsets(),styles=useMemo(()=>makeStyles(colors),[colors]);
  const compact=video&&!avatar;
  return <View style={styles.container}><StatusBar style="light"/>{background}{show&&<View style={[styles.overlay,{paddingTop:insets.top+24,paddingBottom:Math.max(insets.bottom,16)+16,paddingLeft:insets.left,paddingRight:insets.right}]} pointerEvents="box-none">
-   <ScrollView style={{flexGrow:0,flexShrink:1}} contentContainerStyle={[styles.top,compact&&{alignItems:'flex-start',paddingRight:140}]}>
+   <ScrollView style={{flexGrow:0,flexShrink:1}} contentContainerStyle={[styles.top,compact&&{alignItems:'flex-start',paddingLeft:64,paddingRight:140}]}>
     {!compact&&<View style={[styles.typePill,{borderColor:colors.neonBorder}]}><Ionicons name={video?'videocam-outline':'call-outline'} size={14} color={colors.primary}/><Text style={[styles.typePillText,{color:colors.primary,marginLeft:6}]}>{video?'VIDEO CALL':'VOICE CALL'}</Text></View>}
     {avatar&&<View style={styles.avatarWrap}><Avatar name={name} size={120}/></View>}
     <Text numberOfLines={2} ellipsizeMode="tail" style={[styles.name,compact&&{fontSize:22,marginTop:0,textAlign:'left'}]}>{name}</Text><Text accessibilityLiveRegion="polite" style={styles.status}>{status}</Text>

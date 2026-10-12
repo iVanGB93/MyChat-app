@@ -1,0 +1,9 @@
+CALL MINIMIZATION RESTORED — OCTOBER 11, 2026
+
+RootAccountCallScreen's Modal.onRequestClose previously ended every nonterminal call. Back now minimizes ringing/connecting calls and active voice/video calls. The in-app floating window shows the peer, call timer/status, a live video view when available, a restore tap area, and an explicit End button. Active media also has a visible Minimize button. Back on video quality options still closes those options.
+
+RootMedia remains mounted with the same call-id key outside the full-screen Modal. Only presentation changes; useWebRTCCore, microphone/camera tracks, connected timer, native call lease and audio route stay alive. Ending or locking still tears down the media normally. Minimized state is scoped to the call id; it cannot minimize a new call. Terminal minimized calls disappear without reopening the full-screen ended screen. Existing full-screen ended calls retain their three-second dismissal.
+
+Validation: TypeScript passed; 30 call appearance, minimization, lifetime, media protocol and audio-route tests passed. Module boundaries and consolidation passed. Three minimization regressions exercise Back/restore without end, media component identity/key/transport continuity, ringing/connecting/ended behavior, and new-call isolation.
+
+Live test used only existing disposable UI Test Peer 1/2 emulator identities. Real video connected on emulator-5554 and emulator-5556. Caller hardware Back showed the small video window, with the same active call id and ready status on both sides. Tapping the small window restored the full-screen video and continuing timer. Recipient hardware Back also minimized with a working video preview; both call snapshots stayed ready. End was then tapped in the recipient's minimized window. No physical official apps, accounts, builds or deployments were changed. This is an in-app minimized window; Android system picture-in-picture outside Axonic is not implemented by this change.

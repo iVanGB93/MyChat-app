@@ -64,27 +64,44 @@ test('journal liveness fallback still delivers for adapters without indexed chec
  for(let i=0;i<8;i++)await receiver.tick();assert.equal((await f.job(1)).phase,'complete');assert.equal(f.written.length,3);
 });
 
-test('negotiated three-chunk batches preserve final bytes and receipt',async t=>{
- const f=context(t,4096*7+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+for(const window of [2,4])test(`negotiated three-chunk window ${window} preserves final bytes and receipt`,async t=>{
+ const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
  const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};const counts=[];
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,
+ const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>window,
  request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:(_p,raw)=>{counts.push(JSON.parse(raw).count);return sender.receive(raw,peer);}});
  await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<8&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
- assert.deepEqual(counts,[3,3,2]);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.deepEqual(counts,[3,3,3,3,2]);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
 
-test('small batch window drains both requests and checkpoints only the verified prefix on failure',async t=>{
- const f=context(t,4096*7+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+for(const window of [2,4])test(`small batch window ${window} drains requests and checkpoints only the verified prefix on failure`,async t=>{
+ const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
  const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let active=0,peak=0;
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,
+ const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>window,
  request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
   active++;peak=Math.max(peak,active);const index=JSON.parse(raw).index;
   try{await new Promise(r=>setTimeout(r,index===0?10:1));if(index===3)throw Error('lost batch');return await sender.receive(raw,peer);}finally{active--;}
  }});
  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
- assert.equal(peak,2);assert.equal(active,0);assert.equal((await f.job(1)).cursor,3);
+ assert.equal(peak,window);assert.equal(active,0);assert.equal((await f.job(1)).cursor,3);
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain.slice(0,3*4096)));
+});
+
+test('RTC pipeline replenishes a verified batch before a slower adjacent batch completes',async t=>{
+ const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
+ let release,active=0,peak=0;const gate=new Promise(r=>release=r),started=[];
+ const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>2,
+ request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
+  const index=JSON.parse(raw).index;started.push(index);active++;peak=Math.max(peak,active);
+  try{if(index===3)await gate;return await sender.receive(raw,peer);}finally{active--;}
+ }});
+ await receiver.enqueue(f.descriptor,'incoming');const work=receiver.tick();
+ try{for(let n=0;n<100&&!started.includes(6);n++)await new Promise(setImmediate);
+  assert(started.includes(6),'third request starts while second is held');assert.equal(peak,2);
+ }finally{release();await work;}
+ assert.equal(active,0);assert.equal((await f.job(1)).cursor,14);
+ assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
 
 test('direct 512 KiB batches deliver a larger file with two requests and a verified receipt',async t=>{

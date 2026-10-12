@@ -1,6 +1,9 @@
 package expo.modules.axonicappupdate
 
 import android.app.Activity
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
+import android.util.Base64
 import android.content.ContentUris
 import android.content.ContentValues
 import android.net.Uri
@@ -11,6 +14,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.Promise
 import java.io.File
 import java.io.InputStream
+import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 
 /** Shared storage only; no broad permissions and no remote/network operations. */
@@ -22,6 +26,33 @@ class AxonicMediaStoreModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("AxonicMediaStore")
     Constant("supported") { Build.VERSION.SDK_INT >= 29 }
+    AsyncFunction("videoThumbnail") { source: String ->
+      val uri = Uri.parse(source)
+      require(uri.scheme == "file")
+      val file = File(requireNotNull(uri.path)).canonicalFile
+      val root = File(context.filesDir, "axonic-own-attachments-v1").canonicalFile
+      require(file.path.startsWith(root.path + File.separator) && file.name == "content" && file.isFile)
+      val retriever = MediaMetadataRetriever()
+      var frame: Bitmap? = null
+      try {
+        retriever.setDataSource(file.path)
+        frame = if (Build.VERSION.SDK_INT >= 27)
+          retriever.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 440, 440)
+        else retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+        val bitmap = frame
+        if (bitmap == null) null else {
+          val scale = minOf(1.0, 440.0 / maxOf(bitmap.width, bitmap.height))
+          val small = if (scale < 1) Bitmap.createScaledBitmap(bitmap,
+            maxOf(1, (bitmap.width * scale).toInt()), maxOf(1, (bitmap.height * scale).toInt()), true) else bitmap
+          try {
+            ByteArrayOutputStream().use { output ->
+              check(small.compress(Bitmap.CompressFormat.JPEG, 80, output))
+              "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+            }
+          } finally { if (small !== bitmap) small.recycle() }
+        }
+      } finally { frame?.recycle(); retriever.release() }
+    }
     AsyncFunction("requestDelete") { value: String, messageId: String, promise: Promise ->
       try {
         check(Build.VERSION.SDK_INT >= 30)

@@ -396,3 +396,68 @@ October 10: Lifecycle tracing and mutual-authentication timing fix
 - Found a scheduling defect consistent with that rejection: discovery next-start time was set before the outstanding lookup completed. A media-tolerated12s delayed lookup can be followed3s later by the next scheduled lookup, violating the receiver's10s admission spacing. Changed scheduling to15s after completion, preserving the receiver's limit and signature checks. Regression holds the request12s during the valid15s media/control grace and proves a second lookup waits until32s, rather than arriving at20s. Full check710 passed,3 skips; no type/module/cycle/consolidation failures.
 - Evidence builds/authentication-race-repeat.log, authentication-race-phone.log, authentication-race-emulator.log, discovery-recovery-check.log. Final implementation loaded in Phone Dev and emulator5554. Final transfer in discovery-recovery-live.log.
 - Final combined-fix3MB live run delivered/checksum matched at both ends by51.300s. Scoped logs show an initial unopened RTC attempt timing out; no established-channel closure or introductions rejection was logged during this transfer. Variation remains substantial; this is a stability fix and does not demonstrate higher throughput. Final logs builds/discovery-recovery-live.log, discovery-recovery-phone.log, discovery-recovery-emulator.log. Official app unchanged.
+
+October 11: remove timer serialization between small RTC batches
+- Found the two-request small-batch path paced every start with a 5ms timer, unlike the existing credit-based single-chunk lane. A regression first failed: only one of two permitted requests was sent without advancing the clock.
+- Small batches now have two burst credits, refilling at the existing 200 requests/sec. The two outstanding request limit, 20KB frames, custody/push priority, authentication checks and large-batch 250ms pacing remain. No cryptographic or wire-format change.
+- Regression covers immediate pair admission, third-request rejection, control completion while media is pending, out-of-order replies, refill timing, backward clock and stop draining. Focused transport suite: 96 passed, 2 optional benchmarks skipped. Full npm run check passed (see builds/rtc-batch-speed-check.log).
+- Alternating before/after PC transport-only simulation: 128 responses of 17000 characters; 10ms one-way delay; 16ms timer floor; three runs each. Before 2416/2415/2401ms, after 1342/1343/1369ms. Median 2415 -> 1343ms (44.4% lower). Payloads matched and sessions stayed connected. This excludes real RTC, file I/O and cryptographic preparation; not an end-to-end phone speed claim.
+- Evidence builds/rtc-batch-speed-benchmark.cjs and .json, rtc-batch-speed-focused.log. Physical phone not present in ADB; real device transfer validation remains. No production build, official-app installation, AoN deployment or real-user messages performed for this change. Unrelated UI changes preserved.
+
+October 11: two physical Dev phones, Wi-Fi and RTC measurements
+- User authorized both Axonic Dev apps. Second phone's older Dev installation lacked native attachmentFileSha256 and its receive job stayed queued. Installed the already-built, verified com.axonic.dev arm64 debug APK in place; its fresh test identity survived. Interrupted 3 MB file resumed and both retained files matched independent SHA-256. This interrupted run is excluded from speed comparisons.
+- Direct Wi-Fi 3147775-byte file: receiver first observed complete at16.753s forward and15.879s reverse; sender receipt observed18.926s and16.885s. Includes preparation and coarse sequential CDP polling, not exact wire latency.
+- User turned first phone Wi-Fi off. Internet RTC 3147775-byte file: receiver first observed complete134.897s, sender receipt137.320s, checksum verified on both ends. No failure checkpoint was observed. This is still too slow.
+- Same 262144-byte RTC workload: optimized receiver observations23.520s/14.883s; prior scheduler20.788s/10.517s. Two samples per version, coarse polling, network variation and sequential version order: no reliable real-phone improvement established. The earlier simulated44% improvement must not be presented as a measured phone speedup. Optimized source restored and both Dev clients reloaded after comparison; unrelated UI work preserved.
+- Component measurements (10 repetitions per phone): identity reads19.20ms/9.70ms; signature checks10.40ms/5.65ms total. These do not explain the multi-second network waits.
+- Added local aggregate transfer stage diagnostics enabled by default only in Dev (or existing explicit timing flag). Counters scope to one runtime and expose no identity, file path, keys or message content; unavailable while locked. Includes incoming request serving duration. Shipping release default remains off.
+- Fresh-account256KiB profile receiver first observed complete15.514s. At11.788s:19 network requests had13530ms aggregate waiting (overlapping, not wall time);54 writes54ms;11 checkpoints209ms. Sender at10.699s: preparation483ms,54 file reads80ms,18 served requests301ms. Prioritize the bounded in-flight data window/round trips, not larger SQLite changes; current RTC batches remain3 chunks per request,2 concurrent batch requests,20KB frame cap.
+- First Dev account became locked after a reload and no saved secure credential remained. Root cause of that specific loss was not captured. Found/reproduced independent startup defect: any unlock error erased the remembered login, including transient storage errors. Now malformed/different-account credentials are removed, but unlock failures retain secure credentials and propagate for Retry; explicit lock still deletes them. Regression and existing lock-race tests passed.
+- With explicit user approval, backed up first phone's com.axonic.dev files/databases/shared_prefs (161801216-byte tar,216 entries, SHA25615279e9b857f9bb1823cacfd1282d3b1ac8f4f9cb31001297aaa196276c57e05) to backend builds/dev-phone-backup-20261011.tar, verified it, reset ONLY that Dev package, and created a fresh separate test identity. Old Dev chats are in the backup, not in the new account. Automatic secure login survived subsequent reload. Backup cannot independently recover an unknown identity password and is not a portable recovery phrase. No official Play Store data touched.
+- Fixed a flaky tampering test that overwrote a random ciphertext byte with00 (occasionally unchanged); it now flips a bit, guaranteeing tampering. No cryptographic protocol change.
+- Final full check:808 passed,3 skipped; typecheck, cycles, module boundaries and consolidation passed. No production build, AoN deployment, commit or push.
+- Evidence: backend builds/two-dev-measurements-*.jsonl, two-dev-*-small-*.json, two-dev-component-timings.json; mobile builds/two-dev-speed-final-check.log. Next: negotiate a bounded larger in-flight RTC window without exceeding frame/buffer limits or breaking older peers, then repeat controlled real-device tests.
+October 11, 2026 - negotiated RTC window experiment
+Added bounded optional four-small-batch negotiation, legacy two-batch fallback,
+worker forwarding, and tests for mixed versions, request admission, out-of-order
+responses, complete bytes/receipt, and contiguous-prefix checkpoint on failure.
+RTC does NOT advertise this capability in the final configuration: the live
+trial did not establish a speed benefit. Current default remains two batches.
+Full npm run check: 813 passed, 3 skipped, 0 failed; type/cycle/module/consolidation passed.
+Both physical com.axonic.dev identities were preserved. Official apps unchanged.
+262144-byte test started 21:48:21 UTC. Direct RTC failed during transfer:
+receiving phone logged exchange-timeout:introductions at 17:49:00 local;
+remote logged channel-closed. This establishes the close reason, not whether
+larger concurrency caused the underlying delay. No buffer-full event observed.
+Restored conservative advertisement, reloaded Dev, let existing job resume.
+Sender verified at 164201ms; receiver at 165423ms, both delivered and SHA256
+31a1f9dea0169551092d05e8bf4a446228c8c3eb4c9b713c66adcb7fd53c89be matched.
+Includes reload/reconnection and retry backoff, NOT steady-state throughput.
+Evidence: backend builds/two-dev-measurements-rtc-window4-first.jsonl and
+builds/two-dev-measurements-rtc-window2-recovery.jsonl.
+Next: reproduce introduction-control timeout under active RTC traffic and
+verify bounded scheduling/recovery without weakening authentication expiry.
+No production build or AoN deployment performed for this experiment.
+October 11, 2026 - discovery timeout during media
+Authenticated introductions now get the existing bounded 15-second control
+grace even if they start just before the first media frame. Previously that
+ordering selected 4 seconds and could close a healthy transfer. Timeout remains
+capped by the authenticated peer expiry; initial handshake unchanged.
+Regression tests cover delayed discovery completion after 4 seconds and a hard
+15-second deadline that closes without accepting a late response.
+Full npm run check: 815 passed, 3 skipped, 0 failed; all static checks passed.
+Loaded through Metro on both physical com.axonic.dev apps; no release build.
+Internet RTC, conservative two-batch default retained:
+- 256 KiB forward: receiver observed delivered/verified 20.199s, sender22.665s.
+- 256 KiB reverse: receiver7.254s, sender8.427s.
+- 1 MiB forward: sender57.910s, receiver59.062s.
+All three completed with byte-for-byte SHA256 checks on both endpoints, no
+observed transfer retries, same direct session (hello count remained1) and
+successful repeated discovery/authentication exchanges during the larger file.
+Polling observations are upper bounds, not exact completion timestamps.
+This validates the bounded timeout fix; directional/network variability and
+lack of paired baseline do not establish a general throughput percentage gain.
+Evidence: backend builds/two-dev-measurements-discovery-grace-{forward,reverse,1mb}.jsonl.
+Remaining speed work: reduce RTC per-window round-trip waiting with measured
+backpressure-aware scheduling. Four-batch advertisement remains disabled.
+AoNs and official Play Store apps were not modified in this test iteration.

@@ -1,4 +1,4 @@
-type Stage='prepare'|'network'|'checkpoint'|'readFile'|'writeFile'|'verifyFile'|'receipt'|'chat';
+type Stage='serve'|'prepare'|'network'|'checkpoint'|'readFile'|'writeFile'|'verifyFile'|'receipt'|'chat';
 /** Local aggregate timings only: never accepts identities, filenames, payloads or keys. */
 export function createAttachmentTiming(enabled:boolean,now:()=>number=Date.now){
  const rows=new Map<Stage,{calls:number;milliseconds:number;maximum:number;errors:number}>();

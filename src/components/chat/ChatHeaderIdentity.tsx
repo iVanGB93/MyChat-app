@@ -1,5 +1,6 @@
 import React from 'react';
-import {TouchableOpacity} from 'react-native';
+import {TouchableOpacity,View} from 'react-native';
+import {Ionicons} from '@expo/vector-icons';
 import Avatar from '../ui/Avatar';
 import SyncingHeaderTitle from './SyncingHeaderTitle';
 import {chatRoomStyles as styles} from './chat-room-styles';
@@ -11,6 +12,7 @@ export default function ChatHeaderIdentity({
   isGroup,
   isOnline,
   onPress,
+  onBack,
 }: {
   title: string;
   syncing: boolean;
@@ -19,8 +21,13 @@ export default function ChatHeaderIdentity({
   isGroup: boolean;
   isOnline: boolean;
   onPress: () => void;
+  onBack: () => void;
 }) {
   return (
+    <View style={styles.headerNavigation}>
+    <TouchableOpacity accessibilityRole="button" accessibilityLabel="Go back" onPress={onBack} style={styles.headerBack}>
+      <Ionicons name="arrow-back" size={24} color={color}/>
+    </TouchableOpacity>
     <TouchableOpacity
       testID="axonic-chat-header-details"
       accessibilityRole="button"
@@ -39,5 +46,6 @@ export default function ChatHeaderIdentity({
       />
       <SyncingHeaderTitle title={title} syncing={syncing} color={color} />
     </TouchableOpacity>
+    </View>
   );
 }

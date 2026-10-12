@@ -1,5 +1,5 @@
 import {KeyboardAwareTextInput as TextInput} from './ui/KeyboardForm';
-import {parseIdentityCode} from '../modules/identity';
+import {parseIdentityInput} from '../modules/identity';
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, Pressable, Text, View } from 'react-native';
 import { type DirectoryLookupResult } from '../modules/identity';
@@ -21,20 +21,20 @@ export default function IdentityLookup({ lookup, color = '#e6edf7', muted = '#a2
     return () => { generation.current++; state.remove(); };
   }, []);
   async function find() {
-    if (running.current || !parseIdentityCode(account)) return;
+    if (running.current || !parseIdentityInput(account)) return;
     running.current = true; setBusy(true); setResult(null); const epoch = generation.current;
-    try { const found = await lookup(parseIdentityCode(account)!); if (epoch === generation.current) setResult(found); }
+    try { const found = await lookup(parseIdentityInput(account)!); if (epoch === generation.current) setResult(found); }
     catch { if (epoch === generation.current) setResult({ status: 'unavailable', queried: 0, answered: 0, rejected: 0, sources: [] }); }
     finally { running.current = false; setBusy(false); }
   }
   return <View style={{ gap: 12, marginTop: 22 }}>
     <Text accessibilityRole="header" style={{ color, fontSize: 20, fontWeight: '600' }}>Find identity</Text>
     <Text style={{ color: muted, lineHeight: 22 }}>Ask connected neurons for a signed public identity record.</Text>
-    <TextInput accessibilityLabel="Public identity code" placeholder="axon…" placeholderTextColor={muted} autoCapitalize="none" autoCorrect={false}
-      value={account} maxLength={73} editable={!busy} onChangeText={value => { setAccount(value); setResult(null); }}
+    <TextInput accessibilityLabel="Public identity code" placeholder="Paste an ID or identity link…" placeholderTextColor={muted} autoCapitalize="none" autoCorrect={false}
+      value={account} maxLength={256} editable={!busy} onChangeText={value => { setAccount(value); setResult(null); }}
       style={{ color, borderColor: border, borderWidth: 1, borderRadius: 10, padding: 12 }} />
-    <Pressable accessibilityRole="button" disabled={busy || !parseIdentityCode(account)} onPress={() => void find()}
-      style={{ borderColor: border, borderWidth: 1, borderRadius: 10, padding: 14, opacity: busy || !parseIdentityCode(account) ? 0.5 : 1 }}>
+    <Pressable accessibilityRole="button" disabled={busy || !parseIdentityInput(account)} onPress={() => void find()}
+      style={{ borderColor: border, borderWidth: 1, borderRadius: 10, padding: 14, opacity: busy || !parseIdentityInput(account) ? 0.5 : 1 }}>
       <Text style={{ color, textAlign: 'center' }}>{busy ? 'Checking neurons…' : 'Find identity'}</Text>
     </Pressable>
     {result && <View accessibilityLiveRegion="polite" style={{ gap: 8 }}>

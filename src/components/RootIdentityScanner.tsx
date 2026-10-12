@@ -5,7 +5,7 @@ import React, {useRef, useState} from 'react';
 import {Modal, Pressable, StyleSheet, Text, TouchableOpacity, View} from 'react-native';
 import {CameraView, useCameraPermissions} from 'expo-camera';
 import {useTheme} from '../contexts/ThemeContext';
-import {parseIdentityCode} from '../modules/identity';
+import {parseIdentityInput} from '../modules/identity';
 import {Ionicons} from '@expo/vector-icons';
 import {contactListStyles} from '../screens/contacts/contact-list-styles';
 
@@ -24,7 +24,7 @@ export default function RootIdentityScanner({onIdentity,compact=false}: {onIdent
     {!!error && <Text accessibilityRole="alert" style={{color: colors.error}}>{error}</Text>}
     <Modal visible={open} onRequestClose={() => setOpen(false)} animationType="slide">
       <View style={[scanStyles.container,{backgroundColor:'#000'}]}>
-        {open&&<CameraView style={StyleSheet.absoluteFill} facing="back" enableTorch={torch} barcodeScannerSettings={{barcodeTypes:['qr']}} onBarcodeScanned={({data})=>{if(received.current)return;const account=parseIdentityCode(data);if(!account)return;received.current=true;setOpen(false);setError('');onIdentity(account);}}/>}
+        {open&&<CameraView style={StyleSheet.absoluteFill} facing="back" enableTorch={torch} barcodeScannerSettings={{barcodeTypes:['qr']}} onBarcodeScanned={({data})=>{if(received.current)return;const account=parseIdentityInput(data);if(!account)return;received.current=true;setOpen(false);setError('');onIdentity(account);}}/>}
         <View style={scanStyles.overlay} pointerEvents="none"><View style={[scanStyles.reticle,{borderColor:colors.primary,shadowColor:colors.primary}]}/></View>
         <View style={[scanStyles.hintBox,{top:insets.top+Spacing.lg}]}><Text style={scanStyles.hintText}>Point your camera at an Axonic identity QR code</Text></View>
         <View style={[scanStyles.controls,{bottom:insets.bottom+Spacing.xl}]}><TouchableOpacity accessibilityLabel="Cancel QR scan" style={[scanStyles.controlBtn,{borderColor:colors.neonBorder}]} onPress={()=>setOpen(false)}><Ionicons name="close" size={26} color="#fff"/></TouchableOpacity><TouchableOpacity accessibilityLabel="Toggle flashlight" style={[scanStyles.controlBtn,{borderColor:torch?colors.accent:colors.neonBorder,backgroundColor:torch?'rgba(255,255,255,0.15)':'transparent'}]} onPress={()=>setTorch(t=>!t)}><Ionicons name={torch?'flashlight':'flashlight-outline'} size={24} color="#fff"/></TouchableOpacity></View>

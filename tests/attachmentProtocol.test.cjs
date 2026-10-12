@@ -26,7 +26,7 @@ test('accelerated leaf hashes preserve canonical bytes, proofs, AEAD and rejecti
  let called=false;assert.throws(()=>a.attachmentLeaf(0,'gg'.repeat(17),()=>{called=true;return '00'.repeat(32);}));assert.equal(called,false);
 });
 test('chunk tampering, swapped positions, wrong keys and unauthorized manifest mutations fail closed',()=>{
- const f=fixture(),chunk=f.chunks[0];assert(!a.verifyAttachmentChunk(f.manifest,{...chunk,index:1}));assert(!a.verifyAttachmentChunk(f.manifest,{...chunk,ciphertext:'00'+chunk.ciphertext.slice(2)}));
+ const f=fixture(),chunk=f.chunks[0];assert(!a.verifyAttachmentChunk(f.manifest,{...chunk,index:1}));assert(!a.verifyAttachmentChunk(f.manifest,{...chunk,ciphertext:(parseInt(chunk.ciphertext.slice(0,2),16)^1).toString(16).padStart(2,'0')+chunk.ciphertext.slice(2)}));
  assert(!a.verifyAttachmentChunk(f.manifest,{...chunk,proof:[]}));assert.throws(()=>a.decryptAttachmentChunk(f.manifest,chunk,random(32)));
  for(const patch of [{bytes:9000},{root:'00'.repeat(32)},{recipient:f.ids[2].record.account},{recipientDevice:f.ids[2].device.id},{expires:f.manifest.expires-1}])assert(!a.verifyAttachmentManifest({...f.manifest,...patch},f.ids[0].record,now));
  assert(!a.verifyAttachmentManifest(f.manifest,f.ids[0].record,f.manifest.expires));assert.throws(()=>a.encryptAttachmentChunk(f.manifest,-1,new Uint8Array(4096),f.key));

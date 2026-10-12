@@ -3,7 +3,7 @@ const {DatabaseSync}=require('node:sqlite');
 const cache=new Map();
 function protocol(name){if(cache.has(name))return cache.get(name);const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/'+name+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>n.startsWith('./')?protocol(n.slice(2).replace(/\.ts$/,'')):require(n));cache.set(name,out);return out;}
 const p=protocol('identityProtocol'),c=protocol('custodyProtocol'),seed=n=>new Uint8Array(32).fill(n);
-async function fixture(t){
+async function fixture(t,options={}){
  const now=Date.now(),device=p.publicDevice(seed(2),seed(3)),recipientDevice=p.publicDevice(seed(5),seed(6));
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
  const storage=new Map(),displayed=new Map(),shown=[],cancelled=[],toasts=[],channels=[],database=new DatabaseSync(':memory:');t.after(()=>database.close());
@@ -13,7 +13,7 @@ async function fixture(t){
  getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
  withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(db);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const imports={
- '../../../modules/axonic-nearby':{default:{notificationReadActionInShade:async()=>true}},
+ '../../../modules/axonic-nearby':{default:{notificationReadActionInShade:async()=>true,...options.native}},
  './rootMessageToast':{publishRootMessageToast:preview=>{toasts.push(preview);return true;}},
  './localAccount':{localAccount:{status:()=>({state:locked?'locked':'unlocked',account:owner?.account})}},
  './rootNotificationRoute':{rootConversationVisible:()=>visible},
@@ -24,7 +24,7 @@ async function fixture(t){
  './rootCallWake':{rootWakeContext:async()=>owner,rootWakeBlocked:async()=>blocked}};
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
  const preferences={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationPreferences.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(preferences,n=>imports[n]??protocol(n.slice(2)));imports['./rootNotificationPreferences']=preferences;
- const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)));
+ const mod={};new Function('exports','require','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)),options.setTimeout??setTimeout,clearTimeout);
  const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:'private text',now,random:async n=>new Uint8Array(n).fill(12)});
  const data=c.createCustodyWake(envelope,sender);
  return {database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
@@ -189,6 +189,25 @@ test('stalled recovery cannot postpone an authenticated background notice indefi
  const task=f.mod.receiveRootMessageWake(f.data,()=>stalled);
  await new Promise(resolve=>{const stop=setTimeout(()=>{timedOut=true;release();resolve();},3500);f.onDisplay(()=>{clearTimeout(stop);release();resolve();});});
  await task;assert.equal(timedOut,false);assert.equal(f.shown.length,1);
+});
+
+test('screen-off native deadline publishes a hint when frame timers never run',async t=>{
+ let calls=0,jsTimers=0,release;
+ const f=await fixture(t,{setTimeout:()=>{jsTimers++;return 0;},native:{axonMessageWait:async ms=>{
+  assert(ms>=1&&ms<=1000);calls++;await new Promise(resolve=>setTimeout(resolve,ms));
+ }}});
+ const recovery=new Promise(resolve=>release=resolve);
+ f.onDisplay(()=>release());
+ await f.mod.receiveRootMessageWake(f.data,()=>recovery);
+ assert.equal(f.shown.length,1);assert.equal(jsTimers,0);assert(calls>=2);
+ // The losing native deadline must not schedule its entire 25-second budget.
+ const count=calls;await new Promise(resolve=>setTimeout(resolve,1100));assert.equal(calls,count);
+});
+
+test('fast native recovery keeps the decrypted preview without a generic replacement',async t=>{
+ const f=await fixture(t,{native:{axonMessageWait:ms=>new Promise(resolve=>setTimeout(resolve,ms))}});
+ await f.mod.receiveRootMessageWake(f.data,()=>f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'recovered',at:Date.now()}));
+ assert.equal(f.shown.length,1);assert.equal(f.shown[0].body,'recovered');
 });
 
 test('decrypted preview updates the same hint without sounding twice; a later message can alert',async t=>{

@@ -142,6 +142,8 @@ export function createRtcAxonTransport(d: {
     const wire: AxonWire = {
       mediaLane:!!d.authenticated&&d.mediaLane===true,
       smallAttachmentBatches:!!d.authenticated&&d.mediaLane===true,
+      // Four-batch support is tested at the protocol layer, but is not advertised
+      // until mobile-data trials demonstrate stable throughput. Keep two in flight.
       enableMediaLane(){mediaEnabled=true;},
       attachments:!!d.authenticated,
       enableAttachments(){if(!dead&&channel){d.authenticated?.(channel);authenticated=!!d.authenticated;}},

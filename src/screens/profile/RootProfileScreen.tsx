@@ -9,6 +9,7 @@ import type {NativeStackNavigationProp} from '@react-navigation/native-stack';
 import {Ionicons} from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
 import {readProfileAvatar,storeProfileAvatar,getAutoSaveReceivedMedia,setAutoSaveReceivedMedia,finishRootMediaCleanup} from '../../modules/storage';
 
 import Avatar from '../../components/ui/Avatar';
@@ -81,12 +82,21 @@ export default function RootProfileScreen({account, loginName, connected, childr
         <Text style={[styles.qrHint, {color: Colors.textTertiary}]}>Tap to enlarge</Text>
       </View>
       </View>
+      <View style={styles.identityActionsRow}>
+      <View style={styles.identityActionColumn}>
       <View style={[styles.statusBadge, styles.identityStatus, {borderColor: connected ? Colors.online : Colors.border}]}>
         <View style={[styles.statusDot, {backgroundColor: connected ? Colors.online : Colors.textSecondary}]}/>
         <Text style={[styles.statusText, {color: connected ? Colors.online : Colors.textSecondary}]}>{connected ? 'CONNECTED' : 'FINDING NEURONS'}</Text>
       </View>
+      </View>
+      <View style={styles.identityActionColumn}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Copy ID" disabled={busy} onPress={()=>void run(async()=>{await Clipboard.setStringAsync(code);Alert.alert('Identity copied','Your full identity code is ready to paste.');})} style={[styles.copyIdButton,{borderColor:Colors.primary,backgroundColor:Colors.highlight}]}>
+          <Ionicons name="copy-outline" size={16} color={Colors.primary}/><Text style={[styles.copyIdText,{color:Colors.primary}]}>Copy ID</Text>
+        </TouchableOpacity>
+      </View>
+      </View>
       <TouchableOpacity accessibilityLabel="Share identity link" disabled={busy} onPress={() => void run(async () => {await Share.share({message: identityLink(account)});})} style={[styles.tagBox, {borderColor: Colors.accent, backgroundColor: Colors.highlight}]}>
-        <View style={{flex: 1}}><Text style={[styles.label, {color: Colors.textSecondary}]}>YOUR AXON</Text><Text selectable style={{color: Colors.accent, fontSize: 14, fontWeight: '700'}}>{shortIdentity(account)}</Text><Text style={[styles.tagHint, {color: Colors.textTertiary}]}>Tap to share a link to your identity.</Text></View>
+        <View style={{flex: 1}}><Text style={[styles.label, {color: Colors.textSecondary}]}>YOUR AXON</Text><Text style={{color: Colors.accent, fontSize: 14, fontWeight: '700'}}>{shortIdentity(account)}</Text><Text style={[styles.tagHint, {color: Colors.textTertiary}]}>Tap to share a link to your identity.</Text></View>
         <Ionicons name="share-outline" size={20} color={Colors.accent}/>
       </TouchableOpacity>
     </View>

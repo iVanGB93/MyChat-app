@@ -22,7 +22,7 @@ test('default device session resumes after cold start without weakening password
   const f = fixture(); await f.session.initialize(); assert.equal(f.session.autoLock(), false);
   await f.session.remember(password); f.identity.lock(); await f.session.initialize(); assert.equal(f.identity.status().state, 'unlocked');
   f.identity.lock(); f.storage.credential = JSON.stringify({version: 1, account, password: 'wrong'});
-  await f.session.initialize(); assert.equal(f.identity.status().state, 'locked'); assert.equal(f.storage.credential, null);
+  await assert.rejects(f.session.initialize(), /Wrong password/); assert.equal(f.identity.status().state, 'locked'); assert.ok(f.storage.credential);
 });
 test('opt-in locking clears automatic login and remains enabled across cold start', async () => {
   const f = fixture(); await f.session.remember(password); await f.session.setAutoLock(true); f.identity.lock();
@@ -122,4 +122,17 @@ test('failed startup can retry without running resume against unreadable storage
  const start=createLocalAccountStartup({inspect:async()=>{if(++reads===1)throw Error('storage unavailable');},initialize:async()=>{resumes++;}});
  await assert.rejects(start(),/storage unavailable/);assert.equal(resumes,0);
  await start();assert.equal(resumes,1);
+});
+
+
+test('temporary unlock failure keeps the secure credential for a later retry',async()=>{
+ const f=fixture();await f.session.remember(password);f.identity.lock();const original=f.identity.unlock;let attempts=0;
+ f.identity.unlock=async value=>{if(++attempts===1)throw Error('Native storage temporarily unavailable');return original(value);};
+ await assert.rejects(f.session.initialize(),/temporarily unavailable/);assert.equal(f.identity.status().state,'locked');assert.ok(f.storage.credential);
+ await f.session.initialize();assert.equal(f.identity.status().state,'unlocked');
+});
+test('malformed or different-account remembered credentials are discarded',async()=>{
+ for(const raw of ['{',JSON.stringify({version:1,account:'different',password}),JSON.stringify({version:1,account,password:17})]){
+  const f=fixture();f.identity.lock();f.storage.credential=raw;await f.session.initialize();assert.equal(f.storage.credential,null);assert.equal(f.identity.status().state,'locked');
+ }
 });

@@ -32,7 +32,8 @@ function wires(media = [false,false], latency = 0) {
   const wire = i => ({
     mediaLane:!!media[i],
     bulkAttachments:media[i]==='bulk',
-    smallAttachmentBatches:media[i]==='small',
+    smallAttachmentBatches:['small','small4'].includes(media[i]),
+    smallAttachmentWindow:media[i]==='small4'?4:undefined,
     listen(message, close) { listeners[i] = message; closed[i] = close; return () => { listeners[i] = null; closed[i] = null; }; },
     send(raw) { if (dead) throw Error('closed'); history[i].push(raw); const deliver=()=>{if(!dead&&!drop){if(paused)held.push([1-i,raw]);else listeners[1-i]?.(raw);}};if(latency)setTimeout(deliver,latency);else queueMicrotask(deliver); },
     close() { if (dead) return; dead = true; for (const close of closed) close?.(); },
@@ -92,6 +93,30 @@ test('delayed peer discovery waits a full interval after completion before retry
  const requests=()=>f.transport.history[0].map(JSON.parse).filter(x=>x.operation==='introductions').length;
  assert.equal(requests(),1);f.advance(12000);f.sessions[0].tick();await settle(()=>received===2);
  assert.equal(requests(),2);assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+});
+
+for(const outcome of ['late-response','deadline'])test(`discovery started before media has bounded grace (${outcome})`,async t=>{
+ let release,held=false,index=0,received=0;
+ const hooks={list:()=>[],received:()=>{received++;}};
+ const f=pair(t,{0:{introductions:hooks,onAttachment:async()=> 'ok'},1:{introductions:hooks,onAttachment:async()=> 'ok'}},[true,true],0,d=>{
+  if(index++!==0)return createPersistentAxon(d);const wire=d.wire;
+  return createPersistentAxon({...d,wire:{...wire,send(raw){const frame=JSON.parse(raw);if(!held&&frame.kind==='request'&&frame.operation==='introductions'){held=true;release=()=>wire.send(raw);}else wire.send(raw);}}});
+ });
+ await Promise.all(f.sessions.map(s=>s.ready));f.advance(5000);
+ f.sessions[0].tick();await settle(()=>held);
+ // Discovery began while idle; a media response then shares its channel.
+ await f.sessions[1].attachmentRequest('probe');
+ f.advance(4001);f.sessions[0].tick();
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+ if(outcome==='late-response'){
+  release();await settle(()=>received===1);
+  assert.equal(await f.sessions[1].attachmentRequest('after-discovery'),'ok');
+  assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+ }else{
+  f.advance(11000);f.sessions[0].tick();
+  assert.equal(f.sessions[0].snapshot().closeReason,'exchange-timeout:introductions');
+  assert.throws(release,/closed/);await new Promise(r=>setImmediate(r));assert.equal(received,0);
+ }
 });
 
 test('bidirectional background control traffic survives repeated minute windows', async t => {
@@ -1287,4 +1312,30 @@ test('media scheduler benchmark with coarse mobile-like timers',{skip:!process.e
   results.push(Math.round(performance.now()-start));assert.equal(f.sessions[0].snapshot().state,'connected');f.sessions.forEach(s=>s.stop());
  }
  t.diagnostic(JSON.stringify({scope:'simulated 16ms timer floor, 10ms one-way link, 192 chunks; no phone I/O',milliseconds:results}));
+});
+
+test('small RTC batch pairs start together while rate, overflow and control limits remain bounded',async t=>{
+ const releases=new Map(),hooks={onAttachment:raw=>new Promise(r=>releases.set(JSON.parse(raw).index,r)),onCustody:async()=> 'control'};
+ const f=pair(t,{0:hooks,1:hooks},['small','small']);await Promise.all(f.sessions.map(s=>s.ready));
+ const request=index=>JSON.stringify({operation:'direct-get-batch',count:3,index});
+ const first=f.sessions[0].attachmentBulkRequest(request(0)),second=f.sessions[0].attachmentBulkRequest(request(3));
+ await new Promise(setImmediate);
+ assert.equal(releases.size,2,'both negotiated batch slots should start without a timer round trip');
+ assert.equal(await f.sessions[0].attachmentBulkRequest(request(6)),null);
+ assert.equal(await f.sessions[0].custodyRequest('{}'),'control');
+ releases.get(3)('second');releases.get(0)('first');assert.deepEqual(await Promise.all([first,second]),['first','second']);
+ const next=f.sessions[0].attachmentBulkRequest(request(6));await new Promise(setImmediate);assert(!releases.has(6));
+ f.advance(4);await new Promise(setImmediate);assert(!releases.has(6));
+ f.advance(1);await settle(()=>releases.has(6));releases.get(6)('next');assert.equal(await next,'next');
+ f.advance(-100);const backward=f.sessions[0].attachmentBulkRequest(request(9));await new Promise(setImmediate);assert(!releases.has(9));
+ f.sessions[0].stop();assert.equal(await backward,null);
+});
+
+for(const modes of [['small4','small4'],['small4','small'],['small','small4']])test('small batch window negotiates safely '+modes.join('/'),async t=>{
+ const releases=[],hooks={onAttachment:()=>new Promise(r=>releases.push(r)),onCustody:async()=> 'control'};
+ const f=pair(t,{0:hooks,1:hooks},modes);await Promise.all(f.sessions.map(s=>s.ready));
+ const n=modes.every(x=>x==='small4')?4:2;assert(f.sessions.every(s=>s.attachmentBatchWindow()===n));
+ const raw=JSON.stringify({operation:'direct-get-batch',count:3});const requests=Array.from({length:n},()=>f.sessions[0].attachmentBulkRequest(raw));
+ await settle(()=>releases.length===n);assert.equal(await f.sessions[0].attachmentBulkRequest(raw),null);assert.equal(await f.sessions[0].custodyRequest('{}'),'control');
+ releases.reverse().forEach(r=>r('ok'));assert.deepEqual(await Promise.all(requests),Array(n).fill('ok'));assert(f.sessions.every(s=>s.snapshot().state==='connected'));
 });

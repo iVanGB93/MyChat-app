@@ -11,7 +11,11 @@ export const profileStyles = StyleSheet.create({
   identityUsername: { textAlign: 'center', letterSpacing: 1 },
   identityCaption: { textAlign: 'center' },
   identityQrBox: { padding: 8, borderWidth: 1, borderRadius: Radius.sm },
-  identityStatus: { alignSelf: 'center', marginTop: Spacing.md },
+  identityStatus: { alignSelf: 'center', marginTop: 0, maxWidth: '100%' },
+  identityActionsRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, marginTop: Spacing.md },
+  identityActionColumn: { flex: 1, minWidth: 0, alignItems: 'center' },
+  copyIdButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: Spacing.xs, minHeight: 36, paddingHorizontal: Spacing.md, paddingVertical: Spacing.sm, borderRadius: Radius.sm, borderWidth: 1 },
+  copyIdText: { fontSize: Font.size.xs, fontWeight: '700' },
   expandedQrScreen: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   expandedQrBox: { padding: 16, backgroundColor: '#fff', borderRadius: Radius.md },
   avatarEditBadge: {
@@ -51,7 +55,7 @@ export const profileStyles = StyleSheet.create({
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 0 },
   },
-  statusText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5 },
+  statusText: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1.5, flexShrink: 1, textAlign: 'center' },
 
   card: {
     paddingHorizontal: Spacing.lg,

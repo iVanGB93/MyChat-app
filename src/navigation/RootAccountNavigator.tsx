@@ -1,3 +1,4 @@
+import RootMediaSize from '../components/chat/RootMediaSize';
 import RootGroupMessageInfo from '../screens/chat/RootGroupMessageInfo';
 import RootMessageReactions from '../components/chat/RootMessageReactions';
 import {dismissRootConversationNotifications} from '../modules/messaging/notifications';
@@ -60,7 +61,7 @@ import QRCode from 'react-native-qrcode-svg';
 
 import RootIdentityScanner from '../components/RootIdentityScanner';
 
-import { displayIdentity, shortIdentity, parseIdentityCode, takeIdentityLink } from '../modules/identity';
+import { displayIdentity, shortIdentity, parseIdentityInput, identityLink, takeIdentityLink } from '../modules/identity';
 
 import RootMessageMenu from '../components/chat/RootMessageMenu';
 
@@ -269,7 +270,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  useEffect(()=>{if(!focused||!foreground)return;let active=true,running=false,last='';const refresh=async()=>{if(running)return;running=true;try{const v=await rootAttachmentProgress(),raw=JSON.stringify(v);if(active&&raw!==last){last=raw;setTransfers(v);}}catch{}finally{running=false;}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{active=false;clearInterval(timer);};},[focused,foreground]);
 
- useLayoutEffect(()=>{navigation.setOptions({headerTitleAlign:'left',headerBackButtonDisplayMode:'minimal',headerTitle:()=> <ChatHeaderIdentity title={name} syncing={false} color={colors.headerText} avatarUri={null} isGroup={false} isOnline={activity.online.includes(peer)} onPress={()=>navigation.navigate('Contact',{peer})}/>,headerRight:()=> <View style={{flexDirection:'row',gap:8,marginRight:8}}>
+ useLayoutEffect(()=>{navigation.setOptions({headerTitleAlign:'left',headerBackVisible:false,headerTitle:'',headerLeft:()=> <ChatHeaderIdentity onBack={()=>navigation.goBack()} title={name} syncing={false} color={colors.headerText} avatarUri={null} isGroup={false} isOnline={activity.online.includes(peer)} onPress={()=>navigation.navigate('Contact',{peer})}/>,headerRight:()=> <View style={{flexDirection:'row',gap:8,marginRight:8}}>
 
   <TouchableOpacity accessibilityLabel={contact?.muted?'Unmute notifications':'Mute notifications'} onPress={()=>void conversations().configure(peer,{muted:!contact?.muted}).catch(report)} style={{width:36,height:36,borderRadius:18,backgroundColor:contact?.muted?'rgba(255,80,80,0.15)':'rgba(0,229,255,0.10)',borderWidth:1,borderColor:contact?.muted?'rgba(255,80,80,0.35)':'rgba(0,229,255,0.30)',alignItems:'center',justifyContent:'center'}}><Ionicons name={contact?.muted?'notifications-off-outline':'notifications-outline'} size={18} color={contact?.muted?'#FF5050':'#00E5FF'}/></TouchableOpacity>
 
@@ -293,7 +294,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   <FlatList ref={list} inverted data={messages} keyExtractor={m=>m.direction+':'+m.id} style={roomStyles.messageList} contentContainerStyle={roomStyles.messagesList} keyboardShouldPersistTaps="handled"
 
-   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
+   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
 
     {!m.deleted&&m.reply&&<View style={{borderLeftWidth:3,borderLeftColor:colors.primary,padding:8,marginBottom:6}}><Text style={{color:colors.primary,fontWeight:'600'}}>{m.reply.author===owner?'You':name}</Text><Text numberOfLines={2} style={{color:colors.textSecondary}}>{quoted?(quoted.attachment?(quoted.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':quoted.attachment.name):parseSticker(quoted.text)?'Sticker':quoted.text):'Original message unavailable on this device'}</Text></View>}
 
@@ -301,7 +302,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
 
 
-    <View style={bubbleStyles.metaRow}>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>
+    <View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>
 
    </Pressable></RootMessageReactions></View></ReplySwipe>;}}/>
 
@@ -337,7 +338,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
    {!voiceActive&&<TouchableOpacity accessibilityLabel="Attach" disabled={busy||!!editing||contact?.blocked} onPress={()=>setAttachOpen(true)} style={[roomStyles.attachBtn,{borderColor:colors.neonBorder,backgroundColor:colors.surface,shadowColor:colors.primary}]}><Ionicons name="add" size={25} color={colors.primary}/></TouchableOpacity>}
 
-   {!voiceActive&&<View style={[roomStyles.inputRow,{backgroundColor:colors.surface,borderColor:colors.neonBorder,paddingLeft:12}]}><Pressable accessibilityLabel="Open stickers" disabled={busy||!!editing||contact?.blocked} onPress={()=>setStickersOpen(true)} style={{padding:8}}><Ionicons name="happy-outline" size={24} color={colors.primary}/></Pressable><TextInput ref={composer} testID="axonic-message-composer" accessibilityLabel="New message" placeholder="Compose message…" placeholderTextColor={colors.textTertiary} style={[roomStyles.textInput,{color:colors.text}]} value={text} onChangeText={value=>{setText(value);activity.notify(peer,!!value.trim());}} multiline maxLength={1600} editable={!contact?.blocked}/></View>}
+   {!voiceActive&&<View style={[roomStyles.inputRow,{backgroundColor:colors.surface,borderColor:colors.neonBorder,paddingLeft:12}]}><Pressable accessibilityLabel="Open stickers" disabled={busy||!!editing||contact?.blocked} onPress={()=>setStickersOpen(true)} style={roomStyles.stickerBtn} hitSlop={4}><Ionicons name="happy-outline" size={24} color={colors.primary}/></Pressable><TextInput ref={composer} testID="axonic-message-composer" accessibilityLabel="New message" placeholder="Compose message…" placeholderTextColor={colors.textTertiary} style={[roomStyles.textInput,{color:colors.text}]} value={text} onChangeText={value=>{setText(value);activity.notify(peer,!!value.trim());}} multiline maxLength={1600} editable={!contact?.blocked}/></View>}
 
    {text.trim()||editing?<TouchableOpacity testID="axonic-send-message" accessibilityLabel="Send message" disabled={busy||!text.trim()||contact?.blocked} onPress={()=>void send()} style={[roomStyles.sendBtn,{backgroundColor:colors.primary,borderColor:colors.neonBorder,shadowColor:colors.primary,opacity:busy||!text.trim()||contact?.blocked?0.45:1}]}><Text style={[roomStyles.sendIcon,{color:colors.textInverse}]}>▶</Text></TouchableOpacity>:<RootVoiceComposer peer={peer} reply={replyReference} onSent={clearReply} disabled={busy||!!contact?.blocked} onError={report} onActive={setVoiceActive}/>}
 
@@ -395,7 +396,7 @@ function Contact({route,navigation}:Screen<'Contact'>){
 
    <View style={{alignItems:'center',padding:12,backgroundColor:'#fff',borderRadius:12,alignSelf:'center'}}><QRCode value={identity} size={180}/></View>
 
-   <View style={infoStyles.actions}><Action icon="copy-outline" label="Copy ID" onPress={()=>void Clipboard.setStringAsync(identity).catch(report)}/><Action icon="share-outline" label="Share ID" onPress={()=>void Share.share({message:identity}).catch(report)}/></View>
+   <View style={infoStyles.actions}><Action icon="copy-outline" label="Copy ID" onPress={()=>void Clipboard.setStringAsync(identity).catch(report)}/><Action icon="share-outline" label="Share ID" onPress={()=>void Share.share({message:identityLink(identity)}).catch(report)}/></View>
 
   </View>
 
@@ -431,17 +432,18 @@ function NewChat({navigation,route}:Screen<'NewChat'>){
 
  useEffect(()=>{if(route.params?.identity)setPeer(route.params.identity);},[route.params?.identity]);
 
- async function open(value=peer){if(busy)return;setBusy(true);try{const account=parseIdentityCode(value);if(!account||account===localAccount.status().account)throw Error('Paste another person’s complete identity code');await conversations().configure(account,{accepted:true});navigation.replace('ChatRoom',{peer:account});}catch(e){report(e);}finally{setBusy(false);}}
+ async function open(value=peer){if(busy)return;setBusy(true);try{const account=parseIdentityInput(value);if(!account||account===localAccount.status().account)throw Error('Paste another person’s complete identity code or identity link');await conversations().configure(account,{accepted:true});navigation.replace('ChatRoom',{peer:account});}catch(e){report(e);}finally{setBusy(false);}}
 
  const query=peer.toLowerCase(),contacts=state.contacts.filter(c=>!c.blocked&&(!query||c.alias.toLowerCase().includes(query)||displayIdentity(c.account).toLowerCase().includes(query)));
+ const identity=parseIdentityInput(peer),ownIdentity=identity===localAccount.status().account;
 
  return <KeyboardAvoidingScreen style={[contactStyles.container,{backgroundColor:colors.background}]}>
 
-  <View style={contactStyles.searchBar}><View style={{flex:1}}><Input accessibilityLabel="Identity code" placeholder="Paste an identity code…" autoCapitalize="none" autoCorrect={false} value={peer} onChangeText={setPeer} containerStyle={contactStyles.searchInput}/></View><RootIdentityScanner compact onIdentity={account=>void open(displayIdentity(account))}/></View>
+  <View style={contactStyles.searchBar}><View style={{flex:1}}><Input accessibilityLabel="Identity code or link" placeholder="Paste an ID or identity link…" autoCapitalize="none" autoCorrect={false} value={peer} onChangeText={setPeer} containerStyle={contactStyles.searchInput}/></View><RootIdentityScanner compact onIdentity={account=>void open(displayIdentity(account))}/></View>
 
-  <TouchableOpacity style={[contactStyles.item,{borderBottomWidth:1,borderBottomColor:colors.divider}]} onPress={()=>navigation.navigate('GroupCreate')}><Ionicons name="people-outline" size={26} color={colors.primary}/><Text style={[contactStyles.name,{color:colors.primary,marginLeft:Spacing.md}]}>New group</Text></TouchableOpacity>
+  {!peer.length&&<TouchableOpacity style={[contactStyles.item,{borderBottomWidth:1,borderBottomColor:colors.divider}]} onPress={()=>navigation.navigate('GroupCreate')}><Ionicons name="people-outline" size={26} color={colors.primary}/><Text style={[contactStyles.name,{color:colors.primary,marginLeft:Spacing.md}]}>New group</Text></TouchableOpacity>}
 
-  {!!parseIdentityCode(peer)&&<View style={{padding:Spacing.md}}><Button title="START CHAT" disabled={busy} onPress={()=>void open()}/></View>}
+  <View style={{padding:Spacing.md,gap:8}}>{!!peer.trim()&&(!identity||ownIdentity)&&<Text accessibilityRole="alert" style={{color:colors.error}}>{ownIdentity?'This is your identity. Paste someone else’s ID.':'Paste the full identity code or link. Shortened IDs with … cannot start a chat.'}</Text>}<Button title="START CHAT" disabled={busy||!identity||ownIdentity} onPress={()=>void open()}/></View>
 
   <FlatList keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" data={contacts} keyExtractor={c=>c.account} contentContainerStyle={!contacts.length?contactStyles.emptyContainer:contactStyles.list} ListEmptyComponent={<EmptyState iconName="people-outline" title="No contacts" subtitle="Scan a QR code or paste an identity to start a chat"/>} renderItem={({item:c})=><TouchableOpacity style={contactStyles.item} onPress={()=>void open(displayIdentity(c.account))}><Avatar name={c.alias||shortIdentity(c.account)} size={46}/><View style={contactStyles.info}><Text numberOfLines={1} style={[contactStyles.name,{color:colors.text}]}>{c.alias||shortIdentity(c.account)}</Text><Text numberOfLines={1} style={[contactStyles.sub,{color:colors.textSecondary}]}>{shortIdentity(c.account)}</Text></View><Ionicons name="chatbubble-outline" size={22} color={colors.primary}/></TouchableOpacity>} ItemSeparatorComponent={()=><View style={[contactStyles.separator,{backgroundColor:colors.divider}]}/>}/>
 

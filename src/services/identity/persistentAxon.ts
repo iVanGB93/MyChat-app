@@ -21,6 +21,7 @@ export interface AxonWire {
   mediaLane?: boolean;
   bulkAttachments?: boolean;
   smallAttachmentBatches?: boolean;
+  smallAttachmentWindow?: 4;
   enableBulkAttachments?():void;
   enableMediaLane?(): void;
   enableAttachments?(): void;
@@ -56,10 +57,19 @@ export function createPersistentAxon(d: {
   let mediaInbound=0,mediaWaiting=0,mediaWindow=1,mediaSuccesses=0;
   let lastMediaAt=-Infinity;
   let peerBulk=false,bulkInbound=0,bulkFrames=0;
-  let smallBatches=false;
+  let smallBatches=false,smallWindow=2;
   const bulkFrameLimit=()=>smallBatches?AXON_FRAME_BYTES:ATTACHMENT_BULK_FRAME_BYTES;
   const smallRequest=(raw:string)=>{try{const r=JSON.parse(raw);return r.operation==='direct-get-batch'&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=3;}catch{return false;}};
   let bulkWaiting=0,bulkNext=0;
+  // Small RTC batches fit the negotiated two/four-request inbound limit. Start them together
+  // instead of forcing the second slot through a mobile timer; keep 200/sec.
+  let smallBatchCredits=2,smallBatchCreditAt=d.now();
+  function bulkRateReady(){
+    if(!smallBatches)return d.now()>=bulkNext;
+    const now=d.now();
+    if(now>smallBatchCreditAt){smallBatchCredits=Math.min(smallWindow,smallBatchCredits+(now-smallBatchCreditAt)/5);smallBatchCreditAt=now;}
+    return smallBatchCredits>=1;
+  }
   // Four bounded burst credits, replenished at the existing 200 requests/sec.
   // Mobile timers may run at frame cadence; spacing every request by a timer
   // unnecessarily serializes a negotiated window even on a fast local link.
@@ -150,8 +160,10 @@ export function createPersistentAxon(d: {
     return new Promise((resolve, reject) => {
       const id = ++sequence;
       // Give renewal and control traffic sharing an active media channel room
-      // for mobile/SCTP stalls. Never extend the proof or initial handshake.
-      const grace=peer&&(operation==='describe'||operation==='authenticate'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
+      // for mobile/SCTP stalls. Discovery can begin just before a transfer, so
+      // it needs the same bounded grace even before the first media frame.
+      // Never extend the proof or initial handshake.
+      const grace=peer&&(operation==='describe'||operation==='authenticate'||operation==='introductions'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
       const timeout=grace?Math.max(1,Math.min(15000,peer!.expiresAt-d.now())):
         operation === 'call-control' || operation === 'call-media' || operation === 'call-relay' || operation === 'call-media-relay' || operation === 'call-media-forward' ? 15000 : 4000;
       pending = { operation, id, resolve, reject, until:d.now()+timeout, timer:setTimeout(() => stop('exchange-timeout:' + operation),timeout) };
@@ -245,6 +257,7 @@ export function createPersistentAxon(d: {
         peerBulk=peerMediaLane&&f.bulkAttachments===1&&d.wire.bulkAttachments===true;
         smallBatches=!peerBulk&&peerMediaLane&&f.smallAttachmentBatches===1&&d.wire.smallAttachmentBatches===true;
         peerBulk ||= smallBatches;
+        smallWindow=smallBatches&&d.wire.smallAttachmentWindow===4&&f.smallAttachmentWindow===4?4:2;smallBatchCredits=smallWindow;
         peerRelay = f.callRelay === 1;peerMediaRelay=f.callMediaRelay===1;peerMediaForward=f.callMediaForward===1;
         peerPush = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('push-registration-v1');
         peerMedia = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('call-control-v2');
@@ -288,7 +301,7 @@ export function createPersistentAxon(d: {
       }
       if(f.kind==='media-request'||f.kind==='bulk-request'){
         if(bulk&&smallBatches&&!smallRequest(f.body)){stop('invalid-small-batch');return;}
-        if(!media||mediaInbound>=4||bulk&&bulkInbound>=2||f.body.length>13000){stop('invalid-media-request');return;}
+        if(!media||mediaInbound>=4||bulk&&bulkInbound>=(smallBatches?smallWindow:2)||f.body.length>13000){stop('invalid-media-request');return;}
         mediaInbound++;
         if(bulk)bulkInbound++;
         try{
@@ -341,7 +354,7 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
     mediaRelayPeer:()=>peerMediaRelay && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
@@ -443,14 +456,15 @@ export function createPersistentAxon(d: {
     supportsAttachments:()=>peerAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachmentBulk:()=>peerBulk&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     attachmentBatchChunks:()=>smallBatches?3:128,
+    attachmentBatchWindow:()=>smallBatches?smallWindow:1,
     async attachmentBulkRequest(raw:string):Promise<string|null>{
       const permitted=()=>peerBulk&&!!peer&&peer.expiresAt>d.now()&&!stopped&&d.current();
-      if(!permitted()||raw.length>13000||bulkWaiting>=2||smallBatches&&!smallRequest(raw))return null;
+      if(!permitted()||raw.length>13000||bulkWaiting>=(smallBatches?smallWindow:2)||smallBatches&&!smallRequest(raw))return null;
       bulkWaiting++;
       try{
-        for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||d.now()<bulkNext)&&n<400;n++)await wait(5);
-        if(!permitted()||authenticating||custodyWaiting||pushWaiting||d.now()<bulkNext)return null;
-        bulkNext=d.now()+(smallBatches?5:250); // Small batches retain the media lane's bounded rate.
+        for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5);
+        if(!permitted()||authenticating||custodyWaiting||pushWaiting||mediaPending.size>=4||!bulkRateReady())return null;
+        if(smallBatches)smallBatchCredits--;else bulkNext=d.now()+250;
         return await new Promise<string>((resolve,reject)=>{
           const id=++sequence;mediaPending.set(id,{bulk:true,until:d.now()+15000,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),15000)});
           try{send({version:1,kind:'bulk-request',id,body:raw});}catch{stop('bulk-send-failed');}
