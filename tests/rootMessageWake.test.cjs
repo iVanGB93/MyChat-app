@@ -13,6 +13,7 @@ async function fixture(t,options={}){
  getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
  withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(db);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const imports={
+ '../mobileDeliveryDiagnostics':{deliveryDiagnosticEvent:()=>{}},
  '../../../modules/axonic-nearby':{default:{notificationReadActionInShade:async()=>true,...options.native}},
  './rootMessageToast':{publishRootMessageToast:preview=>{toasts.push(preview);return true;}},
  './localAccount':{localAccount:{status:()=>({state:locked?'locked':'unlocked',account:owner?.account})}},
@@ -187,7 +188,7 @@ test('128 retained previews cannot suppress a later valid signed wake or forget 
 test('stalled recovery cannot postpone an authenticated background notice indefinitely',async t=>{
  const f=await fixture(t);let release,timedOut=false;const stalled=new Promise(resolve=>release=resolve);
  const task=f.mod.receiveRootMessageWake(f.data,()=>stalled);
- await new Promise(resolve=>{const stop=setTimeout(()=>{timedOut=true;release();resolve();},3500);f.onDisplay(()=>{clearTimeout(stop);release();resolve();});});
+ await new Promise(resolve=>{const stop=setTimeout(()=>{timedOut=true;release();resolve();},7000);f.onDisplay(()=>{clearTimeout(stop);release();resolve();});});
  await task;assert.equal(timedOut,false);assert.equal(f.shown.length,1);
 });
 
@@ -208,6 +209,15 @@ test('fast native recovery keeps the decrypted preview without a generic replace
  const f=await fixture(t,{native:{axonMessageWait:ms=>new Promise(resolve=>setTimeout(resolve,ms))}});
  await f.mod.receiveRootMessageWake(f.data,()=>f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'recovered',at:Date.now()}));
  assert.equal(f.shown.length,1);assert.equal(f.shown[0].body,'recovered');
+});
+
+test('recovery after the old 1.5 second deadline still publishes only the preview',async t=>{
+ const f=await fixture(t);
+ await f.mod.receiveRootMessageWake(f.data,async()=>{
+  await new Promise(resolve=>setTimeout(resolve,1800));
+  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'recovered after cold start',at:Date.now()});
+ });
+ assert.equal(f.shown.length,1);assert.equal(f.shown[0].body,'recovered after cold start');
 });
 
 test('a wake deadline survives foreground to background without frame timers',async t=>{

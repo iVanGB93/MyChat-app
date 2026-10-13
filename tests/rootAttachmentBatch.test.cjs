@@ -15,7 +15,7 @@ function fixture(){
   if(name==='./attachmentTransfer')return {createAttachmentTransfer:()=>({stop(){}})};
   if(name==='./rootMediaExport')return {startRootMediaExport:()=>({stop(){}})};
   if(name==='./identityProtocol')return {validAccountId:p=>['owner','peer','other'].includes(p)};
-  if(name==='./rootAttachmentFiles')return {stageRootAttachmentSource:(owner,id,uri)=>{if(fail&&uri==='file://two')throw Error('Disk full');staged.set(id,uri);},removeRootAttachmentSource:(owner,id)=>{removed.push(id);staged.delete(id);}};
+  if(name==='./rootAttachmentFiles')return {stageRootAttachmentSource:(owner,id,uri,shared)=>{if(fail&&uri==='file://two')throw Error('Disk full');staged.set(shared??id,uri);},removeRootAttachmentSource:(owner,id)=>{removed.push(id);staged.delete(id);}};
   return {};
  },out,()=>0,()=>{});
  return {out,rows,staged,status,groupMessages,feedback,fail:()=>fail=true,items:[{uri:'file://one',name:'One',mime:'image/jpeg',caption:'First'},{uri:'file://two',name:'Two',mime:'image/png'}]};
@@ -25,13 +25,13 @@ test('reviewed batch commits all selections together and preserves captions',asy
  const rows=JSON.parse([...f.rows.values()][0]);assert.equal(rows.length,2);assert.equal(rows[0].caption,'First');assert.equal(f.staged.size,2);
 });
 
-test('group sharing requires every recipient and a separate compatible custodian',async()=>{
+test('group preparation shares one source per item even with offline recipients and no custodian',async()=>{
  for(const capable of [[],['peer','relay'],['peer','other'],['peer','other','relay']]){
   const f=fixture(),runtime=f.out.startRootAttachmentRuntime({peers:()=>capable,sharedPeers:()=>capable,request:async()=>null});
   try{await f.out.queueRootAttachmentBatch({owner:'owner',peer:'',items:f.items,audience:{owner:'owner',peers:['peer','other'],group:{id:'g',revision:1}}});
    const rows=JSON.parse([...f.rows.values()][0]);
-   if(capable.length===3){assert(rows.every(r=>r.shared));assert.equal(rows[0].shared.id,rows[1].shared.id);assert.notEqual(rows[0].shared.id,rows[2].shared.id);assert.deepEqual(rows.map(r=>r.shared.slot),[0,1,0,1]);}
-   else assert(rows.every(r=>r.shared===undefined),'legacy/missing peer keeps the existing format');
+   {assert(rows.every(r=>r.shared));assert.equal(rows[0].shared.id,rows[1].shared.id);assert.notEqual(rows[0].shared.id,rows[2].shared.id);assert.deepEqual(rows.map(r=>r.shared.slot),[0,1,0,1]);}
+   assert.equal(f.staged.size,2,'two media sources, not four recipient copies');
   }finally{runtime.stop();}
  }
 });

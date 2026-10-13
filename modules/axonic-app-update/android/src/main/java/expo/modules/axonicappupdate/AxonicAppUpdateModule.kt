@@ -18,6 +18,7 @@ import com.google.android.play.core.install.model.UpdateAvailability
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.functions.Queues
 
 class AxonicAppUpdateModule : Module() {
   private var flowPending = false
@@ -28,9 +29,11 @@ class AxonicAppUpdateModule : Module() {
   private var previousAudioMode: Int? = null
   private var previousSpeaker = false
   private val audio get() = requireNotNull(appContext.reactContext).getSystemService(Context.AUDIO_SERVICE) as AudioManager
+  private var callAudioRouter: CallAudioRouter? = null
 
   @Suppress("DEPRECATION")
   private fun restoreCallAudio() {
+    callAudioRouter?.stop()
     val previous = previousAudioMode ?: return
     if (Build.VERSION.SDK_INT >= 31) audio.clearCommunicationDevice()
     else audio.isSpeakerphoneOn = previousSpeaker
@@ -39,7 +42,24 @@ class AxonicAppUpdateModule : Module() {
   }
   override fun definition() = ModuleDefinition {
     Name("AxonicAppUpdate")
-    Events("onInstallState")
+    AsyncFunction("getDiagnosticBuildInfo") {
+      val context = requireNotNull(appContext.reactContext)
+      @Suppress("DEPRECATION")
+      val info = context.packageManager.getPackageInfo(context.packageName, 0)
+      @Suppress("DEPRECATION")
+      val versionCode = if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()
+      mapOf("applicationId" to context.packageName, "versionName" to info.versionName,
+        "versionCode" to versionCode.toString())
+    }
+    Events("onInstallState", "onCallAudioRoute")
+    AsyncFunction("startCallAudio") { video: Boolean ->
+      val router = callAudioRouter ?: CallAudioRouter(requireNotNull(appContext.reactContext)) { sendEvent("onCallAudioRoute", it) }.also { callAudioRouter = it }
+      router.start(video)
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("getCallAudioRoutes") { callAudioRouter?.snapshot() }.runOnQueue(Queues.MAIN)
+    AsyncFunction("selectCallAudioRoute") { route: String ->
+      requireNotNull(callAudioRouter) { "No active call" }.select(route)
+    }.runOnQueue(Queues.MAIN)
     OnStartObserving {
       appContext.reactContext?.let { context ->
         if (observedUpdateManager == null) {
@@ -102,7 +122,7 @@ class AxonicAppUpdateModule : Module() {
         manager.isSpeakerphoneOn
       }
     }
-    AsyncFunction("restoreCallAudio") { restoreCallAudio() }
+    AsyncFunction("restoreCallAudio") { restoreCallAudio() }.runOnQueue(Queues.MAIN)
     OnDestroy {
       observedUpdateManager?.unregisterListener(installListener)
       observedUpdateManager = null

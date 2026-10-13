@@ -20,8 +20,8 @@ import {createMobileAttachmentJobs} from './mobileAttachmentJobs';
 import {stageRootAttachmentSource,prepareRootAttachment,readRootAttachmentChunk,readRootAttachmentChunks,writeRootAttachmentChunk,commitRootAttachmentFile,rootAttachmentFile,removeRootAttachmentSource} from './rootAttachmentFiles';
 type SharedSelection={id:string;count:number;slot:number};
 type Selection={createdAt?:number;shared?:SharedSelection;id:string;peer:string;name:string;mime:string;caption?:string;failed:boolean;reply?:RootChatReply;group?:RootGroupContext};
-let activeSharedPeers:(()=>string[])|null=null;
-function canShare(peers:string[]){const capable=activeSharedPeers?.()??[];return peers.length>1&&peers.every(p=>capable.includes(p))&&capable.some(p=>!peers.includes(p));}
+// Preparation is independent of current connectivity; transport checks capability on reconnect.
+function canShare(peers:string[]){return peers.length>1;}
 let activeTimings:(()=>{startedAt:number;observedAt:number;stages:ReturnType<ReturnType<typeof createAttachmentTiming>['snapshot']>})|null=null;
 /** Local aggregate diagnostics; no identities, paths or payloads. */
 export const rootAttachmentTimings=()=>localAccount.status().state==='unlocked'?activeTimings?.()??null:null;
@@ -45,7 +45,7 @@ export async function queueRootAttachmentSource(peer:string,uri:string,name:stri
  try{await changeSelections(owner,rows=>{if(localAccount.status().account!==owner)throw Error('Account changed');if(rows.length>=4)throw Error('Finish or remove a pending attachment first');stageRootAttachmentSource(owner,id,uri);rows.push({createdAt:Date.now(),id,peer,name:safeName,mime:safeMime,failed:false,...(caption?{caption}:{}),...(reply?{reply:{...reply}}: {})});});}
  catch(error){removeRootAttachmentSource(owner,id);throw error;}publishRootMessageFeedback({owner,peer,id,direction:'outgoing'});return id;
 }
-/** Snapshot the audience before opening a native picker. Keep per-recipient transfer IDs; compatible groups share one content key/ciphertext. */
+/** Snapshot the audience before opening a native picker. Keep per-recipient transfer IDs; groups share one content key/ciphertext. */
 export async function rootGroupAttachmentAudience(groupId:string,reply?:RootChatReply){const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account');const s=await localRootChat().snapshot(),g=s.groups?.find(g=>g.id===groupId);if(!g||g.blocked||!g.accepted||!g.members.includes(owner))throw Error('Accept an active group first');if(reply&&!groupReplyAvailable(s,owner,groupId,reply))throw Error('Original group message unavailable');const peers=g.members.filter(p=>p!==owner);if(!peers.length||peers.some(p=>s.contacts.some(c=>c.account===p&&c.blocked)))throw Error('Choose an active group without blocked members');return {owner,peers,group:{id:groupId,revision:g.revision,messageId:await Native!.identityRandomBytes!(32)},...(reply?{reply:{...reply}}:{})};}
 export async function queueRootGroupAttachmentSource(audience:Awaited<ReturnType<typeof rootGroupAttachmentAudience>>,uri:string,name:string,mime='application/octet-stream',caption?:string){
  if(caption!==undefined&&(typeof caption!=='string'||new TextEncoder().encode(caption).length>1600))throw Error('Comment is too long');
@@ -53,7 +53,7 @@ export async function queueRootGroupAttachmentSource(audience:Awaited<ReturnType
  if(reply&&!groupReplyAvailable(await localRootChat().snapshot(),owner,group.id,reply))throw Error('Original group message unavailable');
  const sharedId=canShare(peers)?await Native!.identityRandomBytes!(32):null;
  const createdAt=Date.now();const rows:Selection[]=[];for(const peer of peers)rows.push({createdAt,... (sharedId?{shared:{id:sharedId,count:peers.length,slot:rows.length}}:{}),id:await Native!.identityRandomBytes!(32),peer,name:name.replace(/[\x00-\x1f\x7f/\\]/g,'_').slice(0,120)||'Attachment',mime:/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(mime.toLowerCase())?mime.toLowerCase():'application/octet-stream',failed:false,...(caption?{caption}:{}),group:{...group},...(reply?{reply:{...reply}}:{})});
- try{await changeSelections(owner,current=>{if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner||current.length+rows.length>64)throw Error('Finish pending attachments first');for(const row of rows)stageRootAttachmentSource(owner,row.id,uri);current.push(...rows);});}catch(e){for(const row of rows)removeRootAttachmentSource(owner,row.id);throw e;}publishRootMessageFeedback({owner,peer:peers[0],id:group.messageId,group:group.id,direction:'outgoing'});return group.messageId;
+ try{await changeSelections(owner,current=>{if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner||current.length+rows.length>64)throw Error('Finish pending attachments first');for(const row of rows)stageRootAttachmentSource(owner,row.id,uri,row.shared?.id);current.push(...rows);});}catch(e){for(const row of rows)removeRootAttachmentSource(owner,row.id);for(const id of new Set(rows.map(r=>r.shared?.id).filter((id):id is string=>!!id)))removeRootAttachmentSource(owner,id);throw e;}publishRootMessageFeedback({owner,peer:peers[0],id:group.messageId,group:group.id,direction:'outgoing'});return group.messageId;
 }
 
 /** Stage a reviewed batch atomically: a later copy failure cannot send only its first items. */
@@ -76,20 +76,19 @@ export async function queueRootAttachmentBatch(input:{peer:string;owner:string;r
  }
  try{await changeSelections(owner,current=>{
   if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner||current.length+rows.length>64)throw Error('Finish pending attachments first');
-  for(const row of rows)stageRootAttachmentSource(owner,row.id,sources.get(row.id)!);
+  for(const row of rows)stageRootAttachmentSource(owner,row.id,sources.get(row.id)!,row.shared?.id);
   current.push(...rows);
- });}catch(error){for(const row of rows)removeRootAttachmentSource(owner,row.id);throw error;}
+ });}catch(error){for(const row of rows)removeRootAttachmentSource(owner,row.id);for(const id of new Set(rows.map(r=>r.shared?.id).filter((id):id is string=>!!id)))removeRootAttachmentSource(owner,id);throw error;}
  const first=rows[0];publishRootMessageFeedback({owner,peer:first.peer,id:first.group?.messageId??first.id,...(first.group?{group:first.group.id}:{}),direction:'outgoing'});
  return first.id;
 }
 
 export async function rootAttachmentProgress(){const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked')return {jobs:[],selections:[]};
- const jobs=await createMobileAttachmentJobs().list(owner);return {jobs:jobs.map(j=>({id:j.descriptor.manifest.id,phase:j.phase,cursor:j.cursor,bytes:j.descriptor.manifest.bytes,failures:j.failures,digest:j.digest,canPause:!j.receipt&&!['complete','cancelled','expired'].includes(j.phase)})),selections:await selections(owner)};}
+ const jobs=await createMobileAttachmentJobs().list(owner);return {jobs:jobs.map(j=>({id:j.descriptor.manifest.id,phase:j.phase,cursor:j.cursor,bytes:j.descriptor.manifest.bytes,failures:j.failures,digest:j.digest,canPause:!j.receipt&&['queued','uploading','downloading'].includes(j.phase)})),selections:await selections(owner)};}
 export async function retryRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const row=rows.find(r=>r.id===id);if(row)row.failed=false;});}
-export async function removeRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const i=rows.findIndex(r=>r.id===id&&r.failed);if(i>=0){removeRootAttachmentSource(owner,id);rows.splice(i,1);}});}
+export async function removeRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const i=rows.findIndex(r=>r.id===id&&r.failed);if(i>=0){const shared=rows[i].shared?.id;removeRootAttachmentSource(owner,id);rows.splice(i,1);if(shared&&!rows.some(r=>r.shared?.id===shared))removeRootAttachmentSource(owner,shared);}});}
 /** Own transfer jobs are separate from the temporary ciphertext this device holds for other people. */
 export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;sharedPeers?():string[];peers():string[];request(peer:string,raw:string):Promise<string|null>;bulkPeers?():string[];batchChunks?(peer:string):number;batchWindow?(peer:string):number;bulkRequest?(peer:string,raw:string):Promise<string|null>;lookup?(peer:string):Promise<unknown>}){
- activeSharedPeers=network.sharedPeers??null;
  const timingEnabled=(typeof __DEV__!=='undefined'&&__DEV__)||process.env.EXPO_PUBLIC_ATTACHMENT_TIMING==='1',timing=createAttachmentTiming(timingEnabled);
  const timingStarted=Date.now(),snapshotTimings=()=>({startedAt:timingStarted,observedAt:Date.now(),stages:timing.snapshot()});
  if(timingEnabled)activeTimings=snapshotTimings;
@@ -139,7 +138,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  async function prepareSelection(account:string,snapshot:Awaited<ReturnType<ReturnType<typeof localRootChat>['snapshot']>>,current:()=>boolean){
    const ledger=localRootChat();
    const queued=await selections(account);if(!current())return;const removed=queued.filter(s=>snapshot.hiddenChats?.includes(s.group?'group:'+s.group.id:s.peer));
-   if(removed.length){await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(removed.some(r=>r.id===rows[i].id))rows.splice(i,1);});for(const row of removed)removeRootAttachmentSource(account,row.id);}
+   if(removed.length){await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(removed.some(r=>r.id===rows[i].id))rows.splice(i,1);});for(const row of removed)removeRootAttachmentSource(account,row.id);for(const id of new Set(removed.map(r=>r.shared?.id).filter((id):id is string=>!!id)))if(!queued.some(r=>!removed.includes(r)&&r.shared?.id===id))removeRootAttachmentSource(account,id);}
    for(const peer of lookupAfter.keys())if(!queued.some(s=>s.peer===peer))lookupAfter.delete(peer);
    const eligible=queued.filter(s=>!removed.includes(s)&&!s.failed&&!snapshot.contacts.find(c=>c.account===s.peer)?.blocked);
    const pending=eligible.length?eligible[selectionCursor++%eligible.length]:null;
@@ -177,6 +176,6 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  let timer:ReturnType<typeof setTimeout>;
  async function pump(){let progressed=false;try{progressed=!!await tick();}finally{if(!stopped)timer=setTimeout(()=>void pump(),progressed?0:200);}}
  timer=setTimeout(()=>void pump(),0);
- return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',()=>worker.receive(...args)),stop(){if(activeSharedPeers===network.sharedPeers)activeSharedPeers=null;if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
+ return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',()=>worker.receive(...args)),stop(){if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
 }
 

@@ -1,10 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript'),crypto=require('node:crypto');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol');
 function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHash,nativeFileHash,bytes=2*65536+17}={}){
- const f=fixture(bytes),data=new Map(),directories=new Set(),calls={read:0,write:0,open:0,close:0},buffers=[];
+ const f=fixture(bytes),data=new Map(),directories=new Set(),calls={read:0,write:0,open:0,close:0,copy:0},buffers=[];
  const path=args=>args.map(v=>typeof v==='string'?v:v.uri).join('/');
  class Directory{
-  constructor(...args){this.uri=path(args);}get exists(){return directories.has(this.uri);}create(){directories.add(this.uri);}
+  constructor(...args){this.uri=path(args);}get parentDirectory(){return new Directory(this.uri.slice(0,this.uri.lastIndexOf('/')));}list(){return [...directories].filter(p=>p.startsWith(this.uri+'/')&&!p.slice(this.uri.length+1).includes('/')).map(p=>new Directory(p));}get exists(){return directories.has(this.uri)||[...data.keys()].some(p=>p.startsWith(this.uri+'/'));}create(){directories.add(this.uri);}
   delete(){for(const key of data.keys())if(key.startsWith(this.uri+'/'))data.delete(key);directories.delete(this.uri);}
  }
  class File{
@@ -13,7 +13,7 @@ function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHas
   write(value){data.set(this.uri,typeof value==='string'?Buffer.from(value):Uint8Array.from(value));}
   textSync(){return Buffer.from(data.get(this.uri)).toString();}
   move(target){data.set(target.uri,data.get(this.uri));data.delete(this.uri);this.uri=target.uri;}
-  copy(target){if(!data.has(this.uri))throw Error('Missing source');data.set(target.uri,Uint8Array.from(data.get(this.uri)));if(failCopy)throw Error('copy failed');}
+  copy(target){calls.copy++;if(!data.has(this.uri))throw Error('Missing source');data.set(target.uri,Uint8Array.from(data.get(this.uri)));if(failCopy)throw Error('copy failed');}
   open(){calls.open++;const file=this;return {offset:0,
    readBytes(n){calls.read++;const result=data.get(file.uri).slice(this.offset,this.offset+n-(shortRead?1:0));this.offset+=result.length;buffers.push(result);return result;},
    writeBytes(bytes){calls.write++;buffers.push(bytes);if(failWrite&&file.uri.endsWith('/ciphertext'))throw Error('disk full');const old=data.get(file.uri),next=new Uint8Array(Math.max(old.length,this.offset+bytes.length));next.set(old);next.set(bytes,this.offset);this.offset+=bytes.length;data.set(file.uri,next);},
@@ -59,7 +59,7 @@ test('shared group preparation encrypts once and resumes independent recipient g
   hashes++;return crypto.createHash('sha256').update(data.get(`own/axonic-own-attachments-v1/${owner.slice(9)}/staging/${id}/content`)).digest('hex');
  }}),owner=f.ids[0].record.account;
  const shared={id:'ab'.repeat(32),count:2,slot:0};
- const first=await f.out.prepareRootAttachment({...f.input,shared});const reads=f.calls.read,writes=f.calls.write;
+ const first=await f.out.prepareRootAttachment({...f.input,shared});const reads=f.calls.read,writes=f.calls.write,copies=f.calls.copy;
  const next={...f.input,id:'cd'.repeat(32),recipient:f.ids[2].record,shared:{...shared,slot:1}};
  f.out.rootAttachmentSource(owner,next.id).write(f.plain);
  const second=await f.out.prepareRootAttachment(next);
@@ -67,11 +67,14 @@ test('shared group preparation encrypts once and resumes independent recipient g
  assert.equal(first.key,second.key);assert.equal(first.checksum,second.checksum);assert.notEqual(a.attachmentDigest(first.manifest),a.attachmentDigest(second.manifest));
  assert.equal(a.attachmentContentDigest(first.manifest),a.attachmentContentDigest(second.manifest));
  assert.deepEqual(await f.out.prepareRootAttachment(next),second);
+ assert.equal(f.calls.copy,copies,'no per-recipient payload copies');assert.equal(f.out.rootAttachmentFile(owner,a.attachmentDigest(first.manifest)).uri,f.out.rootAttachmentFile(owner,a.attachmentDigest(second.manifest)).uri);
  assert.equal(hashes,1,'reuse the prepared checksum across recipient grants and retries');
  for(let i=0;i<Math.ceil(f.plain.length/4096);i++){
   const c=await f.out.readRootAttachmentChunk({owner,digest:a.attachmentDigest(second.manifest),descriptor:second},i);
   assert.deepEqual(a.decryptAttachmentChunk(second.manifest,c,f.key),f.plain.slice(i*4096,(i+1)*4096));
  }
+ f.out.removeRootAttachmentContent(owner,a.attachmentDigest(first.manifest));assert(f.out.rootAttachmentFile(owner,a.attachmentDigest(second.manifest)).exists,'another recipient retains the payload');
+ f.out.removeRootAttachmentSource(owner,shared.id);f.out.removeRootAttachmentContent(owner,a.attachmentDigest(second.manifest));assert(![...f.data.keys()].some(p=>p.includes('/shared/')),'last reference releases payload');
 });
 test('short source reads and write failures never publish prepared attachment files',async t=>{
  for(const options of [{shortRead:true},{failWrite:true},{failCopy:true}]){
@@ -123,4 +126,24 @@ for(const mode of ['native','fallback','wrong','error','locked'])test(`full-file
  if(['wrong','error','locked'].includes(mode)){await assert.rejects(verify);assert.equal(f.data.has(final),false);assert.equal(f.data.has(partial),true);}
  else{await verify;assert.deepEqual(Buffer.from(f.data.get(final)),Buffer.from(f.plain));assert.equal(f.data.has(partial),false);}
  assert.equal(seen,mode==='fallback'?0:1);assert.equal(f.calls.open,f.calls.close);
+});
+
+
+test('group staging copies a source once and survives removing the first recipient before preparation',async t=>{
+ const f=setup(t),owner=f.ids[0].record.account,shared={id:'ef'.repeat(32),count:2,slot:0},first='11'.repeat(32),second='22'.repeat(32);
+ f.data.set('external',f.plain);f.out.stageRootAttachmentSource(owner,first,'external',shared.id);f.out.stageRootAttachmentSource(owner,second,'external',shared.id);
+ assert.equal(f.calls.copy,1);assert.equal(f.out.rootAttachmentSource(owner,first).uri,f.out.rootAttachmentSource(owner,second).uri);
+ f.out.removeRootAttachmentSource(owner,first);
+ const descriptor=await f.out.prepareRootAttachment({...f.input,id:second,shared:{...shared,slot:1}});
+ assert.equal(descriptor.checksum,crypto.createHash('sha256').update(f.plain).digest('hex'));
+ const digest=a.attachmentDigest(descriptor.manifest);f.out.removeRootAttachmentContent(owner,digest);
+ assert([...f.data.keys()].some(p=>p.includes('/shared/')),'pending selections pin the shared preparation');
+ f.out.removeRootAttachmentSource(owner,second);f.out.removeRootAttachmentSource(owner,shared.id);
+ assert(![...f.data.keys()].some(p=>p.includes('/shared/')),'last selection and grant release the data');
+});
+
+test('shared file references reject traversal instead of reading another location',t=>{
+ const f=setup(t),owner=f.ids[0].record.account,digest='99'.repeat(32);
+ f.data.set(`own/axonic-own-attachments-v1/${owner.slice(9)}/files/${digest}/shared.json`,Buffer.from(JSON.stringify({id:'../other'})));
+ assert.throws(()=>f.out.rootAttachmentFile(owner,digest),/Invalid shared/);
 });

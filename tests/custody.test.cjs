@@ -12,6 +12,17 @@ function fixture(t){const databases=new Map(),cache=new Map(),opens=[];const ran
  const request=async(s,i,operation,packet)=>JSON.parse(await s.receive(ids[i].record.account,JSON.stringify({operation,...(operation==='consume'?packet:{packet})})));
  t.after(()=>databases.forEach(d=>d.close()));return {ids,records,store,service,seal,request,protocol,load,random,now:()=>now,advance:ms=>now+=ms,expire:()=>now+=protocol.CUSTODY_TTL,stop:()=>active=false,databases,opens};
 }
+test('background completion requires receipt acceptance and a drained relay, and resets on resume',async t=>{
+ const f=fixture(t),e=await f.seal(),receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ let accept=false,empty=false;
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>e.recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['relay'],seal:async()=>e,receive:async()=>receipt,
+ request:async(_peer,raw)=>{const q=JSON.parse(raw);if(q.operation==='receipt')return JSON.stringify({status:accept?'accepted':'retry'});return JSON.stringify({status:'ok',packet:empty||q.exclude.includes(e.id)?null:e});}});
+ await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'inbox alone is insufficient');
+ accept=true;f.advance(5000);await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),true);
+ assert.equal(courier.recoveryComplete('another-sender',e.id),false);
+ courier.resume();assert.equal(courier.recoveryComplete(e.sender,e.id),false);
+ empty=true;await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'empty inbox is not target receipt evidence');courier.stop();
+});
 test('stored digest reuse preserves row bindings, changed-byte rejection and capacity checks',async t=>{
  const f=fixture(t),e=await f.seal(),validate=f.load('custodyService').validateCustodyRows;
  const row={sender:e.sender,recipient:e.recipient,id:e.id,recipientDevice:e.recipientDevice,expires:e.expires,digest:f.protocol.custodyDigest(e),packet:e};

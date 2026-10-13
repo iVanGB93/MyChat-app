@@ -1,0 +1,40 @@
+Call audio output selector — October 13, 2026
+
+Voice calls: Audio button. Video calls: Options > Audio output.
+Choices are Automatic, Phone, Speaker, and currently available communication
+devices (Bluetooth, wired headphones, USB audio). Native device names distinguish
+headsets; disconnected devices disappear. The actual output is marked In use.
+
+Automatic captures the anticipated media output before entering communication
+mode on Android 13+, maps a media Bluetooth route to its communication counterpart,
+and prefers the current/available headset. An active media speaker is preserved.
+Without an external route, voice defaults to Phone and video to Speaker.
+Explicit choices persist through new connections; disconnection resets Automatic.
+Android 12+ uses communication-device selection and callbacks. Older Android uses
+speaker/SCO routing with one choice per device type, not per Bluetooth headset.
+
+Audio ownership lasts for the mounted media call, including in-app minimization
+and system PiP. Ending/unmounting restores routing and the previous audio mode.
+Native startup/selection/restoration are serialized; asynchronous native route
+events update the display without pretending that a pending switch already took
+effect. Existing development clients report that the native build needs updating.
+
+Validation:
+- TypeScript, full unit suite, cycles, module boundaries and consolidation passed.
+  Full log: builds/call-audio-selector-check.log.
+- Focused audio/call UI checks: 10 passed, covering ordered routing/cleanup,
+  errors, native observations, voice/video selection and removed headset options.
+- Local arm64 side-by-side debug build succeeded. Verified application ID
+  com.axonic.dev, then installed with -r on authorized phone R3GYC0H7PMY.
+- Live native probe: connected Bluetooth device listed; Speaker selected, explicit
+  Bluetooth selected, and Automatic selected Bluetooth. Native callbacks reported
+  actual route changes. Cleanup returned requested and actual mode to MODE_NORMAL.
+- Dev account matched its public identity before/after the update. No password,
+  recovery words or tokens were used or logged.
+- Sound/microphone quality in a live call and physical connection/disconnection
+  remain unverified. Only one phone was available; no emulator or second-phone
+  update was performed. Official com.axonic was untouched.
+
+No production build, deployment, commit, push or data wipe.
+Native reference: https://developer.android.com/develop/connectivity/bluetooth/ble-audio/audio-manager
+Media-route query: https://developer.android.com/reference/android/media/AudioManager#getAudioDevicesForAttributes(android.media.AudioAttributes)

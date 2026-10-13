@@ -1,11 +1,14 @@
 import {storeSharedAvatarPart} from '../../modules/storage/sharedProfileStore';
 import {publishRootMessageFeedback} from './rootMessageFeedback';
 import {ownChatStore} from '../../modules/storage/chatStore';
+import {captureDeliveryState,clearDeliveryCapture,mobileDeliveryDiagnostics} from '../mobileDeliveryDiagnostics';
 import { localAccount } from './localAccount';
 import { createRootChatLedger } from './rootChatLedger';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {verifyAttachmentManifest,verifyAttachmentReceipt} from './attachmentProtocol';
 const ledgers=new Map<string,ReturnType<typeof createRootChatLedger>>();
+let diagnosticOwner=localAccount.status().account;
+localAccount.subscribe(()=>{const status=localAccount.status();if(status.account!==diagnosticOwner||status.removalPending)clearDeliveryCapture();diagnosticOwner=status.account;});
 const queuedListeners=new Set<(owner:string,peer:string,id:string)=>void>();
 export function subscribeRootChatQueued(listener:(owner:string,peer:string,id:string)=>void){queuedListeners.add(listener);return()=>{queuedListeners.delete(listener);};}
 export function localRootChat(){
@@ -13,6 +16,7 @@ export function localRootChat(){
  if(!owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account first');
  let ledger=ledgers.get(owner);if(!ledger){const store=ownChatStore(owner);
   ledger=createRootChatLedger({owner,...store,now:Date.now,
+   write:async raw=>{await store.write(raw);try{if(mobileDeliveryDiagnostics.active())captureDeliveryState(owner,JSON.parse(raw));}catch{/* Diagnostics must never invalidate a committed message. */}},
    messageCommitted:(m,state)=>{
     // Outgoing attachment feedback occurs when selections are staged, before deferred preparation.
     if(m.direction==='outgoing'&&m.attachment)return;

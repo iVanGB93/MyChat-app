@@ -1,3 +1,5 @@
+import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
+import {createMessageNotificationDeadline} from './messageNotificationDeadline';
 import {rootMessageNotificationId,currentRootMessageNotification,cancelRootMessageNotification} from './rootMessageNotification';
 import {publishRootMessageToast} from './rootMessageToast';
 import {readRootNotificationPreferences} from './rootNotificationPreferences';
@@ -45,31 +47,36 @@ async function alreadyReceived(owner:string,sender:string,id:string){
  return [...ledger.messages,...(ledger.actions??[]),...(ledger.groupActions??[]),] .some((m:{id:string;peer:string;direction:string})=>m.id===id&&m.peer===sender&&m.direction==='incoming')||(ledger.groupSeen??[]).some((m:{id:string;peer:string})=>m.id===id&&m.peer===sender);
 }
 /** A stalled account/network startup must not withhold an already authenticated alert. */
-async function waitForRecovery(work:Promise<void>,ms:number){
+async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>number){
  // React Native frame timers may stop with the display off. Native completions
  // still reach the headless task while its FCM execution window is active.
  if(Native?.axonMessageWait){
   let finished=false;const until=Date.now()+ms;
-  const deadline=(async()=>{while(!finished&&Date.now()<until){
-   await Native.axonMessageWait!(Math.max(1,Math.min(1000,until-Date.now())));
+  const deadline=(async()=>{while(!finished&&Date.now()<until&&(!remaining||remaining()>0)){
+   await Native.axonMessageWait!(Math.max(1,Math.min(500,until-Date.now(),remaining?.()??ms)));
   }})();
   try{await Promise.race([work,deadline]);}finally{finished=true;}
   return;
  }
- let timer:ReturnType<typeof setTimeout>|undefined;
- try{await Promise.race([work,new Promise<void>(resolve=>{timer=setTimeout(resolve,ms);})]);}
- finally{if(timer!==undefined)clearTimeout(timer);}
+ let timer:ReturnType<typeof setTimeout>|undefined,finished=false;
+ const until=Date.now()+ms;
+ const deadline=(async()=>{while(!finished&&Date.now()<until&&(!remaining||remaining()>0))await new Promise<void>(resolve=>{timer=setTimeout(resolve,Math.max(1,Math.min(500,until-Date.now(),remaining?.()??ms)));});})();
+ try{await Promise.race([work,deadline]);}
+ finally{finished=true;if(timer!==undefined)clearTimeout(timer);}
 }
 /** Signed hint only. Private keys and message content remain unavailable until local unlock. */
-export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number)=>Promise<void>){
+export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void)=>Promise<void>){
  setStage('context');
  const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048)return;
  let sender:string;try{sender=JSON.parse(d.event).sender;}catch{return;}if(!validAccountId(sender))return;
  const owner=await rootWakeContext();if(!owner||await rootWakeBlocked(owner.account,sender))return;
  const record=await createMobileIdentityRecordStore(Date.now).read(sender);
- const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event)return;setStage('recovery');
- const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires)).then(()=>{},()=>{setStage('recovery-failed');});
- await waitForRecovery(recovery,1500);
+ const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event)return;setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified');
+ const deadline=createMessageNotificationDeadline();
+ const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress)).then(()=>{},()=>{setStage('recovery-failed');});
+ // Three seconds without new progress, capped at ten seconds overall. A preview
+ // publishes independently; retries and repeated milestones cannot extend this.
+ await waitForRecovery(recovery,10000,deadline.remaining);
  await serial(async()=>{
   const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now())return;
   const database=await db();let admitted=false;
@@ -100,7 +107,8 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
    await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);return;
   }
   setStage('generic');
-  await notifee.displayNotification({id,title:'Axonic',body:'New message. Open Axonic to read it.',
+  deliveryDiagnosticEvent(owner.account,sender,event.id,'notification_requested');
+  await notifee.displayNotification({id,title:'Axonic',body:'You may have new messages. Open Axonic to check.',
    data:{type:'root_neuron_message',account:owner.account,sender,messageId:event.id},
    android:{channelId,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
     pressAction:{id:'root-message-open',launchActivity:'default'},timeoutAfter:Math.max(1,event.expires-Date.now())}});
@@ -148,6 +156,7 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
    android:{channelId,onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
     pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender}}))}}});
   await Native?.notificationReadActionInShade?.(key);
+  deliveryDiagnosticEvent(owner,sender,id,'notification_requested');
   if(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group))await cancelRootMessageNotification(owner,sender,id,preview.group);
   setStage('preview');
   await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);

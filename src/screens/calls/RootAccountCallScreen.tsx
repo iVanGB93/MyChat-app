@@ -4,7 +4,7 @@ import {localAccount} from '../../modules/identity';
 import {shortIdentity} from '../../modules/identity';
 import {startRootCallLease,stopRootCallLease,markRootCallConnected} from '../../modules/messaging';
 import React,{useCallback,useEffect,useRef,useState} from 'react';
-import {AppState,Modal,Platform,Switch,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
+import {AppState,Modal,Platform,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {StatusBar} from 'expo-status-bar';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -22,7 +22,7 @@ import type {NeuronCallView} from '../../modules/messaging';
 import useWebRTCCore from '../../hooks/useWebRTCCore';
 import {useTheme} from '../../contexts/ThemeContext';
 import {ActionButton,makeStyles} from './CallAppearance';
-import {setCallSpeaker,restoreCallAudio} from '../../services/call-audio-route';
+import {startCallAudio,getCallAudioRoutes,selectCallAudioRoute,observeCallAudioRoutes,restoreCallAudio,type CallAudioRoutes} from '../../services/call-audio-route';
 
 export async function ensureRootCallPermissions(kind:'voice'|'video'){
  if(!(await AudioModule.getRecordingPermissionsAsync()).granted&&!(await AudioModule.requestRecordingPermissionsAsync()).granted)throw Error('Allow microphone access to make or answer calls.');
@@ -84,7 +84,7 @@ function MinimizedCall({name,status,video,stream,restore,end}:{name:string;statu
 
 function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:NeuronCallView<string>;name:string;avatarUri?:string|null;end:()=>void;minimized:boolean;minimize():void;restore():void}){
  useKeepAwake('root-account-call');
- const {colors}=useTheme(),styles=makeStyles(colors),[connected,setConnected]=useState(false),[speaker,setSpeaker]=useState(false),[error,setError]=useState('');
+ const {colors}=useTheme(),styles=makeStyles(colors),[connected,setConnected]=useState(false),[audioRoutes,setAudioRoutes]=useState<CallAudioRoutes|null>(null),[error,setError]=useState('');
  const started=useRef(false),audioBusy=useRef(false),connectedAt=useRef<number|null>(null);
  const insets=useSafeAreaInsets(),[seconds,setSeconds]=useState(0),[controls,setControls]=useState(true),[options,setOptions]=useState(false),[foreground,setForeground]=useState(AppState.currentState==='active');
  useEffect(()=>{const listener=AppState.addEventListener('change',state=>setForeground(state==='active'));return()=>listener.remove();},[]);
@@ -95,7 +95,15 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  useEffect(()=>{if(call.outgoing&&!started.current){started.current=true;void rtc.startAsOfferer();}},[call.outgoing,rtc.startAsOfferer]);
  useEffect(()=>{if(connected)return;const timer=setTimeout(end,45000);return()=>clearTimeout(timer);},[connected,call.id]);
  useEffect(()=>{void startRootCallLease(call.id,call.media);return()=>{stopRootCallLease(call.id);restoreCallAudio();};},[call.id,call.media]);
- const routeAudio=async()=>{if(audioBusy.current)return;audioBusy.current=true;try{setSpeaker(await setCallSpeaker(!speaker));}catch{setError('Unable to change speaker.');}finally{audioBusy.current=false;}};
+ useEffect(()=>{
+  let mounted=true;
+  const update=(routes:CallAudioRoutes)=>{if(mounted)setAudioRoutes(routes);};
+  const listener=observeCallAudioRoutes(update);
+  void startCallAudio(call.media==='video').then(update).catch(error=>{if(mounted)setError(error instanceof Error?error.message:'Unable to select audio output.');});
+  const active=AppState.addEventListener('change',state=>{if(state==='active')void getCallAudioRoutes().then(routes=>{if(routes)update(routes);}).catch(()=>{});});
+  return()=>{mounted=false;listener.remove();active.remove();};
+ },[call.id,call.media]);
+ const routeAudio=async(id:string)=>{if(audioBusy.current)return;audioBusy.current=true;setError('');try{setAudioRoutes(await selectCallAudioRoute(id));}catch(error){setError(error instanceof Error?error.message:'Unable to change audio output.');}finally{audioBusy.current=false;}};
  const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video',localVisible=rtc.isCameraOff?undefined:local;
  const background=video&&<>
   {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit="cover" mirror={!remote} style={styles.fullVideo} zOrder={0}/>}
@@ -120,15 +128,15 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
    {video&&<ActionButton size={52} icon={rtc.isCameraOff?'videocam-off':'videocam'} label={rtc.isCameraOff?'Cam On':'Cam Off'} active={rtc.isCameraOff} onPress={rtc.toggleCamera} Colors={colors}/>}
    <EndButton video={video} onPress={end}/>
    {video&&<ActionButton size={52} icon="camera-reverse-outline" label="Flip" onPress={rtc.switchCamera} Colors={colors}/>}
-   {video?<ActionButton size={52} icon="options-outline" label="Options" onPress={()=>setOptions(true)} Colors={colors}/>:<ActionButton icon="volume-high-outline" label="Speaker" active={speaker} onPress={()=>void routeAudio()} Colors={colors}/>}
+   {video?<ActionButton size={52} icon="options-outline" label="Options" onPress={()=>setOptions(true)} Colors={colors}/>:<ActionButton icon={audioRoutes?.devices.find(d=>d.id===audioRoutes.selectedId)?.kind==='bluetooth'?'bluetooth':'volume-high-outline'} label="Audio" onPress={()=>setOptions(true)} Colors={colors}/>}
   </View>
  </CallLayout>
  <Pressable accessibilityRole="button" accessibilityLabel="Minimize call" testID="axonic-minimize-call" onPress={minimizeMedia} style={{position:'absolute',top:insets.top+12,left:insets.left+12,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="chevron-down" size={28} color="#fff"/></Pressable>
  </Modal>
- <Modal visible={!homeWindow&&!minimized&&options&&video} transparent animationType="slide" onRequestClose={()=>setOptions(false)}>
+ <Modal visible={!homeWindow&&!minimized&&options} transparent animationType="slide" onRequestClose={()=>setOptions(false)}>
   <View style={{flex:1,justifyContent:'flex-end',backgroundColor:'rgba(0,0,0,0.55)'}}><Pressable accessibilityLabel="Close call options" onPress={()=>setOptions(false)} style={StyleSheet.absoluteFill}/>
    <ScrollView style={{flexGrow:0,backgroundColor:colors.background,borderTopLeftRadius:24,borderTopRightRadius:24,maxHeight:'85%'}} contentContainerStyle={{padding:24,paddingLeft:insets.left+24,paddingRight:insets.right+24,paddingBottom:Math.max(insets.bottom,16)+12}}>
-    <Text accessibilityRole="header" style={{color:colors.text,fontSize:22}}>Video quality</Text><Text style={{color:colors.textSecondary,marginVertical:12}}>Controls video sent by this phone. Automatic adapts to your connection.</Text>
+    {video&&<><Text accessibilityRole="header" style={{color:colors.text,fontSize:22}}>Video quality</Text><Text style={{color:colors.textSecondary,marginVertical:12}}>Controls video sent by this phone. Automatic adapts to your connection.</Text>
     {([
       ['automatic','Automatic','Adjusts to your connection · Default'],
       ['low','Low','Uses less data · Lower detail and frame rate'],
@@ -136,7 +144,19 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
       ['high','High','Best detail · Uses more data'],
     ] as [VideoQualityMode,string,string][]).map(([mode,label,detail])=><TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} accessibilityRole="radio" accessibilityState={{checked:rtc.videoQualityMode===mode}} onPress={()=>rtc.selectVideoQuality(mode)} style={{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:14}}><Ionicons name={rtc.videoQualityMode===mode?'radio-button-on':'radio-button-off'} size={24} color={colors.primary}/><View style={{flex:1}}><Text style={{color:colors.text,fontSize:17}}>{label}</Text><Text style={{color:colors.textSecondary,marginTop:4}}>{detail}</Text></View></TouchableOpacity>)}
     {!!rtc.videoQualityError&&<Text accessibilityRole="alert" style={{color:colors.error}}>{rtc.videoQualityError}</Text>}
-    <View style={{paddingVertical:14,flexDirection:'row',alignItems:'center',justifyContent:'space-between',gap:12}}><Text style={{color:colors.text,fontSize:17}}>Speaker</Text><Switch accessibilityLabel="Speaker" value={speaker} onValueChange={()=>void routeAudio()} trackColor={{false:colors.border,true:colors.primary}}/></View>
+    </>}
+    <Text accessibilityRole="header" style={{color:colors.text,fontSize:22,marginTop:video?20:0}}>Audio output</Text>
+    <Text style={{color:colors.textSecondary,marginVertical:12}}>Automatic uses your current headset and follows device changes.</Text>
+    {!!error&&<Text accessibilityRole="alert" style={{color:colors.error}}>{error}</Text>}
+    {audioRoutes&&[{id:'automatic',label:'Automatic',name:'',kind:'other' as const},...audioRoutes.devices].map(device=>{
+     const selected=device.id==='automatic'?audioRoutes.automatic:!audioRoutes.automatic&&device.id===audioRoutes.selectedId;
+     const inUse=device.id===audioRoutes.selectedId;
+     return <TouchableOpacity key={device.id} accessibilityRole="radio" accessibilityLabel={device.name?`${device.label}: ${device.name}`:device.label} accessibilityState={{checked:selected}} onPress={()=>void routeAudio(device.id)} style={{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:14}}>
+      <Ionicons name={selected?'radio-button-on':'radio-button-off'} size={24} color={colors.primary}/>
+      <View style={{flex:1}}><Text style={{color:colors.text,fontSize:17}}>{device.label}</Text>{!!device.name&&<Text style={{color:colors.textSecondary,marginTop:4}}>{device.name}</Text>}</View>
+      {inUse&&<Text style={{color:colors.primary,fontSize:12}}>In use</Text>}
+     </TouchableOpacity>;
+    })}
     <TouchableOpacity accessibilityRole="button" onPress={()=>setOptions(false)} style={{alignItems:'center',padding:14,backgroundColor:colors.primary,borderRadius:16,marginTop:12}}><Text style={{color:colors.textInverse}}>Done</Text></TouchableOpacity>
    </ScrollView>
   </View>

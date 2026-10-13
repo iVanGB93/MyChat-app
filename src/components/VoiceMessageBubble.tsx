@@ -43,6 +43,7 @@ interface Props {
   trackBg: string;
   playbackAllowed?:()=>boolean;
   onPlaybackError?:(error:string)=>void;
+  messageFooter?:React.ReactNode;
 }
 
 function fmtTime(ms: number): string {
@@ -62,6 +63,7 @@ export default function VoiceMessageBubble({
   trackBg,
   playbackAllowed,
   onPlaybackError,
+  messageFooter,
 }: Props) {
   const player = useAudioPlayer(fileUri || null, { updateInterval: 250 });
   const status = useAudioPlayerStatus(player);
@@ -261,7 +263,7 @@ export default function VoiceMessageBubble({
           </Pressable>
         </View>
         <View style={styles.metaRow}>
-          <Text style={[styles.duration, { color: subtleColor }]}>
+          <Text numberOfLines={1} style={[styles.duration, { color: subtleColor },messageFooter!=null&&{flex:1}]}>
             {disabled ? '— : —' : `${fmtTime(displayedMs)} / ${fmtTime(totalMs)}`}
           </Text>
           <TouchableOpacity
@@ -279,6 +281,7 @@ export default function VoiceMessageBubble({
           >
             <Text style={[styles.speedText, { color: tint }]}>{playbackRate}×</Text>
           </TouchableOpacity>
+          {messageFooter}
         </View>
       </View>
     </View>

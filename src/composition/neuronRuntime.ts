@@ -9,7 +9,7 @@ import {createGroupRecovery} from '../services/identity/groupRecovery';
 // Composition root: joins module ports and owns foreground/background leases.
 import {shortIdentity} from '../services/identity/identityPresentation';
 import {rootChatView} from '../services/identity/rootChatActions';
-import {parseSticker} from '../services/stickers';
+import {rootNotificationPreviewText} from '../services/identity/rootNotificationPreviewText';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {createRememberedNeurons} from '../services/identity/rememberedNeurons';
 import type {NeuronCandidate} from '../services/identity/neuronConnections';
@@ -131,7 +131,7 @@ function createLocalAccountNetwork() {
     if(accepted&&!seen){
       const state=rootChatView(account,await localRootChat().snapshot()),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
       const contact=state.contacts.find(c=>c.account===message.from),group=m?.group&&state.groups?.find(g=>g.id===m.group!.id);
-      const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),senderName:contact?.alias||shortIdentity(message.from),text:m.attachment?m.attachment.name:parseSticker(m.text)?'Sticker':m.text,at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id,orderId:m.group.messageId}:{})}:undefined;
+      const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),senderName:contact?.alias||shortIdentity(message.from),text:rootNotificationPreviewText(m),at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id,orderId:m.group.messageId}:{})}:undefined;
       await finishRootMessageWake(account,message.from,message.id,preview).catch(()=>{});
     }
     return accepted;
@@ -200,14 +200,16 @@ function createLocalAccountNetwork() {
   activePeerResolver=peerResolver.resolve;
   const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
   ownAttachments=startRootAttachmentRuntime({...attachmentApi,streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
-  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume() { runtime.resume();courier.resume();pump(); }, tick:pump, stop() { chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
+  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot,
+    recoveryComplete:(sender:string,id:string)=>{const status=delivery.snapshot();return !status.busy&&!status.collecting&&!status.queuedHints&&courier.recoveryComplete(sender,id);},
+    resume() { runtime.resume();courier.resume();pump(); }, tick:pump, stop() { chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
 }
 
 // Foreground UI and a headless wake share one transport; each releases only its own lease.
 let sharedNetwork:{runtime:ReturnType<typeof createLocalAccountNetwork>;references:number}|null=null;
 export function startLocalAccountNetwork(){
  const shared=sharedNetwork??={runtime:createLocalAccountNetwork(),references:0};shared.references++;
- let released=false;return {snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
+ let released=false;return {snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,recoveryComplete:shared.runtime.recoveryComplete,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
 }
 
 

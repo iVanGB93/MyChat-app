@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function fixture(status='ready'){
- const effects=[];let appListener;const app={currentState:'active',addEventListener:(_,fn)=>{appListener=fn;return {remove(){}};}};
+ const effects=[];let appListener,routeListener;const chosen=[];const routes={automatic:true,selectedId:'bt',devices:[{id:'phone',kind:'phone',label:'Phone',name:''},{id:'speaker',kind:'speaker',label:'Speaker',name:''},{id:'bt',kind:'bluetooth',label:'Bluetooth',name:'Test headset'}]};const app={currentState:'active',addEventListener:(_,fn)=>{appListener=fn;return {remove(){}};}};
  const call={id:'one',peerUser:'peer',outgoing:true,media:'video',status,transport:{}},slots=new Map();let current,index,ended=0;
  const react={Fragment:'fragment',createElement:(type,props,...children)=>({type,props:{...props,children}}),
   useState:initial=>{const i=index++;if(!(i in current))current[i]=initial;return [current[i],value=>current[i]=typeof value==='function'?value(current[i]):value];},
@@ -14,10 +14,12 @@ function fixture(status='ready'){
   'expo-keep-awake':{useKeepAwake:()=>{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,right:0,bottom:0,left:0})},
   '../../hooks/useWebRTCCore':{default:()=>({remoteStream:{toURL:()=> 'remote'},localStream:{toURL:()=> 'local'},callQuality:{level:'unknown'}})},
   '@expo/vector-icons':{Ionicons:'Icon'},'react-native-webrtc':{RTCView:'RTCView'}};
+ imports['../../services/call-audio-route']={startCallAudio:async()=>routes,getCallAudioRoutes:async()=>routes,
+  observeCallAudioRoutes:fn=>{routeListener=fn;return {remove(){}};},selectCallAudioRoute:async id=>{chosen.push(id);return {...routes,automatic:id==='automatic',selectedId:id==='automatic'?'bt':id};}};
  const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>imports[n]??{});
  function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;if(type===out.default&&!current.length)current[0]=call;return type(props);}
  const screen=()=>render(out.default);
- return {call,render,screen,ended:()=>ended,listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
+ return {call,render,screen,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
 }
 function find(tree,predicate){if(!tree||typeof tree!=='object')return; if(predicate(tree))return tree;for(const child of tree.props?.children??[]){const result=Array.isArray(child)?child.map(x=>find(x,predicate)).find(Boolean):find(child,predicate);if(result)return result;}}
 
@@ -43,4 +45,19 @@ test('Home puts video on the Activity surface, hides call dialogs and retains th
  const homeOwner=f.screen();assert.equal(homeOwner.type,owner.type);assert.equal(homeOwner.props.key,owner.props.key);
  const home=f.render(homeOwner.type,homeOwner.props),surface=find(home,n=>n.props.testID==='axonic-system-call-window');assert(surface);assert.equal(find(surface,n=>n.type==='RTCView').props.streamURL,'remote');assert.equal(find(home,n=>n.type==='Modal').props.visible,false);assert.equal(f.ended(),0);
  f.appState('active');const restored=f.render(owner.type,owner.props);assert(!find(restored,n=>n.props.testID==='axonic-system-call-window'));assert.equal(find(restored,n=>n.type==='Modal').props.visible,true);assert.equal(f.ended(),0);
+});
+
+test('voice and video options select connected audio outputs and remove disconnected devices',async()=>{
+ for(const media of ['voice','video']){
+  const f=fixture();f.call.media=media;const owner=f.screen();let tree=f.render(owner.type,owner.props);
+  f.audioListen();await Promise.resolve();await Promise.resolve();tree=f.render(owner.type,owner.props);
+  const button=find(tree,n=>n.props.label===(media==='voice'?'Audio':'Options'));assert(button);button.props.onPress();
+  tree=f.render(owner.type,owner.props);assert(find(tree,n=>n.type==='Modal'&&n.props.visible&&n.props.transparent));
+  const bluetooth=find(tree,n=>n.props.accessibilityLabel==='Bluetooth: Test headset');assert(bluetooth);
+  await bluetooth.props.onPress();await Promise.resolve();await Promise.resolve();tree=f.render(owner.type,owner.props);
+  assert.deepEqual(f.chosen,['bt']);assert.equal(find(tree,n=>n.props.accessibilityLabel==='Bluetooth: Test headset').props.accessibilityState.checked,true);
+  f.routeUpdate({automatic:true,selectedId:'phone',devices:[{id:'phone',kind:'phone',label:'Phone',name:''},{id:'speaker',kind:'speaker',label:'Speaker',name:''}]});
+  tree=f.render(owner.type,owner.props);assert(!find(tree,n=>n.props.accessibilityLabel==='Bluetooth: Test headset'));
+  assert.equal(find(tree,n=>n.props.accessibilityLabel==='Automatic').props.accessibilityState.checked,true);assert.equal(f.ended(),0);
+ }
 });

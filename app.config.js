@@ -1,5 +1,6 @@
 module.exports = ({ config }) => ({
   ...config,
+  extra: {...config.extra, diagnosticsJsSourceSha256: require('./scripts/diagnostic-source-hash.cjs')(__dirname)},
   plugins: [
     ...(config.plugins || []),
     ['@sentry/react-native/expo', {

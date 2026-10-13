@@ -1,6 +1,6 @@
-import type {RootChatMessage} from './rootChatTypes';
+export type MessageDeliveryInput={status:string;read?:boolean;attachment?:unknown;descriptorDelivered?:boolean;networkStoredUntil?:number;attachmentStoredUntil?:number};
 export type MessageDeliveryStatus='pending'|'stored'|'delivered'|'read';
-export function rootMessageStatus(m:RootChatMessage,now=Date.now()):MessageDeliveryStatus{
+export function rootMessageStatus(m:MessageDeliveryInput,now=Date.now()):MessageDeliveryStatus{
  if(m.status==='delivered')return m.read?'read':'delivered';
  if(m.read&&!m.attachment)return 'read';
  const description=m.descriptorDelivered||(m.networkStoredUntil??0)>now;

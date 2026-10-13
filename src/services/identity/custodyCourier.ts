@@ -24,6 +24,7 @@ export function createCustodyCourier(d: {
   const polls = new Map<string, { busy: boolean; next: number }>();
   const skips = new Map<string, { until: number; ids: string[] }>();
   const deferred = new Map<string, Map<string,number>>();
+  const acknowledged = new Set<string>(), drained = new Set<string>();
   const lease = () => { const owner = d.owner(), generation = epoch; return { owner, current: () => !!owner && !stopped && generation === epoch && d.owner() === owner }; };
   async function request(relay: string, body: unknown) {
     const raw = await d.request(relay, JSON.stringify(body));
@@ -31,6 +32,10 @@ export function createCustodyCourier(d: {
     try { return JSON.parse(raw); } catch { return null; }
   }
   return {
+    recoveryComplete(sender:string,id:string) {
+      const relays=[...new Set(d.relays())].slice(0,10);
+      return !stopped&&acknowledged.has(sender+':'+id)&&depositing.size===0&&relays.length>0&&relays.every(relay=>drained.has(relay)&&!polls.get(relay)?.busy);
+    },
     async deposit(peer: string, text: string, id: string) {
       const l = lease(); if (!l.current() || !d.allowed(peer) || depositing.has(peer) || depositing.size>=2) return;
       const candidates = d.relays().filter(r => r !== peer && r !== l.owner && (unavailable.get(r+':'+peer) ?? 0) <= d.now()).slice(0, 10);
@@ -79,6 +84,7 @@ export function createCustodyCourier(d: {
         if (!state) { if (polls.size >= 10) return; state = { busy: false, next: 0 }; polls.set(relay, state); }
         if (state.busy || d.now() < state.next) return;
         state.busy = true; state.next = d.now() + (d.now()<resumeUntil?1000:5000);
+        drained.delete(relay);
         try {
           let skip = skips.get(relay);
           if (!skip || skip.until <= d.now()) {
@@ -94,9 +100,11 @@ export function createCustodyCourier(d: {
           // Unusable receipts must not occupy every poll batch forever. Keep
           // them at the relay and retry shortly; never consume or acknowledge them.
           const pass = [...new Set([...skip.ids,...rejected.keys()])].slice(-124);
+          let incomplete=false;
           for (let count = 0; count < 4 && l.current() && pass.length < 128; count++) {
             const reply = await request(relay, { operation: 'poll', exclude: pass });
-            if (!l.current() || reply?.status !== 'ok' || !reply.packet) break;
+            if (!l.current() || reply?.status !== 'ok') break;
+            if (!reply.packet) { if(!incomplete&&!rejected.size)drained.add(relay);break; }
             const packet = parseCustody(JSON.stringify(reply.packet), d.now());
             if (!packet || pass.includes(packet.id)) break;
             pass.push(packet.id);
@@ -130,14 +138,21 @@ export function createCustodyCourier(d: {
             }
             // Lost acknowledgements retry next pass, not a minute later. The
             // durable recipient store makes duplicate delivery idempotent.
-            if (accepted && l.current()) skip.ids.push(packet.id);
+            if (accepted && l.current()) {
+              skip.ids.push(packet.id);
+              if(packet.kind==='envelope'){
+                if(acknowledged.size>=256)acknowledged.delete(acknowledged.values().next().value!);
+                acknowledged.add(packet.sender+':'+packet.id);
+              }
+            }
+            else incomplete=true;
           }
         } catch { /* This relay retries without blocking the other custodians. */ }
         finally { state.busy = false; }
       }));
     },
-    resume() { resumeUntil=d.now()+10000;for(const state of polls.values())state.next=0; },
-    invalidate() { epoch++; unavailable.clear(); skips.clear(); deferred.clear(); for (const state of polls.values()) state.next = 0; },
-    stop() { stopped = true; epoch++; skips.clear(); deferred.clear(); },
+    resume() { drained.clear();acknowledged.clear();resumeUntil=d.now()+10000;for(const state of polls.values())state.next=0; },
+    invalidate() { epoch++; acknowledged.clear();drained.clear();unavailable.clear(); skips.clear(); deferred.clear(); for (const state of polls.values()) state.next = 0; },
+    stop() { stopped = true; epoch++; acknowledged.clear();drained.clear();skips.clear(); deferred.clear(); },
   };
 }

@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {localAccount} from './localAccount';
 import {localRootChat} from './localRootChat';
 import {rootChatView} from './rootChatActions';
-import {rootAttachmentFile,rootAttachmentExportLink,linkRootAttachmentExport} from './rootAttachmentFiles';
+import {rootAttachmentFile,removeRootAttachmentContent,rootAttachmentExportLink,linkRootAttachmentExport} from './rootAttachmentFiles';
 import {createReceivedMediaExporter,type MediaExportRecord} from './receivedMediaExport';
 
 const native=Platform.OS==='android'?requireOptionalNativeModule<{supported:boolean;copyShared?(uri:string):Promise<string>;save(uri:string,name:string,mime:string,kind:string):Promise<string>;available(uri:string):Promise<boolean>;deleteOwned(uri:string,id:string):Promise<'deleted'|'missing'|'needs-confirmation'>;requestDelete(uri:string,id:string):Promise<boolean>}>('AxonicMediaStore'):null;
@@ -29,7 +29,7 @@ export function startRootMediaExport(){
     source:digest=>{const f=rootAttachmentFile(owner,digest);return f.exists?f.uri:null;},
     save:(...args)=>native!.save(...args),
     link:async(digest,uri)=>{const file=rootAttachmentFile(owner,digest);if(await native!.available(uri)){if(!file.exists)await copyAsync({from:uri,to:file.uri});linkRootAttachmentExport(owner,digest,uri);}},
-    remove:async(digest,uri)=>{const result=await native!.deleteOwned(uri,digest);if(result==='needs-confirmation')return false;const file=rootAttachmentFile(owner,digest);if(file.uri.startsWith('file:')&&file.exists)file.delete();return true;},
+    remove:async(digest,uri)=>{const result=await native!.deleteOwned(uri,digest);if(result==='needs-confirmation')return false;removeRootAttachmentContent(owner,digest);return true;},
    });
   }
   await worker!.run();
@@ -42,12 +42,12 @@ export function startRootMediaExport(){
 /** Explicit storage action may ask Android to remove an older owned export. */
 export async function removeRootDownloadedMedia(owner:string,digest:string){
  if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)throw Error('Unlock your account');
- const file=rootAttachmentFile(owner,digest),uri=rootAttachmentExportLink(owner,digest);
+ const uri=rootAttachmentExportLink(owner,digest);
  if(uri&&native){
   const result=await native.deleteOwned(uri,digest);
   if(result==='needs-confirmation'&&!await native.requestDelete(uri,digest))throw Error('Media removal was not approved');
  }
- if(file.exists)file.delete();
+ removeRootAttachmentContent(owner,digest);
 }
 
 /** Explicit Save from the original message menu; independent of auto-save. */
@@ -76,7 +76,7 @@ export async function finishRootMediaCleanup(){
    if(asked){pending++;continue;}asked=true;
    if(!await native.requestDelete(row.uri,digest)){pending++;continue;}
   }
-  const file=rootAttachmentFile(owner,digest);if(file.exists)file.delete();
+  removeRootAttachmentContent(owner,digest);
  }
  // The normal serialized exporter removes confirmed/missing entries from its journal.
  return pending;
