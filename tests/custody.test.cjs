@@ -154,6 +154,21 @@ test('unaccepted envelopes cannot monopolize recovery batches or fabricate recei
  await courier.tick();assert.equal(received.length,4);assert.equal(acks.length,0);
  await courier.tick();assert.deepEqual(acks,[packets[4].id]);courier.stop();
 });
+test('own custody reclaims expired legacy rows and supports more than 200 live packets without eviction',async t=>{
+ const f=fixture(t),store=f.load('ownCustodyStore').createOwnCustodyStore(f.now),packet=await f.seal(),owner=packet.sender;
+ await store.save(owner,packet,()=>true);const db=f.databases.get('axonic_own_custody_v1.db');
+ const insert=db.prepare('INSERT INTO own_custody VALUES(?,?,?,NULL)');
+ for(let i=1;i<4096;i++){const e={...packet,id:i.toString(16).padStart(64,'0')};insert.run(owner,e.id,JSON.stringify(e));}
+ const extra={...packet,id:'fe'.repeat(32)};
+ assert.equal(await store.save(owner,extra,()=>true),null,'active capacity remains bounded');
+ assert.deepEqual((await store.get(owner,packet.id)).envelope,packet,'no live proof eviction');
+ await store.consumed(owner,packet.id,()=>false);assert.ok(await store.get(owner,packet.id),'locked cleanup is refused');
+ await store.consumed(owner,packet.id,()=>true);assert.ok(await store.save(owner,extra,()=>true));
+ f.expire();const fresh=await f.seal('fresh');assert.ok(await store.save(owner,fresh,()=>true));
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM own_custody').get().n,1);
+ assert.equal(await store.save(owner,packet,()=>true),null,'expired input cannot occupy reclaimed capacity');
+});
+
 test('automatic courier reuses durable envelope, survives recreation, and only recipient receipt delivers',async t=>{
  const f=fixture(t),[a,hub,b]=f.ids,relay=f.service(),messages=f.load('testMessageStore').createTestMessageStore(),own=f.load('ownCustodyStore').createOwnCustodyStore();
  const id='e1'.repeat(32);await messages.put({owner:a.record.account,peer:b.record.account,direction:'out',id,text:'courier synthetic',state:'pending',created:f.now(),attempts:0,next:0},()=>true);
@@ -167,7 +182,7 @@ test('automatic courier reuses durable envelope, survives recreation, and only r
  assert.equal((await messages.list(a.record.account))[0].state,'pending');sender.stop();sender=create(deps(0));
  await sender.deposit(b.record.account,'courier synthetic',id);assert.equal(sealed,1);assert.deepEqual((await own.get(a.record.account,id)).envelope,original);
  await receiver.tick();await sender.tick();assert.equal((await messages.list(a.record.account))[0].state,'delivered');assert.equal((await messages.list(b.record.account)).length,1);
- assert.equal(await f.store.transaction(r=>r[0].packet.kind),'receipt');consumeLost=false;f.advance(61000);await sender.tick();assert.equal(await f.store.transaction(r=>r[0].packet),null);
+ assert.equal(await f.store.transaction(r=>r[0].packet.kind),'receipt');assert.ok(await own.get(a.record.account,id),'lost consume acknowledgement retains receipt proof');consumeLost=false;f.advance(61000);await sender.tick();assert.equal(await f.store.transaction(r=>r[0].packet),null);assert.equal(await own.get(a.record.account,id),null,'confirmed consumed ciphertext is released');
 });
 test('courier cannot mark held/completed response delivered, reseal expired envelopes, or persist after locking',async t=>{
  const f=fixture(t),[a,hub,b]=f.ids,own=f.load('ownCustodyStore').createOwnCustodyStore();let owner=a.record.account,release,seals=0,updates=0;

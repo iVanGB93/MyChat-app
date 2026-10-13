@@ -126,6 +126,7 @@ export function createCustodyCourier(d: {
                 await d.messages!.update(row, true, 0, l.current);
               }
               if (l.current()) accepted = (await request(relay, { operation: 'consume', id: packet.id, digest: packet.digest }))?.status === 'accepted';
+              if (accepted && l.current()) await d.own.consumed?.(l.owner!,packet.id,l.current);
             }
             // Lost acknowledgements retry next pass, not a minute later. The
             // durable recipient store makes duplicate delivery idempotent.

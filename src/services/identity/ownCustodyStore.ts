@@ -8,7 +8,7 @@ import type { OwnCustodyRow, OwnCustodyStore } from './normalChatContracts';
 let writes: Promise<unknown> = Promise.resolve();
 const serial = <T>(fn: () => Promise<T>) => { const result = writes.then(fn); writes = result.catch(() => {}); return result; };
 /** Own outgoing encrypted envelopes, retained to verify receipts and reuse exact ciphertext after restart. */
-export function createOwnCustodyStore(): OwnCustodyStore {
+export function createOwnCustodyStore(now: () => number = Date.now): OwnCustodyStore {
   const db = () => opening ??= SQLite.openDatabaseAsync('axonic_own_custody_v1.db', { useNewConnection: true }).then(async database => {
     await database.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS own_custody(owner TEXT NOT NULL,id TEXT NOT NULL,envelope TEXT NOT NULL,relay TEXT,PRIMARY KEY(owner,id));'); return database;
   }).catch(error => { opening = undefined; throw error; });
@@ -28,10 +28,14 @@ export function createOwnCustodyStore(): OwnCustodyStore {
         let result: OwnCustodyRow | null = null;
         await (await db()).withExclusiveTransactionAsync(async tx => {
           if (!current()) return;
+          // Expired proofs cannot validate a live receipt. Reclaim them before
+          // capacity checks, including records left by earlier app versions.
+          await tx.runAsync("DELETE FROM own_custody WHERE json_extract(envelope,'$.expires')<=?",now());
+          if (!current() || envelope.expires<=now()) return;
           const existing = decode(await tx.getFirstAsync('SELECT * FROM own_custody WHERE owner=? AND id=?', owner, envelope.id));
           if (existing) { result = existing; return; }
           const count = await tx.getFirstAsync<{ total: number; owned: number }>('SELECT COUNT(*) AS total,COALESCE(SUM(owner=?),0) AS owned FROM own_custody', owner);
-          if (!count || count.total >= 1000 || count.owned >= 200 || !current()) return;
+          if (!count || count.total >= 8192 || count.owned >= 4096 || !current()) return;
           await tx.runAsync('INSERT INTO own_custody(owner,id,envelope,relay) VALUES(?,?,?,NULL)', owner, envelope.id, raw);
           result = { owner, id: envelope.id, envelope: JSON.parse(raw), relay: null };
         });
@@ -39,6 +43,7 @@ export function createOwnCustodyStore(): OwnCustodyStore {
       });
     },
     held(owner, id, relay, current) { return serial(async () => { const database = await db(); if (current()) await database.runAsync('UPDATE own_custody SET relay=? WHERE owner=? AND id=?', relay, owner, id); }); },
+    consumed(owner,id,current) { return serial(async()=>{const database=await db();if(current())await database.runAsync('DELETE FROM own_custody WHERE owner=? AND id=?',owner,id);}); },
     clear(owner) { return serial(async () => { await (await db()).runAsync('DELETE FROM own_custody WHERE owner=?', owner); }); },
   };
 }
