@@ -43,7 +43,8 @@ export function validOwnProfile(p:unknown,owner:string):p is OwnProfile{
 }
 export const profilePartId=(owner:string,peer:string,m:ProfileManifest,index:number)=>profileHash(utf8ToBytes(JSON.stringify(['axonic-avatar-part-v1',owner,peer,m.revision,m.hash,index])));
 export function profilePackets(owner:string,peer:string,p:OwnProfile,acked:number[]){
- return Array.from({length:profileCount(p.manifest)},(_,index)=>{const id=profilePartId(owner,peer,p.manifest,index),part:ProfilePart={manifest:p.manifest,index,data:p.data.slice(index*PROFILE_CHUNK_BYTES*2,(index+1)*PROFILE_CHUNK_BYTES*2)};return {peer,id,index,raw:JSON.stringify(['axonic-avatar-part-v1',peer,id,part])};}).filter(p=>!acked.includes(p.index));
+ const delivered=new Set(acked);
+ return Array.from({length:profileCount(p.manifest)},(_,index)=>index).filter(index=>!delivered.has(index)).map(index=>{const id=profilePartId(owner,peer,p.manifest,index),part:ProfilePart={manifest:p.manifest,index,data:p.data.slice(index*PROFILE_CHUNK_BYTES*2,(index+1)*PROFILE_CHUNK_BYTES*2)};return {peer,id,index,raw:JSON.stringify(['axonic-avatar-part-v1',peer,id,part])};});
 }
 export function receiveProfilePart(cache:ProfileCache,from:string,owner:string,id:string,part:ProfilePart,now:number):ProfileCache|null{
  if(!part||Object.keys(part).sort().join(',')!=='data,index,manifest'||!validProfileManifest(part.manifest,from)||part.manifest.revision>now+300000||!validAccountId(owner))return null;

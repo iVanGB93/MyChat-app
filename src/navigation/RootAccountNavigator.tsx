@@ -1,3 +1,4 @@
+import {useForegroundPoll} from '../hooks/useForegroundPoll';
 import RootMediaSize from '../components/chat/RootMediaSize';
 import RootGroupMessageInfo from '../screens/chat/RootGroupMessageInfo';
 import RootMessageReactions from '../components/chat/RootMessageReactions';
@@ -177,9 +178,9 @@ function ChatList({navigation}:Screen<'Tabs'>){
  const openChat=useCallback((peer:string)=>peer.startsWith('group:')?navigation.navigate('GroupRoom',{id:peer.slice(6)}):navigation.navigate('ChatRoom',{peer}),[navigation]);
  const markOneRead=useCallback((peer:string)=>void markRead([peer]).catch(report),[markRead]);
 
- const latest=new Map<string,RootChatMessage>();for(const m of state.messages.filter(m=>!m.group)){const old=latest.get(m.peer);if(!old||m.at>=old.at)latest.set(m.peer,m);}
+ const unreadCounts=useMemo(()=>{const counts=new Map<string,number>();for(const m of state.messages){if(m.direction!=='incoming'||m.read||m.deleted)continue;const key=m.group?'group:'+m.group.id:m.peer;counts.set(key,(counts.get(key)??0)+1);}return counts;},[state.messages]);
+ const latest=useMemo(()=>{const result=new Map<string,RootChatMessage>();for(const m of state.messages){if(m.group)continue;const old=result.get(m.peer);if(!old||m.at>=old.at)result.set(m.peer,m);}for(const g of state.groups??[]){const m=rootGroupMessages(state,g.id).at(-1);if(m)result.set('group:'+g.id,m);}return result;},[state.messages,state.groups]);
 
- for(const g of state.groups??[]){const m=rootGroupMessages(state,g.id).at(-1);if(m)latest.set('group:'+g.id,m);}
 
  const contacts=[...state.contacts,...(state.groups??[]).map(g=>({account:'group:'+g.id,alias:g.name,blocked:g.blocked,accepted:g.accepted}))].filter(c=>!state.hiddenChats?.includes(c.account)).sort((a,b)=>(latest.get(b.account)?.at??0)-(latest.get(a.account)?.at??0));
 
@@ -199,7 +200,7 @@ function ChatList({navigation}:Screen<'Tabs'>){
 
     lastMsgContent={c.blocked?'Blocked':!c.accepted?(c.account.startsWith('group:')?'Group invitation':'Message request'):m?.attachment?(m.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':m.attachment.caption||m.attachment.name):parseSticker(m?.text??'')?'Sticker':m?.text??null} lastMsgTime={m?formatHistoryTime(m.at):null}
 
-    lastMsgFromMe={m?.direction==='outgoing'} lastMsgStatus={m?rootMessageStatus(m):undefined} unread={state.messages.filter(m=>(c.account.startsWith('group:')?m.group?.id===c.account.slice(6):!m.group&&m.peer===c.account)&&m.direction==='incoming'&&!m.read&&!m.deleted).length} typingLabel={activity.typing.includes(c.account)?'Typing…':null} isMuted={c.account.startsWith('group:')?state.groups?.find(g=>g.id===c.account.slice(6))?.muted===true:state.contacts.find(contact=>contact.account===c.account)?.muted===true} selectionMode={selected.size>0} selected={selected.has(c.account)} Colors={colors}
+    lastMsgFromMe={m?.direction==='outgoing'} lastMsgStatus={m?rootMessageStatus(m):undefined} unread={unreadCounts.get(c.account)??0} typingLabel={activity.typing.includes(c.account)?'Typing…':null} isMuted={c.account.startsWith('group:')?state.groups?.find(g=>g.id===c.account.slice(6))?.muted===true:state.contacts.find(contact=>contact.account===c.account)?.muted===true} selectionMode={selected.size>0} selected={selected.has(c.account)} Colors={colors}
 
     onOpen={openChat} onAvatarPress={setAvatarPeer} onLongPress={toggle} onToggleSelection={toggle} onMarkRead={markOneRead}/>;}}/>
 
@@ -264,7 +265,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  useEffect(()=>{if(!focused||!foreground||!contact?.accepted||contact.blocked||!unreadKey)return;let active=true;
 
-  void (async()=>{for(const m of unread){if(!active||AppState.currentState!=='active')return;await act(m,'read');}})().catch(()=>{});
+  void (async()=>{for(let i=0;i<unread.length;i+=20){if(!active||AppState.currentState!=='active')return;await messaging.readMessages(peer,unread.slice(i,i+20).map(m=>m.id),owner);}})().catch(()=>{});
 
   return()=>{active=false;};
 
@@ -464,7 +465,8 @@ function Calls({navigation}:Screen<'Tabs'>){
 
  const {colors}=useTheme(),{state}=useOwnChat(),[rows,setRows]=useState<OwnCallSummary[]>([]),[error,setError]=useState('');
 
- useEffect(()=>{let active=true;const refresh=async()=>{const owner=localAccount.status().account;if(!owner)return;try{const result=await listOwnCallHistory(owner);if(active){setRows(result);setError('');}}catch{if(active)setError('Unable to read call history');}};void refresh();const timer=setInterval(()=>void refresh(),3000);return()=>{active=false;clearInterval(timer);};},[]);
+ const focused=useIsFocused();
+ useForegroundPoll(async current=>{const owner=localAccount.status().account;if(!owner)return;try{const result=await listOwnCallHistory(owner);if(current()&&localAccount.status().account===owner){setRows(previous=>JSON.stringify(previous)===JSON.stringify(result)?previous:result);setError('');}}catch{if(current())setError('Unable to read call history');}},3000,focused);
 
  return <View style={[callStyles.container,{backgroundColor:colors.background}]}>{!!error&&<Text accessibilityRole="alert" style={{color:colors.error,padding:12}}>{error}</Text>}<FlatList data={rows} keyExtractor={r=>r.id} contentContainerStyle={rows.length?callStyles.list:callStyles.emptyContainer} ListEmptyComponent={<EmptyState iconName="call-outline" title="No call history" subtitle="Start a call from a chat conversation"/>} ItemSeparatorComponent={()=><View style={[callStyles.separator,{backgroundColor:colors.divider}]}/>} renderItem={({item:r})=><TouchableOpacity accessibilityLabel={`Call ${nickname(state,r.peer)}`} onPress={()=>navigation.navigate('OutgoingCall',{peer:r.peer,kind:r.media})} activeOpacity={0.7} style={[callStyles.callItem,{borderColor:colors.neonBorder}]}><View style={[callStyles.accentBar,{backgroundColor:colors.primary}]}/><Avatar name={nickname(state,r.peer)} uri={state.avatarUris[r.peer]} size={46}/><View style={callStyles.callInfo}><Text numberOfLines={1} style={[callStyles.callName,{color:colors.text}]}>{nickname(state,r.peer).toUpperCase()}</Text><View style={callStyles.callMeta}><Text style={[callStyles.directionTag,{color:colors.primary,borderColor:colors.primary}]}>{r.outgoing?'OUT':'IN'}</Text><Text style={[callStyles.callType,{color:colors.textSecondary}]}>{r.media==='video'?'VIDEO':'AUDIO'}</Text></View></View><View style={callStyles.callRight}><Text style={[callStyles.callTime,{color:colors.primary}]}>{formatHistoryTime(r.at)}</Text><View style={[callStyles.callbackBtn,{borderColor:colors.primary}]}><Ionicons name={r.media==='video'?'videocam-outline':'call-outline'} size={16} color={colors.primary}/></View></View></TouchableOpacity>}/></View>;
 
@@ -525,7 +527,7 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
   <Stack.Navigator screenOptions={{headerStyle:{backgroundColor:colors.headerBg},headerTintColor:colors.headerText,headerTitleStyle:{...Font.semiBold,color:colors.headerText},contentStyle:{backgroundColor:colors.background}}}>
 
-   <Stack.Screen name="Tabs" options={{headerShown:false}}>{props=><Tabs.Navigator screenOptions={options}><Tabs.Screen name="Chats" options={{headerTitle:'AXONIC'}}>{()=> <ChatList {...props}/>}</Tabs.Screen><Tabs.Screen name="Calls" options={{headerTitle:'CALLS'}}>{()=> <Calls {...props}/>}</Tabs.Screen><Tabs.Screen name="Profile" options={{headerTitle:'PROFILE'}}>{()=> <>{profile}</>}</Tabs.Screen></Tabs.Navigator>}</Stack.Screen>
+   <Stack.Screen name="Tabs" options={{headerShown:false}}>{props=><Tabs.Navigator detachInactiveScreens={false} screenOptions={options}><Tabs.Screen name="Chats" options={{headerTitle:'AXONIC'}}>{()=> <ChatList {...props}/>}</Tabs.Screen><Tabs.Screen name="Calls" options={{headerTitle:'CALLS'}}>{()=> <Calls {...props}/>}</Tabs.Screen><Tabs.Screen name="Profile" options={{headerTitle:'PROFILE'}}>{()=> <>{profile}</>}</Tabs.Screen></Tabs.Navigator>}</Stack.Screen>
 
    <Stack.Screen name="ChatRoom" component={ChatRoom}/><Stack.Screen name="NewChat" component={NewChat} options={{title:'New chat'}}/><Stack.Screen name="Contact" component={Contact} options={{title:'User details'}}/>
 

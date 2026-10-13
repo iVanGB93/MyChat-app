@@ -5,6 +5,18 @@ const root=new Uint8Array(32).fill(41),other=new Uint8Array(32).fill(42),now=Dat
 const jpeg=n=>Uint8Array.from([255,216,255,192,0,11,8,0,128,0,128,1,1,17,0,...new Array(n).fill(7),255,217]);
 const image=p.signProfile(jpeg(2300),now,root),sender=load('identityProtocol').accountId(image.manifest.root);
 const recipient=load('identityProtocol').accountId(p.signProfile(new Uint8Array(),now,other).manifest.root);
+test('acknowledged avatar packets are omitted without changing remaining wire bytes',()=>{
+ const all=p.profilePackets(sender,recipient,image,[]),acked=[0,2];
+ assert.deepEqual(p.profilePackets(sender,recipient,image,acked),all.filter(row=>!acked.includes(row.index)));
+ assert.deepEqual(p.profilePackets(sender,recipient,image,all.map(row=>row.index)),[]);
+});
+test('changed avatar bytes are revalidated after a successful ledger read',async()=>{
+ let raw=JSON.stringify({version:1,messages:[],contacts:[],ownProfile:image});
+ const api=chat.createRootChatLedger({owner:sender,read:async()=>raw,write:async value=>{raw=value;},current:()=>true,now:Date.now});
+ await api.snapshot();await api.snapshot();
+ raw=JSON.stringify({version:1,messages:[],contacts:[],ownProfile:{...image,data:'00'+image.data.slice(2)}});
+ await assert.rejects(api.snapshot(),/needs recovery/);
+});
 function ledger(owner){let raw=null,cache={},clock=now;const make=()=>chat.createRootChatLedger({owner,read:async()=>raw,write:async v=>{raw=v;},current:()=>true,now:()=>clock,receiveProfile:async(from,id,part)=>{const next=p.receiveProfilePart(cache,from,owner,id,part,clock);if(!next)return false;cache=next;return true;}});let api=make();return {get api(){return api;},restart(){api=make();},get cache(){return cache;}};}
 async function pair(){const a=ledger(sender),b=ledger(recipient);await a.api.configure(recipient,{accepted:true});await b.api.configure(sender,{accepted:true});await a.api.rememberProfilePeers([recipient]);await b.api.rememberProfilePeers([sender]);await a.api.publishProfile(image);return {a,b};}
 test('signed avatar is bounded, private to eligible peers and uses stable sub-2KB packets',async()=>{const {a}=await pair();const packets=chat.pendingRootChat(await a.api.snapshot(),sender);assert.equal(packets.length,p.profileCount(image.manifest));for(const row of packets){assert.ok(Buffer.byteLength(row.raw)<=2048);assert.equal(row.peer,recipient);}assert.equal((await a.api.snapshot()).messages.length,0);await a.api.configure(recipient,{blocked:true});assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,0);});

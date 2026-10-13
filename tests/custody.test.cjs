@@ -12,6 +12,16 @@ function fixture(t){const databases=new Map(),cache=new Map(),opens=[];const ran
  const request=async(s,i,operation,packet)=>JSON.parse(await s.receive(ids[i].record.account,JSON.stringify({operation,...(operation==='consume'?packet:{packet})})));
  t.after(()=>databases.forEach(d=>d.close()));return {ids,records,store,service,seal,request,protocol,load,random,now:()=>now,advance:ms=>now+=ms,expire:()=>now+=protocol.CUSTODY_TTL,stop:()=>active=false,databases,opens};
 }
+test('stored digest reuse preserves row bindings, changed-byte rejection and capacity checks',async t=>{
+ const f=fixture(t),e=await f.seal(),validate=f.load('custodyService').validateCustodyRows;
+ const row={sender:e.sender,recipient:e.recipient,id:e.id,recipientDevice:e.recipientDevice,expires:e.expires,digest:f.protocol.custodyDigest(e),packet:e};
+ validate([row]);validate([structuredClone(row)]);
+ for(const change of [{digest:'00'.repeat(32)},{recipient:f.ids[3].record.account},{expires:e.expires+1}])assert.throws(()=>validate([{...row,...change}]),/Invalid custody packet/);
+ for(const field of ['ciphertext','signature']){const p=structuredClone(row);p.packet[field]=(p.packet[field].startsWith('00')?'01':'00')+p.packet[field].slice(2);assert.throws(()=>validate([p]),/Invalid custody packet/);}
+ assert.throws(()=>validate([row,row]),/Invalid custody row/);
+ assert.throws(()=>validate([row],{live:128,rows:1024,bytes:1,perSender:16,perRecipient:16}),/capacity/);
+ validate([row]);
+});
 test('offline ciphertext survives custody reopen; recipient receipt deletes payload, sender consumption leaves only bounded tombstone',async t=>{
  const f=fixture(t),e=await f.seal();let relay=f.service();assert.equal((await f.request(relay,0,'deposit',e)).status,'held');
  assert.equal(JSON.stringify(await f.store.transaction(r=>r)).includes('offline synthetic message'),false);
@@ -88,6 +98,62 @@ test('no held confirmation escapes a failing storage transaction',async t=>{
  assert.equal((await f.request(s,0,'deposit',e)).status,'rejected');
 });
 
+test('unmatched receipts cannot starve newer delivery and remain retryable without consumption',async t=>{
+ const f=fixture(t),envelopes=await Promise.all(Array.from({length:5},()=>f.seal())),receipts=envelopes.map(e=>f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed));
+ const consumed=[],checked=[];let acceptOld=false;
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[0].record.account,allowed:()=>true,now:f.now,records:f.records,
+ own:{get:async(owner,id)=>({envelope:envelopes.find(e=>e.id===id)})},relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,
+ confirmReceipt:async r=>{checked.push(r.id);return acceptOld||r.id===receipts[4].id;},
+ request:async(peer,raw)=>{const q=JSON.parse(raw);if(q.operation==='consume'){consumed.push(q.id);return JSON.stringify({status:'accepted'});}return JSON.stringify({status:'ok',packet:receipts.find(r=>!q.exclude.includes(r.id)&&!consumed.includes(r.id))??null});}});
+ await courier.tick();assert.equal(checked.length,4);assert.equal(consumed.length,0);
+ f.advance(5000);await courier.tick();assert.deepEqual(consumed,[receipts[4].id]);
+ acceptOld=true;f.advance(10001);await courier.tick();assert.equal(consumed.length,5);courier.stop();
+});
+test('invalid receipt signatures are never consumed and do not hide valid later receipts',async t=>{
+ const f=fixture(t),envelopes=await Promise.all(Array.from({length:5},()=>f.seal())),receipts=envelopes.map((e,i)=>({...f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed),...(i<4?{signature:'00'.repeat(64)}:{})})),consumed=[];
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[0].record.account,allowed:()=>true,now:f.now,records:f.records,
+ own:{get:async(owner,id)=>({envelope:envelopes.find(e=>e.id===id)})},relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,confirmReceipt:async()=>true,
+ request:async(peer,raw)=>{const q=JSON.parse(raw);if(q.operation==='consume'){consumed.push(q.id);return JSON.stringify({status:'accepted'});}return JSON.stringify({status:'ok',packet:receipts.find(r=>!q.exclude.includes(r.id)&&!consumed.includes(r.id))??null});}});
+ await courier.tick();assert.equal(consumed.length,0);await courier.tick();assert.deepEqual(consumed,[receipts[4].id]);courier.stop();
+});
+test('slow custody deposit does not block another recipient; same-recipient work stays serialized',async t=>{
+ const f=fixture(t),envelope=await f.seal();let release,requests=0;
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[0].record.account,allowed:()=>true,now:f.now,records:f.records,
+ own:{get:async(owner,id)=>({envelope:{...envelope,id,recipient:id==='a'?f.ids[2].record.account:f.ids[3].record.account}}),held:async()=>{}},
+ relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,
+ request:async(peer,raw)=>{requests++;if(JSON.parse(raw).packet.id==='a')await new Promise(r=>release=r);return JSON.stringify({status:'held'});}});
+ const first=courier.deposit(f.ids[2].record.account,'old','a');for(let i=0;i<20&&!release;i++)await new Promise(r=>setTimeout(r,1));assert(release);
+ assert.equal(await courier.deposit(f.ids[2].record.account,'duplicate','a'),undefined);
+ assert.equal(await courier.deposit(f.ids[3].record.account,'new','b'),true);assert.equal(requests,2);
+ release();assert.equal(await first,true);courier.stop();
+});
+test('recipient quota failure does not blacklist the relay for another conversation',async t=>{
+ const f=fixture(t),e=await f.seal();let requests=0;
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[0].record.account,allowed:()=>true,now:f.now,records:f.records,
+ own:{get:async(owner,id)=>({envelope:{...e,id,recipient:id==='old'?f.ids[2].record.account:f.ids[3].record.account}}),held:async()=>{}},
+ relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,
+ request:async(peer,raw)=>{requests++;return JSON.stringify({status:JSON.parse(raw).packet.id==='old'?'full':'held'});}});
+ await courier.deposit(f.ids[2].record.account,'old','old');await courier.deposit(f.ids[2].record.account,'old','old');assert.equal(requests,1);
+ assert.equal(await courier.deposit(f.ids[3].record.account,'new','new'),true);assert.equal(requests,2);courier.stop();
+});
+test('foreground resume polls immediately without duplicating an active inbox request',async t=>{
+ const f=fixture(t);let polls=0,release;
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[0].record.account,allowed:()=>true,now:f.now,records:f.records,own:{},
+ relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,
+ request:async()=>{polls++;await new Promise(r=>release=r);return JSON.stringify({status:'ok',packet:null});}});
+ const first=courier.tick();await Promise.resolve();assert.equal(polls,1);courier.resume();await courier.tick();assert.equal(polls,1);release();await first;
+ const next=courier.tick();await Promise.resolve();assert.equal(polls,2);release();await next;
+ await courier.tick();assert.equal(polls,2);courier.stop();
+});
+test('unaccepted envelopes cannot monopolize recovery batches or fabricate receipts',async t=>{
+ const f=fixture(t),packets=await Promise.all(Array.from({length:5},()=>f.seal())),received=[],acks=[];
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[2].record.account,allowed:()=>true,now:f.now,records:f.records,own:{},
+ relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},
+ receive:async p=>{received.push(p.id);if(p.id===packets[0].id)throw Error('old device ciphertext');return p.id===packets[4].id?f.protocol.signCustodyReceipt(p,f.ids[2].signingSeed,f.ids[2].encryptionSeed):null;},
+ request:async(peer,raw)=>{const q=JSON.parse(raw);if(q.operation==='receipt'){acks.push(q.packet.id);return JSON.stringify({status:'accepted'});}return JSON.stringify({status:'ok',packet:packets.find(p=>!q.exclude.includes(p.id))??null});}});
+ await courier.tick();assert.equal(received.length,4);assert.equal(acks.length,0);
+ await courier.tick();assert.deepEqual(acks,[packets[4].id]);courier.stop();
+});
 test('automatic courier reuses durable envelope, survives recreation, and only recipient receipt delivers',async t=>{
  const f=fixture(t),[a,hub,b]=f.ids,relay=f.service(),messages=f.load('testMessageStore').createTestMessageStore(),own=f.load('ownCustodyStore').createOwnCustodyStore();
  const id='e1'.repeat(32);await messages.put({owner:a.record.account,peer:b.record.account,direction:'out',id,text:'courier synthetic',state:'pending',created:f.now(),attempts:0,next:0},()=>true);

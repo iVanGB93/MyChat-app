@@ -210,6 +210,18 @@ test('fast native recovery keeps the decrypted preview without a generic replace
  assert.equal(f.shown.length,1);assert.equal(f.shown[0].body,'recovered');
 });
 
+test('a wake deadline survives foreground to background without frame timers',async t=>{
+ let f,release,jsTimers=0;
+ f=await fixture(t,{setTimeout:()=>{jsTimers++;return 0;},native:{axonMessageWait:async ms=>{
+  f.app.currentState='background';await new Promise(resolve=>setTimeout(resolve,ms));
+ }}});
+ f.app.currentState='active';
+ const recovery=new Promise(resolve=>release=resolve);
+ f.onDisplay(()=>release());
+ await f.mod.receiveRootMessageWake(f.data,()=>recovery);
+ assert.equal(jsTimers,0);assert.equal(f.shown.length,1);
+});
+
 test('decrypted preview updates the same hint without sounding twice; a later message can alert',async t=>{
  const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'recovered',at:Date.now()});

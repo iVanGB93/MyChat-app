@@ -1,0 +1,27 @@
+Video-call hangup delivery — October 12, 2026
+
+Hangup was durably saved, then media closed while the signed terminal event
+waited for periodic direct/relay delivery. The peer could therefore enter ICE
+recovery before learning that the other participant intentionally ended the call.
+
+The coordinator now notifies composition after persisting end/cancel/reject/busy.
+Composition immediately starts direct draining and an independent, bounded relay
+deposit. The relay deposit bypasses the periodic cooldown and any stalled poll,
+targets the selected participant for confirmed calls, and sends only a terminal
+event from the verified durable outbox. Deposits do not substitute for signed
+recipient receipts; failed or unacknowledged delivery remains eligible for retry.
+Local hangup does not await network delivery. Genuine connectivity recovery is
+unchanged. No control signature, wire format, admission rule or deadline changed.
+
+Validation:
+- 62 focused tests passed, including hangup by either video participant without
+  another delivery tick, after invitation expiry, and no subsequent media send.
+- A stalled relay poll does not block terminal deposit; the test confirms exact
+  saved bytes, selected-device routing, retained outbox and stop behavior.
+- Full check: 978 passed, 3 skipped, no failures; TypeScript, dependency cycles,
+  module boundaries and consolidation passed. builds/call-hangup-check.log.
+- Final post-read policy guard was verified by rerunning the focused checks and
+  TypeScript. Live two-device verification remains unavailable: Metro exposed
+  only Dev phone sessions, without the two signed-in emulator test clients.
+
+No installs, data wipes, production builds, commits, pushes or deployments.

@@ -1,6 +1,26 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const out=require('./helpers/attachment.cjs').load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),id='1'.repeat(64);
+test('duplicate delivery receipts do not rewrite history or repeat commit notifications',async()=>{
+ let raw=null,writes=0,commits=0;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async v=>{raw=v;writes++;},messageCommitted:()=>commits++});
+ await ledger.enqueue(b,id,'receipt test');await ledger.delivered(b,id);
+ const saved=raw,count=writes,committed=commits;
+ for(let i=0;i<12;i++)await ledger.delivered(b,id);
+ assert.equal(writes,count);assert.equal(raw,saved);assert.equal(commits,committed);
+ assert.equal((await ledger.snapshot()).messages[0].status,'delivered');
+});
+test('validated-byte reuse isolates snapshots, rejects changed storage and still checks unlock',async()=>{
+ let raw=JSON.stringify({version:1,messages:[],contacts:[]}),active=true;
+ const ledger=out.createRootChatLedger({owner:a,now:Date.now,current:()=>active,read:async()=>raw,write:async value=>{raw=value;}});
+ const first=await ledger.snapshot();first.contacts.push({account:b,alias:'not saved',accepted:true,blocked:false});
+ assert.deepEqual((await ledger.snapshot()).contacts,[]);
+ raw=JSON.stringify({version:1,messages:[],contacts:[{account:b,alias:42}]});
+ await assert.rejects(ledger.snapshot(),/needs recovery/);
+ await assert.rejects(ledger.snapshot(),/needs recovery/);
+ raw=JSON.stringify({version:1,messages:[],contacts:[]});await ledger.snapshot();
+ active=false;await assert.rejects(ledger.snapshot(),/Unlock/);
+});
 function fixture(owner=a){let raw=null,active=true,fail=false;const ledger=out.createRootChatLedger({owner,now:()=>100000,current:()=>active,read:async()=>raw,write:async v=>{if(fail)throw Error('disk');raw=v;}});return {ledger,lock:()=>active=false,fail:()=>fail=true,corrupt:()=>raw='broken'};}
 test('identity-addressed text persists before acknowledgement and deduplicates retries',async()=>{const f=fixture(),wire=out.encodeRootChat(a,id,'hello');assert.equal(await f.ledger.receive(b,id,wire),true);assert.equal(await f.ledger.receive(b,id,wire),true);const s=await f.ledger.snapshot();assert.equal(s.messages.length,1);assert.equal(s.contacts[0].accepted,false);assert.equal(await f.ledger.receive(b,id,out.encodeRootChat(a,id,'changed')),false);});
 test('wrong recipient and blocked sender cannot enter the inbox',async()=>{const f=fixture();assert.equal(await f.ledger.receive(b,id,out.encodeRootChat(b,id,'hello')),false);await f.ledger.configure(b,{blocked:true});assert.equal(await f.ledger.receive(b,id,out.encodeRootChat(a,id,'hello')),false);assert.equal((await f.ledger.snapshot()).messages.length,0);});

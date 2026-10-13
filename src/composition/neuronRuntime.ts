@@ -1,3 +1,5 @@
+import {createRuntimeChatReads,createPeerCapabilityWriter} from '../services/identity/runtimeChatReads';
+import {ownChatRevision} from '../modules/storage/chatStore';
 import {migrateSharedProfileAvatar} from '../modules/messaging/profile';
 import {createProfileRecovery} from '../services/identity/profileRecovery';
 import {profileAudience,knownProfileReceipt} from '../services/identity/rootProfileSharing';
@@ -79,7 +81,7 @@ function createLocalAccountNetwork() {
         store:createMobileCallJournalStore(),list:()=>listMobileCallJournals(account),
         listPending:()=>listMobileCallJournals(account,Date.now()),current:()=>owner()===account,
         now:Date.now,random:async()=>hexToBytes(await Native!.identityRandomBytes!(32)),
-        contacts:async()=>(await localRootChat().snapshot()).contacts,
+        contacts:async()=>(await chatReads.read()).contacts,
         wakes:{pending:()=>pendingRootCallWakes(account),finish:id=>{
           const view=calls?.runtime.coordinator.snapshot();
           return finishRootCallWake(account,id,AppState.currentState!=='active'&&view?.id===id&&!view.outgoing&&view.status==='ringing');
@@ -98,6 +100,8 @@ function createLocalAccountNetwork() {
   let attachments:{owner:string;service:ReturnType<typeof createAttachmentCustody>}|null=null;
   let ownAttachments:ReturnType<typeof startRootAttachmentRuntime>|null=null;
   const owner = () => !stopped && !localAccount.status().busy && localAccount.status().state === 'unlocked' ? localAccount.status().account : null;
+  const chatReads=createRuntimeChatReads({owner,revision:ownChatRevision,read:()=>localRootChat().snapshot()});
+  const capabilities=createPeerCapabilityWriter({owner,write:async(p,t)=>{const ledger=localRootChat();await ledger.rememberProfilePeers(p);await ledger.rememberTimestampPeers(t);}});
   function service() {
     const account = owner(); if (!account) return null;
     if (custody?.owner !== account) {
@@ -172,21 +176,22 @@ function createLocalAccountNetwork() {
     receive:envelope=>localAccount.receiveCustody(envelope,operationalRecords,receiveMessage),
     held:envelope=>localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires),
     confirmReceipt:async(receipt,current)=>{
-      if(!current())return false;const ledger=localRootChat(),state=await ledger.snapshot();
+      if(!current())return false;const ledger=localRootChat(),state=await chatReads.read();
       if(!current()||![...state.messages,...(state.actions??[]),...(state.groupActions??[])].some(m=>m.id===receipt.id&&m.peer===receipt.recipient&&m.direction==='outgoing')&&!state.groupPackets?.some(m=>m.id===receipt.id&&m.peer===receipt.recipient)&&!knownProfileReceipt(state,owner()!,receipt.recipient,receipt.id))return false;
       await ledger.delivered(receipt.recipient,receipt.id);return current();
     },
   });
-  const unsub = localAccount.subscribe(() => { if (!owner()) {activity.clear();peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();} });
+  const unsub = localAccount.subscribe(() => { if (!owner()) {chatReads.clear();capabilities.clear();activity.clear();peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();} });
   const unlimit = subscribeAllowedAxons(() => runtime.setLimit(allowedAxons()));
   void loadAllowedAxons().catch(() => {});
-  const delivery=createMessageDelivery({owner,ledger:localRootChat,
+  const delivery=createMessageDelivery({owner,ledger:()=>({...localRootChat(),snapshot:chatReads.read}),
+    now:Date.now,connectedPeers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),
     blocked:peers=>{blocked.clear();for(const peer of peers)blocked.add(peer);},collect:()=>courier.tick(),
     send:runtime.sendChatMessage,resolve:peerResolver.resolve,deposit:(...args)=>courier.deposit(...args)});
   const unqueue=subscribeRootChatQueued((account,peer,id)=>{if(owner()===account)delivery.wake(peer,id);});
   const groupRecovery=createGroupRecovery({owner,now:Date.now,peers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),random:()=>Native!.identityRandomBytes!(32),recover:(peer,id)=>localRootChat().recoverGroupsForPeer(peer,id)});
-  const profileRecovery=createProfileRecovery({owner,now:Date.now,peers:async()=>profileAudience(await localRootChat().snapshot(),owner()!).filter(p=>runtime.profilePeers().includes(p)),known:peer=>sharedAvatarHash(owner()!,peer),request:(peer,id,known)=>localRootChat().requestProfile(peer,id,known),random:()=>Native!.identityRandomBytes!(32)});
-  const pump = () => { void migrateSharedProfileAvatar().catch(()=>{}); if(owner())void localRootChat().rememberProfilePeers(runtime.profilePeers()).catch(()=>{});if(owner())void localRootChat().rememberTimestampPeers(runtime.timestampPeers()).catch(()=>{});loadRemembered(); runtime.tick(); service();void groupRecovery.tick().catch(()=>{});void profileRecovery.tick().catch(()=>{});void custody?.wake.tick(); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
+  const profileRecovery=createProfileRecovery({owner,now:Date.now,peers:async()=>profileAudience(await chatReads.read(),owner()!).filter(p=>runtime.profilePeers().includes(p)),known:peer=>sharedAvatarHash(owner()!,peer),request:(peer,id,known)=>localRootChat().requestProfile(peer,id,known),random:()=>Native!.identityRandomBytes!(32)});
+  const pump = () => { void migrateSharedProfileAvatar().catch(()=>{}); void capabilities.update(runtime.profilePeers(),runtime.timestampPeers()).catch(()=>{});loadRemembered(); runtime.tick(); service();void groupRecovery.tick().catch(()=>{});void profileRecovery.tick().catch(()=>{});void custody?.wake.tick(); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
   const tick = setInterval(pump, 1000);
   let sweeping = false;
   const sweep = setInterval(() => { if (sweeping) return; const current = service(); if (!current) return;
@@ -195,7 +200,7 @@ function createLocalAccountNetwork() {
   activePeerResolver=peerResolver.resolve;
   const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
   ownAttachments=startRootAttachmentRuntime({...attachmentApi,streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
-  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume: runtime.resume, tick:pump, stop() { activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
+  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot, resume() { runtime.resume();courier.resume();pump(); }, tick:pump, stop() { chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
 }
 
 // Foreground UI and a headless wake share one transport; each releases only its own lease.

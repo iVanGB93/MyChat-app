@@ -37,6 +37,11 @@ export function createMessagingCommands(d: {
         }
       }
     },
+    async readMessages(peer:string,ids:string[],expectedOwner?:string|null) {
+      const s=session(expectedOwner),items=[];
+      for(const id of ids.slice(0,20))items.push({id:await s.id(),target:{id,author:peer}});
+      s.check();await s.ledger.readBatch(peer,items);
+    },
     async createGroup(name: string, members: string[]) {
       const s = session(), id = await s.id(), packet = await s.id();
       await s.ledger.createGroup(id, packet, name, members); return id;

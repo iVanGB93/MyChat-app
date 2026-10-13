@@ -17,6 +17,7 @@ export function createCallRelayPump(d: {
 }) {
   let stopped = false, busy = false, next = 0, rowCursor = 0, deviceCursor = 0;
   const stats={requests:0,deposits:0,received:0,receipts:0,last:'idle',reply:'none'};
+  const urgent=new Set<string>();
   const live = () => !stopped && d.current();
   const state = (event: CallControl) => event.caller === d.account
     ? createDurableCallerCallControl(d.store,d.account,event.callId,d.now)
@@ -33,6 +34,32 @@ export function createCallRelayPump(d: {
   return {
     diagnostics:()=>({...stats,busy}),
     stop() { stopped = true; },
+    async flushTerminal(invite:CallControl) {
+      if(!live()||urgent.has(invite.callId)||urgent.size>=2)return;
+      urgent.add(invite.callId);
+      try{
+        const remote=invite.caller===d.account?invite.callee:invite.caller;
+        if(d.blocked(remote))return;
+        const [local,record]=await Promise.all([d.records.read(d.account),d.records.read(remote)]);
+        if(!local||!record||!verifyRecord(local,d.now())||!verifyRecord(record,d.now())||!live()||d.blocked(remote))return;
+        const call=state(invite),snapshot=await call.snapshot(d.now());
+        const targets=record.devices.filter(device=>remote===invite.caller?device.id===invite.callerDevice:
+          snapshot?.confirmed?device.id===snapshot.selectedDevice:true).slice(0,16);
+        // Bypass the normal poll/cooldown, but send only signed, durably saved terminal events.
+        await Promise.all(d.peers().filter(p=>p.expiresAt>d.now()).slice(0,10).map(async peer=>{
+          for(const device of targets){
+            if(!active(peer)||d.blocked(remote))return;
+            const pending=await call.pendingEvents(local,device.id,d.now());
+            const raw=pending.find(raw=>['end','cancel','reject','busy'].includes(JSON.parse(raw).kind));
+            if(!raw||!active(peer)||d.blocked(remote))continue;
+            if(!(await call.pendingEvents(local,device.id,d.now())).includes(raw))continue;
+            if(!active(peer)||d.blocked(remote))return;
+            const reply=await request(peer,'put',{raw,targetDevice:device.id});
+            if(reply?.accepted===true)stats.deposits++;
+          }
+        }));
+      }finally{urgent.delete(invite.callId);}
+    },
     async tick() {
       if (!live() || busy || d.now() < next) return;
       busy = true; next = d.now() + 3000;

@@ -18,10 +18,12 @@ export function createCustodyCourier(d: {
   seal(record: IdentityRecord, device: string, id: string, text: string): Promise<CustodyEnvelope>;
   receive(envelope: CustodyEnvelope): Promise<CustodyReceipt | null>;
 }) {
-  let epoch = 0, stopped = false, depositing = false;
+  let epoch = 0, stopped = false, resumeUntil = 0;
+  const depositing = new Set<string>();
   const unavailable = new Map<string, number>();
   const polls = new Map<string, { busy: boolean; next: number }>();
   const skips = new Map<string, { until: number; ids: string[] }>();
+  const deferred = new Map<string, Map<string,number>>();
   const lease = () => { const owner = d.owner(), generation = epoch; return { owner, current: () => !!owner && !stopped && generation === epoch && d.owner() === owner }; };
   async function request(relay: string, body: unknown) {
     const raw = await d.request(relay, JSON.stringify(body));
@@ -30,10 +32,10 @@ export function createCustodyCourier(d: {
   }
   return {
     async deposit(peer: string, text: string, id: string) {
-      const l = lease(); if (!l.current() || !d.allowed(peer) || depositing) return;
-      const candidates = d.relays().filter(r => r !== peer && r !== l.owner && (unavailable.get(r) ?? 0) <= d.now()).slice(0, 10);
+      const l = lease(); if (!l.current() || !d.allowed(peer) || depositing.has(peer) || depositing.size>=2) return;
+      const candidates = d.relays().filter(r => r !== peer && r !== l.owner && (unavailable.get(r+':'+peer) ?? 0) <= d.now()).slice(0, 10);
       if (!candidates.length) return;
-      depositing = true;
+      depositing.add(peer);
       try {
         let saved = await d.own.get(l.owner!, id);
         if (!saved) {
@@ -60,10 +62,13 @@ export function createCustodyCourier(d: {
         }
         if(response?.status==='completed')return;
         else if (l.current()) {
-          if (unavailable.size >= 10) unavailable.clear(); unavailable.set(relay, d.now() + CUSTODIAN_BACKOFF_MS);
+          // Quotas/rejections can belong to one recipient. Do not make that
+          // recipient's failed deposit disable this relay for unrelated chats.
+          if (unavailable.size >= 256) unavailable.delete(unavailable.keys().next().value!);
+          unavailable.set(relay+':'+peer, d.now() + CUSTODIAN_BACKOFF_MS);
         }
         }
-      } finally { depositing = false; }
+      } finally { depositing.delete(peer); }
     },
     async tick() {
       const l = lease(); if (!l.current()) return;
@@ -73,7 +78,7 @@ export function createCustodyCourier(d: {
         let state = polls.get(relay);
         if (!state) { if (polls.size >= 10) return; state = { busy: false, next: 0 }; polls.set(relay, state); }
         if (state.busy || d.now() < state.next) return;
-        state.busy = true; state.next = d.now() + 5000;
+        state.busy = true; state.next = d.now() + (d.now()<resumeUntil?1000:5000);
         try {
           let skip = skips.get(relay);
           if (!skip || skip.until <= d.now()) {
@@ -82,7 +87,13 @@ export function createCustodyCourier(d: {
           }
           // Drain a bounded batch on each independent connection. A slow peer
           // must not consume the entire background recovery window.
-          const pass = [...skip.ids];
+          let rejected=deferred.get(relay);
+          if(!rejected){if(deferred.size>=10)deferred.clear();rejected=new Map();deferred.set(relay,rejected);}
+          for(const [id,until] of rejected)if(until<=d.now())rejected.delete(id);
+          const defer=(id:string)=>{if(rejected!.size>=64)rejected!.delete(rejected!.keys().next().value!);rejected!.set(id,d.now()+15000);state!.next=d.now();};
+          // Unusable receipts must not occupy every poll batch forever. Keep
+          // them at the relay and retry shortly; never consume or acknowledge them.
+          const pass = [...new Set([...skip.ids,...rejected.keys()])].slice(-124);
           for (let count = 0; count < 4 && l.current() && pass.length < 128; count++) {
             const reply = await request(relay, { operation: 'poll', exclude: pass });
             if (!l.current() || reply?.status !== 'ok' || !reply.packet) break;
@@ -94,14 +105,21 @@ export function createCustodyCourier(d: {
               if (packet.recipient !== l.owner || !d.allowed(packet.sender)) {
                 skip.ids.push(packet.id); continue;
               }
-              const receipt = await d.receive(packet);
+              let receipt:CustodyReceipt|null=null;
+              try { receipt=await d.receive(packet); }
+              catch { if(l.current())defer(packet.id);continue; }
+              if(!receipt&&l.current()){defer(packet.id);continue;}
               if (receipt && l.current()) accepted = (await request(relay, { operation: 'receipt', packet: receipt }))?.status === 'accepted';
             } else {
-              if (packet.sender !== l.owner || !d.allowed(packet.recipient) || !await verifyCustody(packet, d.records, d.now()) || !l.current()) continue;
+              if(!l.current())continue;
+              if (packet.sender !== l.owner || !d.allowed(packet.recipient) || !await verifyCustody(packet, d.records, d.now())) {if(l.current())defer(packet.id);continue;}
+              if(!l.current())continue;
               const saved = await d.own.get(l.owner!, packet.id), e = saved?.envelope;
-              if (!e || packet.digest !== custodyDigest(e) || packet.recipient !== e.recipient || packet.recipientDevice !== e.recipientDevice || packet.expires !== e.expires || !l.current()) continue;
+              if (!l.current())continue;
+              if (!e || packet.digest !== custodyDigest(e) || packet.recipient !== e.recipient || packet.recipientDevice !== e.recipientDevice || packet.expires !== e.expires) {defer(packet.id);continue;}
               if (d.confirmReceipt) {
-                if (!await d.confirmReceipt(packet, l.current) || !l.current()) continue;
+                if (!await d.confirmReceipt(packet, l.current)) {if(l.current())defer(packet.id);continue;}
+                if (!l.current()) continue;
               } else {
                 const row = (await d.messages?.list(l.owner!) ?? []).find(r => r.direction === 'out' && r.id === packet.id && r.peer === packet.recipient);
                 if (!row || !l.current()) continue;
@@ -117,7 +135,8 @@ export function createCustodyCourier(d: {
         finally { state.busy = false; }
       }));
     },
-    invalidate() { epoch++; unavailable.clear(); skips.clear(); for (const state of polls.values()) state.next = 0; },
-    stop() { stopped = true; epoch++; skips.clear(); },
+    resume() { resumeUntil=d.now()+10000;for(const state of polls.values())state.next=0; },
+    invalidate() { epoch++; unavailable.clear(); skips.clear(); deferred.clear(); for (const state of polls.values()) state.next = 0; },
+    stop() { stopped = true; epoch++; skips.clear(); deferred.clear(); },
   };
 }

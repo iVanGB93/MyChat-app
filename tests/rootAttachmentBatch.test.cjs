@@ -9,6 +9,7 @@ function fixture(){
   if(name==='./rootGroupActions')return {validGroupReply:r=>!!r&&/^[a-f0-9]{64}$/.test(r.id)&&['owner','peer','other'].includes(r.author),groupReplyAvailable:(state,owner,group,reply)=>state.messages.some(m=>m.group?.id===group&&m.group.messageId===reply.id&&m.peer===reply.author)};
   if(name==='./localAccount')return {localAccount:{status:()=>status,subscribe:()=>()=>{}}};
   if(name==='./attachmentTiming')return {createAttachmentTiming:()=>({snapshot:()=>({})})};
+  if(name==='./attachmentPolicy')return require('./helpers/attachment.cjs').load('attachmentPolicy');
   if(name==='./identityRecordStore')return {createMobileIdentityRecordStore:()=>({})};
   if(name==='./mobileAttachmentJobs')return {createMobileAttachmentJobs:()=>({})};
   if(name==='./attachmentTransfer')return {createAttachmentTransfer:()=>({stop(){}})};

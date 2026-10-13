@@ -8,6 +8,17 @@ export interface CustodyStore { limits?: CustodyLimits; transaction<T>(change: (
 export const CUSTODY_LIMIT = 128;
 export interface CustodyLimits { live: number; rows: number; bytes: number; perSender: number; perRecipient: number }
 export const DEFAULT_CUSTODY_LIMITS: CustodyLimits = {live:128,rows:1024,bytes:1_024_000,perSender:16,perRecipient:16};
+// Exact normalized envelope bytes only. This saves repeated hashing of unchanged
+// stored ciphertext, not admission checks: parsing, row bindings, limits and
+// signature verification still run where they did before. At most ~896 KB of keys.
+const storedDigests = new Map<string,string>();
+function storedEnvelopeDigest(packet:CustodyEnvelope){
+  const bytes=JSON.stringify(packet),cached=storedDigests.get(bytes);
+  if(cached!==undefined)return cached;
+  const digest=custodyDigest(packet);
+  if(storedDigests.size>=128)storedDigests.delete(storedDigests.keys().next().value!);
+  storedDigests.set(bytes,digest);return digest;
+}
 export function validateCustodyRows(value: unknown, limits: CustodyLimits = DEFAULT_CUSTODY_LIMITS): asserts value is CustodyRow[] {
   if (!Array.isArray(value) || value.length > limits.rows) throw Error('Invalid custody store');
   const keys = new Set<string>();
@@ -19,7 +30,7 @@ export function validateCustodyRows(value: unknown, limits: CustodyLimits = DEFA
     if (r.packet !== null) {
       const p = parseCustody(JSON.stringify(r.packet), r.expires - 1);
       if (!p || p.id !== r.id || p.sender !== r.sender || p.recipient !== r.recipient || p.recipientDevice !== r.recipientDevice
-        || p.expires !== r.expires || (p.kind === 'envelope' ? custodyDigest(p) : p.digest) !== r.digest) throw Error('Invalid custody packet');
+        || p.expires !== r.expires || (p.kind === 'envelope' ? storedEnvelopeDigest(p) : p.digest) !== r.digest) throw Error('Invalid custody packet');
     }
   }
   if (JSON.stringify(value).length > limits.bytes) throw Error('Custody byte capacity exceeded');

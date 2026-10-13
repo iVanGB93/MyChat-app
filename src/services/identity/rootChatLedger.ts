@@ -26,6 +26,9 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
 }){
  if(!validAccountId(d.owner))throw Error('Invalid account');
  let knownMessages=new Set<string>();
+ // Cache only successful validation of identical persisted bytes for this owner.
+ // Every read still checks unlock state and returns a fresh mutable object.
+ let validatedRaw:string|null=null;
  const messageKey=(m:RootChatMessage)=>m.direction+':'+m.peer+':'+m.id;
  let tail:Promise<unknown>=Promise.resolve();
  const run=<T>(work:()=>Promise<T>)=>{const p=tail.then(work);tail=p.catch(()=>{});return p;};
@@ -35,6 +38,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
  async function read():Promise<RootChatState>{
   check();const raw=await d.read();check();if(raw===null){knownMessages.clear();return {version:1,messages:[],contacts:[]};}
   const s=JSON.parse(raw) as RootChatState;
+  if(raw!==validatedRaw){
   if(!validProfileStorage(s,d.owner)||s.timestampPeers!==undefined&&(!Array.isArray(s.timestampPeers)||s.timestampPeers.length>500||s.timestampPeers.some(p=>!validPeer(p)))||s.version!==1||!Array.isArray(s.messages)||!Array.isArray(s.contacts)||s.messages.length>5000||s.contacts.length>500
    ||s.hiddenChats!==undefined&&(!Array.isArray(s.hiddenChats)||s.hiddenChats.length>564||s.hiddenChats.some(k=>!validChat(k)))
    ||s.removedMessages!==undefined&&(!Array.isArray(s.removedMessages)||s.removedMessages.length>20000||s.removedMessages.some(m=>!validPeer(m.peer)||!idValid(m.id)||!['incoming','outgoing'].includes(m.direction)))
@@ -51,6 +55,8 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    ||s.groupActions!==undefined&&(!Array.isArray(s.groupActions)||s.groupActions.length>10000||s.groupActions.some(a=>!validGroupAction(a,d.owner)||!s.groups?.some(g=>g.id===a.group.id)))
    ||s.groupSeen!==undefined&&(!Array.isArray(s.groupSeen)||s.groupSeen.length>2000||s.groupSeen.some(v=>!validPeer(v.peer)||!idValid(v.id)||typeof v.raw!=='string'||byteLength(v.raw)>2048)))throw Error('Chat storage needs recovery; it was not replaced');
   if(s.groups?.some(g=>g.recoveryPending!==undefined&&(g.recoveryPending!==true||g.admin!==d.owner||g.accepted)||g.backup!==undefined&&(!validRootGroupBackup(g.backup)||g.backup.group.id!==g.id||g.backup.group.admin!==g.admin)))throw Error('Group backup needs recovery; it was not replaced');
+  validatedRaw=raw;
+  }
   if(d.messageCommitted)knownMessages=new Set(s.messages.map(messageKey));
   return s;
  }
@@ -62,6 +68,24 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   }
  }
  function contact(s:RootChatState,peer:string){let c=s.contacts.find(c=>c.account===peer);if(!c){if(s.contacts.length>=500)throw Error('Contact storage is full');c={account:peer,alias:'',blocked:false,accepted:false};s.contacts.push(c);}return c;}
+ function applyAction(s:RootChatState,peer:string,id:string,target:RootChatReply,kind:RootActionKind,text=''){
+   if(!validPeer(peer))throw Error('Invalid identity');
+   const c=contact(s,peer);if(c.blocked)throw Error('This identity is blocked');
+   const m=s.messages.find(m=>m.peer===peer&&m.id===target.id&&(m.direction==='outgoing'?d.owner:peer)===target.author);
+   if(!m)throw Error('Original message unavailable');
+   if(m.group)throw Error('Group message actions are not available yet');
+   const previous=(s.actions??[]).filter(a=>a.peer===peer&&a.direction==='outgoing'&&sameTarget(a.target,target)&&actionFamily(a.kind)===actionFamily(kind));
+   const event:RootChatAction={id,peer,direction:'outgoing',target:{...target},kind,text,revision:kind==='read'?1:Math.max(0,...previous.map(a=>a.revision))+1,at:d.now(),status:'pending'};
+   if(!validRootAction(event,d.owner,peer)||byteLength(encodeRootAction(event))>2048)throw Error('Invalid action or text too long');
+   if(kind==='edit'&&m.attachment)throw Error('Only text messages can be edited');
+   if(s.groupActions?.some(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id)||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.peer===peer&&m.direction==='outgoing'&&m.id===id))throw Error('Message ID conflict');
+   const retry=s.actions?.find(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id);
+   if(retry){if(retry.kind!==kind||retry.text!==text||!sameTarget(retry.target,target))throw Error('Action ID conflict');return false;}
+   if(s.actions?.some(a=>a.peer===peer&&sameTarget(a.target,target)&&a.kind==='delete'))throw Error('Message was deleted');
+   if(kind==='read'&&previous.length)return false;
+   if((s.actions?.length??0)>=10000)throw Error('Action storage is full');
+   (s.actions??=[]).push(event);return true;
+ }
  return {
   snapshot:()=>run(read),
   rememberProfilePeers:(peers:string[])=>run(async()=>{if(!peers.length)return;const s=await read(),before=(s.profilePeers??[]).length,known=new Set(s.profilePeers??[]);for(const p of peers)if(validPeer(p)&&known.size<500)known.add(p);if(known.size!==before){s.profilePeers=[...known];await save(s);}}),
@@ -124,22 +148,13 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   }),
 
   act:(peer:string,id:string,target:RootChatReply,kind:RootActionKind,text='')=>run(async()=>{
-   if(!validPeer(peer))throw Error('Invalid identity');
-   const s=await read(),c=contact(s,peer);if(c.blocked)throw Error('This identity is blocked');
-   const m=s.messages.find(m=>m.peer===peer&&m.id===target.id&&(m.direction==='outgoing'?d.owner:peer)===target.author);
-   if(!m)throw Error('Original message unavailable');
-   if(m.group)throw Error('Group message actions are not available yet');
-   const previous=(s.actions??[]).filter(a=>a.peer===peer&&a.direction==='outgoing'&&sameTarget(a.target,target)&&actionFamily(a.kind)===actionFamily(kind));
-   const event:RootChatAction={id,peer,direction:'outgoing',target:{...target},kind,text,revision:kind==='read'?1:Math.max(0,...previous.map(a=>a.revision))+1,at:d.now(),status:'pending'};
-   if(!validRootAction(event,d.owner,peer)||byteLength(encodeRootAction(event))>2048)throw Error('Invalid action or text too long');
-   if(kind==='edit'&&m.attachment)throw Error('Only text messages can be edited');
-   if(s.groupActions?.some(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id)||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.peer===peer&&m.direction==='outgoing'&&m.id===id))throw Error('Message ID conflict');
-   const retry=s.actions?.find(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id);
-   if(retry){if(retry.kind!==kind||retry.text!==text||!sameTarget(retry.target,target))throw Error('Action ID conflict');return;}
-   if(s.actions?.some(a=>a.peer===peer&&sameTarget(a.target,target)&&a.kind==='delete'))throw Error('Message was deleted');
-   if(kind==='read'&&previous.length)return;
-   if((s.actions?.length??0)>=10000)throw Error('Action storage is full');
-   (s.actions??=[]).push(event);await save(s);
+   const s=await read();if(applyAction(s,peer,id,target,kind,text))await save(s);
+  }),
+  readBatch:(peer:string,items:{id:string;target:RootChatReply}[])=>run(async()=>{
+   if(items.length>20)throw Error('Read batch too large');
+   const s=await read();let changed=false;
+   for(const item of items)changed=applyAction(s,peer,item.id,item.target,'read')||changed;
+   if(changed)await save(s);
   }),
   enqueueAttachment:(input:AttachmentDescriptor,reply?:RootChatReply,group?:RootGroupContext,selectedAt?:number)=>run(async()=>{
    if(selectedAt!==undefined&&!validCreationTime(selectedAt))throw Error('Invalid creation time');check();if(!validAttachmentDescriptor(input))throw Error('Invalid attachment');const descriptor=JSON.parse(JSON.stringify(input)) as AttachmentDescriptor;
@@ -232,8 +247,8 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if((m[field]??0)>=until)return;m[field]=until;await save(s);
   }),
   delivered:(peer:string,id:string)=>run(async()=>{const s=await read();const request=s.profileRequests?.find(p=>p.peer===peer&&p.id===id);if(request){s.profileRequests=s.profileRequests!.filter(p=>p!==request);await save(s);return;}
-   const profile=s.ownProfile,delivery=s.profileDeliveries?.find(p=>p.peer===peer);if(profile&&delivery){for(let i=0;i<profileCount(profile.manifest);i++)if(profilePartId(d.owner,peer,profile.manifest,i)===id){if(!delivery.acked.includes(i))delivery.acked.push(i);await save(s);const next=pendingProfiles(s,d.owner).find(p=>p.peer===peer);if(next)d.queued?.(peer,next.id);return;}}
-   const groupAction=s.groupActions?.find(a=>a.id===id&&a.peer===peer&&a.direction==='outgoing');if(groupAction){groupAction.status='delivered';await save(s);return;}const packet=s.groupPackets?.find(v=>v.peer===peer&&v.id===id);if(packet){packet.status='delivered';await save(s);return;}const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(m){if(m.attachment)m.descriptorDelivered=true;else m.status='delivered';await save(s);}else{const a=s.actions?.find(a=>a.peer===peer&&a.id===id&&a.direction==='outgoing');if(a){a.status='delivered';await save(s);}}}),
+   const profile=s.ownProfile,delivery=s.profileDeliveries?.find(p=>p.peer===peer);if(profile&&delivery){for(let i=0;i<profileCount(profile.manifest);i++)if(profilePartId(d.owner,peer,profile.manifest,i)===id){if(delivery.acked.includes(i))return;delivery.acked.push(i);await save(s);const next=pendingProfiles(s,d.owner).find(p=>p.peer===peer);if(next)d.queued?.(peer,next.id);return;}}
+   const groupAction=s.groupActions?.find(a=>a.id===id&&a.peer===peer&&a.direction==='outgoing');if(groupAction){if(groupAction.status==='delivered')return;groupAction.status='delivered';await save(s);return;}const packet=s.groupPackets?.find(v=>v.peer===peer&&v.id===id);if(packet){if(packet.status==='delivered')return;packet.status='delivered';await save(s);return;}const m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(m){if(m.attachment?m.descriptorDelivered:m.status==='delivered')return;if(m.attachment)m.descriptorDelivered=true;else m.status='delivered';await save(s);}else{const a=s.actions?.find(a=>a.peer===peer&&a.id===id&&a.direction==='outgoing');if(a){if(a.status==='delivered')return;a.status='delivered';await save(s);}}}),
   attachmentComplete:(peer:string,id:string,direction:RootChatMessage['direction'],receipt:AttachmentReceipt)=>run(async()=>{
    const s=await read(),m=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction===direction);if(!m?.attachment||!await d.verifyAttachmentReceipt?.(m.attachment,receipt))return false;
    check();m.status='delivered';if(direction==='outgoing')m.descriptorDelivered=true;await save(s);return true;

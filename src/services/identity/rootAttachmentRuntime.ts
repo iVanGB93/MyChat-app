@@ -3,7 +3,7 @@ import {createRootAttachmentStreams,type AttachmentStreams} from './rootAttachme
 import {ownChatRevision} from '../../modules/storage/chatStore';
 import {groupReplyAvailable,validGroupReply} from './rootGroupActions';
 import {startRootMediaExport} from './rootMediaExport';
-import {indexAttachmentPolicy} from './attachmentPolicy';
+import {indexAttachmentPolicy,createAttachmentSnapshot} from './attachmentPolicy';
 import {createAttachmentTiming} from './attachmentTiming';
 import {validRootReply,type RootChatReply} from './rootChatLedger';
 import {validGroupContext,rootGroupAllowed} from './rootGroups';
@@ -97,6 +97,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  const store={...journal,save:(...args:Parameters<typeof journal.save>)=>timing.measure('checkpoint',()=>journal.save(...args))};let stopped=false,busy=false,epoch=0,selectionCursor=0;
  const accepted=new Set<string>();const owner=()=>!stopped&&localAccount.status().state==='unlocked'&&!localAccount.status().busy?localAccount.status().account:null;
  let allowedJob:(job:AttachmentJob)=>boolean=()=>false;
+ const snapshots=createAttachmentSnapshot({owner,revision:ownChatRevision,read:()=>localRootChat().snapshot()});
  let policyRevision=-1;
  function applyPolicy(snapshot:Awaited<ReturnType<ReturnType<typeof localRootChat>['snapshot']>>,account:string,revision:number){
   allowedJob=indexAttachmentPolicy(snapshot,account);accepted.clear();for(const c of snapshot.contacts)if(c.accepted&&!c.blocked)accepted.add(c.account);
@@ -105,7 +106,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  }
  const streamLease=(job:AttachmentJob,live:()=>Promise<boolean>)=>async()=>{
   if(owner()!==job.owner)return false;const revision=ownChatRevision(job.owner);
-  if(revision!==policyRevision){const snapshot=await localRootChat().snapshot();if(owner()!==job.owner)return false;applyPolicy(snapshot,job.owner,revision);}
+  if(revision!==policyRevision){const snapshot=await snapshots.read();if(!snapshot||owner()!==job.owner)return false;applyPolicy(snapshot.state,job.owner,snapshot.revision);}
   return allowedJob(job)&&accepted.has(job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient)&&await live();
  };
  const streams=network.streams?createRootAttachmentStreams(network.streams,network.request):undefined;
@@ -132,7 +133,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  });
  const mediaExport=startRootMediaExport();
  activeControls=worker;
- const unsubscribe=localAccount.subscribe(()=>{epoch++;worker.invalidate();accepted.clear();allowedJob=()=>false;policyRevision=-1;});
+ const unsubscribe=localAccount.subscribe(()=>{epoch++;snapshots.clear();worker.invalidate();accepted.clear();allowedJob=()=>false;policyRevision=-1;});
  let preparing=false;
  const lookupAfter=new Map<string,number>();
  async function prepareSelection(account:string,snapshot:Awaited<ReturnType<ReturnType<typeof localRootChat>['snapshot']>>,current:()=>boolean){
@@ -160,7 +161,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
   const current=()=>!stopped&&epoch===generation&&owner()===account;
   try{
    await store.retire?.(account,current);if(!current())return;
-   const revision=ownChatRevision(account),ledger=localRootChat(),snapshot=await ledger.snapshot();if(!current())return;applyPolicy(snapshot,account,revision);
+   const cached=await snapshots.read();if(!cached||!current())return;const snapshot=cached.state;if(policyRevision!==cached.revision)applyPolicy(snapshot,account,cached.revision);
    // Preparation/identity lookup has its own single flight. Slow remote lookups
    // and local encryption must not hold the download/receipt worker hostage.
    if(!preparing){preparing=true;void prepareSelection(account,snapshot,current)
@@ -176,6 +177,6 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  let timer:ReturnType<typeof setTimeout>;
  async function pump(){let progressed=false;try{progressed=!!await tick();}finally{if(!stopped)timer=setTimeout(()=>void pump(),progressed?0:200);}}
  timer=setTimeout(()=>void pump(),0);
- return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',()=>worker.receive(...args)),stop(){if(activeSharedPeers===network.sharedPeers)activeSharedPeers=null;if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;streams?.stop();mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
+ return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',()=>worker.receive(...args)),stop(){if(activeSharedPeers===network.sharedPeers)activeSharedPeers=null;if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
 }
 

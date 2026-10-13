@@ -230,7 +230,7 @@ test('call-bound media survives a transient relay route gap',async()=>{
  available=true;await x.coords[0].tick();assert.equal(x.views[0].transport,transport);
 });
 
-test('fresh root-account runtime rings, accepts, signals media and blocks without numeric accounts',async()=>{
+async function rootRuntimePair(){
  const f=await fixture(),factory=load('rootAccountCalls'),delivery=load('callControlDelivery');
  let clock=now;const values=[null,null],blocked=[false,false],live=[true,true],views=[null,null],apps=[];
  const peers=f.records.map((r,i)=>({account:r.account,device:f.devices[i].id,instance:String(i+1).repeat(64),expiresAt:now+60000}));
@@ -251,18 +251,44 @@ test('fresh root-account runtime rings, accepts, signals media and blocks withou
    contacts:async()=>[{account:peers[other].account,alias:'Local nickname',blocked:blocked[i]}],changed:v=>views[i]=v,
   }));
  }
+ return {apps,views,peers,blocked,live,advance:ms=>{clock+=ms;}};
+}
+test('fresh root-account runtime rings, accepts, signals media and blocks without numeric accounts',async()=>{
+ const {apps,views,peers,blocked,live,advance}=await rootRuntimePair();
  const id=await apps[0].coordinator.start(peers[1].account,'video');
- for(let n=0;n<2;n++){clock+=2100;await apps[0].tick();await apps[1].tick();}
+ for(let n=0;n<2;n++){advance(2100);await apps[0].tick();await apps[1].tick();}
  assert.equal(views[1].status,'ringing');assert.equal(views[1].peerUser,peers[0].account);
  assert.equal(views[1].peerName,'Local nickname');
  assert.equal(await apps[1].coordinator.accept(id),true);
- for(let n=0;n<3;n++){clock+=2100;await apps[1].tick();await apps[0].tick();}
+ for(let n=0;n<3;n++){advance(2100);await apps[1].tick();await apps[0].tick();}
  assert.equal(views[0].status,'ready');assert.equal(views[1].status,'ready');
  const received=[];views[1].transport.subscribe((kind,data)=>received.push(kind));
  assert.equal(await views[0].transport.send('offer',{type:'offer',sdp:'v=0'}),true);assert.deepEqual(received,['offer']);
- const old=views[0].transport;blocked[0]=true;clock+=2100;await apps[0].tick();
+ const old=views[0].transport;blocked[0]=true;advance(2100);await apps[0].tick();
  assert.equal(views[0].status,'ended');assert.equal(await old.send('offer',{type:'offer',sdp:'v=0'}),false);
  await assert.rejects(apps[0].coordinator.start(peers[1].account,'voice'));
  live[1]=false;await assert.rejects(apps[1].receive('{}',peers[0]));
  for(const app of apps)app.stop();
+});
+
+test('either video participant hangs up promptly without another periodic delivery tick',async()=>{
+ for(const ending of [0,1]){
+  const {apps,views,peers,advance}=await rootRuntimePair();
+  try{
+   const id=await apps[0].coordinator.start(peers[1].account,'video');
+   for(let n=0;n<2;n++){advance(2100);await apps[0].tick();await apps[1].tick();}
+   await apps[1].coordinator.accept(id);
+   for(let n=0;n<3;n++){advance(2100);await apps[1].tick();await apps[0].tick();}
+   assert.deepEqual(views.map(v=>v.status),['ready','ready']);
+   const transports=views.map(v=>v.transport);
+   // Confirmed calls can end after the original invitation window closes.
+   advance(61000);
+   // Refresh transport sessions while retaining the same accepted call.
+   peers.forEach(p=>p.expiresAt+=120000);
+   await apps[ending].coordinator.end(id);
+   for(let n=0;n<20&&views[1-ending].status!=='ended';n++)await new Promise(r=>setImmediate(r));
+   assert.deepEqual(views.map(v=>v.status),['ended','ended']);
+   for(const transport of transports)assert.equal(await transport.send('offer',{type:'offer',sdp:'v=0'}),false);
+  }finally{apps.forEach(app=>app.stop());}
+ }
 });

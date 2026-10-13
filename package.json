@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.1.11",
+  "version": "1.1.12",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -9,8 +9,8 @@
     "web": "expo start --web",
     "fix:gradle9": "node scripts/patch-react-native-gradle-plugin.cjs",
     "fix:rtc-identity": "node scripts/patch-webrtc-identity.cjs",
-    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent",
-    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent",
+    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result",
+    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --test tests/*.test.cjs",
     "test:rtc-native": "node scripts/test-native-identity-guard.cjs",
@@ -19,7 +19,8 @@
     "check:modules": "node scripts/check-module-boundaries.cjs",
     "fix:audio-recorder": "node scripts/patch-audio-recorder.cjs",
     "check:consolidation": "node scripts/check-consolidation.cjs",
-    "fix:share-intent": "node scripts/patch-share-intent.cjs"
+    "fix:share-intent": "node scripts/patch-share-intent.cjs",
+    "fix:activity-result": "node scripts/patch-activity-result.cjs"
   },
   "dependencies": {
     "@config-plugins/react-native-webrtc": "^14.0.0",
@@ -87,7 +88,8 @@
     "autolinking": {
       "android": {
         "buildFromSource": [
-          "expo-audio"
+          "expo-audio",
+          "expo-modules-core"
         ]
       }
     }

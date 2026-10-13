@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useCallback} from 'react';
 import {View} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -31,7 +31,8 @@ function TabIcon({ label, focused }: { label: string; focused: boolean }) {
 }
 
 
-export function useMainTabOptions(){const {colors:Colors}=useTheme();const insets=useSafeAreaInsets();return ({route}:{route:{name:string}}):BottomTabNavigationOptions => ({
+export function useMainTabOptions(){const {colors:Colors}=useTheme();const insets=useSafeAreaInsets();return useCallback(({route}:{route:{name:string}}):BottomTabNavigationOptions => ({
+        freezeOnBlur: true,
         headerStyle: {
           backgroundColor: Colors.headerBg,
           elevation: 0,
@@ -61,4 +62,4 @@ export function useMainTabOptions(){const {colors:Colors}=useTheme();const inset
         tabBarInactiveTintColor: Colors.textTertiary,
         tabBarLabelStyle: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1 },
         tabBarIcon: ({ focused }) => <TabIcon label={route.name} focused={focused} />,
-      });}
+      }),[Colors,insets.bottom]);}

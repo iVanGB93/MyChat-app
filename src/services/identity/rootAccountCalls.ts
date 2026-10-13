@@ -51,7 +51,13 @@ export function createRootAccountCalls(d:{
     const raw=await d.network().callRelayRequest(provider,JSON.stringify({version:1,operation:'ice'}));
     const config=raw&&parseNeuronIceConfig(raw,d.now());if(config)return config;
    }return neuronStunConfig();
-  },changed:d.changed});
+  },changed:d.changed,terminalSaved:invite=>{
+   // Independent of a slow periodic relay poll; failure leaves the durable outbox intact.
+   const remote=invite.caller===account?invite.callee:invite.caller;
+   for(const peer of d.network().callPeers().filter(p=>p.account===remote&&p.expiresAt>d.now()).slice(0,10))
+    void control.drain(invite,peer).catch(()=>{});
+   void pump.flushTerminal(invite).catch(()=>{});
+  }});
  const relay=createCallControlRelay({records:d.records,now:d.now,current,blocked});
  const endpoint=createCallRelayEndpoint(relay);
  const mediaRelay=createCallMediaRelay({records:d.records,now:d.now,current,blocked,forward:(...args)=>d.network().forwardMedia(...args)});

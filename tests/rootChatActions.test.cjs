@@ -7,6 +7,21 @@ function fixture(owner){let raw=null,fail=false,active=true;return {api:ledger.c
 async function pair(){const left=fixture(a),right=fixture(b);await left.api.enqueue(b,id,'Original');await right.api.receive(a,id,ledger.encodeRootChat(b,id,'Original'));return {left,right};}
 async function exchange(from,to,sender){for(const pending of ledger.pendingRootChat(await from.api.snapshot())){assert.equal(await to.api.receive(sender,pending.id,pending.raw),true);await from.api.delivered(pending.peer,pending.id);}}
 const view=async(f,owner)=>actions.rootChatView(owner,await f.api.snapshot()).messages[0];
+
+test('batched receipts preserve individual wire events with one durable write and safe retries',async()=>{
+ let raw=null,writes=0,fail=false;const api=ledger.createRootChatLedger({owner:b,current:()=>true,now:()=>100000,read:async()=>raw,write:async v=>{if(fail)throw Error('disk');writes++;raw=v;}});
+ const ids=Array.from({length:20},fresh);for(const key of ids)await api.receive(a,key,ledger.encodeRootChat(b,key,'Original'));
+ const items=ids.map(id=>({id:fresh(),target:{id,author:a}})),before=writes,original=(await api.snapshot()).messages;
+ fail=true;await assert.rejects(api.readBatch(a,items),/disk/);assert.equal((await api.snapshot()).actions?.length??0,0);
+ fail=false;await api.readBatch(a,items);assert.equal(writes,before+1);assert.deepEqual((await api.snapshot()).messages,original);
+ const events=(await api.snapshot()).actions;assert.equal(events.length,20);assert(events.every(e=>e.kind==='read'&&e.revision===1&&e.status==='pending'&&actions.validRootAction(e,b,a)));
+ await api.readBatch(a,items);assert.equal(writes,before+1);
+ const sender=fixture(a);for(const key of ids)await sender.api.enqueue(b,key,'Original');
+ for(const event of events)assert.equal(await sender.api.receive(b,event.id,actions.encodeRootAction(event)),true);
+ assert(actions.rootChatView(a,await sender.api.snapshot()).messages.every(m=>m.read));
+ await assert.rejects(api.readBatch(a,Array(21).fill(items[0])),/too large/);
+ await api.configure(a,{blocked:true});await assert.rejects(api.readBatch(a,items),/blocked/);
+});
 test('edits preserve original retry payload, round-trip once, and use monotonically increasing revisions',async()=>{
  const {left,right}=await pair();const event=fresh();await left.api.act(b,event,{id,author:a},'edit','Edited');await left.api.act(b,event,{id,author:a},'edit','Edited');
  assert.equal((await left.api.snapshot()).actions.length,1);assert.equal((await left.api.snapshot()).messages[0].text,'Original');

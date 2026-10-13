@@ -11,7 +11,7 @@ function fixture(mode){
  '../../modules/storage/chatStore':{ownChatRevision:()=>0},
  './localAccount':{localAccount:{status:()=>({account:owner,state:locked?'locked':'unlocked'}),subscribe:f=>{listener=f;return()=>{};}}},
  './localRootChat':{localRootChat:()=>({snapshot:async()=>snapshot,enqueueAttachment:async()=>events.push('publish')})},
- './attachmentPolicy':{indexAttachmentPolicy:()=>()=>true},
+ './attachmentPolicy':{...require('./helpers/attachment.cjs').load('attachmentPolicy'),indexAttachmentPolicy:()=>()=>true},
  './attachmentTiming':{createAttachmentTiming:()=>({measure:(_s,f)=>f(),snapshot:()=>({})})},
  './rootMediaExport':{startRootMediaExport:()=>({stop(){},wake(){}})},
  './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async()=>mode==='lookup'?null:{}})},

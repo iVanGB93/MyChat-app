@@ -446,6 +446,29 @@ test('relay pump prevents overlap and discards an in-flight response after locki
  live=false;release(JSON.stringify({raw:f.invite}));await pending;assert.equal(received,0);assert.equal(requests,1);
 });
 
+test('urgent terminal delivery bypasses a stalled poll and preserves the unacknowledged outbox',async()=>{
+ const f=fixture(),x=courierFixture(f),store=memoryStore(),call=session(f,store);
+ await call.begin(f.invite,f.caller,now);
+ const accept=f.event('accept');await call.receive(accept,f.callee,now+1);
+ await call.receive(selection(f,accept),f.caller,now+1);
+ const end=f.event('end',{sequence:2});await call.receive(end,f.caller,now+2);
+ let release;const puts=[];
+ const pump=pumpModule.createCallRelayPump({account:f.caller.account,device:f.a.id,store,records:x.d.records,
+  current:()=>true,now:()=>now+2,blocked:()=>false,peers:()=>[x.peer],direct:()=>[],list:async()=>[],
+  receive:async()=>null,request:async(peer,raw)=>{
+   const input=JSON.parse(raw);if(input.operation==='poll')return new Promise(r=>{release=r;});
+   puts.push(input);return JSON.stringify({accepted:true});
+  }});
+ const polling=pump.tick();await new Promise(r=>setImmediate(r));
+ try{
+  await pump.flushTerminal(JSON.parse(f.invite));
+  assert.equal(puts.length,1);assert.equal(puts[0].targetDevice,f.b.id);
+  assert.equal(puts[0].raw,end,'only the persisted hangup, never an obsolete invite or selection');
+  assert.deepEqual(await call.pendingEvents(f.caller,f.b.id,now+2),[end],'deposit is not a delivery receipt');
+  pump.stop();await pump.flushTerminal(JSON.parse(f.invite));assert.equal(puts.length,1);
+ }finally{release('{}');await polling;pump.stop();}
+});
+
 const wake=load('callWakeProtocol');
 test('compact call wake verifies with pinned public identity without unlocking signing keys',()=>{
  const f=fixture(),data=wake.createCallWake(f.invite,f.b.id,now);

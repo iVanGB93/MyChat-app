@@ -33,6 +33,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
   callRoute?(account:string,device:string): {expiresAt:number}|null;
   sendRoutedMedia?(raw:string):Promise<boolean>;
   changed(view: NeuronCallView<Peer> | null): void;
+  terminalSaved?(invite:CallControl):void;
 }) {
   let stopped = false, active: CallControl | null = null, view: NeuronCallView<Peer> | null = null;
   const declined=new Set<string>();
@@ -53,8 +54,11 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     const sequence=1+Math.max(0,...events.filter((x:CallControl)=>x.record.account===d.account&&x.device===d.device).map((x:CallControl)=>x.sequence));
     const issuedAt=d.now(),expiresAt=['end','cancel'].includes(kind)?issuedAt+30000:Math.min(e.expiresAt,issuedAt+30000);
     if(expiresAt<=issuedAt)return false;
-    return d.submit(d.sign({callId:e.callId,caller:e.caller,callee:e.callee,callerDevice:e.callerDevice,
+    const saved=await d.submit(d.sign({callId:e.callId,caller:e.caller,callee:e.callee,callerDevice:e.callerDevice,
       media:e.media,kind,invitation:callControlDigest(e),sequence,issuedAt,expiresAt,...extra}));
+    // Start delivery before closing media; a hangup must not wait for a periodic scan.
+    if(saved&&['end','cancel','reject','busy'].includes(kind))d.terminalSaved?.(e);
+    return saved;
   }
   async function terminate(e:CallControl) {
     const s=await state(e).snapshot(d.now());

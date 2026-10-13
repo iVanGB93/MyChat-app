@@ -48,7 +48,7 @@ async function alreadyReceived(owner:string,sender:string,id:string){
 async function waitForRecovery(work:Promise<void>,ms:number){
  // React Native frame timers may stop with the display off. Native completions
  // still reach the headless task while its FCM execution window is active.
- if(AppState.currentState!=='active'&&Native?.axonMessageWait){
+ if(Native?.axonMessageWait){
   let finished=false;const until=Date.now()+ms;
   const deadline=(async()=>{while(!finished&&Date.now()<until){
    await Native.axonMessageWait!(Math.max(1,Math.min(1000,until-Date.now())));
