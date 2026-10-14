@@ -1,6 +1,7 @@
 import type {createRootChatLedger} from '../../services/identity/rootChatLedger';
 import type {RootChatReply} from '../../services/identity/rootChatTypes';
 import type {RootActionKind} from '../../services/identity/rootChatActionTypes';
+import {rootChatView} from '../../services/identity/rootChatActions';
 
 type Ledger = ReturnType<typeof createRootChatLedger>;
 /** UI commands persist intent locally. They never require a connected peer. */
@@ -28,7 +29,7 @@ export function createMessagingCommands(d: {
       const s = session(expectedOwner); await s.ledger.act(peer, await s.id(), target, kind, value);
     },
     async markRead(peers: string[]) {
-      const s = session(), state = await s.ledger.snapshot(); s.check();
+      const s = session(), state = rootChatView(s.owner, await s.ledger.snapshot()); s.check();
       for (const peer of peers) {
         s.check();
         if (peer.startsWith('group:')) { await s.ledger.markGroupRead(peer.slice(6)); continue; }

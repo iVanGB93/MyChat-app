@@ -1,0 +1,27 @@
+Recovery pacing and reconnect validation — October 13, 2026 (America/New_York)
+
+Changes
+- Custody recovery no longer immediately repolls after an unusable packet. Packet failures back off 15, 30, 60, 120, 240 then 300 seconds, bounded in memory. Receipt/envelope validation and durable delivery acknowledgements are unchanged.
+- Normal and group mailbox polls share a local per-identity token budget across sockets/reconnects: default 60/minute, burst 4. Deposits and acknowledgements do not spend poll credits.
+- Authenticated custody work exceeding its configurable soft allowance returns retry with a bounded retry interval; a separate 4096-frame/minute hard ceiling retains flood protection. General control, unauthenticated and media protections remain separate.
+- Couriers honor retry intervals and measure normal retry waits from completion, avoiding compressed retries after slow I/O.
+- Successful custody handoffs in mobile and hosted own-chat outboxes wait 60 seconds before rechecking. A recipient becoming directly connected permits prompt direct delivery; custody acceptance never means recipient delivery.
+- Network > Advanced diagnostics includes adjustable recovery checks (30–90/minute) and recovery traffic allowance (512–2048/minute), plus Restore recovery defaults. Preferences persist and apply immediately; resetting preferences does not erase messages or clear rate counters. It cannot change a remote peer's limits. Installing this release is required once before these controls exist in the official app.
+
+Validation
+- Mobile full check: 1073 tests passed, 3 skipped, no failures; typecheck, cycles, boundaries and consolidation passed.
+- Automated recovery backlog: 160 messages, lost ACK, courier recreation, all recovered; one expected duplicate processing attempt from the deliberately lost ACK, no duplicate logical delivery.
+- Axonic Dev on R3GYC0H7PMY and emulator-5554: 64 synthetic texts queued with Dev recipient stopped. 24 recovered with emulator sender stopped. After reconnecting sender, all 64 unique messages received and all 64 marked delivered by sender.
+- Dev current-process logs: no control-rate-limit/custody-rate-limit closures. Observed transport closures include deliberately offline endpoints and AoN deployments; this is not a claim of zero transport retries or universal stability.
+- Live Dev setting change to 75 polls/minute applied immediately; original 60 restored. Persistence, invalid-range and failed-save tests passed.
+- Evidence: builds/recovery-live-backlog.json, recovery-live-recipient-only.jsonl, recovery-live-final.jsonl, recovery-full-check.log, aon-recovery-final-tests.log.
+
+Deployment
+Both AoNs authenticated release fingerprints match:
+d7ca7b4b5a8cea4b3c4c27b7fe4a2482622009dc4ee42dfe898756031058ad0b
+SecondNeuron deployment: 655812bd-ffd7-4085-b11c-899e7ac0b85e (SUCCESS).
+FirstNeuron identity preserved; rollback copy retained.
+No production mobile build or official-phone installation performed. Old official clients can still close their own connections at the old shared control limit until updated.
+
+Remaining performance limitation
+FirstNeuron still showed high CPU (approximately 76% of one core lifetime average in the final short observation). This work fixes evidenced retry loops and rate-limit collisions; it does not establish that overall CPU scaling or media performance is solved. Live backlog handoff/recovery still took minutes, not instant delivery.

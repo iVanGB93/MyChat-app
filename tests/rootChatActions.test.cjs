@@ -75,3 +75,12 @@ test('presentation index keeps direct and group targets isolated even with match
  assert.deepEqual(actions.rootChatView(a,state).messages.map(m=>m.text),['Direct B','Direct C','Group']);
  assert.deepEqual(state.messages.map(m=>m.text),['Original','Original','Original']);
 });
+
+test('deletion racing a read batch skips deleted content without losing other receipts',async()=>{
+ const {left,right}=await pair(),second=fresh();await left.api.enqueue(b,second,'Second');await right.api.receive(a,second,ledger.encodeRootChat(b,second,'Second'));
+ await left.api.act(b,fresh(),{id,author:a},'delete');await exchange(left,right,a);
+ await right.api.readBatch(a,[{id:fresh(),target:{id,author:a}},{id:fresh(),target:{id:second,author:a}}]);
+ const s=await right.api.snapshot();assert.equal(s.actions.filter(e=>e.direction==='outgoing'&&e.kind==='read').length,1);
+ assert.equal(s.actions.find(e=>e.direction==='outgoing'&&e.kind==='read').target.id,second);
+ await assert.rejects(right.api.act(a,fresh(),{id,author:a},'reaction',''),/deleted/);
+});

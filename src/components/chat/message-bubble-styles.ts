@@ -29,6 +29,7 @@ export const messageBubbleStyles = StyleSheet.create({
   voiceBubble: { paddingHorizontal: 8, paddingTop: 6, paddingBottom: 6 },
   photoBubble: { minWidth: 0, width: 226, borderRadius: Radius.sm + 3 },
   bubbleReceived: { borderBottomLeftRadius: Radius.xs ?? 4 },
+  groupSenderLink: { paddingHorizontal: 10, paddingTop: 6, paddingBottom: 4, maxWidth: '90%' },
   senderName: {
     fontSize: Font.size.xs,
     marginBottom: 2,

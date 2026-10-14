@@ -132,9 +132,9 @@ test('bidirectional background control traffic survives repeated minute windows'
 });
 
 test('authenticated control flood still closes at the bounded budget',async t=>{
-  const f=pair(t,{0:{onCustody:async()=> 'ok'},1:{onCustody:async()=> 'ok'}});
+  const f=pair(t,{0:{onDirectory:async()=> 'ok'},1:{onDirectory:async()=> 'ok'}});
   await Promise.all(f.sessions.map(s=>s.ready));
-  for(let i=0;i<260&&f.sessions[0].snapshot().state==='connected';i++)await f.sessions[0].custodyRequest('poll');
+  for(let i=0;i<260&&f.sessions[0].snapshot().state==='connected';i++)await f.sessions[0].directoryRequest('poll');
   assert(f.sessions.some(s=>s.snapshot().closeReason==='control-rate-limit'));
 });
 
@@ -1379,4 +1379,58 @@ for(const modes of [['small4','small4'],['small4','small'],['small','small4']])t
  const raw=JSON.stringify({operation:'direct-get-batch',count:3});const requests=Array.from({length:n},()=>f.sessions[0].attachmentBulkRequest(raw));
  await settle(()=>releases.length===n);assert.equal(await f.sessions[0].attachmentBulkRequest(raw),null);assert.equal(await f.sessions[0].custodyRequest('{}'),'control');
  releases.reverse().forEach(r=>r('ok'));assert.deepEqual(await Promise.all(requests),Array(n).fill('ok'));assert(f.sessions.every(s=>s.snapshot().state==='connected'));
+});
+
+test('quality observes existing exchanges without adding wire frames or advertising scores',async t=>{
+ let f;f=pair(t,{0:{onCustody:async()=> 'ok'},1:{onCustody:async()=>{f.advance(75);return 'ok';}}});await Promise.all(f.sessions.map(s=>s.ready));
+ const before=f.transport.history.map(h=>h.length);assert.equal(await f.sessions[0].custodyRequest('poll'),'ok');const q=f.sessions[0].snapshot().quality;assert.equal(q.samples,1);assert.equal(q.responseMs,75);
+ assert.deepEqual(f.transport.history.map((h,i)=>h.length-before[i]),[1,1]);assert.ok(f.transport.history.flat().every(raw=>!raw.includes('quality')&&!raw.includes('responseMs')));
+ f.transport.blackhole();const work=f.sessions[0].custodyRequest('poll');await new Promise(r=>setImmediate(r));f.advance(4001);f.sessions[0].tick();await work;assert.equal(f.sessions[0].snapshot().quality.failures,1);
+});
+
+test('bidirectional normal chat queues an ACK while durable receive is busy without closing',async t=>{
+ let release;const seen=[];const f=await testMessagePair(t,undefined,undefined,async(message,i)=>{if(i===1)await new Promise(r=>release=r);seen.push(message.text);return true;},true);
+ const a=f.sessions[0].sendChatMessage('one','c1'.repeat(32));await settle(()=>!!release);
+ const b=f.sessions[1].sendChatMessage('two','c2'.repeat(32));await settle(()=>seen.includes('two'));
+ await new Promise(r=>setTimeout(r,20));assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+ release();assert.deepEqual(await Promise.all([a,b]),[true,true]);assert.deepEqual(seen.sort(),['one','two']);assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+});
+test('normal chat receive queue remains bounded while storage is blocked',async t=>{
+ let release;const f=await testMessagePair(t,undefined,undefined,async()=>{await new Promise(r=>release=r);return true;},true);
+ const pending=f.sessions[0].sendChatMessage('bounded','c3'.repeat(32));await settle(()=>!!release);
+ const frame=JSON.parse(f.bus.history[0].find(raw=>JSON.parse(raw).kind==='chat-message'));
+ for(let i=0;i<4;i++)f.bus.inject(1,frame);
+ await settle(()=>f.sessions[1].snapshot().state==='closed');assert.equal(f.sessions[1].snapshot().closeReason,'chat-receive-queue-full');release();assert.equal(await pending,false);
+});
+
+test('bounded custody recovery has its own budget and leaves control exchanges usable',async t=>{
+ const hooks={onCustody:async()=> 'ok',onDirectory:async()=> 'ok'},f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ for(let i=0;i<300;i++)assert.equal(await f.sessions[0].custodyRequest('poll'),'ok');
+ assert.equal(await f.sessions[0].directoryRequest('lookup'),'ok');assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+ for(let i=300;i<512;i++)await f.sessions[0].custodyRequest('poll');
+ assert.equal(JSON.parse(await f.sessions[0].custodyRequest('poll')).status,'retry');
+ assert.equal(await f.sessions[0].directoryRequest('lookup'),'ok');
+ assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+ for(let i=513;i<4097;i++)await f.sessions[0].custodyRequest('poll');
+ assert.ok(f.sessions.some(s=>s.snapshot().closeReason==='custody-rate-limit'));
+});
+
+test('backlog poll pacing preserves control capacity and live setting changes do not require reconnecting',async t=>{
+ const policy=load('recoveryPolicy');t.after(()=>policy.setRecoveryPolicy({...policy.DEFAULT_RECOVERY_POLICY}));
+ const hooks={onCustody:async()=>'{"status":"ok","packet":null}',onDirectory:async()=> 'ok'},f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ let sent=0,deferred=0;for(let i=0;i<200;i++){const reply=JSON.parse(await f.sessions[0].custodyRequest(JSON.stringify({operation:i%2?'poll':'group-poll'})));if(reply.status==='retry')deferred++;else sent++;}
+ assert.equal(sent,4);assert.equal(deferred,196);assert.equal(await f.sessions[0].directoryRequest('lookup'),'ok');
+ f.advance(1000);assert.equal(JSON.parse(await f.sessions[0].custodyRequest('{"operation":"poll"}')).status,'ok');
+ policy.setRecoveryPolicy({pollsPerMinute:90,custodyFramesPerMinute:768});f.advance(667);
+ assert.equal(JSON.parse(await f.sessions[0].custodyRequest('{"operation":"poll"}')).status,'ok');
+ assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+});
+
+test('recovery budget survives socket replacement and clock rollback; invalid settings cannot disable protection',()=>{
+ const p=load('recoveryPolicy'),owner='test-owner-reconnect',peer='test-peer-reconnect';
+ for(let i=0;i<4;i++)assert.equal(p.reserveRecoveryPoll(owner,peer,now),0);
+ assert(p.reserveRecoveryPoll(owner,peer,now)>0,'a replacement socket uses the same identity budget');
+ assert(p.reserveRecoveryPoll(owner,peer,now-5000)>0);
+ assert.throws(()=>p.setRecoveryPolicy({pollsPerMinute:Infinity,custodyFramesPerMinute:512}));
+ assert.throws(()=>p.setRecoveryPolicy({pollsPerMinute:60,custodyFramesPerMinute:0}));
 });

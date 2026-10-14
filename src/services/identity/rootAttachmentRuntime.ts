@@ -83,10 +83,23 @@ export async function queueRootAttachmentBatch(input:{peer:string;owner:string;r
  return first.id;
 }
 
+/** One visible preparation row per group photo; underlying grants remain independent. */
+export function groupAttachmentSelections(rows:Selection[]){
+ const result:Selection[]=[];
+ for(const row of rows){const prior=row.group?result.find(s=>s.group?.id===row.group!.id&&s.group?.messageId===row.group!.messageId):undefined;
+  if(prior)prior.failed=prior.failed||row.failed;else result.push({...row});}
+ return result;
+}
+function sameSelection(a:Selection,b:Selection){return a.id===b.id||!!a.group&&a.group.id===b.group?.id&&a.group.messageId===b.group.messageId;}
 export async function rootAttachmentProgress(){const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked')return {jobs:[],selections:[]};
- const jobs=await createMobileAttachmentJobs().list(owner);return {jobs:jobs.map(j=>({id:j.descriptor.manifest.id,phase:j.phase,cursor:j.cursor,bytes:j.descriptor.manifest.bytes,failures:j.failures,digest:j.digest,canPause:!j.receipt&&['queued','uploading','downloading'].includes(j.phase)})),selections:await selections(owner)};}
-export async function retryRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const row=rows.find(r=>r.id===id);if(row)row.failed=false;});}
-export async function removeRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const i=rows.findIndex(r=>r.id===id&&r.failed);if(i>=0){const shared=rows[i].shared?.id;removeRootAttachmentSource(owner,id);rows.splice(i,1);if(shared&&!rows.some(r=>r.shared?.id===shared))removeRootAttachmentSource(owner,shared);}});}
+ const jobs=await createMobileAttachmentJobs().list(owner);return {jobs:jobs.map(j=>({id:j.descriptor.manifest.id,phase:j.phase,cursor:j.cursor,bytes:j.descriptor.manifest.bytes,failures:j.failures,digest:j.digest,canPause:!j.receipt&&['queued','uploading','downloading'].includes(j.phase)})),selections:groupAttachmentSelections(await selections(owner))};}
+export async function retryRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{const row=rows.find(r=>r.id===id);if(row)for(const item of rows)if(sameSelection(row,item))item.failed=false;});}
+export async function removeRootAttachmentSelection(id:string){const owner=localAccount.status().account;if(owner&&localAccount.status().state==='unlocked')await changeSelections(owner,rows=>{
+ const selected=rows.find(r=>r.id===id);if(!selected)return;
+ const batch=rows.filter(r=>sameSelection(selected,r));if(!batch.some(r=>r.failed))return;
+ for(const row of batch){removeRootAttachmentSource(owner,row.id);rows.splice(rows.indexOf(row),1);}
+ for(const shared of new Set(batch.map(r=>r.shared?.id)))if(shared&&!rows.some(r=>r.shared?.id===shared))removeRootAttachmentSource(owner,shared);
+});}
 /** Own transfer jobs are separate from the temporary ciphertext this device holds for other people. */
 export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;sharedPeers?():string[];peers():string[];request(peer:string,raw:string):Promise<string|null>;bulkPeers?():string[];batchChunks?(peer:string):number;batchWindow?(peer:string):number;bulkRequest?(peer:string,raw:string):Promise<string|null>;lookup?(peer:string):Promise<unknown>}){
  const timingEnabled=(typeof __DEV__!=='undefined'&&__DEV__)||process.env.EXPO_PUBLIC_ATTACHMENT_TIMING==='1',timing=createAttachmentTiming(timingEnabled);
@@ -142,19 +155,36 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
    for(const peer of lookupAfter.keys())if(!queued.some(s=>s.peer===peer))lookupAfter.delete(peer);
    const eligible=queued.filter(s=>!removed.includes(s)&&!s.failed&&!snapshot.contacts.find(c=>c.account===s.peer)?.blocked);
    const pending=eligible.length?eligible[selectionCursor++%eligible.length]:null;
-   if(pending){const record=await records.read(pending.peer);if(!current())return;if(!record||!verifyRecord(record,Date.now())){
-     if((lookupAfter.get(pending.peer)??0)<=Date.now()){
-      lookupAfter.set(pending.peer,Date.now()+5000);
-      try{await network.lookup?.(pending.peer);}finally{if(current())lookupAfter.set(pending.peer,Date.now()+5000);}
-     }return;}if(!current())return;
-    if(pending.group&&(!rootGroupAllowed(snapshot,account,pending.peer,pending.group)||!snapshot.groups?.find(g=>g.id===pending.group!.id)?.accepted)){await changeSelections(account,rows=>{const row=rows.find(r=>r.id===pending.id);if(row)row.failed=true;});return;}
-    try{const descriptor=await timing.measure('prepare',()=>prepareRootAttachment({...pending,recipient:record,current}));if(!current())return;
-     await ledger.enqueueAttachment(descriptor,pending.reply,pending.group,pending.createdAt);await worker.enqueue(descriptor,'outgoing');if(!current())return;
-     await changeSelections(account,rows=>{const i=rows.findIndex(r=>r.id===pending.id);if(i>=0)rows.splice(i,1);});removeRootAttachmentSource(account,pending.id);
-     if(pending.shared&&!(await selections(account)).some(s=>s.shared?.id===pending.shared!.id))removeRootAttachmentSource(account,pending.shared.id);
+   if(pending){
+    const batch=pending.shared?eligible.filter(s=>s.shared?.id===pending.shared!.id):[pending];
+    // Do not publish a partial audience while another grant is failed or blocked.
+    if(pending.shared&&batch.length!==queued.filter(s=>s.shared?.id===pending.shared!.id).length)return;
+    try{
+     const prepared=[];
+     for(const row of batch){
+      const record=await records.read(row.peer);if(!current())return;
+      if(!record||!verifyRecord(record,Date.now())){
+       if((lookupAfter.get(row.peer)??0)<=Date.now()){
+        lookupAfter.set(row.peer,Date.now()+5000);
+        try{await network.lookup?.(row.peer);}finally{if(current())lookupAfter.set(row.peer,Date.now()+5000);}
+       }return;
+      }
+      if(row.group&&(!rootGroupAllowed(snapshot,account,row.peer,row.group)||!snapshot.groups?.find(g=>g.id===row.group!.id)?.accepted))throw Error('Group membership changed');
+      const input=await timing.measure('prepare',()=>prepareRootAttachment({...row,recipient:record,current}));if(!current())return;
+      prepared.push({input,reply:row.reply,group:row.group,selectedAt:row.createdAt});
+     }
+     if(batch.length===1)await ledger.enqueueAttachment(prepared[0].input,pending.reply,pending.group,pending.createdAt);
+     else await ledger.enqueueAttachments(prepared);
+     if(!current())return;
+     for(const item of prepared){await worker.enqueue(item.input,'outgoing');if(!current())return;}
+     const ids=new Set(batch.map(s=>s.id));
+     await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(ids.has(rows[i].id))rows.splice(i,1);});
+     for(const row of batch)removeRootAttachmentSource(account,row.id);
+     if(pending.shared)removeRootAttachmentSource(account,pending.shared.id);
      return true;
-    }catch{if(current())await changeSelections(account,rows=>{const row=rows.find(r=>r.id===pending.id);if(row)row.failed=true;});}return;
+    }catch{if(current())await changeSelections(account,rows=>{for(const row of rows)if(batch.some(s=>s.id===row.id))row.failed=true;});}
    }
+
  }
  async function tick(){const account=owner(),generation=epoch;if(!account||busy)return;busy=true;
   const current=()=>!stopped&&epoch===generation&&owner()===account;

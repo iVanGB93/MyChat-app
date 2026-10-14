@@ -1,0 +1,12 @@
+Send-then-type fix, October 14, 2026
+
+Android .clear() reproduced the submitted-prefix race with both ADB text injection and actual Samsung keyboard key taps. Yield-before-persistence, blur/clear/refocus, and cancellable press-start clearing did not fix it; all three experiments removed. Updating native text and selection together through setNativeProps passed the same tests. iOS retains normal native clear. No arbitrary delay or keyboard-focus reset retained.
+
+Verified old native clear failure: DEV-KEYBOARD-D + keyboard t/e became DEV-KEYBOARD-Dte. Verified new path: E/F/G yielded NEXT-E/F/G; H yielded Te (keyboard automatic capitalization). The test initially expected lowercase te and reported failure; inspection confirmed correct separate draft, not retained submitted text. Final combined isolation tests I/J/K passed (case-insensitive expected keyboard capitalization). Individual chat also passed: DEV-NATIVE-DIRECT sent; NEXT-DIRECT alone remained.
+
+Retained text-only DraftEditor isolation: per-keystroke state remains in the text field; parent controls receive changes only at empty/sendable boundaries. Editor handle checks originating owner/scope so delayed sends cannot update another conversation. Voice recorder remains mounted/disabled when hidden and memoized.
+
+No consistent overall frame improvement claimed. Final uninstrumented group sample: 62 frames,22 janky (35.48%),p95 14ms,p99 16ms. Earlier experimental React profiling showed smaller text-only render durations, but those samples are not a matched final overall-speed benchmark. Remaining stuttering is unresolved and needs native-frame profiling.
+
+Full check: 1086 passed,3 skipped; typecheck,cycles,boundaries,consolidation passed. Regression coverage includes editor flag boundaries, current draft sends, recorder lifetime, Android native clearing and iOS fallback, failed-send restoration/newer-draft preservation. No production build or official app change. Synthetic unsent drafts cleared.
+Evidence: builds/native-composer-results.json, builds/composer-final-check.log, builds/composer-final-gfx.txt.

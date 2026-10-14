@@ -1,0 +1,14 @@
+Group attachment publication and preparation display
+
+One photo already reused one staged source, checksum, ciphertext and local payload across recipients. The group screen nevertheless exposed every recipient selection as a separate preparation row. Separately, preparation published each descriptor immediately, allowing delivery to select a single recipient before the other descriptors existed.
+
+The runtime now prepares all queued grants sharing that photo before publishing them in one durable ledger transaction. Verification, membership, blocked-contact, reply, identity, and storage checks remain enforced for each recipient. A failed check or write publishes none of the new descriptors. Delivery wake callbacks run only after the whole transaction is saved. Retry is idempotent. Missing recipient identity data retains the staged photo until preparation can continue.
+
+Progress presents one row per group message/photo. Retry resets its queued recipient selections together; removing a failed photo removes its queued selections together. Separate photos remain separate. Per-recipient receipts and transfer jobs remain necessary and independent. Direct delivery and compatibility fallback remain supported; this is not a promise of one network packet or one upload across every possible route/failure.
+
+Validation: full mobile check 1077 passed, 3 skipped; typecheck, dependency cycles, module boundaries and consolidation passed. AoN suite 177 passed. Regression tests cover atomic publication/write failure, invalid signatures, duplicate retry, runtime preparation batching, progress grouping, group retry/removal. Existing shared-media tests verify one encryption/checksum/local payload and no repeated shared ciphertext chunk upload to a common custodian.
+
+No live phone send was performed in this change. No production build or official-phone update was started. The installed Play Store app needs a future mobile release for the fix; AoN deployment alone cannot change its preparation screen or local outbox publication.
+
+Matching AoN runtime: 26e2f2f290d5692a3f678fb75c1778d7a74b43602250a7eb0cf0f8b4cd51825f
+SecondNeuron deployment request: 7d001ac9-ca44-46a0-80c0-4772b226cecb.

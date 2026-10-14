@@ -1,0 +1,11 @@
+Composer profiling and recorder lifetime - October 14, 2026
+
+Retained change: keep RootVoiceComposer mounted in a hidden/disabled wrapper while draft is sendable or editing. React.memo prevents unchanged recorder props from rerendering on each key. Previously switching empty/nonempty mounted and released the Expo recorder. A live test surfaced an already-released AudioRecorder error during this transition; subsequent retained-change typing runs did not show the dialog. This is a bounded observation, not a guarantee against all audio lifecycle errors.
+
+Experiment reverted: isolating DraftEditor reduced typical React profile durations from 1-3ms to around 1ms, but live send-and-immediately-type tests exposed retained submitted text. The same stress case reproduced after reverting, so causal attribution to isolation is not established. Kept established composer design while this native clear/input-event race remains unresolved. All temporary React profiling/log instrumentation removed from production source.
+
+Final retained-code typing sample: 61 frames,16 janky (26.23%),p95 13ms,p99 15ms. This is essentially unchanged from previous ~27%; no proven overall stutter improvement claimed. Longer experimental draft samples are not comparable and are not final results.
+
+Full check: 1084 pass,3 skipped; typecheck,cycles,boundaries,consolidation pass. Added tests verify recorder position stays stable across typing/clearing and send uses current draft. Synthetic unsent drafts cleared. Dev test group only; official app untouched; no production build.
+
+Outstanding: frame stuttering and rapid send-then-type native clearing race. Tests accepting queued JS work do not establish native input ordering correctness. Evidence: builds/recorder-composer-check.log, builds/recorder-composer-gfx.txt.

@@ -177,3 +177,31 @@ test('shared handoff refreshes the whole audience after a direct attempt changes
  const d=delivery(f,{connectedPeers:()=>[b],send:async()=>{await f.ledger.configure(c,{blocked:true});return false;},depositGroup:async messages=>{audience=messages.map(m=>m.peer);return true;}});
  await d.worker.tick();assert.deepEqual(audience,[b]);assert.equal(d.events.filter(e=>e[0]==='deposit').length,0);d.worker.stop();
 });
+
+test('mark all read skips deleted history and continues across chats',async()=>{
+ const f=setup(),{encodeRootChat}=load('rootChatLedger'),{encodeRootAction,rootChatView}=load('rootChatActions');
+ const old='d'.repeat(64),live='e'.repeat(64),other='f'.repeat(64),event='9'.repeat(64);
+ await f.ledger.receive(b,old,encodeRootChat(a,old,'Old deleted message'));
+ await f.ledger.receive(b,live,encodeRootChat(a,live,'Still unread'));
+ await f.ledger.receive(c,other,encodeRootChat(a,other,'Another chat'));
+ await f.ledger.receive(b,event,encodeRootAction({id:event,peer:a,direction:'outgoing',target:{id:old,author:b},kind:'delete',text:'',revision:1,at:1800000000000,status:'pending'}));
+ await f.commands.markRead([b,c]);await f.commands.markRead([b,c]);
+ const state=await f.ledger.snapshot(),view=rootChatView(a,state);
+ assert.equal(view.messages.filter(m=>m.direction==='incoming'&&!m.read&&!m.deleted).length,0);
+ assert.equal(state.actions.filter(e=>e.direction==='outgoing'&&e.kind==='read').length,2);
+ assert.ok(!state.actions.some(e=>e.kind==='read'&&e.target.id===old));
+});
+
+test('successful custody handoff waits before retry and does not starve newer queued messages',async()=>{
+ const f=setup(),first=await f.commands.sendText(b,'first'),second=await f.commands.sendText(b,'second');let now=10000,peers=[],deposits=[];
+ const d=delivery(f,{now:()=>now,connectedPeers:()=>peers,deposit:async(peer,raw,id)=>{deposits.push(id);return true;},send:async()=>true});
+ await d.worker.tick();await d.worker.tick();assert.deepEqual(new Set(deposits),new Set([first,second]));
+ for(let i=0;i<20;i++){now+=1000;await d.worker.tick();}assert.equal(deposits.length,2);
+ peers=[b];await d.worker.tick();await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages.filter(m=>m.status==='delivered').length,2);d.worker.stop();
+});
+
+test('reconnected durable backlog drains without waiting for one timer tick per message',async()=>{
+ const f=setup();for(let i=0;i<64;i++)await f.commands.sendText(b,'backlog '+i);
+ let sends=0;const d=delivery(f,{send:async()=>{sends++;return true;}});
+ try{await d.worker.tick();for(let i=0;i<1000&&sends<64;i++)await new Promise(r=>setTimeout(r,5));assert.equal(sends,64);await until(async()=> (await f.ledger.snapshot()).messages.every(m=>m.status==='delivered'));}finally{d.worker.stop();}
+});

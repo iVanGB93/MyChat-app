@@ -1,5 +1,5 @@
 import {createCustodyWake, verifyCustody, type CustodyEnvelope} from './custodyProtocol.ts';
-import type {CustodyStore} from './custodyService.ts';
+import {readCustodyStore,type CustodyStore} from './custodyService.ts';
 import type {IdentityRecordStore} from './identityAdmission.ts';
 
 /** The durable custody store is the queue. Only signed public wake metadata leaves it. */
@@ -19,7 +19,7 @@ export function createCustodyWakeForwarder(d: {
         const peers = d.peers().slice(0, 10); if (!peers.length) return;
         const topology=[...peers].sort().join(',');
         if(topology!==peerSet){for(const state of attempts.values())if(!state.forwarded)state.next=0;peerSet=topology;}
-        const rows = await d.store.transaction(rows => rows.filter(r => r.packet?.kind === 'envelope' && r.packet.wakeSignature && r.expires > d.now()).map(r => r.packet as CustodyEnvelope));
+        const rows = await readCustodyStore(d.store,rows => rows.filter(r => r.packet?.kind === 'envelope' && r.packet.wakeSignature && r.expires > d.now()).map(r => r.packet as CustodyEnvelope));
         const key = (r: CustodyEnvelope) => r.sender + r.id;
         const ids = new Set(rows.map(key));
         for (const id of attempts.keys()) if (!ids.has(id)) attempts.delete(id);

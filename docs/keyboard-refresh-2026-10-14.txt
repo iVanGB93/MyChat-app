@@ -1,0 +1,7 @@
+Keyboard refresh optimization - October 14, 2026
+Replaced unconditional 250ms native keyboard-overlap polling with immediate show/hide/frame/resume/layout refreshes, a 180ms settling read, and a 1s fallback only when visible. Removed unused native measureInWindow calls from the Android native-insets path. Cleanup removes event subscriptions and timers.
+
+Measured Axonic Dev R3GYC0H7PMY: before 24 calls/6 seconds idle; after 0 hidden and 7 visible (includes settling). Matched short injected-text workload after prior shared composer: before 20/62 janky (32.26%), p95 14ms; after 16/60 (26.67%), p95 13ms, p99 20ms. Development samples are noisy and do not establish complete elimination of stutter.
+
+Two open/close cycles returned composer to identical screen bounds: hidden y2914-3051; visible y1569-1706. All 48 injected characters retained. Synthetic unsent draft cleared. No production build or official-app change.
+Tests cover no hidden polling, visible refresh, background suppression, foreground recovery, cleanup, existing overlap/scroll/fallback behavior. Evidence: builds/keyboard-refresh-typing.txt, builds/keyboard-refresh-check.log.

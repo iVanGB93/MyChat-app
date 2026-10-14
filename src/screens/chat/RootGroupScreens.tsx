@@ -1,10 +1,12 @@
+import {ChatComposer,type ChatComposerHandle} from '../../components/chat/ChatComposer';
+import {submitComposer} from '../../components/chat/submitComposer';
 import ScreenHeader from '../../components/ui/ScreenHeader';
 import RootMediaSize from '../../components/chat/RootMediaSize';
 import RootMessageReactions from '../../components/chat/RootMessageReactions';
 import {dismissRootConversationNotifications} from '../../modules/messaging/notifications';
-import type {TextInput as NativeTextInput} from 'react-native';
+
 import {KeyboardAvoidingScreen,KeyboardFormScrollView} from '../../components/ui/KeyboardForm';
-import {KeyboardAwareTextInput as TextInput} from '../../components/ui/KeyboardForm';
+
 import StickerPreview from '../../components/chat/sticker-preview';
 import type {Sticker} from '../../services/stickers';
 import {groupPhotoUri} from '../../components/chat/group-photo';
@@ -12,7 +14,7 @@ import RootForwardPicker from '../../components/chat/RootForwardPicker';
 
 import {useChatActivity} from '../../modules/ui/useChatActivity';
 
-import {useChatDraft} from '../../hooks/use-chat-draft';
+
 
 import {useAttachmentPreview} from '../../components/chat/AttachmentPreview';
 
@@ -78,7 +80,7 @@ import {CHAT_STICKER_SIZE,messageBubbleStyles as bubbles} from '../../components
 
 import RootAttachmentBubble from '../../components/RootAttachmentBubble';
 
-import RootVoiceComposer from '../../components/chat/RootVoiceComposer';
+
 
 import AttachmentMenu from '../../components/chat/AttachmentMenu';
 
@@ -162,7 +164,7 @@ export function RootGroupInfo({route,navigation}:Screen<'GroupInfo'>){
 
 }
 
-export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {colors}=useTheme(),state=useGroups(),g=state.groups?.find(g=>g.id===route.params.id),owner=localAccount.status().account,header=useHeaderHeight(),insets=useSafeAreaInsets(),[text,setText]=useChatDraft(owner,'group:'+route.params.id),[reply,setReply]=useState<RootChatReply>(),[editing,setEditing]=useState<RootChatMessage>(),[menu,setMenu]=useState<RootChatMessage>(),[busy,setBusy]=useState(false),[attach,setAttach]=useState(false),[stickers,setStickers]=useState(false),[voice,setVoice]=useState(false),[transfers,setTransfers]=useState<Awaited<ReturnType<typeof rootAttachmentProgress>>>({jobs:[],selections:[]});
+export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {colors}=useTheme(),state=useGroups(),g=state.groups?.find(g=>g.id===route.params.id),owner=localAccount.status().account,header=useHeaderHeight(),[reply,setReply]=useState<RootChatReply>(),[editing,setEditing]=useState<RootChatMessage>(),[menu,setMenu]=useState<RootChatMessage>(),[busy,setBusy]=useState(false),[attach,setAttach]=useState(false),[stickers,setStickers]=useState(false),[transfers,setTransfers]=useState<Awaited<ReturnType<typeof rootAttachmentProgress>>>({jobs:[],selections:[]});
 
  const [stickerSource,setStickerSource]=useState<string>();
  const [stickerPreview,setStickerPreview]=useState<Sticker>();
@@ -171,7 +173,7 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
  const attachmentPreview=useAttachmentPreview(),activity=useChatActivity(route.params.id);
 
- const focused=useIsFocused(),[foreground,setForeground]=useState(AppState.currentState==='active'),unread=state.messages.filter(m=>m.group?.id===route.params.id&&m.direction==='incoming'&&!m.read).length;
+ const focused=useIsFocused(),[foreground,setForeground]=useState(AppState.currentState==='active'),unread=React.useMemo(()=>state.messages.filter(m=>m.group?.id===route.params.id&&m.direction==='incoming'&&!m.read).length,[state.messages,route.params.id]);
 
  useEffect(()=>{const listener=AppState.addEventListener('change',state=>setForeground(state==='active'));return()=>listener.remove();},[]);
 
@@ -181,25 +183,29 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
  useLayoutEffect(()=>navigation.setOptions({headerTitleAlign:'left',headerBackVisible:false,headerTitle:'',headerLeft:()=> <ChatHeaderIdentity onBack={()=>navigation.goBack()} title={g?.name??'Group'} syncing={false} avatarUri={groupPhotoUri(state,route.params.id,owner)} isGroup isOnline={false} color={colors.headerText} onPress={()=>navigation.navigate('GroupInfo',{id:route.params.id})}/>}),[navigation,g?.name,route.params.id,colors.headerText,state,owner]);
 
- const composer=React.useRef<NativeTextInput>(null);
+ const composer=React.useRef<ChatComposerHandle>(null);
+ const setText=(next:string|((current:string)=>string))=>composer.current?.setText(next);
  useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
  const cannotCompose=!g||g.blocked||!g.accepted||!g.members.includes(owner!);
  const disabled=busy||cannotCompose;
  useEffect(()=>{if(focused&&foreground&&owner)void dismissRootConversationNotifications(owner,{group:route.params.id}).catch(()=>{});},[focused,foreground,owner,route.params.id]);
 
- async function work(fn:()=>Promise<unknown>){if(busy)return;setBusy(true);try{await fn();}catch(e){report(e);}finally{setBusy(false);}}
+ const working=React.useRef(false);
+ async function work(fn:()=>Promise<unknown>){if(working.current)return;working.current=true;setBusy(true);try{await fn();}catch(e){report(e);}finally{working.current=false;setBusy(false);}}
 
  const clearReply=React.useCallback(()=>setReply(current=>current===reply?undefined:current),[reply]);
  const target=(m:RootChatMessage):RootChatReply=>({id:m.group!.messageId,author:m.direction==='outgoing'?owner!:m.peer});
 
  const act=(m:RootChatMessage,kind:'edit'|'delete'|'reaction',value='')=>work(async()=>{await messaging.actGroup(route.params.id,target(m),kind,value,owner);});
 
- const send=(value:string)=>{composer.current?.focus();return work(async()=>{if(editing)await messaging.actGroup(route.params.id,target(editing),'edit',value,owner);else await messaging.sendGroupText(route.params.id,value,reply,owner);setText(current=>current===value?'':current);for(const peer of g?.members??[])if(peer!==owner)activity.notify(peer,false);setReply(undefined);setEditing(undefined);});};
+ const send=(value:string)=>{const update=composer.current?.setText;composer.current?.focus();return work(async()=>{if(!update)return;composer.current?.clear();await submitComposer(value,update,()=>editing?messaging.actGroup(route.params.id,target(editing),'edit',value,owner):messaging.sendGroupText(route.params.id,value,reply,owner));for(const peer of g?.members??[])if(peer!==owner)activity.notify(peer,false);setReply(undefined);setEditing(undefined);});};
 
- const messages=rootGroupMessages(state,route.params.id).reverse();
+ const messages=React.useMemo(()=>rootGroupMessages(state,route.params.id).reverse(),[state,route.params.id]);
  const memberName=(account:string)=>account===owner?'You':state.contacts.find(c=>c.account===account)?.alias||shortIdentity(account);
  const findReply=(reference:RootChatReply)=>messages.find(q=>q.group?.messageId===reference.id&&(q.direction==='outgoing'?owner:q.peer)===reference.author);
 
+
+ const messageList=React.useMemo(()=>(<FlatList inverted data={messages} keyExtractor={m=>(m.direction==='outgoing'?'own':m.peer)+':'+m.group!.messageId} style={styles.messageList} contentContainerStyle={styles.messagesList} keyboardShouldPersistTaps="handled" renderItem={({item:m,index})=>{const mine=m.direction==='outgoing',sticker=parseSticker(m.text),previous=messages[index+1],showSender=!mine&&(!previous||previous.direction==='outgoing'||previous.peer!==m.peer);return <ReplySwipe disabled={disabled||m.deleted} onReply={()=>{setEditing(undefined);setReply(target(m));}}><View style={[bubbles.bubbleRow,mine?bubbles.bubbleRowRight:bubbles.bubbleRowLeft]}>{showSender&&<Pressable accessibilityRole="button" accessibilityLabel={'Open details for '+memberName(m.peer)} onPress={()=>navigation.navigate('Contact',{peer:m.peer})} style={bubbles.groupSenderLink} hitSlop={4}><Text numberOfLines={1} style={[bubbles.senderName,{color:colors.primary}]}>{memberName(m.peer)}</Text></Pressable>}<RootMessageReactions message={m} owner={owner} disabled={disabled} onReact={value=>void act(m,'reaction',value)}><Pressable onLongPress={event=>{if(!disabled&&!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbles.bubble,mine?bubbles.bubbleSent:bubbles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbles.stickerBubble]}>{!m.deleted&&m.reply&&<View style={[bubbles.quoteBlock,{borderLeftColor:colors.primary,backgroundColor:colors.surfaceVariant}]}><Text numberOfLines={1} style={[bubbles.quoteName,{color:colors.primary}]}>{memberName(m.reply.author)}</Text><Text numberOfLines={2} style={[bubbles.quoteText,{color:colors.textSecondary}]}>{messagePreview(findReply(m.reply))}</Text></View>}{m.attachment&&!m.deleted?<RootAttachmentBubble onLongPress={event=>{if(!disabled){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>:undefined} message={m} progress={transfers.jobs.find(j=>j.digest===attachmentDigest(m.attachment!.manifest))} onError={report}/>:sticker&&!m.deleted?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:m.deleted?<Text style={[bubbles.deletedText,{color:colors.textSecondary}]}>Message deleted</Text>:<SmartMessageText style={[bubbles.messageText,{color:colors.text}]} linkColor={colors.primary}>{m.text}</SmartMessageText>}{(!m.attachment?.mime.startsWith('audio/')||m.deleted)&&<View style={bubbles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>}</Pressable></RootMessageReactions></View></ReplySwipe>;}}/>),[messages,state,owner,colors,disabled,transfers.jobs,navigation,route.params.id]);
 
  return <KeyboardAvoidingScreen style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={header}>
 
@@ -207,7 +213,7 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
   {g?.blocked&&<Text style={{color:colors.error,padding:12}}>This group is blocked.</Text>}{g&&!g.members.includes(owner!)&&<Text style={{color:colors.textSecondary,padding:12}}>You are no longer a member.</Text>}
 
-  <FlatList inverted data={messages} keyExtractor={m=>(m.direction==='outgoing'?'own':m.peer)+':'+m.group!.messageId} style={styles.messageList} contentContainerStyle={styles.messagesList} keyboardShouldPersistTaps="handled" renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=parseSticker(m.text);return <ReplySwipe disabled={disabled||m.deleted} onReply={()=>{setEditing(undefined);setReply(target(m));}}><View style={[bubbles.bubbleRow,mine?bubbles.bubbleRowRight:bubbles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={disabled} onReact={value=>void act(m,'reaction',value)}><Pressable onLongPress={event=>{if(!disabled&&!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbles.bubble,mine?bubbles.bubbleSent:bubbles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbles.stickerBubble]}>{!mine&&<Text numberOfLines={1} style={[bubbles.senderName,{color:colors.primary}]}>{state.contacts.find(c=>c.account===m.peer)?.alias||shortIdentity(m.peer)}</Text>}{!m.deleted&&m.reply&&<View style={[bubbles.quoteBlock,{borderLeftColor:colors.primary,backgroundColor:colors.surfaceVariant}]}><Text numberOfLines={1} style={[bubbles.quoteName,{color:colors.primary}]}>{memberName(m.reply.author)}</Text><Text numberOfLines={2} style={[bubbles.quoteText,{color:colors.textSecondary}]}>{messagePreview(findReply(m.reply))}</Text></View>}{m.attachment&&!m.deleted?<RootAttachmentBubble onLongPress={event=>{if(!disabled){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>:undefined} message={m} progress={transfers.jobs.find(j=>j.digest===attachmentDigest(m.attachment!.manifest))} onError={report}/>:sticker&&!m.deleted?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:m.deleted?<Text style={[bubbles.deletedText,{color:colors.textSecondary}]}>Message deleted</Text>:<SmartMessageText style={[bubbles.messageText,{color:colors.text}]} linkColor={colors.primary}>{m.text}</SmartMessageText>}{(!m.attachment?.mime.startsWith('audio/')||m.deleted)&&<View style={bubbles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>}</Pressable></RootMessageReactions></View></ReplySwipe>;}}/>
+  {messageList}
 
   {!!activity.typing.length&&<Text style={{color:colors.primary,padding:8}}>{activity.typing.filter(p=>g?.members.includes(p)).map(p=>state.contacts.find(c=>c.account===p)?.alias||shortIdentity(p)).join(', ')} typing…</Text>}
 
@@ -227,7 +233,8 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
   {stickers&&owner&&<StickerPicker ownerId={owner} initialUri={stickerSource} draftStorage={rootStickerDraft(owner)} onClose={()=>{setStickers(false);setStickerSource(undefined);}} onSend={s=>work(async()=>{await messaging.sendGroupText(route.params.id,stickerMessage(s),reply,owner);clearReply();})} onSendImported={s=>work(async()=>{const uri=importedStickerUri(owner,s);await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(route.params.id,reply),uri,IMPORTED_STICKER_CONTENT,await stickerFileMime(uri));clearReply();})}/>}
 
-  <View style={[styles.inputBar,{backgroundColor:colors.chatBg,borderTopColor:colors.neonBorder,paddingBottom:Math.max(insets.bottom,8)}]}><View style={styles.inputRowWrap}>{!voice&&<><TouchableOpacity accessibilityLabel="Attach" disabled={disabled||!!editing} onPress={()=>setAttach(true)} style={[styles.attachBtn,{borderColor:colors.neonBorder,backgroundColor:colors.surface,shadowColor:colors.primary}]}><Ionicons name="add" size={25} color={colors.primary}/></TouchableOpacity><View style={[styles.inputRow,{backgroundColor:colors.surface,borderColor:colors.neonBorder,paddingLeft:12}]}><Pressable accessibilityLabel="Open stickers" disabled={disabled||!!editing} onPress={()=>setStickers(true)} style={styles.stickerBtn} hitSlop={4}><Ionicons name="happy-outline" size={24} color={colors.primary}/></Pressable><TextInput ref={composer} accessibilityLabel="New group message" placeholder="Compose message…" placeholderTextColor={colors.textTertiary} value={text} onChangeText={value=>{setText(value);for(const peer of g?.members??[])if(peer!==owner)activity.notify(peer,!!value.trim());}} multiline editable={!cannotCompose} maxLength={1600} style={[styles.textInput,{color:colors.text}]}/></View></>}{text.trim()||editing?<TouchableOpacity accessibilityLabel="Send group message" disabled={disabled||!text.trim()} onPress={()=>void send(text)} style={[styles.sendBtn,{backgroundColor:colors.primary,borderColor:colors.neonBorder,shadowColor:colors.primary,opacity:disabled||!text.trim()?0.45:1}]}><Text style={{color:colors.textInverse}}>▶</Text></TouchableOpacity>:<RootVoiceComposer peer={route.params.id} groupId={route.params.id} disabled={disabled||!!editing} reply={reply} onSent={clearReply} onActive={setVoice} onError={report}/>}</View></View>
+  <ChatComposer peer={route.params.id} onError={report} ref={composer} owner={owner} groupId={route.params.id} disabled={disabled} cannotCompose={cannotCompose} editing={!!editing} reply={reply} onSend={send} onAttach={()=>setAttach(true)} onStickers={()=>setStickers(true)} onSent={clearReply} onTyping={value=>{for(const peer of g?.members??[])if(peer!==owner)activity.notify(peer,value);}}/>
+
 
  </KeyboardAvoidingScreen>;
 

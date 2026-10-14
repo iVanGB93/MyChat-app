@@ -4,17 +4,20 @@ function fixture(mode){
  const gate=new Promise(r=>release=r),owner='axonic:1:'+'a'.repeat(64),peer='axonic:1:'+'b'.repeat(64);
  const selection={id:'c'.repeat(64),peer,name:'test',mime:'image/jpeg',failed:false};
  let rows=[selection];
+ if(mode==='group'){selection.shared={id:'d'.repeat(64),count:2,slot:0};selection.group={id:'e'.repeat(64),revision:1,messageId:'f'.repeat(64)};rows.push({...selection,id:'1'.repeat(64),peer:'axonic:1:'+'2'.repeat(64),shared:{...selection.shared,slot:1}});}
  const incoming={manifest:{expires:Date.now()+60000}};
  const snapshot={contacts:[{account:peer,accepted:true}],messages:[{peer,status:'pending',direction:'incoming',attachment:incoming}]};
+ if(mode==='group')snapshot.groups=[{id:selection.group.id,accepted:true,members:[owner,peer,rows[1].peer]}];
  const worker={enqueue:async(_,direction)=>events.push(direction),tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
  const deps={
  '../../modules/storage/chatStore':{ownChatRevision:()=>0},
  './localAccount':{localAccount:{status:()=>({account:owner,state:locked?'locked':'unlocked'}),subscribe:f=>{listener=f;return()=>{};}}},
- './localRootChat':{localRootChat:()=>({snapshot:async()=>snapshot,enqueueAttachment:async()=>events.push('publish')})},
+ './localRootChat':{localRootChat:()=>({snapshot:async()=>snapshot,enqueueAttachment:async()=>events.push('publish'),enqueueAttachments:async items=>{assert.equal(items.length,2);assert.equal(prepares,2);events.push('publish-batch');}})},
  './attachmentPolicy':{...require('./helpers/attachment.cjs').load('attachmentPolicy'),indexAttachmentPolicy:()=>()=>true},
  './attachmentTiming':{createAttachmentTiming:()=>({measure:(_s,f)=>f(),snapshot:()=>({})})},
  './rootMediaExport':{startRootMediaExport:()=>({stop(){},wake(){}})},
  './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async()=>mode==='lookup'?null:{}})},
+ './rootGroups':{validGroupContext:()=>true,rootGroupAllowed:()=>true},
  './identityProtocol':{validAccountId:()=>true,verifyRecord:()=>true},
  './mobileAttachmentJobs':{createMobileAttachmentJobs:()=>({})},
  './attachmentTransfer':{createAttachmentTransfer:()=>worker},
@@ -40,3 +43,11 @@ test('locking during preparation cannot publish or remove a staged attachment',a
  for(let n=0;n<6;n++)await new Promise(setImmediate);
  assert(!f.events.includes('publish'));assert(!f.events.includes('remove'));assert.equal(f.rows().length,1);
 });
+
+ test('group descriptors stay unpublished until all recipients finish preparation',async t=>{
+ const f=fixture('group');t.after(()=>f.runtime.stop());await f.pump();await f.pump();
+ assert(!f.events.includes('publish'));assert(!f.events.includes('publish-batch'));assert.equal(f.rows().length,2);
+ f.release();for(let n=0;n<20;n++)await new Promise(setImmediate);
+ assert.equal(f.events.filter(e=>e==='publish-batch').length,1);assert.equal(f.events.filter(e=>e==='publish').length,0);
+ assert.equal(f.rows().length,0);assert.equal(f.events.filter(e=>e==='outgoing').length,2);
+ });

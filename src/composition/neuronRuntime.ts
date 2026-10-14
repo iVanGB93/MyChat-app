@@ -1,3 +1,4 @@
+import {loadRecoverySettings} from '../services/recoverySettings';
 import {createGroupCustodyCourier} from '../services/identity/groupCustodyCourier';
 import {createGroupCustodyService,groupCustodyWakeStore} from '../services/identity/groupCustodyService';
 import {createMobileGroupCustodyStore} from '../services/identity/mobileGroupCustodyStore';
@@ -123,7 +124,7 @@ function createLocalAccountNetwork() {
     if(attachments?.owner!==account)attachments={owner:account,service:createAttachmentCustody({owner:account,records,store:createMobileAttachmentStore(account),now:Date.now,current:()=>owner()===account})};
     return attachments.service;
   }
-  const activity=createChatActivity({owner,now:Date.now,allowed:async(peer,group)=>{const s=await localRootChat().snapshot();if(s.contacts.some(c=>c.account===peer&&c.blocked))return false;return group?s.groups?.some(g=>g.id===group&&g.accepted&&!g.blocked&&g.members.includes(peer)&&g.members.includes(owner()!))===true:s.contacts.some(c=>c.account===peer&&c.accepted);},send:async(peer,raw)=>{if(AppState.currentState!=='active')return false;const id=await Native!.identityRandomBytes!(32);return runtime.sendChatMessage(peer,raw,id);}});
+  const activity=createChatActivity({owner,now:Date.now,allowed:async(peer,group)=>{const s=await chatReads.read();if(s.contacts.some(c=>c.account===peer&&c.blocked))return false;return group?s.groups?.some(g=>g.id===group&&g.accepted&&!g.blocked&&g.members.includes(peer)&&g.members.includes(owner()!))===true:s.contacts.some(c=>c.account===peer&&c.accepted);},send:async(peer,raw)=>{if(AppState.currentState!=='active')return false;const id=await Native!.identityRandomBytes!(32);return runtime.sendChatMessage(peer,raw,id);}});
   activeActivity=activity;
   const native = Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> };
   async function receiveMessage(message:{from:string;id:string;text:string}){
@@ -194,6 +195,7 @@ function createLocalAccountNetwork() {
   const unsub = localAccount.subscribe(() => { if (!owner()) {chatReads.clear();capabilities.clear();activity.clear();peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();groupCourier.invalidate();profileRecovery.invalidate();}else{profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});} });
   const unlimit = subscribeAllowedAxons(() => runtime.setLimit(allowedAxons()));
   void loadAllowedAxons().catch(() => {});
+  void loadRecoverySettings().catch(() => {});
   const delivery=createMessageDelivery({owner,ledger:()=>({...localRootChat(),snapshot:chatReads.read}),
     now:Date.now,connectedPeers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),
     blocked:peers=>{blocked.clear();for(const peer of peers)blocked.add(peer);},collect:async()=>{await courier.tick();await groupCourier.tick();},

@@ -11,25 +11,34 @@ const KeyboardLayoutContext=createContext({nativeInsets:false,visible:false});
 export function KeyboardAvoidingScreen({children,style,keyboardVerticalOffset,...props}:ViewProps&{keyboardVerticalOffset?:number}){
  const root=useRef<View>(null),[top,setTop]=useState(0);
  const [layout,setLayout]=useState({visible:false,overlap:0});
+ const refreshLayout=useRef<()=>void>(()=>{});
  const rootStyle=StyleSheet.flatten(style),basePadding=rootStyle?.paddingBottom??rootStyle?.paddingVertical??rootStyle?.padding;
  const nativeInsets=Platform.OS==='android'&&Number(Platform.Version)>=30&&supportsKeyboardOverlap();
  useEffect(()=>{
   if(!nativeInsets)return;
-  let active=true,running=false;
+  let active=true,running=false,visible=Keyboard.isVisible();
+  let settle:ReturnType<typeof setTimeout>|undefined;
   const refresh=async()=>{
    if(running||AppState.currentState!=='active')return;
    const tag=findNodeHandle(root.current);if(tag===null)return;
    running=true;
    try{
     const next=await getKeyboardOverlap(tag);
-    if(active&&next)setLayout(current=>current.visible===next.visible&&current.overlap===next.overlap?current:next);
+    if(active&&next){visible=next.visible;setLayout(current=>current.visible===next.visible&&current.overlap===next.overlap?current:next);}
    }finally{running=false;}
   };
-  void refresh();const timer=setInterval(()=>void refresh(),250);
-  return()=>{active=false;clearInterval(timer);};
+  // Events handle transitions; retain a slower visible-keyboard fallback for OEM resizing.
+  const changed=()=>{void refresh();clearTimeout(settle);settle=setTimeout(()=>void refresh(),180);};
+  refreshLayout.current=changed;
+  const show=Keyboard.addListener('keyboardDidShow',()=>{visible=true;changed();});
+  const hide=Keyboard.addListener('keyboardDidHide',()=>{visible=false;changed();});
+  const frame=Keyboard.addListener('keyboardDidChangeFrame',changed);
+  const app=AppState.addEventListener('change',state=>{if(state==='active')changed();});
+  changed();const timer=setInterval(()=>{if(visible)void refresh();},1000);
+  return()=>{active=false;refreshLayout.current=()=>{};clearTimeout(settle);clearInterval(timer);show.remove();hide.remove();frame.remove();app.remove();};
  },[nativeInsets]);
  return <View {...props} ref={root} collapsable={false} style={[{flex:1},style,nativeInsets&&{paddingBottom:Math.max(typeof basePadding==='number'?basePadding:0,layout.overlap)}]} onLayout={event=>{
-  props.onLayout?.(event);root.current?.measureInWindow((_x,y)=>setTop(y));
+  props.onLayout?.(event);refreshLayout.current();if(!nativeInsets)root.current?.measureInWindow((_x,y)=>setTop(y));
  }}><KeyboardLayoutContext.Provider value={{nativeInsets,visible:layout.visible}}><KeyboardAvoidingView enabled={!nativeInsets} style={{flex:1}} behavior={Platform.OS==='ios'?'padding':'height'} keyboardVerticalOffset={keyboardVerticalOffset??top}>{children}</KeyboardAvoidingView></KeyboardLayoutContext.Provider></View>;
 }
 

@@ -1,3 +1,4 @@
+import {createPeerRanking} from './peerRanking';
 import { createAxonSignaling, type AxonSignal } from './axonSignaling';
 import {routeCallMedia} from './callMediaRouting';
 import { createIntroductionDirectory } from './identityIntroductions';
@@ -36,6 +37,15 @@ export function createIdentityNetwork(d: {
   let admit: ((candidate: NeuronCandidate, wire: AxonWire) => boolean) | null = null;
   let account: string | null = null, enabled = true, disposed = false, generation = 0;
   const sessions = new Set<Session>();
+  const ranking=createPeerRanking(d.now);
+  function rankedConnections(mode:'text'|'media'='text'){
+    for(const session of sessions){const snap=session.snapshot();if(snap.account)ranking.observe(snap.account,snap.quality);}
+    return ranking.rank((pool?.snapshot().connections??[]).filter(c=>c.state==='connected'),mode);
+  }
+  function rankedSessions(mode:'text'|'media'='text'){
+    const peers=rankedConnections(mode).map(c=>c.account);
+    return [...sessions].filter(s=>peers.includes(s.snapshot().account!)).sort((a,b)=>peers.indexOf(a.snapshot().account!)-peers.indexOf(b.snapshot().account!));
+  }
   const connectedListeners=new Set<(peer:string)=>void>();
   let signaling: ReturnType<typeof createAxonSignaling> | null = null;
   const sendSignal = (via: string, raw: string) => [...sessions].some(s => s.snapshot().account === via && s.sendSignal(raw));
@@ -43,7 +53,7 @@ export function createIdentityNetwork(d: {
   function pause() {
     generation++; signaling?.clear(); signaling = null; directory.clear(); admit = null; pool?.stop();
     for (const session of [...sessions]) session.stop();
-    account = null;
+    account = null; ranking.clear();
   }
   function reconcile() {
     const status = d.identity.status();
@@ -74,6 +84,7 @@ export function createIdentityNetwork(d: {
           wire = incoming ?? await d.connect(candidate, context);
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
           session = await d.identity.createAxon(wire, d.store, candidate.account, () => {
+            if(session){const snap=session.snapshot();if(snap.account){ranking.observe(snap.account,snap.quality);if(snap.closeReason!=='session-stopped'&&snap.closeReason!=='inactive-session')ranking.failed(snap.account);}}
             console.info('[Axonic connection]', candidate.route, session?.snapshot().closeReason ?? 'handshake-closed', JSON.stringify(session?.snapshot().traffic ?? {}));
             close(); context.onClosed();
           }, {
@@ -106,14 +117,14 @@ export function createIdentityNetwork(d: {
       const session=[...sessions].find(s=>s.mediaContext()?.peer.account===target && s.mediaContext()?.peer.device===device);
       return session?.callMediaRequest(raw) ?? Promise.resolve(false);
     },
-    mediaRelayPeers:()=>[...sessions].flatMap(s=>{const p=s.mediaRelayPeer();return p?[p]:[];}),
+    mediaRelayPeers:()=>rankedSessions('media').flatMap(s=>{const p=s.mediaRelayPeer();return p?[p]:[];}),
     async sendRelayedMedia(raw:string) {
       const epoch=generation,own=account,current=()=>!!own&&account===own&&generation===epoch&&!disposed&&d.identity.status().state==='unlocked';
       return routeCallMedia(raw,{current,direct:async(target,device,body)=>{
         const session=[...sessions].find(s=>{const peer=s.mediaForwardPeer();return peer?.account===target&&peer.device===device;});
         return session?.mediaRelayRequest(body,true)??false;
       },relay:async body=>{
-        for(const session of sessions){if(!current())return false;if(session.mediaRelayPeer()&&await session.mediaRelayRequest(body))return true;}
+        for(const session of rankedSessions('media')){if(!current())return false;if(session.mediaRelayPeer()&&await session.mediaRelayRequest(body))return true;}
         return false;
       }});
     },
@@ -121,7 +132,7 @@ export function createIdentityNetwork(d: {
       const session=[...sessions].find(s=>s.mediaForwardPeer()?.account===account&&s.mediaForwardPeer()?.device===device);
       return session?.mediaRelayRequest(raw,true)??Promise.resolve(false);
     },
-    relayPeers: () => [...sessions].flatMap(s => { const peer=s.relayPeer(); return peer ? [peer] : []; }),
+    relayPeers: () => rankedSessions().flatMap(s => { const peer=s.relayPeer(); return peer ? [peer] : []; }),
     callRelayRequest(peer: import('./identityClient').IdentityPeer, raw: string) {
       const session=[...sessions].find(s=>{const p=s.relayPeer();return p?.account===peer.account&&p.device===peer.device&&p.instance===peer.instance;});
       return session?.callRelayRequest(raw) ?? Promise.resolve(null);
@@ -135,27 +146,23 @@ export function createIdentityNetwork(d: {
       if (!Number.isInteger(next) || next < 3 || next > 10) throw Error('Allow axons must be between 3 and 10');
       limit = next; pool?.setLimit(next);
     },
-    pushPeers: () => [...sessions].filter(s => s.snapshot().state === 'connected' && s.supportsPush()).map(s => s.snapshot().account!).filter(Boolean),
+    pushPeers: () => rankedSessions().filter(s => s.snapshot().state === 'connected' && s.supportsPush()).map(s => s.snapshot().account!).filter(Boolean),
     pushRequest(target: string, raw: string) {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.supportsPush() ? session.pushRequest(raw) : Promise.resolve(null);
     },
-    directoryPeers() { return (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected'
+    directoryPeers() { return rankedConnections().filter(c => c.state === 'connected'
       && [...sessions].some(s => s.snapshot().account === c.account && s.supportsDirectory())).map(c => c.account); },
     directoryRequest(target: string, raw: string) {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.directoryRequest(raw) ?? Promise.resolve(null);
     },
-    custodians() {
-      const ranks = { lan: 0, private: 1, internet: 2 };
-      return (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && [...sessions].some(s => s.snapshot().account === c.account && s.supportsCustody()))
-        .sort((a, b) => ranks[a.route] - ranks[b.route]).map(c => c.account);
-    },
+    custodians() {return rankedConnections().filter(c=>[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsCustody())).map(c=>c.account);},
     profilePeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsProfileUpdates()).map(s=>s.snapshot().account!).filter(Boolean),
     timestampPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsMessageTimestamps()).map(s=>s.snapshot().account!).filter(Boolean),
-    groupCustodians:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsGroupCustody()).map(s=>s.snapshot().account!).filter(Boolean),
+    groupCustodians:()=>rankedSessions().filter(s=>s.snapshot().state==='connected'&&s.supportsGroupCustody()).map(s=>s.snapshot().account!).filter(Boolean),
     sharedAttachmentPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsSharedAttachments()).map(s=>s.snapshot().account!).filter(Boolean),
-    attachmentPeers(){const ranks={lan:0,private:1,internet:2};return (pool?.snapshot().connections??[]).filter(c=>c.state==='connected'&&[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).sort((a,b)=>ranks[a.route]-ranks[b.route]).map(c=>c.account);},
+    attachmentPeers(){return rankedConnections('media').filter(c=>[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).map(c=>c.account);},
     attachmentRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.snapshot().state==='connected')?.attachmentRequest(raw)??Promise.resolve(null);},
     attachmentBulkPeers(){return [...sessions].filter(s=>s.supportsAttachmentBulk()).map(s=>s.snapshot().account!);},
     attachmentBatchChunks(target:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBatchChunks()??1;},
@@ -189,7 +196,7 @@ export function createIdentityNetwork(d: {
     snapshot() {
       const status = d.identity.status();
       return { state: disposed ? 'stopped' : !enabled ? 'paused' : status.state !== 'unlocked' ? 'locked'
-        : account ? 'active' : 'waiting', account, limit, pool: pool?.snapshot() ?? null, sessions:[...sessions].map(s=>({...s.snapshot(),push:s.supportsPush(),custody:s.supportsCustody()})), introductions: directory.snapshot() };
+        : account ? 'active' : 'waiting', account, limit, pool: pool ? {...pool.snapshot(),connections:[...rankedConnections(),...pool.snapshot().connections.filter(c=>c.state!=='connected')]} : null, sessions:[...sessions].map(s=>({...s.snapshot(),push:s.supportsPush(),custody:s.supportsCustody()})), introductions: directory.snapshot() };
     },
     stop() { if (disposed) return; disposed = true; unsubscribe(); pause(); },
   };

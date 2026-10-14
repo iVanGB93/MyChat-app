@@ -1,0 +1,15 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const source=ts.transpileModule(fs.readFileSync('src/components/ui/KeyboardForm.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.React,esModuleInterop:true,target:ts.ScriptTarget.ES2022}}).outputText;
+function setup(){
+ const effects=[],listeners=new Map(),timers=new Map(),intervals=new Map();let calls=0,visible=false,cleanup;
+ const react={createElement:(type,props,...children)=>({type,props,children}),createContext:()=>({Provider:'Provider'}),forwardRef:f=>f,useCallback:f=>f,useContext:()=>null,useState:v=>[v,()=>{}],useRef:v=>({current:v}),useEffect:f=>effects.push(f)};
+ const subscribe=(key,fn)=>{listeners.set(key,fn);return {remove:()=>listeners.delete(key)};};
+ const app={currentState:'active',addEventListener:(_,fn)=>subscribe('app',fn)};
+ const native={AppState:app,findNodeHandle:()=>1,Keyboard:{isVisible:()=>visible,addListener:subscribe},Platform:{OS:'android',Version:36},StyleSheet:{create:x=>x,flatten:x=>x},View:'View',KeyboardAvoidingView:'Avoid'};
+ const c={exports:{},setTimeout:f=>{const id={};timers.set(id,f);return id;},clearTimeout:id=>timers.delete(id),setInterval:f=>{const id={};intervals.set(id,f);return id;},clearInterval:id=>intervals.delete(id),require:n=>n==='react'?react:n==='react-native'?native:n.includes('axonic-app-update')?{supportsKeyboardOverlap:()=>true,getKeyboardOverlap:async()=>{calls++;return {visible,overlap:visible?300:0};}}:{keyboardScrollDelta:()=>0}};
+ vm.runInNewContext(source,c);c.exports.KeyboardAvoidingScreen({style:{}});cleanup=effects[0]();
+ return {get calls(){return calls;},listeners,intervals,timers,app,event(name,value){visible=value;listeners.get(name)?.();},tick(){for(const f of intervals.values())f();},settle(){const pending=[...timers.values()];timers.clear();pending.forEach(f=>f());},cleanup};
+}
+const flush=async()=>{await Promise.resolve();await Promise.resolve();};
+test('hidden keyboard does not poll; show/hide refresh immediately and visible fallback remains',async()=>{const h=setup();await flush();h.settle();await flush();const baseline=h.calls;h.tick();await flush();assert.equal(h.calls,baseline);h.event('keyboardDidShow',true);await flush();assert.equal(h.calls,baseline+1);h.tick();await flush();assert.equal(h.calls,baseline+2);h.event('keyboardDidHide',false);await flush();const hidden=h.calls;h.tick();await flush();assert.equal(h.calls,hidden);h.cleanup();});
+test('background suppresses native work; resume refreshes and unmount cancels timers/listeners',async()=>{const h=setup();await flush();h.event('keyboardDidShow',true);await flush();h.app.currentState='background';const baseline=h.calls;h.tick();h.settle();await flush();assert.equal(h.calls,baseline);h.app.currentState='active';h.listeners.get('app')('active');await flush();assert.equal(h.calls,baseline+1);h.cleanup();assert.equal(h.timers.size,0);assert.equal(h.intervals.size,0);assert.equal(h.listeners.size,0);});

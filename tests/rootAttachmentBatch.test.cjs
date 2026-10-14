@@ -4,6 +4,7 @@ function fixture(){
  const out={};new Function('require','exports','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>{
   if(name.includes('async-storage'))return {default:{getItem:async k=>rows.get(k),setItem:async(k,v)=>rows.set(k,v)}};
   if(name.includes('axonic-nearby'))return {default:{identityRandomBytes:async()=>String(++seq).padStart(64,'0')}};
+  if(name==='./rootGroups')return {validGroupContext:()=>true};
   if(name==='./rootMessageFeedback')return {publishRootMessageFeedback:event=>feedback.push(event)};
   if(name==='./localRootChat')return {localRootChat:()=>({snapshot:async()=>({messages:groupMessages})})};
   if(name==='./rootGroupActions')return {validGroupReply:r=>!!r&&/^[a-f0-9]{64}$/.test(r.id)&&['owner','peer','other'].includes(r.author),groupReplyAvailable:(state,owner,group,reply)=>state.messages.some(m=>m.group?.id===group&&m.group.messageId===reply.id&&m.peer===reply.author)};
@@ -56,4 +57,13 @@ test('reviewed group media and voice staging preserve a third-member quote for e
 });
 test('an unavailable group quote fails before any batch file is staged',async()=>{
  const f=fixture();await assert.rejects(f.out.queueRootAttachmentBatch({owner:'owner',peer:'',items:f.items,audience:{owner:'owner',peers:['peer'],group:{id:'g',revision:1}},reply:{id:'a'.repeat(64),author:'other'}}),/Original/);assert.equal(f.staged.size,0);assert.equal(f.feedback.length,0);
+});
+
+test('group preparation displays one row per photo and retries/removes the whole failed selection',async()=>{
+ const f=fixture();await f.out.queueRootAttachmentBatch({owner:'owner',peer:'',items:f.items,audience:{owner:'owner',peers:['peer','other'],group:{id:'g',revision:1}}});
+ let rows=JSON.parse([...f.rows.values()][0]);rows[1].failed=true;f.rows.set([...f.rows.keys()][0],JSON.stringify(rows));
+ let visible=f.out.groupAttachmentSelections(rows);assert.equal(visible.length,2);assert.equal(visible[0].failed,true);assert.equal(rows[0].failed,false,'projection does not mutate durable rows');
+ await f.out.retryRootAttachmentSelection(visible[0].id);rows=JSON.parse([...f.rows.values()][0]);assert(rows.every(r=>!r.failed));
+ rows[1].failed=true;f.rows.set([...f.rows.keys()][0],JSON.stringify(rows));await f.out.removeRootAttachmentSelection(visible[0].id);
+ rows=JSON.parse([...f.rows.values()][0]);assert.equal(rows.length,2);assert(rows.every(r=>r.group.messageId===visible[1].group.messageId));
 });

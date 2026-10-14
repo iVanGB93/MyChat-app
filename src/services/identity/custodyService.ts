@@ -4,7 +4,9 @@ import type { IdentityRecordStore } from './identityAdmission.ts';
 export interface CustodyRow { sender: string; recipient: string; id: string; recipientDevice: string;
   expires: number; digest: string; packet: CustodyEnvelope | CustodyReceipt | null }
 /** Store must serialize transactions across ALL instances sharing the same owner. Commit or throw. */
-export interface CustodyStore { limits?: CustodyLimits; transaction<T>(change: (rows: CustodyRow[]) => T): Promise<T> }
+export interface CustodyStore { read?<T>(inspect:(rows:readonly CustodyRow[])=>T):Promise<T>; limits?: CustodyLimits; transaction<T>(change: (rows: CustodyRow[]) => T): Promise<T> }
+/** Optional immutable read path; mutation and acknowledgement still use transactions. */
+export function readCustodyStore<T>(store:CustodyStore,inspect:(rows:readonly CustodyRow[])=>T):Promise<T>{return store.read?store.read(inspect):store.transaction(inspect);}
 export const CUSTODY_LIMIT = 128;
 export interface CustodyLimits { live: number; rows: number; bytes: number; perSender: number; perRecipient: number }
 export const DEFAULT_CUSTODY_LIMITS: CustodyLimits = {live:128,rows:1024,bytes:1_024_000,perSender:16,perRecipient:16};
@@ -12,6 +14,11 @@ export const DEFAULT_CUSTODY_LIMITS: CustodyLimits = {live:128,rows:1024,bytes:1
 // stored ciphertext, not admission checks: parsing, row bindings, limits and
 // signature verification still run where they did before. At most ~896 KB of keys.
 const storedDigests = new Map<string,string>();
+// Cache only successfully validated, exact serialized rows. Changed ciphertext,
+// bindings or receipts always miss. Duplicate/aggregate capacity checks still run.
+const validatedRows=new Map<string,number>();
+let validatedRowBytes=0;
+const VALIDATED_ROW_BYTES=8*1024*1024;
 function storedEnvelopeDigest(packet:CustodyEnvelope){
   const bytes=JSON.stringify(packet),cached=storedDigests.get(bytes);
   if(cached!==undefined)return cached;
@@ -23,6 +30,11 @@ export function validateCustodyRows(value: unknown, limits: CustodyLimits = DEFA
   if (!Array.isArray(value) || value.length > limits.rows) throw Error('Invalid custody store');
   const keys = new Set<string>();
   for (const r of value) {
+    const serialized=JSON.stringify(r);
+    if(validatedRows.has(serialized)){
+      if(keys.has(r.sender+r.id))throw Error('Invalid custody row');
+      keys.add(r.sender+r.id);continue;
+    }
     if (!r || !validAccountId(r.sender) || !validAccountId(r.recipient) || r.sender === r.recipient
       || !/^[a-f0-9]{64}$/.test(r.id) || !/^[a-f0-9]{64}$/.test(r.recipientDevice) || !/^[a-f0-9]{64}$/.test(r.digest)
       || !Number.isSafeInteger(r.expires) || r.expires < CUSTODY_TTL || keys.has(r.sender + r.id)) throw Error('Invalid custody row');
@@ -31,6 +43,11 @@ export function validateCustodyRows(value: unknown, limits: CustodyLimits = DEFA
       const p = parseCustody(JSON.stringify(r.packet), r.expires - 1);
       if (!p || p.id !== r.id || p.sender !== r.sender || p.recipient !== r.recipient || p.recipientDevice !== r.recipientDevice
         || p.expires !== r.expires || (p.kind === 'envelope' ? storedEnvelopeDigest(p) : p.digest) !== r.digest) throw Error('Invalid custody packet');
+    }
+    const cost=serialized.length*2;
+    if(cost<=VALIDATED_ROW_BYTES){
+      while(validatedRows.size>=4096||validatedRowBytes+cost>VALIDATED_ROW_BYTES){const first=validatedRows.keys().next().value!;validatedRowBytes-=validatedRows.get(first)!;validatedRows.delete(first);}
+      validatedRows.set(serialized,cost);validatedRowBytes+=cost;
     }
   }
   if (JSON.stringify(value).length > limits.bytes) throw Error('Custody byte capacity exceeded');
@@ -51,6 +68,18 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
       if (!packet || packet.kind !== (request.operation === 'deposit' ? 'envelope' : 'receipt')
         || peer !== (packet.kind === 'envelope' ? packet.sender : packet.recipient) || packet.sender === d.owner || packet.recipient === d.owner
         || !await verifyCustody(packet, d.records, d.now()) || !d.current()) return JSON.stringify({ status: 'rejected' });
+    }
+    // Polls do not mutate custody. Indexed hosts can reuse validated immutable
+    // rows; expired rows are hidden here and reclaimed by the ordinary sweep.
+    if(request.operation==='poll'&&d.store.read){
+      const exclude:unknown=request.exclude??[];
+      if(!Array.isArray(exclude)||exclude.length>128||!exclude.every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)))return JSON.stringify({status:'rejected'});
+      return d.store.read(rows=>{
+        validateCustodyRows(rows,limits);
+        if(!d.current())return JSON.stringify({status:'rejected'});
+        const row=rows.find(r=>r.expires>d.now()&&r.packet&&!exclude.includes(r.id)&&(r.packet.kind==='envelope'?r.recipient===peer:r.sender===peer));
+        return JSON.stringify({status:'ok',packet:row?.packet??null});
+      });
     }
     let deposited:CustodyEnvelope|null=null;
     const result=await d.store.transaction(rows => {

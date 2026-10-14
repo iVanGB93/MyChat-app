@@ -1,0 +1,12 @@
+Connection investigation — 2026-10-14 UTC
+
+User phone R3GYC0H7PMY, official com.axonic, PID 27799.
+Confirmed phone log at 02:47:17 and 02:47:31 UTC: internet control-rate-limit, with 186/188 custody responses plus other normal control traffic. This is conclusive evidence that the installed mobile client's shared control budget still closes healthy connections. No production app was replaced.
+
+Implemented and tested: bounded serial normal-message receive queue (including ACKs); separate authenticated custody budget (512/min); bounded exact validated-row cache preserving validation on changed bytes; unchanged-file own-chat read cache; bounded content-free AoN close diagnostics.
+Both AoNs run runtime f1c9c77fe6f9a31fe9f7f3655c709086c4542b49b3bb213e9f4ea7359e5db478. Second deployment da9363cf-6523-4618-ac0d-30252cf814f9.
+Validation: 1,067 app tests passed, 3 skipped; 172 AoN tests passed; typecheck/boundaries/cycles/consolidation passed.
+
+Remaining: official mobile build needs updated protocol code. Do not declare live production phone stable yet. FirstNeuron CPU remains high (approximately 90% of one core); repeated storage work remains a performance concern requiring follow-up. Do not claim caching resolved CPU saturation.
+Temporary inspector is closed. A profiler cleanup mistake caused one unintended restart earlier; user was informed, systemd recovered and identity was preserved. Corrected profiler uses process.getBuiltinModule('node:inspector').close().
+ADB server became unresponsive during final observation; restarting only PC ADB server restored both phones. No app data changed.

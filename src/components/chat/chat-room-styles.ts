@@ -46,6 +46,9 @@ export const chatRoomStyles = StyleSheet.create({
     borderWidth: 1,
   },
   stickerBtn: { padding: 4 },
+  composerShell: { marginTop: -42, paddingTop: 42, zIndex: 2 },
+  stickerToolbar: { position: 'absolute', top: 0, left: 44 + Spacing.sm * 2, zIndex: 2 },
+  stickerToolbarButton: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
   textInput: {
     flex: 1,
     fontSize: Font.size.md,

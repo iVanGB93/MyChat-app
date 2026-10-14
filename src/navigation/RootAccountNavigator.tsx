@@ -1,3 +1,5 @@
+import {ChatComposer,type ChatComposerHandle} from '../components/chat/ChatComposer';
+import {submitComposer} from '../components/chat/submitComposer';
 import {MessageStatusTimes} from '../components/chat/MessageStatusTimes';
 import {useForegroundPoll} from '../hooks/useForegroundPoll';
 import {useMessageStateClock} from '../modules/ui/useMessageStateClock';
@@ -6,13 +8,13 @@ import RootMediaSize from '../components/chat/RootMediaSize';
 import RootGroupMessageInfo from '../screens/chat/RootGroupMessageInfo';
 import RootMessageReactions from '../components/chat/RootMessageReactions';
 import {dismissRootConversationNotifications} from '../modules/messaging/notifications';
-import type {TextInput as NativeTextInput} from 'react-native';
+
 import {KeyboardAvoidingScreen,KeyboardFormScrollView} from '../components/ui/KeyboardForm';
 import {KeyboardAwareTextInput as TextInput} from '../components/ui/KeyboardForm';
 import {groupPhotoUri} from '../components/chat/group-photo';
 import {useChatActivity} from '../modules/ui/useChatActivity';
 
-import {useChatDraft} from '../hooks/use-chat-draft';
+
 
 import {useChatSnapshot as useOwnChat} from '../modules/ui/useChatSnapshot';
 import ChatConnectionBar from '../components/chat/ChatConnectionBar';
@@ -87,7 +89,7 @@ import {importedStickerUri,stickerFileMime,type ImportedSticker} from '../servic
 
 import {IMPORTED_STICKER_CONTENT} from '../services/sticker-file-format';
 
-import RootVoiceComposer from '../components/chat/RootVoiceComposer';
+
 
 import AttachmentMenu from '../components/chat/AttachmentMenu';
 
@@ -97,7 +99,7 @@ import * as Clipboard from 'expo-clipboard';
 
 import React,{useCallback,useMemo,useEffect,useLayoutEffect,useRef,useState} from 'react';
 
-import {AppState,BackHandler,Keyboard,FlatList,Pressable,ScrollView,Share,Text,TouchableOpacity,View} from 'react-native';
+import {AppState,BackHandler,Keyboard,Modal,useWindowDimensions,FlatList,Pressable,ScrollView,Share,Text,TouchableOpacity,View} from 'react-native';
 
 import {NavigationContainer,DarkTheme,DefaultTheme,useIsFocused,createNavigationContainerRef} from '@react-navigation/native';
 
@@ -219,7 +221,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  const activity=useChatActivity();
 
- const peer=route.params.peer,{colors}=useTheme(),{state,error}=useOwnChat(),insets=useSafeAreaInsets(),header=useHeaderHeight();
+ const peer=route.params.peer,{colors}=useTheme(),{state,error}=useOwnChat(),header=useHeaderHeight();
 
  const focused=useIsFocused(),[foreground,setForeground]=useState(AppState.currentState==='active');
 
@@ -234,15 +236,16 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  const attachmentPreview=useAttachmentPreview();
 
- const [attachOpen,setAttachOpen]=useState(false),[voiceActive,setVoiceActive]=useState(false);
+ const [attachOpen,setAttachOpen]=useState(false);
 
- const [text,setText]=useChatDraft(localAccount.status().account,peer);
+
 
  const [busy,setBusy]=useState(false),[transfers,setTransfers]=useState<Awaited<ReturnType<typeof rootAttachmentProgress>>>({jobs:[],selections:[]});
 
  const name=nickname(state,peer),contact=state.contacts.find(c=>c.account===peer),messages=useMemo(()=>state.messages.filter(m=>m.peer===peer&&!m.group).slice().reverse(),[state.messages,peer]);
 
- const composer=useRef<NativeTextInput>(null);
+ const composer=useRef<ChatComposerHandle>(null),sending=useRef(false);
+ const setText=(next:string|((current:string)=>string))=>composer.current?.setText(next);
  useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
  const list=useRef<FlatList<RootChatMessage>>(null),owner=localAccount.status().account;
 
@@ -282,8 +285,18 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   {(['video','voice'] as const).map(kind=><TouchableOpacity key={kind} testID={kind==='voice'?'axonic-voice-call':'axonic-video-call'} accessibilityLabel={kind==='voice'?'Start voice call':'Start video call'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind})} style={{width:36,height:36,borderRadius:18,backgroundColor:'rgba(0,229,255,0.10)',borderWidth:1,borderColor:'rgba(0,229,255,0.30)',alignItems:'center',justifyContent:'center',opacity:contact?.blocked?0.4:1}}><Ionicons name={kind==='voice'?'call-outline':'videocam-outline'} size={18} color="#00E5FF"/></TouchableOpacity>)}</View>});},[navigation,peer,name,colors,contact?.blocked,contact?.muted,activity.online.join(),state.avatarUris[peer]]);
 
- async function send(){
- composer.current?.focus();if(busy||!text.trim()||contact?.blocked)return;const value=text,selection=replyTo;setBusy(true);try{if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;if(editing){await messaging.act(peer,{id:editing.id,author:owner!},'edit',value,owner);setEditing(undefined);}else await messaging.sendText(peer,value,selection?{id:selection.id,author:selection.direction==='outgoing'?owner!:peer}:undefined,owner);setReplyTo(current=>current===selection?undefined:current);setText(current=>current===value?'':current);list.current?.scrollToOffset({offset:0,animated:true});}catch(e){report(e);}finally{setBusy(false);}}
+ async function send(value:string){
+ const input=composer.current,update=input?.setText;
+ if(sending.current||busy||!value.trim()||contact?.blocked||!update)return;
+ if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
+ const selection=replyTo,edit=editing;
+ sending.current=true;setBusy(true);input.focus();input.clear();
+ try{await submitComposer(value,update,async()=>{
+  if(edit){await messaging.act(peer,{id:edit.id,author:owner!},'edit',value,owner);setEditing(current=>current===edit?undefined:current);}
+  else await messaging.sendText(peer,value,selection?{id:selection.id,author:selection.direction==='outgoing'?owner!:peer}:undefined,owner);
+ });setReplyTo(current=>current===selection?undefined:current);list.current?.scrollToOffset({offset:0,animated:true});}
+ catch(e){report(e);}finally{sending.current=false;setBusy(false);}
+ }
 
  async function sendSticker(sticker:Sticker){if(!owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account');await messaging.sendText(peer,stickerMessage(sticker),replyReference,owner);setReplyTo(undefined);}
 
@@ -342,15 +355,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   {replyTo&&<View style={[roomStyles.replyPreview,{backgroundColor:colors.surface,borderLeftColor:colors.primary}]}><View style={{flex:1}}><Text style={[roomStyles.replyPreviewName,{color:colors.primary}]}>{replyTo.direction==='outgoing'?'Replying to yourself':'Replying to '+name}</Text><Text numberOfLines={2} style={[roomStyles.replyPreviewText,{color:colors.textSecondary}]}>{replyTo.attachment?.name===IMPORTED_STICKER_CONTENT||parseSticker(replyTo.text)?'Sticker':replyTo.text}</Text></View><Pressable accessibilityLabel="Cancel reply" onPress={()=>setReplyTo(undefined)} style={roomStyles.replyPreviewClose}><Ionicons name="close" size={22} color={colors.text}/></Pressable></View>}
 
-  <View testID="axonic-composer-bar" style={[roomStyles.inputBar,{backgroundColor:colors.chatBg,borderTopColor:colors.neonBorder,paddingBottom:Math.max(insets.bottom,8)}]}><View style={roomStyles.inputRowWrap}>
-
-   {!voiceActive&&<TouchableOpacity accessibilityLabel="Attach" disabled={busy||!!editing||contact?.blocked} onPress={()=>setAttachOpen(true)} style={[roomStyles.attachBtn,{borderColor:colors.neonBorder,backgroundColor:colors.surface,shadowColor:colors.primary}]}><Ionicons name="add" size={25} color={colors.primary}/></TouchableOpacity>}
-
-   {!voiceActive&&<View style={[roomStyles.inputRow,{backgroundColor:colors.surface,borderColor:colors.neonBorder,paddingLeft:12}]}><Pressable accessibilityLabel="Open stickers" disabled={busy||!!editing||contact?.blocked} onPress={()=>setStickersOpen(true)} style={roomStyles.stickerBtn} hitSlop={4}><Ionicons name="happy-outline" size={24} color={colors.primary}/></Pressable><TextInput ref={composer} testID="axonic-message-composer" accessibilityLabel="New message" placeholder="Compose message…" placeholderTextColor={colors.textTertiary} style={[roomStyles.textInput,{color:colors.text}]} value={text} onChangeText={value=>{setText(value);activity.notify(peer,!!value.trim());}} multiline maxLength={1600} editable={!contact?.blocked}/></View>}
-
-   {text.trim()||editing?<TouchableOpacity testID="axonic-send-message" accessibilityLabel="Send message" disabled={busy||!text.trim()||contact?.blocked} onPress={()=>void send()} style={[roomStyles.sendBtn,{backgroundColor:colors.primary,borderColor:colors.neonBorder,shadowColor:colors.primary,opacity:busy||!text.trim()||contact?.blocked?0.45:1}]}><Text style={[roomStyles.sendIcon,{color:colors.textInverse}]}>▶</Text></TouchableOpacity>:<RootVoiceComposer peer={peer} reply={replyReference} onSent={clearReply} disabled={busy||!!contact?.blocked} onError={report} onActive={setVoiceActive}/>}
-
-  </View></View>
+  <ChatComposer ref={composer} owner={owner} peer={peer} disabled={busy||!!contact?.blocked} cannotCompose={!!contact?.blocked} editing={!!editing} reply={replyReference} onSend={send} onAttach={()=>setAttachOpen(true)} onStickers={()=>setStickersOpen(true)} onSent={clearReply} onTyping={value=>activity.notify(peer,value)} onError={report}/>
 
  </KeyboardAvoidingScreen>;
 
@@ -364,9 +369,11 @@ function Contact({route,navigation}:Screen<'Contact'>){
 
  const header=useHeaderHeight(),insets=useSafeAreaInsets();
 
- const [alias,setAlias]=useState<string|null>(null),[saving,setSaving]=useState(false);
+ const [alias,setAlias]=useState<string|null>(null),[saving,setSaving]=useState(false),[qrOpen,setQrOpen]=useState(false);
+ const {width,height}=useWindowDimensions();
+ const qrSize=Math.max(1,Math.min(width-insets.left-insets.right-64,height-insets.top-insets.bottom-160,480));
 
- useEffect(()=>{setAlias(null);},[peer]);
+ useEffect(()=>{setAlias(null);setQrOpen(false);},[peer]);
 
  async function save(){if(alias===null||saving)return;setSaving(true);try{await conversations().configure(peer,{alias});setAlias(null);Alert.alert('Nickname saved','Only you see this name on this phone.');}catch(e){report(e);}finally{setSaving(false);}}
 
@@ -380,9 +387,9 @@ function Contact({route,navigation}:Screen<'Contact'>){
 
   <View style={[infoStyles.hero,section]}>
 
-   <Avatar name={name} uri={state.avatarUris[peer]} size={112}/><Text selectable style={[infoStyles.name,{color:colors.text}]}>{name}</Text>
+   <View style={infoStyles.identityHeading}><Avatar name={name} uri={state.avatarUris[peer]} size={64}/><View style={infoStyles.identityHeadingText}><Text selectable style={[infoStyles.name,{color:colors.text}]}>{name}</Text>
 
-   {!!contact?.alias&&<Text selectable style={[infoStyles.username,{color:colors.textSecondary}]}>{identity}</Text>}
+   {!!contact?.alias&&<Text selectable style={[infoStyles.username,{color:colors.textSecondary}]}>{shortIdentity(peer)}</Text>}</View></View>
 
    <View style={[infoStyles.divider,{backgroundColor:colors.divider}]}/><View style={infoStyles.actions}>
 
@@ -398,23 +405,21 @@ function Contact({route,navigation}:Screen<'Contact'>){
 
   <View style={[infoStyles.section,section]}>
 
-   <Text style={[infoStyles.sectionLabel,{color:colors.textSecondary}]}>AXONIC PROFILE</Text>
-
-   <View style={infoStyles.detailRow}><Ionicons name="finger-print-outline" size={20} color={colors.primary}/><View style={infoStyles.detailText}><Text style={[infoStyles.detailLabel,{color:colors.textSecondary}]}>Axonic ID</Text><Text selectable style={[infoStyles.detailValue,{color:colors.text}]}>{identity}</Text></View></View>
-
-   <View style={{alignItems:'center',padding:12,backgroundColor:'#fff',borderRadius:12,alignSelf:'center'}}><QRCode value={identity} size={180}/></View>
-
-   <View style={infoStyles.actions}><Action icon="copy-outline" label="Copy ID" onPress={()=>void Clipboard.setStringAsync(identity).catch(report)}/><Action icon="share-outline" label="Share ID" onPress={()=>void Share.share({message:identityLink(identity)}).catch(report)}/></View>
-
-  </View>
-
-  <View style={[infoStyles.section,section]}>
-
    <Text style={[infoStyles.sectionLabel,{color:colors.textSecondary}]}>PRIVATE NICKNAME</Text><Text style={{color:colors.textSecondary}}>Only you see this name on this phone. Clear it to use their Axonic ID again.</Text>
 
    <TextInput accessibilityLabel="Private nickname" value={alias??contact?.alias??''} onChangeText={setAlias} editable={!saving} maxLength={80} placeholder="Enter a private nickname" placeholderTextColor={colors.textTertiary} style={{color:colors.text,padding:12,borderWidth:1,borderColor:colors.neonBorder,borderRadius:10}}/>
 
    <TouchableOpacity disabled={saving||alias===null} onPress={()=>void save()}><Text style={{color:colors.primary,fontWeight:'700',opacity:saving||alias===null?0.5:1}}>{saving?'Saving…':'Save nickname'}</Text></TouchableOpacity>
+
+  </View>
+
+  <View style={[infoStyles.section,section]}>
+
+   <Text style={[infoStyles.sectionLabel,{color:colors.textSecondary}]}>AXONIC PROFILE</Text>
+
+   <View style={infoStyles.detailRow}><Ionicons name="finger-print-outline" size={20} color={colors.primary}/><View style={infoStyles.detailText}><Text style={[infoStyles.detailLabel,{color:colors.textSecondary}]}>Axonic ID</Text><Text selectable style={[infoStyles.detailValue,{color:colors.text}]}>{identity}</Text></View></View>
+
+   <View style={[infoStyles.actions,{alignItems:'center'}]}><Action icon="copy-outline" label="Copy ID" onPress={()=>void Clipboard.setStringAsync(identity).catch(report)}/><TouchableOpacity accessibilityRole="button" accessibilityLabel="Enlarge public identity QR code" onPress={()=>{Keyboard.dismiss();setQrOpen(true);}} style={infoStyles.qrBox}><QRCode value={identity} size={80} backgroundColor="#fff" color="#000"/></TouchableOpacity><Action icon="share-outline" label="Share ID" onPress={()=>void Share.share({message:identityLink(identity)}).catch(report)}/></View>
 
   </View>
 
@@ -430,6 +435,7 @@ function Contact({route,navigation}:Screen<'Contact'>){
 
   </TouchableOpacity>
 
+ <Modal visible={qrOpen} animationType="fade" onRequestClose={()=>setQrOpen(false)}><TouchableOpacity activeOpacity={1} accessibilityRole="button" accessibilityLabel="Close enlarged QR code" onPress={()=>setQrOpen(false)} style={[infoStyles.qrScreen,{backgroundColor:colors.background,paddingTop:insets.top+24,paddingBottom:insets.bottom+24}]}><Text style={{color:colors.text,fontSize:22,fontWeight:'700'}}>{name}</Text><View style={infoStyles.qrBox}><QRCode value={identity} size={qrSize} backgroundColor="#fff" color="#000"/></View><Text style={{color:colors.textSecondary}}>Tap anywhere to return</Text></TouchableOpacity></Modal>
  </KeyboardFormScrollView>;
 
 }

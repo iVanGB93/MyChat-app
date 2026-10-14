@@ -1,0 +1,11 @@
+Shared chat composer follow-up - October 14, 2026
+
+Individual and group chats now share ChatComposer. Draft and recording state live in the child, avoiding a full chat-screen render on each key. Individual send uses the same immediate-clear/failed-draft restoration helper as groups, a synchronous duplicate-send guard, and a captured originating draft updater. Existing direct-chat send icon and automation IDs retained.
+
+Raised sticker control now lives inside an expanded hit-test wrapper with compensating negative margin: no added layout height and its top portion remains tappable. Verified upper-edge tap opens picker; closing preserves draft.
+
+Phone Axonic Dev: 48 injected characters preserved. Valid typing sample: 62 frames, 20 janky (32.26%), p50 7ms, p95 14ms, p99 18ms. JS timer lateness over 41 samples: p95 21.48ms, max 51.07ms, none >100ms. Small development-mode sample; no matched direct-chat baseline and no claim of fully resolved typing stutter. First unfocused sample produced no input/frames and was discarded.
+
+Normal UI send to existing synthetic test peer: DEV-COMPOSER-20261014-DIRECT appeared in conversation; immediate DEV-NEXT-DRAFT remained separate. Synthetic unsent draft removed afterward. No official app change or production build.
+
+Validation: 1080 unit tests passed, 3 skipped; TypeScript, cycles, module boundaries, consolidation passed. Evidence: builds/shared-composer-check.log, builds/shared-composer-typing-gfx.txt, builds/shared-picker2.png. Remaining frame deadline misses need further profiling before declaring all lag fixed.

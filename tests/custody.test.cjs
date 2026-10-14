@@ -125,7 +125,7 @@ test('invalid receipt signatures are never consumed and do not hide valid later 
  const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[0].record.account,allowed:()=>true,now:f.now,records:f.records,
  own:{get:async(owner,id)=>({envelope:envelopes.find(e=>e.id===id)})},relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,confirmReceipt:async()=>true,
  request:async(peer,raw)=>{const q=JSON.parse(raw);if(q.operation==='consume'){consumed.push(q.id);return JSON.stringify({status:'accepted'});}return JSON.stringify({status:'ok',packet:receipts.find(r=>!q.exclude.includes(r.id)&&!consumed.includes(r.id))??null});}});
- await courier.tick();assert.equal(consumed.length,0);await courier.tick();assert.deepEqual(consumed,[receipts[4].id]);courier.stop();
+ await courier.tick();assert.equal(consumed.length,0);f.advance(5000);await courier.tick();assert.deepEqual(consumed,[receipts[4].id]);courier.stop();
 });
 test('slow custody deposit does not block another recipient; same-recipient work stays serialized',async t=>{
  const f=fixture(t),envelope=await f.seal();let release,requests=0;
@@ -153,7 +153,7 @@ test('foreground resume polls immediately without duplicating an active inbox re
  relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,
  request:async()=>{polls++;await new Promise(r=>release=r);return JSON.stringify({status:'ok',packet:null});}});
  const first=courier.tick();await Promise.resolve();assert.equal(polls,1);courier.resume();await courier.tick();assert.equal(polls,1);release();await first;
- const next=courier.tick();await Promise.resolve();assert.equal(polls,2);release();await next;
+ f.advance(1000);const next=courier.tick();await Promise.resolve();assert.equal(polls,2);release();await next;
  await courier.tick();assert.equal(polls,2);courier.stop();
 });
 test('unaccepted envelopes cannot monopolize recovery batches or fabricate receipts',async t=>{
@@ -163,7 +163,7 @@ test('unaccepted envelopes cannot monopolize recovery batches or fabricate recei
  receive:async p=>{received.push(p.id);if(p.id===packets[0].id)throw Error('old device ciphertext');return p.id===packets[4].id?f.protocol.signCustodyReceipt(p,f.ids[2].signingSeed,f.ids[2].encryptionSeed):null;},
  request:async(peer,raw)=>{const q=JSON.parse(raw);if(q.operation==='receipt'){acks.push(q.packet.id);return JSON.stringify({status:'accepted'});}return JSON.stringify({status:'ok',packet:packets.find(p=>!q.exclude.includes(p.id))??null});}});
  await courier.tick();assert.equal(received.length,4);assert.equal(acks.length,0);
- await courier.tick();assert.deepEqual(acks,[packets[4].id]);courier.stop();
+ f.advance(5000);await courier.tick();assert.deepEqual(acks,[packets[4].id]);courier.stop();
 });
 test('own custody reclaims expired legacy rows and supports more than 200 live packets without eviction',async t=>{
  const f=fixture(t),store=f.load('ownCustodyStore').createOwnCustodyStore(f.now),packet=await f.seal(),owner=packet.sender;
@@ -483,4 +483,36 @@ test('custody polling cannot send a receipt after its account lease changes',asy
  own:f.load('ownCustodyStore').createOwnCustodyStore(),relays:()=>[hub.record.account],seal:()=>{throw Error('unexpected');},
  request:(peer,raw)=>relay.receive(b.record.account,raw),receive:async packet=>{active=false;q.invalidate();return f.protocol.signCustodyReceipt(packet,b.signingSeed,b.encryptionSeed);}});
  await q.tick();assert.equal(await f.store.transaction(rows=>rows[0].packet.kind),'envelope');
+});
+
+test('validated custody rows reuse exact bytes but mutations and tighter limits still fail',async t=>{
+ const f=fixture(t),e=await f.seal(),validate=f.load('custodyService').validateCustodyRows;
+ const row={sender:e.sender,recipient:e.recipient,id:e.id,recipientDevice:e.recipientDevice,expires:e.expires,digest:f.protocol.custodyDigest(e),packet:e};
+ let parses=0;const original=f.protocol.parseCustody;f.protocol.parseCustody=(...args)=>{parses++;return original(...args);};
+ validate([row]);const before=parses;for(let i=0;i<20;i++)validate([structuredClone(row)]);assert.equal(parses,before);
+ const changed=structuredClone(row);changed.packet.ciphertext='ff'+changed.packet.ciphertext.slice(2);assert.throws(()=>validate([changed]));assert.ok(parses>before);
+ assert.throws(()=>validate([row,row]));assert.throws(()=>validate([row],{rows:0,bytes:1,live:0,perSender:0,perRecipient:0}));
+});
+
+test('unusable recovery packets back off instead of spinning and do not block a later message',async t=>{
+ const f=fixture(t),bad=await f.seal(),good=await f.seal(),reads=[];let calls=0,acks=0,goodVisible=false;
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>bad.recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['relay'],seal:async()=>bad,
+ receive:async p=>{reads.push(p.id);return p.id===good.id?f.protocol.signCustodyReceipt(p,f.ids[2].signingSeed,f.ids[2].encryptionSeed):null;},
+ request:async(_,raw)=>{calls++;const q=JSON.parse(raw);if(q.operation==='receipt'){acks++;return '{"status":"accepted"}';}return JSON.stringify({status:'ok',packet:[bad,...(goodVisible&&!acks?[good]:[])].find(p=>!q.exclude.includes(p.id))??null});}});
+ await courier.tick();const initial=calls;
+ for(let i=0;i<100;i++)await courier.tick();assert.equal(calls,initial,'UI ticks cannot trigger an immediate retry loop');
+ goodVisible=true;f.advance(5000);await courier.tick();assert.equal(acks,1);
+ f.advance(10000);await courier.tick();assert.equal(reads.filter(id=>id===bad.id).length,2);
+ f.advance(15000);await courier.tick();assert.equal(reads.filter(id=>id===bad.id).length,2,'second failure waits 30 seconds');
+ f.advance(15000);await courier.tick();assert.equal(reads.filter(id=>id===bad.id).length,3);courier.stop();
+});
+
+test('large recovery backlog drains exactly once despite lost ACK and courier restart',async t=>{
+ const f=fixture(t),packets=await Promise.all(Array.from({length:160},()=>f.seal())),stored=new Set(),delivered=new Set();let requests=0,lost=true,duplicate=0;
+ const create=()=>f.load('custodyCourier').createCustodyCourier({owner:()=>packets[0].recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['relay'],seal:async()=>packets[0],
+ receive:async p=>{if(delivered.has(p.id))duplicate++;delivered.add(p.id);return f.protocol.signCustodyReceipt(p,f.ids[2].signingSeed,f.ids[2].encryptionSeed);},
+ request:async(_,raw)=>{requests++;const q=JSON.parse(raw);if(q.operation==='receipt'){if(lost){lost=false;return null;}stored.add(q.packet.id);return '{"status":"accepted"}';}return JSON.stringify({status:'ok',packet:packets.find(p=>!stored.has(p.id)&&!q.exclude.includes(p.id))??null});}});
+ let courier=create();
+ for(let i=0;i<60&&stored.size<packets.length;i++){await courier.tick();if(i===12){courier.stop();courier=create();}f.advance(5000);}
+ assert.equal(stored.size,160);assert.equal(delivered.size,160);assert.equal(duplicate,1,'only the lost acknowledgement causes a duplicate receive');assert(requests<380);courier.stop();
 });

@@ -85,10 +85,38 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if(s.groupActions?.some(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id)||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.peer===peer&&m.direction==='outgoing'&&m.id===id))throw Error('Message ID conflict');
    const retry=s.actions?.find(a=>a.peer===peer&&a.direction==='outgoing'&&a.id===id);
    if(retry){if(retry.kind!==kind||retry.text!==text||!sameTarget(retry.target,target))throw Error('Action ID conflict');return false;}
-   if(s.actions?.some(a=>a.peer===peer&&sameTarget(a.target,target)&&a.kind==='delete'))throw Error('Message was deleted');
+   if(s.actions?.some(a=>a.peer===peer&&sameTarget(a.target,target)&&a.kind==='delete')){
+    // A deletion may arrive after the UI selected unread messages. Do not
+    // acknowledge deleted content or prevent other messages being marked read.
+    if(kind==='read')return false;
+    throw Error('Message was deleted');
+   }
    if(kind==='read'&&previous.length)return false;
    if((s.actions?.length??0)>=10000)throw Error('Action storage is full');
    (s.actions??=[]).push(event);return true;
+ }
+ type AttachmentInput={input:AttachmentDescriptor;reply?:RootChatReply;group?:RootGroupContext;selectedAt?:number};
+ async function enqueueAttachments(items:AttachmentInput[]){
+  if(!items.length||items.length>9)throw Error('Invalid attachment batch');
+  const s=await read(),notices:{peer:string;id:string}[]=[];
+  async function append({input,reply,group,selectedAt}:AttachmentInput){
+   if(selectedAt!==undefined&&!validCreationTime(selectedAt))throw Error('Invalid creation time');check();if(!validAttachmentDescriptor(input))throw Error('Invalid attachment');const descriptor=JSON.parse(JSON.stringify(input)) as AttachmentDescriptor;
+   const {id,recipient:peer,sender}=descriptor.manifest;
+   if(group&&!validGroupContext(group))throw Error('Invalid group attachment');
+   if(reply!==undefined&&!(group?validGroupReply(reply):validRootReply(reply,d.owner,peer)))throw Error('Invalid reply');
+   if(reply)reply={...reply};
+   if(sender!==d.owner||!validPeer(peer)||byteLength(group?encodeRootGroupMessage({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,group,...(reply?{reply}:{})}):encodeRootAttachment(peer,id,descriptor,reply))+17>2048||!await d.verifyAttachment?.(descriptor,'outgoing'))throw Error('Attachment identity could not be verified');
+   const c=group?(s.contacts.find(c=>c.account===peer)??{blocked:false,accepted:false}):contact(s,peer);if(c.blocked)throw Error('This identity is blocked');
+   if(s.hiddenChats?.includes(group?'group:'+group.id:peer))throw Error('This conversation was deleted');
+   if(group&&(!rootGroupAllowed(s,d.owner,peer,group)||!s.groups?.find(g=>g.id===group.id)?.accepted))throw Error('Group membership changed');
+   if(reply&&!(group?groupReplyAvailable(s,d.owner,group.id,reply):s.messages.some(m=>!m.group&&m.peer===peer&&m.id===reply!.id&&(m.direction==='outgoing'?d.owner:peer)===reply!.author)))throw Error('Original message is no longer available');
+   const old=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(old){if(JSON.stringify(old.group)!==JSON.stringify(group)||!sameReply(old.reply,reply)||!old.attachment||attachmentDescriptorFingerprint(old.attachment)!==attachmentDescriptorFingerprint(descriptor))throw Error('Attachment ID conflict');return;}
+   if(s.messages.length>=5000)throw Error('Chat storage is full');if(!group)c.accepted=true;
+   const at=selectedAt??d.now();s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at,queuedAt:d.now(),...(s.timestampPeers?.includes(peer)?{createdAt:at}:{}),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});notices.push({peer,id});
+
+  }
+  for(const item of items)await append(item);
+  if(notices.length){await save(s);for(const {peer,id} of notices)d.queued?.(peer,id);}
  }
  return {
   snapshot:()=>run(read),
@@ -162,21 +190,8 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    for(const item of items)changed=applyAction(s,peer,item.id,item.target,'read')||changed;
    if(changed)await save(s);
   }),
-  enqueueAttachment:(input:AttachmentDescriptor,reply?:RootChatReply,group?:RootGroupContext,selectedAt?:number)=>run(async()=>{
-   if(selectedAt!==undefined&&!validCreationTime(selectedAt))throw Error('Invalid creation time');check();if(!validAttachmentDescriptor(input))throw Error('Invalid attachment');const descriptor=JSON.parse(JSON.stringify(input)) as AttachmentDescriptor;
-   const {id,recipient:peer,sender}=descriptor.manifest;
-   if(group&&!validGroupContext(group))throw Error('Invalid group attachment');
-   if(reply!==undefined&&!(group?validGroupReply(reply):validRootReply(reply,d.owner,peer)))throw Error('Invalid reply');
-   if(reply)reply={...reply};
-   if(sender!==d.owner||!validPeer(peer)||byteLength(group?encodeRootGroupMessage({id,peer,direction:'outgoing',text:descriptor.name,at:d.now(),status:'pending',attachment:descriptor,group,...(reply?{reply}:{})}):encodeRootAttachment(peer,id,descriptor,reply))+17>2048||!await d.verifyAttachment?.(descriptor,'outgoing'))throw Error('Attachment identity could not be verified');
-   const s=await read(),c=group?(s.contacts.find(c=>c.account===peer)??{blocked:false,accepted:false}):contact(s,peer);if(c.blocked)throw Error('This identity is blocked');
-   if(s.hiddenChats?.includes(group?'group:'+group.id:peer))throw Error('This conversation was deleted');
-   if(group&&(!rootGroupAllowed(s,d.owner,peer,group)||!s.groups?.find(g=>g.id===group.id)?.accepted))throw Error('Group membership changed');
-   if(reply&&!(group?groupReplyAvailable(s,d.owner,group.id,reply):s.messages.some(m=>!m.group&&m.peer===peer&&m.id===reply!.id&&(m.direction==='outgoing'?d.owner:peer)===reply!.author)))throw Error('Original message is no longer available');
-   const old=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(old){if(JSON.stringify(old.group)!==JSON.stringify(group)||!sameReply(old.reply,reply)||!old.attachment||attachmentDescriptorFingerprint(old.attachment)!==attachmentDescriptorFingerprint(descriptor))throw Error('Attachment ID conflict');return;}
-   if(s.messages.length>=5000)throw Error('Chat storage is full');if(!group)c.accepted=true;
-   const at=selectedAt??d.now();s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at,queuedAt:d.now(),...(s.timestampPeers?.includes(peer)?{createdAt:at}:{}),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});await save(s);d.queued?.(peer,id);
-  }),
+  enqueueAttachment:(input:AttachmentDescriptor,reply?:RootChatReply,group?:RootGroupContext,selectedAt?:number)=>run(()=>enqueueAttachments([{input,reply,group,selectedAt}])),
+  enqueueAttachments:(items:AttachmentInput[])=>run(()=>enqueueAttachments(items)),
   receive:(from:string,id:string,raw:string)=>run(async()=>{
    if(!validPeer(from)||!idValid(id)||byteLength(raw)>2048)return false;
    let a;try{a=JSON.parse(raw);}catch{return false;}

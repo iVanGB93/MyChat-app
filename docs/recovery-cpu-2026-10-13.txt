@@ -1,0 +1,39 @@
+Recovery speed and AoN CPU work - October 13, 2026
+
+Changes
+- Mobile outbox continues after a successful direct acknowledgement or custody handoff instead of waiting for another one-second scheduler tick. Existing concurrency limits and failure backoff remain in place.
+- AoN chat files reuse immutable validated snapshots while the file stamp is unchanged. Changes, external replacement, and invalid data invalidate or reject the snapshot.
+- Read-only hosted chat consumers reuse validated state and dashboard projections. Unchanged capability advertisements do not repeatedly rewrite chat state.
+- Indexed custody storage supports immutable read snapshots invalidated by local and external SQLite changes. Monitoring, wake scans, and mailbox polls avoid read-modify-write transactions. Polls retain authorization, exclusions, validation, and expiry filtering; sweeps reclaim expired data.
+
+Validation
+- Mobile full check: 1074 passed, 3 skipped, no failures. Typecheck, dependency cycles, module boundaries, and consolidation passed.
+- AoN full suite: 177 passed, no failures.
+- Automated regression drains 64 persisted messages after a single initial scheduler tick.
+- First live restart test: 52 confirmed durable messages delivered and acknowledged without duplicates. Elapsed 62.371 seconds includes startup, but Metro source reloads overlapped, so it is not a clean speed benchmark.
+- Second live test: all 32 queued messages were confirmed durable before sender restart. Final sender delivery acknowledgements 32/32; receiver unique messages 32/32. Phone Dev encountered an Expo EventEmitter startup error; reload and a normal Dev launcher start restored it. Timing is invalid as a recovery-speed benchmark. This startup issue is not claimed fixed.
+- Dev phone left connected to both AoNs. Official Play Store installation and account untouched.
+
+CPU observations
+- Same /proc process CPU delta method over 12-second intervals, percent of one CPU core.
+- Before: 61.17% (PID 557316).
+- Intermediate cache release: 34.83% (PID 558166).
+- Final release: 31.17% and 14.83% (PID 558525).
+- Live workload and connections varied. These samples support reduced observed CPU, not a controlled throughput/capacity guarantee or a claim that CPU scaling is fully solved.
+
+Deployment
+- Both authenticated AoN status responses verified matching runtime:
+  4cef5927e1ce4d6e37b0cdce50e968f5d47eb51f32f6456028864c7da90bbd14
+- FirstNeuron identity preserved; rollback copy retained.
+- SecondNeuron deployment: 176ecd3a-94c2-4ffa-9c62-b0dbdc416dfe.
+- No production mobile build or official-phone installation.
+
+Evidence
+builds/recovery-final-validation.log
+builds/aon-final-validation.log
+builds/recovery-speed-timing.json
+builds/recovery-clean-timing.json
+builds/recovery-clean-final.jsonl
+
+Next investigation
+Reproduce the Expo native-module initialization failure on cold Dev startup, then repeat a recovery timing test with no reloads or deployments during measurement. Delivery integrity passed; a clean end-to-end speed improvement remains unmeasured.

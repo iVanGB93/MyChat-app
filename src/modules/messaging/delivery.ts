@@ -38,7 +38,7 @@ export function createMessageDelivery(d: {
   const active=new Map<string,{phase:string;started:number}>();
   const urgent: {peer:string;id:string}[]=[];
   let wakeTimer:ReturnType<typeof setTimeout>|undefined;
-  function schedule(){if(stopped||selecting||active.size>=2||wakeTimer!==undefined||!urgent.some(m=>!active.has(m.peer)&&(retries.get(m.peer+':'+m.id)?.after??0)<=now()))return;wakeTimer=setTimeout(()=>{wakeTimer=undefined;void dispatch();},0);}
+  function schedule(progress=false){if(stopped||selecting||active.size>=2||wakeTimer!==undefined||!progress&&!urgent.some(m=>!active.has(m.peer)&&(retries.get(m.peer+':'+m.id)?.after??0)<=now()))return;wakeTimer=setTimeout(()=>{wakeTimer=undefined;void dispatch();},0);}
   async function collect() {
     const owner = d.owner(), epoch = generation;
     if (collecting || !owner || stopped) return;
@@ -54,7 +54,7 @@ export function createMessageDelivery(d: {
   async function dispatch() {
       const owner = d.owner(), epoch = generation;
       if (selecting || active.size>=2 || !owner || stopped) return;
-      selecting = true;let ownsSelection=true,peer:string|undefined,retryKey:string|undefined,delivered=false;
+      selecting = true;let ownsSelection=true,peer:string|undefined,retryKey:string|undefined,delivered=false,handedOff=false;
       const attempt={phase:'storage',started:now()};
       const current = () => !stopped && generation === epoch && d.owner() === owner;
       try {
@@ -85,7 +85,8 @@ export function createMessageDelivery(d: {
         else if(current()){
           // Recheck revocation after a failed direct attempt and before custody.
           const latest=await ledger.snapshot();if(!current()||!pendingRootChat(latest,owner).some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
-          attempt.phase='deposit';const group=await d.depositGroup?.(pendingRootChat(latest,owner),message);if(!current())return;const held=group===undefined?await d.deposit(message.peer,message.raw,message.id):group;lastOutcome='custody-attempted';
+          attempt.phase='deposit';const group=await d.depositGroup?.(pendingRootChat(latest,owner),message);if(!current())return;const held=group===undefined?await d.deposit(message.peer,message.raw,message.id):group;handedOff=held===true;lastOutcome=handedOff?'custody-held':'custody-attempted';
+          if(handedOff)for(let i=urgent.length-1;i>=0;i--)if(urgent[i].peer===message.peer&&urgent[i].id===message.id)urgent.splice(i,1);
           // Missing keys may need discovery for a later retry. It must never
           // delay this handoff or occupy one of the outgoing delivery slots.
           if(held!==true&&current()&&!resolving.has(message.peer)&&resolving.size<2){
@@ -97,9 +98,9 @@ export function createMessageDelivery(d: {
       finally {
         if(retryKey&&peer&&current()){
           if(delivered)retries.delete(retryKey);
-          else {const failures=Math.min(4,(retries.get(retryKey)?.failures??0)+1);if(retries.size>=512&&!retries.has(retryKey))retries.delete(retries.keys().next().value!);retries.set(retryKey,{peer,failures,after:now()+Math.min(15000,1000*2**failures)});}
+          else {const failures=Math.min(4,(retries.get(retryKey)?.failures??0)+1);if(retries.size>=512&&!retries.has(retryKey))retries.delete(retries.keys().next().value!);retries.set(retryKey,{peer,failures,after:now()+(handedOff?60000:Math.min(15000,1000*2**failures))});}
         }
-        if(ownsSelection)selecting=false;if(peer&&active.get(peer)===attempt)active.delete(peer);schedule();
+        if(ownsSelection)selecting=false;if(peer&&active.get(peer)===attempt)active.delete(peer);schedule(delivered||handedOff);
       }
   }
   return {

@@ -20,6 +20,7 @@ export function createAxonTestMessages(d: {
   random(n: number): Promise<Uint8Array>; send(raw: string): void; received: TestMessageHandler;
 }, purpose: 'test' | 'normal' = 'test') {
   let stopped = false, sending = false, receiving = false;
+  let rejection='none';
   const seen = new Set<string>();
   let pending: { id: string; digest: string; done(ok: boolean): void; timer: ReturnType<typeof setTimeout> } | null = null;
   const alive = () => !stopped && d.current();
@@ -48,6 +49,7 @@ export function createAxonTestMessages(d: {
     finally { c.key.fill(0); plaintext.fill(0); }
   }
   return {
+    rejection:()=>rejection,
     async send(text: string, messageId?: string): Promise<boolean> {
       if (!alive() || sending || pending || typeof text !== 'string' || !text.length || text.length > 2048
         || utf8ToBytes(text).length > 2048) return false;
@@ -66,7 +68,8 @@ export function createAxonTestMessages(d: {
       finally { sending = false; }
     },
     async receive(raw: string): Promise<boolean> {
-      if (!alive() || receiving || typeof raw !== 'string' || raw.length > 5000) return false;
+      if (!alive() || receiving || typeof raw !== 'string' || raw.length > 5000) {rejection=receiving?'overlapping-message':'unavailable-message';return false;}
+      rejection='invalid-packet';
       receiving = true;
       let key: Uint8Array | undefined, plaintext: Uint8Array | undefined;
       try {
@@ -74,22 +77,22 @@ export function createAxonTestMessages(d: {
         if (p.version !== 2 || !['text', 'ack'].includes(p.kind) || !hex(p.id, 32) || !hex(p.nonce, 24)
           || typeof p.ciphertext !== 'string' || p.ciphertext.length < 34 || p.ciphertext.length > 4128
           || !/^(?:[0-9a-f]{2})+$/.test(p.ciphertext) || (p.kind === 'text' && (seen.has(p.nonce) || seen.size >= 64))) return false;
-        const c = await context(false, p.kind, p.id); key = c.key;
-        plaintext = xchacha20poly1305(key, hexToBytes(p.nonce), c.aad).decrypt(hexToBytes(p.ciphertext));
+        rejection='identity-unavailable';const c = await context(false, p.kind, p.id); key = c.key;
+        rejection='invalid-encryption';plaintext = xchacha20poly1305(key, hexToBytes(p.nonce), c.aad).decrypt(hexToBytes(p.ciphertext));
         const text = new TextDecoder().decode(plaintext);
         if (bytesToHex(utf8ToBytes(text)) !== bytesToHex(plaintext) || !alive()) return false;
         if (p.kind === 'ack') {
-          if (!pending || pending.id !== p.id || text !== pending.digest) return false;
+          if (!pending || pending.id !== p.id || text !== pending.digest) {rejection='unexpected-ack';return false;}
           finish(true); return true;
         }
         if (!text.length || plaintext.length > 2048) return false;
         seen.add(p.nonce);
-        const accepted=await d.received({ from: c.peer.account, id: p.id, text });
+        rejection='handler-failed';const accepted=await d.received({ from: c.peer.account, id: p.id, text });
         if(!alive())return false;
         // Authenticated application rejection (e.g. membership not received yet)
         // is not a broken encrypted session. Withhold the ACK so delivery retries.
         if(!accepted)return purpose==='normal';
-        const ack = await seal('ack', p.id, bytesToHex(sha256(utf8ToBytes(raw))));
+        rejection='ack-failed';const ack = await seal('ack', p.id, bytesToHex(sha256(utf8ToBytes(raw))));
         if (!alive()) return false;
         d.send(JSON.stringify(ack)); return true;
       } catch { return false; }

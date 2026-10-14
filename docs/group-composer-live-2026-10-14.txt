@@ -1,0 +1,24 @@
+Normal-UI Axonic Dev test on R3GYC0H7PMY
+
+Initial live send reproduced retained native text despite the state-only composer fix: after message A was saved, immediately typing the next draft appended to A in the Android input field. Added composer.current.clear() at the start of the guarded send, before submitting/persisting. TypeScript and composer regression tests pass.
+
+Retest B: submitted text appeared in the chat once; immediately typed DEV-NEXT-DRAFT-B remained separate. Retests C, D and E: each input cleared after Send. All five synthetic messages A-E have one unique group message ID each and two expected recipient records; all recipient records show network storage. The two test recipients were offline, so final delivery is not established by this run. Only the existing [DEV TEST] Shared attachments group was used; no personal group messages sent.
+
+Three cycles through group -> Chats -> Calls -> Profile -> Chats -> group completed successfully. Fresh Android graphics counters were reset before the C-E/navigation run. No source changes occurred during that measured run.
+
+69.488-second Dev observation: 643 JS timer-delay samples, p95 20.31 ms extra delay, max 139.05 ms, one extra delay over 100 ms. This measures 100 ms timer lateness, not tap-to-pixel latency.
+Android frames: 732 total, 114 janky (15.57%), p50 9 ms, p95 21 ms, p99 40 ms. Development mode and UI-automation overhead apply. This is not comparable to the official app's accumulated 8.42% counter from an unrelated workload, and is not evidence that all lag is resolved.
+Final current-process log tail contained no control-rate-limit, custody-rate-limit, FATAL or ANR matches. This is a bounded observation, not a long-duration reliability guarantee.
+
+Evidence: builds/composer-live-results.json, composer-live-ledger.json, composer-live-performance.json, composer-live-gfx.txt.
+No production build or official app replacement. Smoothness remains a release concern; investigate rendering/frame deadlines further before describing the build as fully smooth.
+
+Typing isolation follow-up (October 14)
+GroupComposer now owns draft/voice state so a keystroke does not rerender RootGroupRoom and its message list. Programmatic edit/cancel and immediate native clear are retained. Send captures the originating composer updater so late completion cannot replace a different room draft. Typing permissions use the existing revision-aware chat read cache and typing hints target currently online peers.
+
+Full validation: 1080 tests passed, 3 skipped; TypeScript, module boundaries, dependency cycles, consolidation and git diff whitespace checks passed.
+Phone F/G/H: each send cleared the composer, one logical group ID per message with two expected recipient records, all network-stored. Recipients offline; no final delivery claim. Navigation cycle passed.
+
+Same injected-text workload: before composer isolation 24/62 janky frames (38.71%), p95 14 ms; after 20/62 (32.26%), p95 13 ms. Scrolling after isolation 10/614 (1.63%), p95 14 ms. Small Dev samples, not a production benchmark.
+Paced Samsung keyboard taps: 32 characters appeared as expected; 75 app frames, p50 8 ms, p95 14 ms, p99 18 ms; Android marked 53 deadline misses (70.67%), legacy jank 9 (12%). No high-input-latency or missed-vsync counter increments. This different workload is not directly comparable to injected-text results and does not establish fully smooth typing. Remaining frame deadline misses require further profiling; do not advertise all lag resolved.
+Synthetic unsent draft cleared after inspection. No production build, official app replacement, or personal messages. Evidence: builds/group-frame-keyboard.txt, builds/composer-isolated-results.json, builds/isolated-composer-check.log.

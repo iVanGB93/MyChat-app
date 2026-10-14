@@ -81,3 +81,14 @@ test('group attachments reject unavailable, wrong-author and deleted quote targe
  assert(await f.sender.receive(f.third,id,JSON.stringify(['axonic-root-group-action-v1',f.owner,id,action])));
  await assert.rejects(f.sender.enqueueAttachment(f.descriptor,f.reply,f.context),/Original/);assert.equal((await f.sender.snapshot()).messages.filter(m=>m.attachment).length,0);
 });
+
+test('attachment batch publishes all recipients in one write and never exposes a partial batch',async()=>{
+ const f=setup();let raw=null,writes=0,fail=false;const notices=[];
+ const ledger=chat.createRootChatLedger({owner:f.manifest.sender,read:async()=>raw,write:async value=>{if(fail)throw Error('disk');raw=value;writes++;},current:()=>true,now:()=>now,verifyAttachment:async d=>protocol.verifyAttachmentManifest(d.manifest,f.ids[0].record,now),queued:()=>notices.push(JSON.parse(raw).messages.length)});
+ const second={...f.descriptor,manifest:protocol.signAttachmentManifest({...f.manifest,id:'ef'.repeat(32),recipient:f.ids[2].record.account,recipientDevice:f.ids[2].device.id},f.ids[0].signingSeed,f.ids[0].record,now)};
+ await assert.rejects(ledger.enqueueAttachments([{input:f.descriptor},{input:{...second,manifest:{...second.manifest,signature:'00'.repeat(64)}}}]));
+ assert.equal(writes,0);assert.equal((await ledger.snapshot()).messages.length,0);assert.deepEqual(notices,[]);
+ fail=true;await assert.rejects(ledger.enqueueAttachments([{input:f.descriptor},{input:second}]),/disk/);assert.deepEqual(notices,[]);
+ fail=false;await ledger.enqueueAttachments([{input:f.descriptor},{input:second}]);assert.equal(writes,1);assert.deepEqual(notices,[2,2]);
+ await ledger.enqueueAttachments([{input:f.descriptor},{input:second}]);assert.equal(writes,1,'retry is idempotent');
+});

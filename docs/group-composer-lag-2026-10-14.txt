@@ -1,0 +1,9 @@
+Phone investigation and group composer changes
+
+Official phone com.axonic PID 27799: foreground group usage reported by user. Read-only Android counters showed 2431/28885 janky frames (8.42%, accumulated process history, not a controlled scenario), and one top sample showed 46.1% CPU. Logs contained repeated control-rate-limit disconnects at 08:50, 08:52, 08:55 and 08:56 local device time. This installed mobile client still uses the older shared limit; the previously implemented mobile recovery-limit fix requires a mobile update. AoN updates alone cannot change it.
+
+Group composer previously cleared only after the durable enqueue resolved. It now clears the submitted value immediately, restores it on failure only if the composer remains empty, and preserves newer typing. A synchronous work guard prevents duplicate taps before React applies busy state. Old-screen async completion cannot update a different draft scope.
+
+Group message projection and the list element are memoized so text input changes do not rebuild every visible message. Message state, transfer state, theme, actions and navigation dependencies remain reactive. This is a targeted rendering optimization, not proof that all observed lag is solved.
+
+Validation: 1080 unit tests passed, 3 skipped. TypeScript, dependency cycles, module boundaries and consolidation passed after placing the composer helper with UI components. New tests cover immediate clearing, late completion preserving new input, stale values and failed persistence restoration. No messages sent to the user's real group. No official app install or production build.

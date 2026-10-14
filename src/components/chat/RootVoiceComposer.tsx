@@ -15,7 +15,7 @@ import {createVoiceRecordingGesture} from '../../utils/voice-recording-gesture';
 
 const options={...RecordingPresets.HIGH_QUALITY,sampleRate:22050,numberOfChannels:1,bitRate:48000};
 const callActive=()=>{const call=localAccountCalls()?.snapshot();return !!call&&call.status!=='ended';};
-export default function RootVoiceComposer({peer,groupId,disabled,onError,onActive,reply,onSent}:{peer:string;groupId?:string;disabled:boolean;onError(error:unknown):void;onActive(active:boolean):void;reply?:RootChatReply;onSent?():void}){
+export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onError,onActive,reply,onSent}:{peer:string;groupId?:string;disabled:boolean;onError(error:unknown):void;onActive(active:boolean):void;reply?:RootChatReply;onSent?():void}){
  const focused=useIsFocused();
  const {colors}=useTheme(),recorder=useAudioRecorder(options),owner=localAccount.status().account;
  const [state,setState]=useState<'idle'|'starting'|'recording'|'sending'>('idle'),[seconds,setSeconds]=useState(0);
@@ -79,4 +79,4 @@ export default function RootVoiceComposer({peer,groupId,disabled,onError,onActiv
   <Pressable accessibilityLabel="Send voice message" disabled={state!=='recording'} onPress={()=>void controller.send().catch(onError)}><Ionicons name="send" size={24} color={colors.primary}/></Pressable>
   </>}</Animated.View>}
  </View>;
-}
+});

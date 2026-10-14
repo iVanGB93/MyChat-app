@@ -1,3 +1,4 @@
+import RecoverySettings from './RecoverySettings';
 import ScreenHeader from './ui/ScreenHeader';
 import {KeyboardFormScrollView} from './ui/KeyboardForm';
 import React, {useState} from 'react';
@@ -20,6 +21,7 @@ export default function NetworkDiagnostics({lookup}: Pick<React.ComponentProps<t
       <View style={{flex: 1, backgroundColor: colors.background}}>
         <ScreenHeader title="Advanced diagnostics" backLabel="Back to Network" onBack={()=>setOpen(false)}/>
         <KeyboardFormScrollView contentContainerStyle={{padding: 18, paddingBottom: insets.bottom + 24}}>
+          {open && <RecoverySettings/>}
           {open && <IdentityLookup lookup={lookup} color={colors.text} muted={colors.textSecondary} border={colors.border}/>}
         </KeyboardFormScrollView>
       </View>

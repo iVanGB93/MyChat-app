@@ -1,4 +1,4 @@
-import {useEffect,useState} from 'react';
+import {useCallback,useEffect,useState} from 'react';
 import {AppState} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
 import {localAccountNetworkSnapshot,peerTyping,notifyPeerTyping} from '../messaging';
@@ -14,5 +14,9 @@ export function useChatActivity(group?:string){
   };
   refresh();const timer=setInterval(refresh,1000);return()=>clearInterval(timer);
  },[focused,group]);
- return {online,typing,notify:(peer:string,value:boolean)=>void notifyPeerTyping(peer,value,group).catch(()=>{})};
+ const notify=useCallback((peer:string,value:boolean)=>{
+  // Ephemeral hints have no offline delivery value; use the existing local session view.
+  if(online.includes(peer))void notifyPeerTyping(peer,value,group).catch(()=>{});
+ },[online,group]);
+ return {online,typing,notify};
 }

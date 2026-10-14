@@ -42,7 +42,8 @@ export function useChatDraft(ownerId: string | null | undefined, roomId: string)
     };
   }, [ownerId, roomId, scope]);
   const update = useCallback((next: string | ((current:string)=>string)) => {
-    const text=typeof next==='function'?next(latest.current.scope===scope?latest.current.text:''):next;
+    if(latest.current.scope!==scope)return; // A completed send from an old screen cannot replace the new draft.
+    const text=typeof next==='function'?next(latest.current.text):next;
     latest.current={scope,text};
     setValue({ scope, text });
     if (session.current?.scope === scope) session.current.update(text);

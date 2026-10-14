@@ -3,3 +3,5 @@ export {chatConnection} from './chatConnection';
 export {startLocalAccountNetwork, localAccountNetworkSnapshot, localAccountDirectorySnapshot,
   localAccountLookupIdentity, localAccountPushStatus} from '../../composition/neuronRuntime';
 export {allowedAxons,setAllowedAxons,subscribeAllowedAxons,loadAllowedAxons} from '../../services/allowedAxons';
+
+export {recoverySettings,defaultRecoverySettings,subscribeRecoverySettings,loadRecoverySettings,saveRecoverySettings} from '../../services/recoverySettings';

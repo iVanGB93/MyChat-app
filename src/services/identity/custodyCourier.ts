@@ -23,7 +23,7 @@ export function createCustodyCourier(d: {
   const unavailable = new Map<string, number>();
   const polls = new Map<string, { busy: boolean; next: number }>();
   const skips = new Map<string, { until: number; ids: string[] }>();
-  const deferred = new Map<string, Map<string,number>>();
+  const deferred = new Map<string, Map<string,{until:number;attempts:number}>>();
   const acknowledged = new Set<string>(), drained = new Set<string>();
   const lease = () => { const owner = d.owner(), generation = epoch; return { owner, current: () => !!owner && !stopped && generation === epoch && d.owner() === owner }; };
   async function request(relay: string, body: unknown) {
@@ -95,15 +95,18 @@ export function createCustodyCourier(d: {
           // must not consume the entire background recovery window.
           let rejected=deferred.get(relay);
           if(!rejected){if(deferred.size>=10)deferred.clear();rejected=new Map();deferred.set(relay,rejected);}
-          for(const [id,until] of rejected)if(until<=d.now())rejected.delete(id);
-          const defer=(id:string)=>{if(rejected!.size>=64)rejected!.delete(rejected!.keys().next().value!);rejected!.set(id,d.now()+15000);state!.next=d.now();};
+          // Keep attempt counts across retries; only exclusions expire.
+          const defer=(id:string)=>{const attempts=(rejected!.get(id)?.attempts??0)+1;if(!rejected!.has(id)&&rejected!.size>=124)rejected!.delete(rejected!.keys().next().value!);rejected!.set(id,{attempts,until:d.now()+Math.min(300000,15000*2**Math.min(attempts-1,5))});};
           // Unusable receipts must not occupy every poll batch forever. Keep
           // them at the relay and retry shortly; never consume or acknowledge them.
-          const pass = [...new Set([...skip.ids,...rejected.keys()])].slice(-124);
+          const pass = [...new Set([...skip.ids,...[...rejected].filter(([,v])=>v.until>d.now()).map(([id])=>id)])].slice(-124);
           let incomplete=false;
           for (let count = 0; count < 4 && l.current() && pass.length < 128; count++) {
             const reply = await request(relay, { operation: 'poll', exclude: pass });
-            if (!l.current() || reply?.status !== 'ok') break;
+            if (!l.current() || reply?.status !== 'ok') {
+              if(reply?.status==='retry'&&Number.isFinite(reply.retryAfterMs))state.next=Math.max(state.next,d.now()+Math.min(60000,Math.max(1000,reply.retryAfterMs)));
+              break;
+            }
             if (!reply.packet) { if(!incomplete&&!rejected.size)drained.add(relay);break; }
             const packet = parseCustody(JSON.stringify(reply.packet), d.now());
             if (!packet || pass.includes(packet.id)) break;
@@ -139,7 +142,7 @@ export function createCustodyCourier(d: {
             // Lost acknowledgements retry next pass, not a minute later. The
             // durable recipient store makes duplicate delivery idempotent.
             if (accepted && l.current()) {
-              skip.ids.push(packet.id);
+              rejected.delete(packet.id);skip.ids.push(packet.id);
               if(packet.kind==='envelope'){
                 if(acknowledged.size>=256)acknowledged.delete(acknowledged.values().next().value!);
                 acknowledged.add(packet.sender+':'+packet.id);
@@ -148,7 +151,7 @@ export function createCustodyCourier(d: {
             else incomplete=true;
           }
         } catch { /* This relay retries without blocking the other custodians. */ }
-        finally { state.busy = false; }
+        finally { state.busy = false; state.next=Math.max(state.next,d.now()+(d.now()<resumeUntil?1000:5000)); }
       }));
     },
     resume() { drained.clear();acknowledged.clear();resumeUntil=d.now()+10000;for(const state of polls.values())state.next=0; },

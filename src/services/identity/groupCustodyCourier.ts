@@ -30,7 +30,7 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
   const work=writes.then(async()=>{if(!current())return;const stored=await d.store.read(owner);validateGroupOutbox(stored,owner);const before=JSON.stringify(stored),rows=stored.filter(r=>r.job.payload.expires>d.now());if(!current())return;const result=await fn(rows);validateGroupOutbox(rows,owner);if(current()&&JSON.stringify(rows)!==before)await d.store.write(owner,rows);return current()?result:undefined;});writes=work.catch(()=>{});return work;
  };
  async function request(peer:string,body:unknown){const raw=await d.request(peer,JSON.stringify(body));if(!raw||raw.length>16000)return null;try{return JSON.parse(raw);}catch{return null;}}
- const rejected=new Map<string,number>(),acknowledged=new Set<string>(),drained=new Set<string>();
+ const rejected=new Map<string,{until:number;attempts:number}>(),acknowledged=new Set<string>(),drained=new Set<string>();
  return {
   recoveryComplete(sender:string,id:string){return !polling&&!depositing&&acknowledged.has(sender+':'+id)&&d.relays().length>0&&d.relays().every(p=>drained.has(p));},
   async deposit(messages:{peer:string;id:string;raw:string}[],selected:{peer:string;id:string;raw:string}):Promise<boolean|undefined>{
@@ -88,9 +88,9 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
    const batch=Array.from({length:Math.min(3,peers.length)},(_,i)=>peers[(start+i)%peers.length]);
    pollCursor=peers.length?(start+batch.length)%peers.length:0;
    try{for(const relay of batch){
-    const exclude:string[]=[];for(const [id,until] of rejected){if(until<=d.now())rejected.delete(id);else exclude.push(id);}
+    const exclude:string[]=[];for(const [id,value] of rejected){if(value.until>d.now()&&id.startsWith(relay+":"))exclude.push(id.slice(relay.length+1));}
     for(let i=0;i<4&&l.current();i++){
-     const response=await request(relay,{operation:'group-poll',exclude:exclude.slice(-128)});if(response?.status!=='ok'||!l.current())break;if(!response.packet){if(!rejected.size)drained.add(relay);break;}drained.delete(relay);
+     const response=await request(relay,{operation:'group-poll',exclude:exclude.slice(-128)});if(response?.status!=='ok'||!l.current()){if(response?.status==='retry'&&Number.isFinite(response.retryAfterMs))nextPoll=Math.max(nextPoll,d.now()+Math.min(60000,Math.max(1000,response.retryAfterMs)));break;}if(!response.packet){if(!rejected.size)drained.add(relay);break;}drained.delete(relay);
      const packet=parseCustody(JSON.stringify(response.packet),d.now());if(!packet||exclude.includes(packet.id))break;exclude.push(packet.id);let accepted=false;
      if(packet.kind==='envelope'&&packet.recipient===l.owner&&d.allowed(packet.sender)){
       let receipt:CustodyReceipt|null=null;try{receipt=await d.receive(packet,response.payload);}catch{}
@@ -104,9 +104,9 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
       }
      }
      if(accepted&&packet.kind==='envelope'&&l.current()){if(acknowledged.size>=256)acknowledged.delete(acknowledged.values().next().value!);acknowledged.add(packet.sender+':'+packet.id);}
-     if(!accepted){if(rejected.size>=64)rejected.delete(rejected.keys().next().value!);rejected.set(packet.id,d.now()+15000);}
+     const key=relay+":"+packet.id;if(accepted)rejected.delete(key);else {const attempts=(rejected.get(key)?.attempts??0)+1;if(!rejected.has(key)&&rejected.size>=1240)rejected.delete(rejected.keys().next().value!);rejected.set(key,{attempts,until:d.now()+Math.min(300000,15000*2**Math.min(attempts-1,5))});}
     }
-   }}catch{/* Durable job and recipient receipts remain retryable. */}finally{polling=false;}
+   }}catch{/* Durable job and recipient receipts remain retryable. */}finally{polling=false;nextPoll=Math.max(nextPoll,d.now()+5000);}
   },
   resume(){nextPoll=0;acknowledged.clear();drained.clear();},invalidate(){epoch++;rejected.clear();acknowledged.clear();drained.clear();nextPoll=0;},stop(){stopped=true;epoch++;rejected.clear();}
  };

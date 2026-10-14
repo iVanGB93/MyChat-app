@@ -1,3 +1,4 @@
+import {recoveryPolicy,reserveRecoveryPoll} from './recoveryPolicy.ts';
 import { createIntroductionService, verifyIntroductions, type IntroductionHooks } from './identityIntroductions.ts';
 import { createIdentityExchange } from './identityExchange.ts';
 import { createAxonTestMessages, createAxonNormalMessages, type TestMessageHandler } from './axonTestMessages.ts';
@@ -91,6 +92,7 @@ export function createPersistentAxon(d: {
     if(timedOutMedia.size>=16)timedOutMedia.delete(timedOutMedia.keys().next().value!);
     timedOutMedia.set(id,{bulk:!!task.bulk,until:d.now()+30000});
     mediaWindow=Math.max(1,Math.floor(mediaWindow/2));mediaSuccesses=0;
+    quality.failures++;quality.updatedAt=d.now();
     task.reject(Error('Attachment request timed out'));
     if(++consecutiveMediaTimeouts>=3)stop('repeated-media-timeout');
   }
@@ -115,10 +117,18 @@ export function createPersistentAxon(d: {
   let authenticating = false, renewalAt = 0, inboundBusy = false, sequence = 0;
   let custodyWaiting = 0, pushWaiting = 0, attachmentWaiting = 0;
   let attachmentTail:Promise<unknown>=Promise.resolve();
-  let windowAt = d.now(), frames = 0;
+  let windowAt = d.now(), frames = 0, custodyFrames=0;
   const traffic: Record<string, number> = {};
+  let chatReceiveTail:Promise<unknown>=Promise.resolve(),chatQueued=0;
   const started = d.now();
-  let pending: { until:number; operation:string; id: number; resolve(raw: string): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
+  // Local observations only: never serialized onto the wire.
+  const quality={samples:0,responseMs:0,mediaSamples:0,mediaResponseMs:0,mediaBytesPerSecond:0,failures:0,updatedAt:0};
+  function observeResponse(start:number,media:boolean,bytes=0){
+    const elapsed=Math.max(1,d.now()-start);quality.updatedAt=d.now();
+    if(media){quality.mediaResponseMs=quality.mediaSamples?quality.mediaResponseMs*.8+elapsed*.2:elapsed;quality.mediaSamples++;if(bytes>=4096)quality.mediaBytesPerSecond=quality.mediaBytesPerSecond?quality.mediaBytesPerSecond*.8+(bytes*1000/elapsed)*.2:bytes*1000/elapsed;}
+    else {quality.responseMs=quality.samples?quality.responseMs*.8+elapsed*.2:elapsed;quality.samples++;}
+  }
+  let pending: { started:number; until:number; operation:string; id: number; resolve(raw: string): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   let resolveReady!: (link: NeuronLink) => void, rejectReady!: (error: Error) => void;
   const ready = new Promise<NeuronLink>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   // Consumers may attach after opening; avoid a transient unhandled rejection on early close.
@@ -136,6 +146,7 @@ export function createPersistentAxon(d: {
   function stop(reason = 'session-stopped') {
     if (stopped) return;
     closeReason = reason;
+    if(reason.startsWith('exchange-timeout:')){quality.failures++;quality.updatedAt=d.now();}
     stopped = true;
     deferredFrames=[];deferredBytes=0;
     for(const sleeper of [...sleepers])sleeper.finish();
@@ -167,7 +178,7 @@ export function createPersistentAxon(d: {
       const grace=peer&&(operation==='describe'||operation==='authenticate'||operation==='introductions'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
       const timeout=grace?Math.max(1,Math.min(15000,peer!.expiresAt-d.now())):
         operation === 'call-control' || operation === 'call-media' || operation === 'call-relay' || operation === 'call-media-relay' || operation === 'call-media-forward' ? 15000 : 4000;
-      pending = { operation, id, resolve, reject, until:d.now()+timeout, timer:setTimeout(() => stop('exchange-timeout:' + operation),timeout) };
+      pending = { started:d.now(), operation, id, resolve, reject, until:d.now()+timeout, timer:setTimeout(() => stop('exchange-timeout:' + operation),timeout) };
       try { send({ version: 1, kind: 'request', id, operation, body }); }
       catch { stop(); }
     });
@@ -224,7 +235,7 @@ export function createPersistentAxon(d: {
       const maxBytes=peerBulk&&peer&&peer.expiresAt>d.now()?bulkFrameLimit():AXON_FRAME_BYTES;
       if (!d.current() || typeof raw !== 'string' || raw.length>maxBytes) { stop(); return; }
       const rawBytes=new TextEncoder().encode(raw).length;if(rawBytes>maxBytes){stop();return;}
-      if (d.now() - windowAt >= 60_000) { windowAt = d.now(); frames = 0; attachmentFrames=0;bulkFrames=0; }
+      if (d.now() - windowAt >= 60_000) { windowAt = d.now(); frames = 0; custodyFrames=0; attachmentFrames=0;bulkFrames=0; }
       const f = JSON.parse(raw);
       // The other side can finish its independent authentication while our
       // final durable identity read is still pending. Bound early application
@@ -249,7 +260,10 @@ export function createPersistentAxon(d: {
       if(media)lastMediaAt=d.now();
       const attachment=media||peerAttachments&&d.onAttachment&&peer&&peer.expiresAt>d.now()&&((f.kind==='request'&&f.operation==='attachment')||(f.kind==='response'&&pending?.operation==='attachment'));
       const controlLimit = peer && peer.expiresAt > d.now() ? AXON_CONTROL_FRAMES_PER_MINUTE : 64;
-      if(attachment?++attachmentFrames>(peerMediaLane?28000:3600):++frames>controlLimit){stop(attachment?'attachment-rate-limit':'control-rate-limit');return;}
+      const custody=peer&&peer.expiresAt>d.now()&&peerCustody&&operation==='custody'&&(f.kind==='request'||f.kind==='response');
+      // Recovery drains up to four envelopes per pass, with receipt/consume
+      // exchanges. Keep its finite budget separate from calls and discovery.
+      if(attachment?++attachmentFrames>(peerMediaLane?28000:3600):custody?++custodyFrames>4096:++frames>controlLimit){stop(attachment?'attachment-rate-limit':custody?'custody-rate-limit':'control-rate-limit');return;}
       if (f.version !== 1) { stop('invalid-version'); return; }
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop('invalid-hello'); return; }
@@ -287,7 +301,15 @@ export function createPersistentAxon(d: {
         return;
       }
       if (f.kind === 'chat-message') {
-        if (!chat || !peerChat || !peer || peer.expiresAt <= d.now() || !await chat.receive(f.body)) stop();
+        if(!chat||!peerChat||!peer||peer.expiresAt<=d.now()||typeof f.body!=='string'||f.body.length>5000){stop('chat-message-unavailable');return;}
+        // Socket callbacks overlap while durable insertion/key lookup awaits I/O.
+        // Serialize normal encrypted messages and ACKs; keep admission bounded.
+        if(chatQueued>=4){stop('chat-receive-queue-full');return;}
+        chatQueued++;
+        const task=chatReceiveTail.then(()=>!stopped&&d.current()?chat.receive(f.body):false);
+        chatReceiveTail=task.catch(()=>{});
+        try{if(!await task&&!stopped)stop('chat-message-rejected:'+chat.rejection());}
+        finally{chatQueued--;}
         return;
       }
       if (!remote || !Number.isSafeInteger(f.id) || f.id < 1 || typeof f.body !== 'string' || f.body.length > (f.kind==='bulk-response'?bulkFrameLimit()-(smallBatches?128:1024):16000)) { stop('invalid-envelope'); return; }
@@ -298,6 +320,7 @@ export function createPersistentAxon(d: {
         if(!media||!task||!!task.bulk!==bulk){stop('invalid-media-response');return;}
         mediaPending.delete(f.id);clearTimeout(task.timer);
         consecutiveMediaTimeouts=0;
+        observeResponse(task.started,true,f.body.length);
         // Grow only as replies arrive; slow storage/links reduce the in-flight window.
         if(d.now()-task.started>1000){mediaWindow=Math.max(1,Math.floor(mediaWindow/2));mediaSuccesses=0;}
         else if(++mediaSuccesses>=mediaWindow){mediaWindow=Math.min(4,mediaWindow+1);mediaSuccesses=0;}
@@ -316,7 +339,7 @@ export function createPersistentAxon(d: {
       }
       if (f.kind === 'response') {
         if (!pending || pending.id !== f.id) { stop('unexpected-response'); return; }
-        const task = pending; pending = null; clearTimeout(task.timer); task.resolve(f.body); return;
+        const task = pending; pending = null; clearTimeout(task.timer); if(task.operation!=='describe'&&task.operation!=='authenticate')observeResponse(task.started,task.operation==='attachment',f.body.length); task.resolve(f.body); return;
       }
       if (f.kind !== 'request' || inboundBusy) { stop(inboundBusy ? 'overlapping-request' : 'invalid-request'); return; }
       inboundBusy = true;
@@ -344,7 +367,9 @@ export function createPersistentAxon(d: {
           response = JSON.stringify({ accepted: await d.onCallMedia(f.body, peer, bytesToHex(d.instance)) });
         if (f.operation === 'directory' && d.onDirectory && peerDirectory && peer && peer.expiresAt > d.now()) response = await d.onDirectory(f.body, peer);
         if(f.operation==='attachment'&&peerAttachments&&d.onAttachment&&peer&&peer.expiresAt>d.now()&&f.body.length<=13000)response=await d.onAttachment(f.body,peer);
-        if (f.operation === 'custody' && d.onCustody && peer && peer.expiresAt > d.now()) response = await d.onCustody(f.body, peer);
+        if (f.operation === 'custody' && d.onCustody && peer && peer.expiresAt > d.now()) response = custodyFrames>recoveryPolicy().custodyFramesPerMinute
+          ?JSON.stringify({status:'retry',retryAfterMs:Math.max(1000,60000-(d.now()-windowAt))})
+          :await d.onCustody(f.body, peer);
         if (f.operation === 'introductions' && introduce && peerIntroductions) response = await introduce(f.body);
         if (!response || stopped || !d.current()) { stop('request-rejected:'+(operations.includes(f.operation)?f.operation:'other')); return; }
         send({ version: 1, kind: 'response', id: f.id, body: response });
@@ -522,13 +547,18 @@ export function createPersistentAxon(d: {
         for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
           await wait(25);
         if (!permitted() || authenticating || introducing || pending) return null;
+        let operation:string|undefined;try{operation=JSON.parse(raw)?.operation;}catch{/* Handler validates opaque payloads. */}
+        if(operation==='poll'||operation==='group-poll'){
+          const retryAfterMs=reserveRecoveryPoll(d.record.account,peer!.account,d.now());
+          if(retryAfterMs)return JSON.stringify({status:'retry',retryAfterMs});
+        }
         const result = await exchange('custody', raw);
         return permitted() ? result : null;
       } catch { return null; }
       finally { custodyWaiting--; }
     },
     sendTestMessage: (text: string, id?: string) => tests?.send(text, id) ?? Promise.resolve(false),
-    sendChatMessage: (text: string, id: string) => chat?.send(text, id) ?? Promise.resolve(false),
+    async sendChatMessage(text:string,id:string){const start=d.now();const accepted=await (chat?.send(text,id)??Promise.resolve(false));if(accepted)observeResponse(start,false);return accepted;},
     sendSignal(raw: string) {
       if (!peer || peer.expiresAt <= d.now() || !peerSignals || !d.onSignal || stopped || !d.current()) return false;
       try { send({ version: 1, kind: 'signal', body: raw }); return true; } catch { stop(); return false; }
@@ -548,6 +578,6 @@ export function createPersistentAxon(d: {
       else if (peer && d.now() >= introduceAt) void discover();
     },
     snapshot: () => ({ state: stopped ? 'closed' : peer ? 'connected' : 'authenticating',
-      account: peer?.account ?? null, expiresAt: peer?.expiresAt ?? null, closeReason, mediaLane:peerMediaLane,bulkAttachments:peerBulk,mediaWindow,mediaInFlight:mediaPending.size,consecutiveMediaTimeouts, traffic: {...traffic} }),
+      account: peer?.account ?? null, expiresAt: peer?.expiresAt ?? null, closeReason, mediaLane:peerMediaLane,bulkAttachments:peerBulk,mediaWindow,mediaInFlight:mediaPending.size,consecutiveMediaTimeouts, traffic: {...traffic},quality:{...quality} }),
   };
 }
