@@ -153,6 +153,16 @@ class AxonicNearbyModule : Module() {
     AsyncFunction("axonWrite") { id: String, raw: String, promise: Promise -> axonWork(promise) { axons.write(id, raw); true } }
     Function("axonClose") { id: String -> axons.close(id) }
     Function("attachmentSha256") { value: String -> AttachmentHash.sha256(value) }
+    AsyncFunction("attachmentPrepareBatch") { owner:String,id:String,key:String,bytes:Double,start:Int,aads:List<String>,promise:Promise ->
+      try {
+        require(bytes.isFinite() && bytes==bytes.toLong().toDouble())
+        val root=requireNotNull(appContext.reactContext).filesDir
+        attachmentWorkers.execute {
+          try { promise.resolve(AttachmentPreparation.encrypt(root,owner,id,key,bytes.toLong(),start,aads)) }
+          catch(error:Exception) { promise.reject("ATTACHMENT_PREPARE","Attachment preparation failed",error) }
+        }
+      } catch(error:Exception) { promise.reject("ATTACHMENT_PREPARE","Attachment preparation unavailable",error) }
+    }
     AsyncFunction("attachmentStagedFileSha256") { owner: String, id: String, bytes: Double, promise: Promise ->
       try {
         require(bytes.isFinite() && bytes == bytes.toLong().toDouble() && bytes >= 1 && bytes <= 250L * 1024 * 1024)

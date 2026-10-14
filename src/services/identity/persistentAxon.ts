@@ -116,6 +116,11 @@ export function createPersistentAxon(d: {
   let peerIntroductions = false, introducing = false, introduceAt = d.now() + 5000;
   let authenticating = false, renewalAt = 0, inboundBusy = false, sequence = 0;
   let custodyWaiting = 0, pushWaiting = 0, attachmentWaiting = 0;
+  let callWaiting=0,callBurst=0;
+  // Two bounded urgent reservations, independent of recovery/push capacity.
+  // After two call exchanges, a waiting background reservation gets a turn.
+  const callPriority=()=>callWaiting>0&&(callBurst<2||custodyWaiting===0);
+  const callMustYield=()=>callBurst>=2&&custodyWaiting>0;
   let attachmentTail:Promise<unknown>=Promise.resolve();
   let windowAt = d.now(), frames = 0, custodyFrames=0;
   const traffic: Record<string, number> = {};
@@ -169,6 +174,7 @@ export function createPersistentAxon(d: {
   }
   function exchange(operation: 'attachment' | 'describe' | 'authenticate' | 'introductions' | 'custody' | 'directory' | 'push' | 'call-control' | 'call-media' | 'call-relay' | 'call-media-relay' | 'call-media-forward', body: string): Promise<string> {
     if (pending || stopped) return Promise.reject(Error('Axon exchange unavailable'));
+    callBurst=operation==='call-control'||operation==='call-media'?Math.min(2,callBurst+1):0;
     return new Promise((resolve, reject) => {
       const id = ++sequence;
       // Give renewal and control traffic sharing an active media channel room
@@ -210,7 +216,7 @@ export function createPersistentAxon(d: {
   }
   async function discover() {
     const source = peer;
-    if (!source || !d.introductions || !peerIntroductions || introducing || authenticating || pending || pushWaiting > 0 || stopped) return;
+    if (!source || !d.introductions || !peerIntroductions || introducing || authenticating || pending || pushWaiting > 0 || callPriority() || stopped) return;
     introducing = true; introduceAt = d.now() + 15_000;
     try {
       const nonce = await d.random(32);
@@ -393,8 +399,8 @@ export function createPersistentAxon(d: {
       if(!permitted()||typeof raw!=='string'||new TextEncoder().encode(raw).length>12000||custodyWaiting>=2||pushWaiting>0)return false;
       custodyWaiting++;
       try {
-        for(let waits=0;permitted()&&(authenticating||introducing||pending)&&waits<80;waits++)await wait(25);
-        if(!permitted()||authenticating||introducing||pending)return false;
+        for(let waits=0;permitted()&&(authenticating||introducing||pending||callPriority())&&waits<80;waits++)await wait(25);
+        if(!permitted()||authenticating||introducing||pending||callPriority())return false;
         const reply=await exchange(forward?'call-media-forward':'call-media-relay',raw);
         return permitted()&&JSON.parse(reply)?.accepted===true;
       }catch{return false;}finally{custodyWaiting--;}
@@ -405,9 +411,9 @@ export function createPersistentAxon(d: {
       if (!permitted() || typeof raw !== 'string' || new TextEncoder().encode(raw).length > 13000 || (custodyWaiting >= 2 || pushWaiting > 0)) return null;
       custodyWaiting++;
       try {
-        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+        for (let waits = 0; permitted() && (authenticating || introducing || pending || callPriority()) && waits < 80; waits++)
           await wait(25);
-        if (!permitted() || authenticating || introducing || pending) return null;
+        if (!permitted() || authenticating || introducing || pending || callPriority()) return null;
         const result = await exchange('call-relay', raw);
         return permitted() && new TextEncoder().encode(result).length <= 13000 ? result : null;
       } catch { return null; }
@@ -418,40 +424,40 @@ export function createPersistentAxon(d: {
     async callMediaRequest(raw: string): Promise<boolean> {
       const permitted = () => !!d.onCallMedia && peerMedia && !!peer && peer.expiresAt > d.now() && !stopped && d.current();
       const event = verifyCallMediaSignal(raw, d.record, d.now());
-      if (!permitted() || !event || event.record.account !== d.record.account || (custodyWaiting >= 2 || pushWaiting > 0)
+      if (!permitted() || !event || event.record.account !== d.record.account || callWaiting >= 2
         || event.sourceInstance !== bytesToHex(d.instance) || event.targetInstance !== peer!.instance
         || event.target !== peer!.account || event.targetDevice !== peer!.device
         || !d.record.devices.some(device => device.id === event.device && device.signing === bytesToHex(ed25519.getPublicKey(d.signingSeed)))) return false;
-      custodyWaiting++;
+      callWaiting++;
       try {
-        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+        for (let waits = 0; permitted() && (authenticating || introducing || pending || callMustYield()) && waits < 80; waits++)
           await wait(25);
-        if (!permitted() || authenticating || introducing || pending || event.expiresAt <= d.now()) return false;
+        if (!permitted() || authenticating || introducing || pending || callMustYield() || event.expiresAt <= d.now()) return false;
         const reply = await exchange('call-media', raw);
         return permitted() && JSON.parse(reply)?.accepted === true;
       } catch { return false; }
-      finally { custodyWaiting--; }
+      finally { callWaiting--; }
     },
     callPeer: () => d.onCallControl && peerCalls && peer && !stopped && d.current() && peer.expiresAt > d.now() ? { ...peer } : null,
     supportsCallControl: () => !!d.onCallControl && peerCalls && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async callControlRequest(raw: string): Promise<string | null> {
       const permitted = () => !!d.onCallControl && peerCalls && !!peer && peer.expiresAt > d.now() && !stopped && d.current();
       const event = verifyCallControl(raw, d.record, d.now());
-      if (!permitted() || !event || event.record.account !== d.record.account || (custodyWaiting >= 2 || pushWaiting > 0)
+      if (!permitted() || !event || event.record.account !== d.record.account || callWaiting >= 2
         || !d.record.devices.some(device => device.id === event.device && device.signing === bytesToHex(ed25519.getPublicKey(d.signingSeed)))) return null;
       if (
         (event.record.account === event.caller ? event.callee : event.caller) !== peer!.account) return null;
-      custodyWaiting++;
+      callWaiting++;
       try {
-        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+        for (let waits = 0; permitted() && (authenticating || introducing || pending || callMustYield()) && waits < 80; waits++)
           await wait(25);
-        if (!permitted() || authenticating || introducing || pending || event.expiresAt <= d.now()) return null;
+        if (!permitted() || authenticating || introducing || pending || callMustYield() || event.expiresAt <= d.now()) return null;
         const reply = await exchange('call-control', raw);
         const latest = await d.store.read(peer!.account);
         const receipt = latest && verifyCallControlReceipt(reply, event, latest, d.now());
         return permitted() && receipt?.device === peer!.device ? reply : null;
       } catch { return null; }
-      finally { custodyWaiting--; }
+      finally { callWaiting--; }
     },
     supportsDirectory: () => !!d.onDirectory && peerDirectory && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     supportsPush: () => !!d.onPush && peerPush && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
@@ -464,8 +470,8 @@ export function createPersistentAxon(d: {
         for(let waits=0;permitted()&&custodyWaiting>=2&&waits<160;waits++)await wait(25);
         if(!permitted()||custodyWaiting>=2)return null;
         custodyWaiting++;reserved=true;
-        for(let waits=0;permitted()&&(authenticating||introducing||pending)&&waits<160;waits++)await wait(25);
-        if(!permitted()||authenticating||introducing||pending)return null;
+        for(let waits=0;permitted()&&(authenticating||introducing||pending||callPriority())&&waits<160;waits++)await wait(25);
+        if(!permitted()||authenticating||introducing||pending||callPriority())return null;
         const result=await exchange('push',raw);return permitted()?result:null;
       }catch{return null;}finally{if(reserved)custodyWaiting--;pushWaiting--;}
     },
@@ -474,9 +480,9 @@ export function createPersistentAxon(d: {
       if (!permitted() || raw.length > 13_000 || (custodyWaiting >= 2 || pushWaiting > 0)) return null;
       custodyWaiting++;
       try {
-        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+        for (let waits = 0; permitted() && (authenticating || introducing || pending || callPriority()) && waits < 80; waits++)
           await wait(25);
-        if (!permitted() || authenticating || introducing || pending) return null;
+        if (!permitted() || authenticating || introducing || pending || callPriority()) return null;
         const result = await exchange('directory', raw);
         return permitted() ? result : null;
       } catch { return null; }
@@ -495,8 +501,8 @@ export function createPersistentAxon(d: {
       if(!permitted()||raw.length>13000||bulkWaiting>=(smallBatches?smallWindow:2)||smallBatches&&!smallRequest(raw))return null;
       bulkWaiting++;
       try{
-        for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5);
-        if(!permitted()||authenticating||custodyWaiting||pushWaiting||mediaPending.size>=4||!bulkRateReady())return null;
+        for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5);
+        if(!permitted()||authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())return null;
         if(smallBatches)smallBatchCredits--;else bulkNext=d.now()+250;
         return await new Promise<string>((resolve,reject)=>{
           const id=++sequence;mediaPending.set(id,{bulk:true,until:d.now()+15000,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),15000)});
@@ -512,8 +518,8 @@ export function createPersistentAxon(d: {
         try{
           // A separate request-ID lane leaves authentication, messages and calls free.
           // Bound the window, total queue and start rate, even on zero-latency links.
-          for(let waits=0;permitted()&&(mediaPending.size>=mediaWindow||authenticating||custodyWaiting>0||pushWaiting>0||!mediaRateReady())&&waits<400;waits++)await wait(5);
-          if(!permitted()||mediaPending.size>=mediaWindow||authenticating||custodyWaiting>0||pushWaiting>0||!mediaRateReady())return null;
+          for(let waits=0;permitted()&&(mediaPending.size>=mediaWindow||authenticating||custodyWaiting>0||pushWaiting>0||callWaiting>0||!mediaRateReady())&&waits<400;waits++)await wait(5);
+          if(!permitted()||mediaPending.size>=mediaWindow||authenticating||custodyWaiting>0||pushWaiting>0||callWaiting>0||!mediaRateReady())return null;
           mediaCredits--;
           return await new Promise<string>((resolve,reject)=>{
             const id=++sequence,until=d.now()+4000;
@@ -528,8 +534,8 @@ export function createPersistentAxon(d: {
       attachmentTail=new Promise<void>(resolve=>{release=resolve;});
       await previous;
       try{
-        for(let waits=0;permitted()&&(authenticating||introducing||pending||custodyWaiting>0||pushWaiting>0||d.now()<attachmentNext)&&waits<80;waits++)await wait(25);
-        if(!permitted()||authenticating||introducing||pending||custodyWaiting>0||pushWaiting>0||d.now()<attachmentNext)return null;
+        for(let waits=0;permitted()&&(authenticating||introducing||pending||custodyWaiting>0||pushWaiting>0||callWaiting>0||d.now()<attachmentNext)&&waits<80;waits++)await wait(25);
+        if(!permitted()||authenticating||introducing||pending||custodyWaiting>0||pushWaiting>0||callWaiting>0||d.now()<attachmentNext)return null;
         // Both endpoints can transfer at once. Reserve headroom within the shared
         // 3,600 incoming attachment frames/minute budget (requests plus responses).
         attachmentNext=d.now()+50;const result=await exchange('attachment',raw);return permitted()?result:null;
@@ -544,9 +550,9 @@ export function createPersistentAxon(d: {
       try {
         // Bounded local contention must not immediately mark a healthy relay unavailable.
         // Use a bounded number of waits so clock changes cannot prolong the queue.
-        for (let waits = 0; permitted() && (authenticating || introducing || pending) && waits < 80; waits++)
+        for (let waits = 0; permitted() && (authenticating || introducing || pending || callPriority()) && waits < 80; waits++)
           await wait(25);
-        if (!permitted() || authenticating || introducing || pending) return null;
+        if (!permitted() || authenticating || introducing || pending || callPriority()) return null;
         let operation:string|undefined;try{operation=JSON.parse(raw)?.operation;}catch{/* Handler validates opaque payloads. */}
         if(operation==='poll'||operation==='group-poll'){
           const retryAfterMs=reserveRecoveryPoll(d.record.account,peer!.account,d.now());

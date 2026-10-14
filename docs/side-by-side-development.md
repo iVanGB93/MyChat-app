@@ -10,6 +10,15 @@ Only debug builds with `-PaxonicSideBySide=true` receive the alternate identity.
 Normal debug and release builds retain their existing identity. The Kotlin
 namespace remains `com.axonic`.
 
+Side-by-side debug builds also embed the JavaScript bundle and assets. Android
+can start Firebase's headless task before Dev Launcher selects Metro; without
+the embedded bundle that launch fails with `Unable to load script`. The normal
+React Native Gradle bundle task generates this fallback from the current source
+during `assembleDebug`. Android debugging and foreground Metro remain available.
+After JavaScript changes, rebuild Dev before testing cold starts: the fallback
+is the snapshot installed in the APK, not the latest Metro code. This changes
+only builds with `axonicSideBySide=true`; it does not alter release bundling.
+
 Firebase project `axion-3b993` has a separately registered Android app for
 `com.axonic.dev`. Local, ignored Google services configuration includes that
 client and preserves the existing `com.axonic` mapping. It lives in ignored

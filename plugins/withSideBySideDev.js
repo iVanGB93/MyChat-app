@@ -3,8 +3,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const marker = '// Axonic optional side-by-side development build';
+const bundleFallback = `
+// Headless Firebase starts before Dev Launcher selects Metro. Supply its asset fallback.
+// This controls bundling only; Android debug/Metro support remains enabled.
+if (project.findProperty('axonicSideBySide') == 'true') {
+    react { debuggableVariants = [] }
+}
+`;
 const gradle = `
 ${marker}
+${bundleFallback}
 android {
     defaultConfig {
         manifestPlaceholders += [axonicAppLabel: "Axonic", axonicScheme: "axonic", axonicExpoScheme: "exp+mychat-app"]
@@ -42,6 +50,13 @@ function configureVersionName(contents) {
     "versionName new groovy.json.JsonSlurper().parse(rootProject.file('../app.json')).expo.version");
 }
 
+function configureGradle(contents) {
+  const versioned = configureVersionName(contents);
+  if (!versioned.includes(marker)) return versioned + gradle;
+  if (versioned.includes('react { debuggableVariants = [] }')) return versioned;
+  return versioned.replace(marker, marker + '\n' + bundleFallback);
+}
+
 module.exports = function withSideBySideDev(config) {
   config = withDangerousMod(config, ['android', mod => {
     const source = path.join(mod.modRequest.projectRoot, 'builds', 'google-services.json');
@@ -57,8 +72,7 @@ module.exports = function withSideBySideDev(config) {
     return mod;
   });
   return withAppBuildGradle(config, mod => {
-    mod.modResults.contents = configureVersionName(mod.modResults.contents);
-    if (!mod.modResults.contents.includes(marker)) mod.modResults.contents += gradle;
+    mod.modResults.contents = configureGradle(mod.modResults.contents);
     return mod;
   });
 };
@@ -66,3 +80,4 @@ module.exports.gradle = gradle;
 module.exports.configureManifest = configureManifest;
 
 module.exports.configureVersionName = configureVersionName;
+module.exports.configureGradle = configureGradle;

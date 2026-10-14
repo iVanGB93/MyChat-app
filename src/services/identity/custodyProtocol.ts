@@ -28,10 +28,22 @@ export const custodyDigest = (e: CustodyEnvelope) => bytesToHex(sha256(bytes([by
 type CustodyWake = {version:1;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;expires:number;digest:string;signature:string};
 const wakeBody=(e:CustodyWake)=>bytes(['axonic-custody-wake-v1',e.version,e.id,e.sender,e.senderDevice,e.recipient,e.recipientDevice,e.expires,e.digest]);
 const wakeFields=(e:CustodyEnvelope):CustodyWake=>({version:1,id:e.id,sender:e.sender,senderDevice:e.senderDevice,recipient:e.recipient,recipientDevice:e.recipientDevice,expires:e.expires,digest:custodyDigest(e),signature:e.wakeSignature??''});
-export function createCustodyWake(e:CustodyEnvelope,record:IdentityRecord){
-  return e.wakeSignature?{type:'neuron_message',event:JSON.stringify(wakeFields(e)),record:recordDigest(record)}:null;
+// Conservative data budget leaves room for FCM routing fields. No plaintext is added.
+export const CUSTODY_WAKE_DATA_BYTES=3500;
+export function createCustodyWake(e:CustodyEnvelope,record:IdentityRecord,inline=false){
+  if(!e.wakeSignature)return null;
+  const data:{type:string;event:string;record:string;envelope?:string}={type:'neuron_message',event:JSON.stringify(wakeFields(e)),record:recordDigest(record)};
+  if(inline){const envelope=JSON.stringify(e);if(utf8ToBytes(JSON.stringify({...data,envelope})).length<=CUSTODY_WAKE_DATA_BYTES)data.envelope=envelope;}
+  return data;
 }
-/** A locked recipient needs only pinned public keys; no ciphertext or private keys enter FCM. */
+/** Optional ciphertext must match the signed wake; normal inbox admission verifies it again. */
+export function custodyWakeEnvelope(data:unknown,event:CustodyWake,now:number):CustodyEnvelope|null{
+  const raw=(data as {envelope?:unknown})?.envelope;
+  if(typeof raw!=='string'||raw.length>CUSTODY_WAKE_DATA_BYTES)return null;
+  const e=parseCustody(raw,now);
+  return e?.kind==='envelope'&&e.id===event.id&&e.sender===event.sender&&e.senderDevice===event.senderDevice&&e.recipient===event.recipient&&e.recipientDevice===event.recipientDevice&&e.expires===event.expires&&custodyDigest(e)===event.digest?e:null;
+}
+/** Wake verification needs only pinned public keys; private keys never enter FCM. */
 export function verifyCustodyWake(data:unknown,record:IdentityRecord,account:string,device:string,now:number):CustodyWake|null{
   try{
     const d=data as {type:string;event:string;record:string};

@@ -1,0 +1,75 @@
+Cold account recovery and notification processing — 2026-10-14
+
+Scope: com.axonic.dev on R3GYC0H7PMY only; data and identity preserved.
+Official com.axonic remains version 1.1.16/code 59, last updated 11:40:43.
+No production build or AoN deployment was required for these client changes.
+
+Measured bottleneck
+Instrumented cold wake: account inspection 41ms, native password derivation
+8432ms, total remembered resume 8488ms. Full foreground derivation was much
+faster (1320ms), so foreground-only measurements obscured the wake cost.
+
+Change and security boundary
+The existing OS-protected remembered credential optionally contains a v1
+salt-bound derived scrypt key. It stays in the same Expo SecureStore entry,
+keychain service and accessibility policy as the previously saved password.
+No derived key is stored in AsyncStorage, diagnostics, public identity records,
+or on an AoN. Explicit password attempts still use the unchanged native KDF:
+scrypt N=131072,r=8,p=1,32-byte output. Only policy-authorized remembered resume
+can use the saved derived key. Account matching, device-secret HKDF binding,
+vault AEAD and root/device/history validation are unchanged.
+
+Legacy credentials upgrade after successful resume. Missing/malformed cached
+fields or a changed vault salt use normal derivation. A structurally valid but
+incorrect key fails vault authentication, clears the in-memory cache and does
+not silently bypass it. Explicit valid password login can repair such a cache.
+Manual/automatic locking still gates startup and removes the secure credential;
+removal purges the same entry. Epoch checks prevent a racing resume from
+unlocking or rewriting credentials after manual lock. Owned byte copies are
+zeroed on clearing; this is not a claim of complete JavaScript memory erasure
+or a formal security proof. OS-keystore compromise remains outside this boundary.
+
+Notification processing now reads independent database/context and preference/
+policy inputs concurrently; cancellation uses one displayed-notification
+snapshot instead of two. Account/lock, mute/block, duplicate and read checks
+remain. Diagnostic output contains durations only.
+
+Real-device results (ordinary SecondNeuron custody -> gateway -> FCM)
+Both tests killed the background Dev process with am kill (not force-stop),
+removed Metro's reverse mapping and turned the display off. Embedded bundled
+JS handled the wake without Metro. A fresh synthetic accepted sender was used.
+
+Run 1, deposit 20:36:49.376 UTC:
+  account inspection 63ms; resume 77ms
+  displayNotification completed 20:36:57.107: 7.731s after submission
+  notification pipeline to display 3053ms
+  observed signed receipt 18.937s (includes polling/inspection overhead)
+Run 2, final processing change, deposit 20:39:37.104 UTC:
+  account inspection 68ms; resume 74ms
+  displayNotification completed 20:39:43.564: 6.460s after submission
+  notification pipeline to display 1265ms
+  observed signed receipt 25.040s (includes polling/inspection overhead)
+Native notification snapshots confirmed actual text previews in both runs.
+These are two cold-process observations, not latency percentiles or a guarantee
+under prolonged deep idle. Receipt routing still has measurable variable delay.
+
+Validation
+Full suite: 1102 passed, 3 skipped, 0 failed. After the final independent-read
+change: 56 focused tests passed, TypeScript passed. Service cycles, module
+boundaries and consolidation checks passed. Real vault tests retain actual
+scrypt and reject ciphertext/key tampering, wrong device secret and explicit
+wrong passwords. Additional tests cover legacy migration, changed salts,
+malformed cache, concurrent resume, clearing during derivation and manual-lock
+races. Both local Dev builds succeeded and were installed preserving data.
+
+Evidence (local ignored build artifacts)
+builds/notification-account-timing-20261014.json
+builds/notification-remembered-recovery-20261014.json
+builds/notification-remembered-recovery-repeat-20261014.json
+builds/notification-remembered-recovery-persistence-20261014.json
+builds/remembered-recovery-tests.log
+builds/remembered-recovery-focused-tests.log
+builds/remembered-recovery-dev-build-final.log
+
+Next validation: prolonged natural sleep and forced idle on this updated Dev
+build; distinguish preview latency from signed-receipt return latency.

@@ -1,0 +1,51 @@
+Notification wake scheduling — 2026-10-14
+
+Before: two ordinary SecondNeuron cold-start deliveries took 114 and 122 seconds.
+The phone was running com.axonic.dev, background process reclaimed with am kill,
+screen off, and USB Metro reverse removed. No force-stop or account reset.
+
+Isolation: a corrected synthetic peer with push capability requested an explicit
+authenticated gateway wake. Gateway returned forwarded in 254 ms and the phone
+returned a verified delivery receipt in 23.2 seconds, with the actual message
+preview. This demonstrated that the roughly 90-second wait could be avoided
+before the mobile recovery path. Gateway acceptance alone is not delivery.
+
+Shared scheduler change: prioritize unattempted newest deposits over old due
+work for up to three turns; every fourth selection serves the oldest eligible
+envelope. Preserve one selection per second, signature verification, durable
+custody, expiry, provider deduplication, and exponential retry backoff. This
+changes local ordering, not peer advertisements or request rate. Continuous
+fresh arrivals cannot monopolize all scheduler turns.
+
+Validation:
+- 46 custody tests passed, including a 120-envelope backlog and continuous new
+  arrivals, old-work fairness, unchanged per-tick rate, retry and restart cases.
+- App TypeScript check passed. All 184 AoN tests passed; shared core synchronized.
+- FirstNeuron updated with rollback copy and identity hash preserved.
+- SecondNeuron uses the same source release. An initial deployment used the
+  generic Dockerfile and failed before startup because /run/axonic/fcm.json had
+  not been materialized. Corrected packaging uses deploy/Dockerfile.railway and
+  its existing initialization/proxy wrapper; replacement deployment
+  45d5e634-4cb7-4684-8a9c-cbf7a3ccd124 succeeded and /health returned ok.
+  No credential value, persistent identity or stored message was changed.
+- Staged runtime and running FirstNeuron SHA256:
+  acaceb206a67d96276ec175bf93304adb592a301d42a40604f52a896643a50b4.
+  Railway SSH verification unavailable because no registered SSH key; do not
+  imply the running SecondNeuron hash was independently read over SSH.
+- Local ARM64 Dev rebuild passed and installed with -r only to com.axonic.dev.
+- Ordinary-route cold test after update: deposit 20:22:31.812 UTC; JS background
+  wake 20:22:34.840; actual preview 20:22:50.405; signed receipt by 27.037 seconds.
+  The phone was not opened and Metro was unavailable during this delivery.
+- Repeated ordinary-route cold test returned a verified receipt in 29.084 seconds
+  with the actual message preview. Both improved runs used normal AoN scheduling,
+  not the explicit gateway shortcut. Evidence:
+  notification-wake-queue-repeat-20261014.json.
+
+Remaining: roughly 9 seconds between starting account recovery and receiving its
+background lease, plus inbox/notification processing. Do not weaken account
+encryption or claim instant cold delivery. These are a few real-device tests,
+not a percentile benchmark or proof across every Android power state.
+
+Evidence (ignored local builds): notification-wake-timing-20261014.json,
+notification-wake-queue-after-20261014.json, wake-queue-tests.log,
+wake-queue-aon-tests.log, wake-queue-dev-build.log.

@@ -541,7 +541,7 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
     const state=await conversations().snapshot();if(!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
 
-    if(target.group&&state.groups?.some(g=>g.id===target.group))ref.navigate('GroupRoom',{id:target.group});else ref.navigate('ChatRoom',{peer:target.sender});
+    if(target.inbox)ref.navigate('Tabs',{screen:'Chats'});else if(target.group&&state.groups?.some(g=>g.id===target.group))ref.navigate('GroupRoom',{id:target.group});else ref.navigate('ChatRoom',{peer:target.sender});
 
     await finishRootNotificationOpen();
 

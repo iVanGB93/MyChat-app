@@ -94,27 +94,39 @@ test('bounded queue serializes simultaneous duplicate signals',async()=>{
   assert.equal(f.received[1].length,1);
 });
 
-async function coordinatedPair(routed=false,preserveIncoming=()=>false,routeAvailable=()=>true){
+async function coordinatedPair(routed=false,preserveIncoming=()=>false,routeAvailable=()=>true,offsets=[0,0]){
   let clock=now;const f=await fixture(),stores=[0,1].map(()=>{let v=null;return {read:async()=>v,compareAndSet:async(o,id,b,a)=>{if(v!==b)return false;v=a;return true;}};});
   const control=load('callControlRuntime'),delivery=load('callControlDelivery'),coordinator=load('neuronCallCoordinator');
   const peers=f.records.map((r,i)=>({account:r.account,device:f.devices[i].id,instance:String(i+1).repeat(64),expiresAt:now+60000}));
   const runtimes=[],coords=[],views=[null,null],contexts=peers.map((_,i)=>[{peer:peers[1-i],instance:peers[i].instance}]);
   const readRecord=async account=>f.records.find(r=>r.account===account)??null;
   for(let i=0;i<2;i++)runtimes.push(control.createCallControlRuntime({account:peers[i].account,device:peers[i].device,
-    store:stores[i],records:{read:readRecord},now:()=>clock,current:()=>true,blocked:()=>false,
-    signReceipt:async e=>delivery.signCallControlReceipt(e,f.records[i],seed(i?5:2),clock),
+    store:stores[i],records:{read:readRecord},now:()=>clock+offsets[i],current:()=>true,blocked:()=>false,
+    signReceipt:async e=>delivery.signCallControlReceipt(e,f.records[i],seed(i?5:2),clock+offsets[i]),
     send:async(a,d,raw)=>{const receipt=await runtimes[1-i].receive(raw,peers[i]);if(receipt)await coords[1-i].observe(JSON.parse(raw));return receipt;}}));
-  const make=i=>coordinator.createNeuronCallCoordinator({account:peers[i].account,device:peers[i].device,store:stores[i],now:()=>clock,current:()=>true,
+  const make=i=>coordinator.createNeuronCallCoordinator({account:peers[i].account,device:peers[i].device,store:stores[i],now:()=>clock+offsets[i],current:()=>true,
     preserveIncoming,busy:()=>false,blocked:()=>false,lookup:()=>({user:1-i,name:'Test peer'}),resolve:async()=>({account:peers[1-i].account,name:'Test peer'}),
     readRecord,list:async()=>{const raw=await stores[i].read();return raw?[JSON.parse(JSON.parse(raw).entries[0].raw)]:[];},
-    random:async()=>seed(31),sign:input=>c.signCallControl({...input,record:f.records[i]},seed(i?5:2),clock),submit:runtimes[i].submit,
-    signMedia:input=>m.signCallMediaSignal({...input,record:f.records[i]},seed(i?5:2),clock),contexts:()=>contexts[i],
+    random:async()=>seed(31),sign:input=>c.signCallControl({...input,record:f.records[i]},seed(i?5:2),clock+offsets[i]),submit:runtimes[i].submit,
+    signMedia:input=>m.signCallMediaSignal({...input,record:f.records[i]},seed(i?5:2),clock+offsets[i]),contexts:()=>contexts[i],
     ...(routed?{callRoute:()=>routeAvailable()?({expiresAt:now+60000}):null,sendRoutedMedia:raw=>coords[1-i].receiveRoutedMedia(raw)}:{}),
     sendMedia:(a,d,raw)=>coords[1-i].receiveMedia(raw,peers[i],peers[1-i].instance),changed:v=>{views[i]=v;}});
   coords.push(make(0),make(1));
   const drain=async i=>{const raw=await stores[i].read();return runtimes[i].drain(JSON.parse(JSON.parse(raw).entries[0].raw),peers[1-i]);};
   return {f,stores,coords,views,contexts,drain,advance:ms=>{clock+=ms;},reopen:i=>{coords[i].stop();coords[i]=make(i);}};
 }
+for(const offsets of [[2000,0],[0,2000],[5000,0],[0,5000]])test(`call setup completes without retries or clock advancement with offsets ${offsets}`,async()=>{
+ const x=await coordinatedPair(false,()=>false,()=>true,offsets),id=await x.coords[0].start(1,'voice');
+ assert.equal(await x.drain(0),1);
+ assert.equal(await x.coords[1].confirmRinging(id),true);assert.equal(await x.drain(1),1);
+ assert.equal(x.views[0].status,'ringing');
+ assert.equal(await x.coords[1].accept(id),true);assert.equal(await x.drain(1),1);
+ assert.notEqual(x.views[0].status,'ready');
+ assert.equal(await x.drain(0),1);await x.coords[0].tick();
+ assert.equal(x.views[0].status,'ready');assert.equal(x.views[1].status,'ready');
+ await x.coords[0].end(id);await x.drain(0);assert.equal(x.views[1].status,'ended');
+});
+
 test('call stays finding after delivery admission and rings only after signed presentation confirmation',async()=>{
  const x=await coordinatedPair(),id=await x.coords[0].start(1,'voice');assert.equal(x.views[0].status,'finding');
  await x.drain(0);assert.equal(x.views[1].status,'ringing');assert.equal(x.views[0].status,'finding');

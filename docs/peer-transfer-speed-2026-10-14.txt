@@ -1,0 +1,81 @@
+Connected-peer transfer audit — October 14, 2026
+
+Scope and method
+One real Samsung phone (R3GYC0H7PMY, com.axonic.dev) and existing AVD
+Medium_Phone_API_36.1 (emulator-5554, com.axonic development client).
+The emulator client needed a data-preserving native rebuild after it failed
+with missing ExpoSecureStore. After inspection/startup its account was empty;
+a synthetic test identity was created, with credentials in the existing
+protected test helper. No existing identity was removed or overwritten.
+The official phone app was not installed or changed. No production build.
+
+Synthetic files contain byte i modulo 251. Sizes are 524287, 2097151 and
+5242879 bytes. They use queueRootAttachmentSource and normal chat delivery,
+not an isolated socket benchmark. Temporary wrappers observed enqueue,
+completion and direct-stream lifecycle; they were restored afterwards.
+Temporary Dev diagnostics were removed after observation. No transfer
+algorithm or protocol fix is claimed in this audit.
+
+Times are measured within each sender process; emulator and phone clocks
+differ, so timestamps across devices must not be subtracted. Total time runs
+from queue invocation to signed attachment completion. Preparation is the
+runtime's stage counter; the wider enqueue/preparation interval includes
+queueing and bookkeeping. Stream time includes lane setup/handshake and
+receiver hash verification. Stage totals may overlap and are not additive.
+
+Results
+Route/path                            Total    Preparation    Sender stream
+Phone -> emulator, first 512 KiB       13.609s   0.499s         no stream
+Phone -> emulator, connected 2 MiB     20.653s   1.824s         no stream
+Phone -> emulator, later 512 KiB        4.830s   0.457s         0.328s
+Phone -> emulator, warm 2 MiB           4.507s   2.451s         0.677s
+Phone -> emulator, warm 5 MiB           8.518s   5.777s         1.707s
+Emulator -> phone, warm 2 MiB           4.451s   2.194s         0.890s
+
+All six listed files were delivered, receiver SHA-256 matched the original,
+and their attachment jobs cleared. A further intermediate 2 MiB transfer
+also completed, but its timing observers were lost on a development refresh;
+it is excluded from the timing table, not treated as a fast/successful timing.
+
+Findings
+1. Connection bandwidth is not the sole bottleneck. The verified direct stream
+   moved 2 MiB in under one second and 5 MiB in about 1.7 seconds. The latter
+   is roughly 2.9 MiB/s including stream setup and final verification.
+2. Preparation dominates the stable 5 MiB run: 5.777 seconds of encryption,
+   hashing/tree work and scheduling; queue-to-enqueued descriptor was 6.099s.
+   Merely increasing network chunks would not remove this cost.
+3. Earlier runs showed connected RTC peers but no direct stream, incoming
+   retries before download, and hundreds of chunk requests/custody uploads.
+   The warm run used the same source algorithm and succeeded through the
+   stream. Instrumentation/refresh changed session conditions; this is not
+   evidence that the problem was fixed by a code change.
+4. The exact trigger for the initial missed stream remains unproven. Code
+   inspection identifies a 60-second retry suppression after any attempted
+   stream (including unavailable attempts), and 10-second source backoff plus
+   exponential job retries after transfer failures. These may amplify route
+   startup failures and warrant targeted tests, not blind limit increases.
+5. The binary stream is restricted to the authenticated intended RTC endpoint
+   over DTLS; a generic connected peer/AoN or unencrypted LAN socket is not an
+   equivalent stream. A peer shown as connected does not alone prove the media
+   lane is usable. This audit does not establish physical Wi-Fi-only throughput
+   or whether the RTC candidate pair used TURN; no candidate statistics were
+   captured. It is a small development-mode sample, not production percentiles.
+
+Recommended next work
+First reproduce stream readiness/fallback transitions deterministically and
+separate unavailable-before-start from an actual failed stream, preserving
+bounded retries and verified chunk fallback. Then profile/offload preparation
+without changing cryptographic parameters or skipping integrity checks.
+The file does not need larger network frames to explain the measured delay.
+
+Local ignored evidence
+builds/peer-speed.cjs and builds/peer-speed-reverse.cjs
+builds/peer-speed-512k-initial.jsonl
+builds/peer-speed-512k-followup.jsonl
+builds/peer-speed-2mb-progress.jsonl
+builds/peer-speed-2mb-result.jsonl
+builds/peer-speed-diagnostic-512k.jsonl
+builds/peer-speed-warm-2mb.jsonl
+builds/peer-speed-warm-5mb.jsonl
+builds/peer-speed-reverse-2mb.jsonl
+builds/peer-speed-emulator-build.log

@@ -1,0 +1,94 @@
+Direct-stream readiness and native preparation — October 14, 2026
+
+Changes
+The attachment stream adapter distinguishes unavailable-before-start from a
+failed transfer. An unavailable result permits another attempt after one second;
+encrypted chunk fallback keeps progressing meanwhile. A real stream failure
+retains the existing 60-second suppression. Only true success advances the job
+to complete-file verification. Exact authenticated recipient/device admission,
+revocation, temporary-file isolation and signed receipts are unchanged.
+This fixes a confirmed readiness suppression mechanism, not every possible
+cause of route churn seen in the earlier audit. Chunk-source failure backoff
+and actual disconnects can still add latency.
+
+Preparation profiling measured 1399ms of encryption in a 2183ms 2 MiB run;
+reads, writes and copy consumed only milliseconds. Android now uses its existing
+Bouncy Castle 1.86 XChaCha20Poly1305 implementation on the attachment worker
+pool. It reads the private staged content and writes ciphertext directly.
+Each call handles at most 128 original 4096-byte chunks, returning only leaf
+hashes. It does not change encryption chunk size, nonce derivation (first 24
+bytes of SHA-256 of canonical AAD), AAD, ciphertext/tag layout, Merkle leaf
+serialization, manifests, shared group payloads or receipt verification.
+
+The JS module produces the same validated canonical AAD as its portable cipher.
+Native paths accept validated owner/id rather than arbitrary paths, reject
+symlinks/canonical-path changes, enforce exact input/output offsets and lengths,
+bound AAD and batch sizes, and check interruption between chunks. Key/plaintext
+byte buffers are cleared; immutable bridge strings/provider-internal copies are
+subject to platform lifetime management, not claimed to be securely erased.
+No keys, plaintext or private paths are logged. Local lock/cancellation is
+checked before and after each native await; failures remove unpublished output
+and retain the staged source for retry. Unsupported clients retain portable
+preparation. Errors from a supported native API fail closed.
+
+Validation
+Full npm run check: 1109 passing tests, 3 skipped, 0 failed; typecheck,
+dependency cycles, module boundaries and consolidation passed.
+Two native known-answer tests cover independent Noble-generated v1 and shared
+v2 ciphertext hashes and every leaf for a full chunk plus one-byte tail, split
+across two calls (nonzero offset), and reject incorrect offsets/traversal.
+JS regression tests cover prompt unavailable retry, bounded retry interval,
+actual-failure fallback, cancellation, malformed/native-error results, lock
+during native preparation, batching and byte-equivalent encrypted chunks.
+These are implementation and interoperability checks, not a formal security
+proof. Native module and both local debug clients compiled successfully.
+
+Paired preparation measurements
+Samsung Dev, same synthetic 2097151-byte source and alternating portable/native
+runs in the same updated client. Milliseconds:
+Portable: 2894, 3114, 2846 (median 2894)
+Native:    449,  369,  365 (median 369)
+Observed median preparation reduction: about 87% in this small Dev sample.
+All outputs passed full plaintext checksum. The last two pairs additionally
+decrypted first, middle and final ciphertext chunks with the unchanged JS
+verifier and checked their exact deterministic bytes/proofs.
+
+Normal-chat device tests
+Phone R3GYC0H7PMY/com.axonic.dev and emulator-5554/com.axonic development client.
+Same synthetic byte pattern as the preceding audit. Total is sender queue
+invocation to signed completion; stage durations use each device's own clock.
+No subtraction between emulator and phone timestamps.
+
+Direction/file                 Total       Preparation       Direct stream
+Phone -> emulator, 2 MiB        2.249s      0.343s            0.676s
+Phone -> emulator, 5 MiB        3.396s      0.729s            1.647s
+Emulator -> phone, 2 MiB        2.795s      0.603s            confirmed used
+
+Earlier warm observations were 4.507s / 8.518s / 4.451s respectively.
+These end-to-end runs are not a randomized paired production benchmark;
+the paired preparation measurements above isolate the actual preparation gain.
+
+A separate 512 KiB emulator -> phone test deliberately closed the stream after
+its first binary buffer. The expected RTC-stream-closed result occurred,
+encrypted fallback delivered in 3.159s, the receiver's full checksum matched,
+and both jobs cleared. All normal transfers also had matching receiver hashes
+and no remaining jobs. Timing and fault hooks were restored on both devices.
+
+Both development clients were installed preserving identities/chats. Official
+phone com.axonic remains versionCode 59, last updated 2026-10-14 11:40:43.
+No production build, production installation, commit, or push was performed.
+No hosted protocol change is needed; existing peers decrypt the same bytes.
+
+Local ignored evidence
+builds/peer-stream-readiness-tests.log
+builds/media-preparation-readiness-tests.log
+builds/native-attachment-preparation-tests.log
+builds/native-media-app-check.log
+builds/preparation-native-profile.cjs
+builds/preparation-native-comparison.jsonl
+builds/native-media-chat-2mb.jsonl
+builds/native-media-chat-5mb.jsonl
+builds/native-media-reverse-2mb.jsonl
+builds/native-media-interrupted.jsonl
+builds/native-media-dev-build.log
+builds/native-media-emulator-build.log

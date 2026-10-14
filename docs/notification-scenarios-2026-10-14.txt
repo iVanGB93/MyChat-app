@@ -1,0 +1,29 @@
+Notification and delivery device checks — October 14, 2026
+
+Device: Samsung SM-S948U1, serial R3GYC0H7PMY, com.axonic.dev only.
+Saved identity and chats preserved. Official com.axonic untouched.
+Both AoNs deployed from the same tested package. Runtime SHA256 bc692f097702e8b1bbb7604cc87c8b29e6f1f91935e6f4cef9e6c0b76d80d560. FirstNeuron health active and identity hash preserved; SecondNeuron deployment 499c5d17-7628-473c-8768-f0c8eb0dc9e7 SUCCESS, health OK.
+
+Real relay/FCM tests with labeled synthetic sender identities:
+- Screen-off small encrypted message: one stored copy, actual text notification, verified recipient receipt; 7.2s until sender receipt/inspection. Logs show preview before recovery resume.
+- Repeat of the same verified wake through the Dev handler: unchanged notification and one inbox copy. This replay is a handler test, not a second Google delivery.
+- Large message exceeding inline budget: one copy, actual text preview after network fetch, receipt in about 7.6s.
+- Muted test conversation: delivered with signed receipt, no new notice; prior conversation preview remained unchanged. Restored unmuted preference afterward.
+- Repeated deposit after completed receipt: relay replied completed, no fresh delivery job.
+- Shared group through SecondNeuron: phone received one copy and group content preview. Generic notification route resolved to the actual group. First fixture took 38.7s to signed receipt; a subsequent fixture with the sender authenticated on both AoNs took 10.3s. These are individual observations, not a controlled benchmark.
+- Separate synthetic group recipient remained offline until after phone delivery, then fetched and decrypted the shared content and returned a receipt successfully.
+- Android am kill reclaimed the background Dev process (not force-stop; stopped=false). A following message was not delivered within 51.8s; no Dev process/debugger was available. Android scheduled the Firebase headless service restart after 134,208ms. This is an unresolved Dev cold-start test, not proof of production behavior or Google acceptance.
+
+Bug found and fixed:
+A generic hint for an already-read message still resolved to its private chat because routing checked immutable stored message flags and ignored signed read/delete actions. rootNotificationRoute now evaluates the existing presentation reducer for that message. Live phone reproduced inbox=false before change and inbox=true after Dev reload. Focused regressions cover direct read/delete and deleted group messages.
+
+Validation: full mobile check 1,094 passed / 3 skipped; an additional group-deletion routing regression passed in the focused four-test suite. No native changes or production build.
+
+Evidence: builds/notification-scenarios-20261014.json; builds/notification-reconnect-group-20261014.json; builds/notification-reconnect-group-final-20261014.json; builds/notification-scenarios-check.log.
+Some exploratory test runs failed due to sleeping debugger or fixture setup errors; they are not counted as passes. Test identities/groups remain visibly labeled in Dev. No user account was reset.
+
+Cold-start follow-up: Android automatically started Dev PID 32345 at about 15:48:40. Its headless React instance failed with Unable to load script / loadJSBundleFromAssets. Metro was running but no debugger target was created. Thus cold-start delivery is blocked by the Dev client bundle-loading path; production cold-start behavior remains unverified. Android service restart scheduling and Dev headless loading are separate observed delays, not proof that the gateway dropped the message.
+
+Final reopen check: after the user unlocked the phone, the Dev server launcher was opened and Metro selected. Account initialization completed without changing credentials. The exact cold-start test message 1ed0d439812e7e8464a179336523b95305c5c618b96f54bc087287708c9e02cd was present once, status delivered, with its original test text. No resend was performed. Evidence: builds/notification-reopen-recovery-20261014.json.
+
+Remaining: a headless-capable Dev bundle/client or separately approved release validation is required for a conclusive process-death FCM test. Longer sleep, deep idle and network-switch scenarios are not established by these short screen-off observations. Identity-discovery latency merits further measurement; the group improvement after sender pre-registration is an observation, not isolation of the sole cause.

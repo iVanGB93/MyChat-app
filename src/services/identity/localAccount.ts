@@ -7,11 +7,20 @@ import { createLocalAccountBiometrics } from './localAccountBiometrics';
 import { createLocalAccountSession, createLocalAccountStartup } from './localAccountSession';
 import {createDeviceRemoval,DEVICE_REMOVAL_KEY} from './deviceRemoval';
 import {purgeDeviceAccountData} from './deviceRemovalStorage';
+import {createRememberedDerivation} from './rememberedDerivation';
 const VAULT = '@axonic_local_account_v1';
 const DEVICE = 'axonic_local_account_device_v1';
 const BIOMETRIC = 'axonic_local_account_biometric_v1';
 const biometricOptions = { keychainService: 'axonic-local-biometric-v1', requireAuthentication: true,
   authenticationPrompt: 'Unlock your Axonic account', keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
+const rememberedDerivation=createRememberedDerivation(async(password,salt)=>{
+  if (!Native?.identityScrypt) throw Error('This build needs the secure identity module');
+  const began=Date.now();
+  const result=await Native.identityScrypt(password,bytesToHex(salt));
+  console.info('[Axonic account timing] password-derivation-ms',Date.now()-began);
+  if(!/^[0-9a-f]{64}$/.test(result))throw Error('Password derivation unavailable');
+  return hexToBytes(result);
+});
 const removal=createDeviceRemoval({
  read:()=>AsyncStorage.getItem(DEVICE_REMOVAL_KEY),write:raw=>AsyncStorage.setItem(DEVICE_REMOVAL_KEY,raw),clear:()=>AsyncStorage.removeItem(DEVICE_REMOVAL_KEY),
  vaultAccount:async()=>{const raw=await AsyncStorage.getItem(VAULT);if(!raw)return null;const account=JSON.parse(raw)?.record?.account;if(typeof account!=='string')throw Error('Account storage unavailable');return account;},
@@ -31,16 +40,17 @@ export const localAccount = createLocalIdentityController({
 }, async size => {
   if (!Native?.identityRandomBytes) throw Error('This build needs the secure identity module');
   return hexToBytes(await Native.identityRandomBytes(size));
-}, Date.now, async (password, salt) => {
-  if (!Native?.identityScrypt) throw Error('This build needs the secure identity module');
-  const result = await Native.identityScrypt(password, bytesToHex(salt));
-  if (!/^[0-9a-f]{64}$/.test(result)) throw Error('Password derivation unavailable');
-  return hexToBytes(result);
+}, Date.now, rememberedDerivation.derive);
+localAccount.subscribe(()=>{
+ const status=localAccount.status();
+ if(status.removalPending||(!status.busy&&status.state!=='unlocked'))rememberedDerivation.clear();
 });
 const SESSION = 'axonic_local_account_session_v1';
 const sessionOptions = { keychainService: 'axonic-local-session-v1', keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
 export const localAccountSession = createLocalAccountSession({ identity: {
   status: localAccount.status, unlock: localAccount.unlock, lock: () => localAccountBiometrics.lock(),
+  resume:(password,saved)=>rememberedDerivation.withSaved(password,saved,()=>localAccount.unlock(password)),
+  rememberedDerivation:rememberedDerivation.export,
 },
   readPolicy: () => AsyncStorage.getItem('@axonic_auto_lock_v1'),
   writePolicy: value => AsyncStorage.setItem('@axonic_auto_lock_v1', value),
@@ -66,8 +76,8 @@ export const localAccountUsername = {
 };
 
 export const startLocalAccount = createLocalAccountStartup({
- inspect:async()=>{await removal.beforeStartup();if(!localAccount.status().account)await localAccount.inspect();},
- initialize:()=>localAccountSession.initialize(),
+ inspect:async()=>{const began=Date.now();await removal.beforeStartup();if(!localAccount.status().account)await localAccount.inspect();console.info('[Axonic account timing] inspect-ms',Date.now()-began);},
+ initialize:async()=>{const began=Date.now();await localAccountSession.initialize();console.info('[Axonic account timing] resume-ms',Date.now()-began);},
 });
 
 /** UI must show the scope and require explicit confirmation plus the current password.

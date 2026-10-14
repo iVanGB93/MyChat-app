@@ -1,0 +1,51 @@
+Text and call latency audit — 2026-10-14
+
+Scope: com.axonic.dev phone and emulator-5554 development com.axonic only.
+Synthetic labeled texts and voice calls; no production installation or build.
+
+Texts
+Six sequential texts per round, three each direction. Measured sender enqueue to
+sender delivered state, polled every 100 ms (includes polling uncertainty).
+Baseline: 498,367,300 / 282,419,411 ms.
+Post-reload: 403,268,370 / 425,319,302 ms.
+Final: 536,421,446 / 488,495,603 ms.
+Queue persistence was 7–84 ms. No text-specific code optimization justified by
+these foreground samples. This does not measure background notification latency.
+
+Calls
+Before: caller finding to confirmed ringing 4058 ms; receiver acceptance to ICE
+connected 5266 ms. Audio byte counters nonzero in both directions.
+Change: after successful durable call-control submit, immediately drain to up to
+ten eligible connected endpoint devices. Existing drain owns inflight limits,
+policy, journal checks and receipt verification. Network work is not awaited by
+submit. A verified receipt also triggers the coordinator clock immediately so
+selection confirmation need not wait for the next periodic tick. Periodic and
+relay fallback remain intact.
+
+Validation: tests for immediate invite/ringing/accept/confirm, failed durable save,
+nonblocking stalled send and receipt-triggered state advancement. Full check:
+1125 passed, 3 skipped; typecheck/cycles/boundaries/consolidation passed. First full
+run had an unrelated timing-sensitive appModules wake assertion (older work also
+ran before stop); complete reruns passed. No changes made to that test.
+
+Live qualification
+Hot reload retained an existing call coordinator; those intermediate results
+were not used as proof. Both test JS runtimes subsequently reloaded explicitly.
+Content-free temporary diagnostics confirmed directPeers=0 shortly after reload,
+then directPeers=1 once the direct connection was established.
+Final warm call: finding to confirmed ringing 2953 ms; receiver acceptance to ICE
+connected 7528 ms. It connected and audio flowed both directions. No consistent
+end-to-end call setup improvement is established. The shared persistent axon
+control queue can reject a call-control attempt when custodyWaiting>=2 or when
+pushWaiting>0, falling back to periodic/relay work. This is a remaining candidate
+bottleneck, not yet established as the sole cause of the measured delay.
+
+All test calls ended and timing/prototype hooks restored. Temporary dispatch
+logging removed. Remaining work: instrument queue/admission wait separately from
+signature/storage work and evaluate bounded call priority without starving push,
+authentication, or recovery. Avoid claiming this audit resolves call latency.
+
+Evidence: builds/text-latency-{baseline,after-reload,final}.jsonl;
+builds/call-latency-baseline-{ringing,connected}.txt;
+builds/call-latency-warm-{ringing,connected}.txt;
+builds/call-immediate-final-check.log and call-immediate-final-focused.log.

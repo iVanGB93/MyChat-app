@@ -1,0 +1,37 @@
+Direct stream waiting and startup recovery — 2026-10-14
+
+Changed rootAttachmentStreams and directAttachmentStream:
+- A pump waiting for remote progress now wakes after processing incoming frames
+  instead of repeatedly querying the durable lease on zero-delay timers.
+- Silent channels still revalidate the lease every 250 ms; close/cancel wakes the
+  waiter. Active send bursts retain their UI yield. Native admission, credit,
+  checksum verification and signed receipt behavior remain unchanged.
+- A thrown startup request before any media lane exists now returns unavailable,
+  allowing the worker's short readiness retry. Failures after lane creation still
+  return false and retain the long failed-stream cooldown and encrypted fallback.
+
+Controlled 524287-byte transfer, 30 ms frame delay:
+durable lease checks fell from 214 to 54 (about 75% fewer).
+This measures work reduction, not a proven end-to-end throughput improvement.
+Regression coverage includes delayed acknowledgements, silence with revoked lease,
+startup request failure followed by successful retry, corruption and interruption.
+
+Live tests, phone com.axonic.dev and emulator-5554 com.axonic:
+- Phone to emulator 5242879 bytes: 4547 ms queue to signed completion;
+  preparation 516 ms, direct stream 1589 ms. Receiver checksum matched.
+- Emulator to phone 524287 bytes with stream closed after first binary frame:
+  encrypted fallback completed in 2398 ms, checksum matched.
+- Next emulator-to-phone 2097151-byte transfer: direct stream resumed normally,
+  2560 ms queue to signed completion, 1112 ms stream, checksum matched.
+No remaining test jobs. Timing and fault hooks restored. Individual live runs
+vary and do not establish a consistent overall speedup over previous runs.
+
+npm run check: 1117 passed, 3 skipped, zero failures. Typecheck, dependency cycles,
+module boundaries, consolidation and git diff --check passed.
+No wire-format change, AoN deployment, native rebuild or production build needed.
+Official phone app was not modified.
+
+Evidence in ignored builds directory:
+stream-progress-before.log, stream-progress-after.log,
+stream-progress-check-final.log, stream-progress-5mb.jsonl,
+stream-progress-interrupted.jsonl, stream-progress-recovered.jsonl.

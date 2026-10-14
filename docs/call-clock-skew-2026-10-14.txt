@@ -1,0 +1,51 @@
+Call setup: clock-skew retry fix, 2026-10-14
+
+Finding
+The Dev phone clock was approximately two seconds ahead of the emulator.
+Call-control verification permits events up to five seconds in the future, but
+receipt generation used the receiver's earlier wall time. Its own verification
+then rejected the receipt (issuedAt < event.issuedAt), after durable admission.
+This prevented observation of the initial invitation and delayed the selected
+receipt until a periodic retry after the receiving clock caught up.
+Immediate ringing/acceptance could likewise predate the invitation.
+
+Change
+Receipt issuance now uses max(local time, admitted event issuance).
+Coordinator replies use max(local time, invitation issuance).
+Expiry remains based on actual local time and the original invitation/event
+and record bounds. No signature, identity, replay, selection-ACK, five-second
+future tolerance, or durable-state validation was relaxed. No wire change.
+Changes are in the mobile source; no AoN deployment or production build here.
+
+Live evidence (foreground voice, existing direct RTC peer, Dev phone/emulator)
+Before, phone -> emulator:
+  caller finding 1792013835933 -> ringing 1792013838543: 2610 ms
+  receiver connecting 1792013845818 -> ICE connected 1792013851113: 5295 ms
+  First invitation response false; selected response false twice, then true.
+After, same direction:
+  finding 1792013940469 -> ringing 1792013941165: 696 ms
+  receiver connecting 1792013945333 -> ICE connected 1792013947089: 1756 ms
+  Invite, ringing, accept and selected succeeded on their first direct attempt.
+Reverse direction, final source after diagnostic removal:
+  finding 1792014020174 -> ringing 1792014020760: 586 ms
+  receiver connecting 1792014031142 -> ICE connected 1792014033707: 2565 ms
+All three calls had nonzero inbound/outbound RTP audio counters on both ends.
+Calls ended and temporary test hooks restored. Official phone app untouched.
+These are single-call comparisons, not percentile estimates or background
+wake-up measurements. All durations use timestamps from the same device.
+
+Regression checks
+Paired real coordinator/runtime tests complete invite/ringing/accept/selected/
+hangup with clocks differing by 2 or 5 seconds in either direction, without
+advancing time or retrying. Caller still waits for selected receipt.
+Receipt tests verify original expiry bounds, expiry rejection and rejection
+beyond the existing five-second future tolerance.
+npm run check: 1136 passed, 3 skipped; typecheck, dependency cycles, boundaries
+and consolidation passed. git diff --check passed.
+
+Local ignored evidence
+builds/call-clock-phone-stages.txt
+builds/call-clock-fixed-connected.txt
+builds/call-clock-reverse-connected.txt
+builds/call-clock-focused.log
+builds/call-clock-check.log

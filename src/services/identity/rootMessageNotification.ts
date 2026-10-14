@@ -11,11 +11,12 @@ export async function currentRootMessageNotification(account:string,sender:strin
 
 /** An old wake or action must not dismiss a newer message in the same conversation. */
 export async function cancelRootMessageNotification(account:string,sender:string,messageId:string,group?:string){
- const current=await currentRootMessageNotification(account,sender,group);
+ const notices=await notifee.getDisplayedNotifications();
+ const current=notices.find(n=>n.notification.id===rootMessageNotificationId(account,sender,group))?.notification;
  if(current?.data?.sender===sender&&current.data.messageId===messageId&&current.id)
   await notifee.cancelNotification(current.id);
  const legacy='root-message:'+account+':'+sender+':'+messageId;
- if((await notifee.getDisplayedNotifications()).some(n=>n.notification.id===legacy))await notifee.cancelNotification(legacy);
+ if(notices.some(n=>n.notification.id===legacy))await notifee.cancelNotification(legacy);
 }
 
 /** Opening a conversation retires its current and legacy notices, independent of unread counts. */

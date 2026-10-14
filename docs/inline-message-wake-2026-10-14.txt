@@ -1,0 +1,17 @@
+Encrypted FCM message delivery — implementation and validation
+
+Scope
+Ordinary custody wakes optionally include the existing signed, end-to-end encrypted envelope when the complete JSON data payload is at most 3,500 UTF-8 bytes. Larger envelopes retain signed metadata-only recovery. No cryptographic primitive, signature transcript, key derivation or message format was changed.
+
+The receiver verifies the wake against the pinned sender record, binds the optional envelope to the signed digest and recipient/device, and uses normal custody verification and durable inbox admission after local account unlock. Inbox admission triggers the existing notification policy. Relay polling continues to exchange the signed receipt; FCM acceptance and inline admission alone do not consume custody. A failure processing inline content falls back to fetching the durable relay copy.
+
+Compatibility
+Older phones ignore the optional field and recover normally. Updated ordinary custodians retry a metadata-only request when an older gateway rejects the optional field. Hosted ordinary custody enables inline payloads; shared group custody explicitly retains metadata-only wakes because recipient envelopes contain keys for a separate shared payload. No additional peer broadcast or discovery traffic was added. Existing ranking and wake deduplication remain in use.
+
+Validation
+Mobile npm run check: 1,090 passed, 3 skipped; TypeScript, dependency cycles, module boundaries and consolidation passed.
+AoN npm test: 184 passed. Shared protocol sources synchronized.
+Tests cover digest/recipient tampering, expiry, payload budget, older gateways, retained custody after push acceptance, locked accounts, processing before connection resume, failure fallback and duplicate gateway requests.
+
+Limits
+No connected ADB devices were available. Real FCM / screen-off validation and latency measurements remain pending. The mobile app must be updated and both AoNs deployed for the full behavior. No AoN deployment, production build, official installation, commit or push was performed in this change. Shared group content still requires network recovery. Unknown sender records still follow existing wake verification policy.

@@ -1,0 +1,48 @@
+Axonic Dev cold-start notification validation — 2026-10-14
+
+Cause: the normal Android debug build skips JavaScript/assets bundling. When
+Firebase starts the React host before Dev Launcher has selected Metro, Expo's
+default host falls back to assets/index.android.bundle. That file was absent,
+causing Unable to load script. Reopening Dev and selecting Metro hid the failure.
+
+Fix: withSideBySideDev enables React Native's standard bundle task for builds
+with axonicSideBySide=true. Android remains debug, with the existing Dev package,
+signing and Metro support. The config plugin upgrades existing generated Gradle
+files idempotently and preserves following customizations. Release and ordinary
+debug configuration are unchanged. Cold tests use the source snapshot embedded
+at build time; rebuilding is required after changes to that snapshot.
+
+Validation:
+- 50 focused notification/recovery/routing/build configuration tests passed.
+- Local ARM64 assembleDebug passed; APK verified com.axonic.dev, version 1.1.16.
+- Embedded assets/index.android.bundle present, 4,933,160 bytes.
+- Installed with -r only on R3GYC0H7PMY; identity and chats preserved.
+- Official com.axonic unchanged: versionCode 59, versionName 1.1.16,
+  lastUpdateTime 2026-10-14 11:40:43. No production build.
+- Cold test reclaimed Dev with am kill, confirmed no process, removed the USB
+  Metro reverse, and turned the screen off. It did not force-stop the package.
+- Synthetic message deposited with SecondNeuron produced a verified signed
+  delivery receipt after approximately 114 seconds without opening the app.
+- Android started Dev for FirebaseMessagingReceiver at 16:04:20 local; the JS
+  wake handler ran at 16:04:22. Native notification inspection confirmed the
+  actual synthetic message text. No missing-bundle exception occurred.
+- After restoring Metro and opening Dev, the same identity auto-unlocked and
+  the message appeared once with status delivered.
+- A second process-death/no-Metro run also produced a verified signed receipt
+  and actual-text notification, in approximately 122 seconds. Its intended
+  explicit-gateway request was not dispatched because the synthetic gateway
+  session lacked the onPush capability; this was another ordinary AoN wake
+  test, not a measurement isolating gateway latency. Evidence:
+  builds/notification-cold-direct-gateway-20261014.json (annotated accordingly).
+
+Limits: the cold-start crash is fixed, but the roughly 88 seconds before Android
+started the receiver are not yet attributed to relay scheduling, FCM transport,
+or Android delivery. This is not a fast-delivery or production validation claim.
+An initial foreground Metro stall also required restarting its existing process;
+Metro reported an unreadable cache and rebuilt it. That is separate from the
+missing embedded bundle. The native notification inspection helper initially
+hit its output-buffer limit; rerunning with a larger buffer verified the preview.
+
+Local evidence: builds/notification-cold-dev-build.log,
+builds/notification-cold-regression.log,
+builds/notification-cold-start-fixed-20261014.json.

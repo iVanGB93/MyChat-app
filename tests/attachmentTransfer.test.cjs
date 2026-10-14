@@ -21,6 +21,52 @@ for(const failure of ['unavailable','disconnect'])test(`direct stream ${failure}
  await f.begin();for(let n=0;n<8;n++)await f.receiver.tick();
  assert.equal(attempts,1);assert.equal((await f.job(1)).phase,'complete');assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
+test('not-yet-ready stream retries promptly while encrypted fallback still makes progress',async t=>{
+ let attempts=0;
+ const f=directContext(t,(f)=>({directStream:async()=>{
+  if(++attempts===1)return 'unavailable';
+  f.written.splice(0,f.written.length,f.plain.slice());return true;
+ }}));
+ await f.begin();await f.receiver.tick();assert.equal(attempts,1);assert.equal((await f.job(1)).cursor,1);
+ f.advance(1001);await f.receiver.tick();await f.receiver.tick();
+ assert.equal(attempts,2);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+});
+
+test('not-yet-ready stream has a bounded retry interval',async t=>{
+ let attempts=0;const f=directContext(t,()=>({directStream:async()=>{attempts++;return 'unavailable';}}));
+ await f.begin();await f.receiver.tick();await f.receiver.tick();assert.equal(attempts,1);
+ assert.equal((await f.job(1)).cursor,2);
+});
+
+for(const response of [null,JSON.stringify({status:'unavailable'})])test(`temporary source response ${response} recovers after bounded retry without a ten-second exclusion`,async t=>{
+ let requests=0;const f=directContext(t,()=>({request:async(p,raw)=>{
+  if(++requests===1)return response;
+  return f.sender.receive(raw,{account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000});
+ }}));
+ await f.begin();await f.receiver.tick();assert.equal((await f.job(1)).failures,1);
+ f.advance(999);await f.receiver.tick();assert.equal(requests,1);
+ f.advance(1);for(let n=0;n<5;n++)await f.receiver.tick();
+ assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
+});
+
+test('persistent source unavailability backs off instead of flooding a connected peer',async t=>{
+ let requests=0;const f=directContext(t,()=>({request:async()=>{requests++;return JSON.stringify({status:'unavailable'});}}));
+ await f.begin();await f.receiver.tick();
+ for(const delay of [1000,2000,4000,8000,16000,30000,30000]){
+  const prior=requests;f.advance(delay-1);await f.receiver.tick();assert.equal(requests,prior);
+  f.advance(1);await f.receiver.tick();assert.equal(requests,prior+1);
+ }
+ assert.equal((await f.job(1)).receipt,null);
+});
+
+test('malformed source responses retain the longer peer exclusion',async t=>{
+ let requests=0;const f=directContext(t,()=>({request:async()=>{requests++;return JSON.stringify({status:'ok',chunk:{index:999}});}}));
+ await f.begin();await f.receiver.tick();f.advance(1000);await f.receiver.tick();assert.equal(requests,1);
+ f.advance(8999);await f.receiver.tick();assert.equal(requests,1);
+ f.advance(1);await f.receiver.tick();assert.equal(requests,2);assert.equal((await f.job(1)).receipt,null);
+});
+
 test('corrupt streamed file never produces a receipt',async t=>{
  let signed=0;const f=directContext(t,(f,base)=>({directStream:async()=>{f.written.push(new Uint8Array(f.plain.length));return true;},
  signReceipt:async m=>{signed++;return base.signReceipt(m);}}));
@@ -146,6 +192,20 @@ for(const window of [2,4])test(`small batch window ${window} drains requests and
  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
  assert.equal(peak,window);assert.equal(active,0);assert.equal((await f.job(1)).cursor,3);
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain.slice(0,3*4096)));
+});
+
+test('temporary batch unavailability preserves the verified prefix and resumes after one second',async t=>{
+ const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let failed=false;
+ const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>2,
+ request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
+  if(JSON.parse(raw).index===3&&!failed){failed=true;return JSON.stringify({status:'unavailable'});}
+  return sender.receive(raw,peer);
+ }});
+ await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();assert.equal((await f.job(1)).cursor,3);
+ f.advance(1000);for(let n=0;n<4;n++)await receiver.tick();
+ assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
 
 test('RTC pipeline replenishes a verified batch before a slower adjacent batch completes',async t=>{

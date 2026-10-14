@@ -11,7 +11,7 @@ import * as SQLite from 'expo-sqlite';
 import {AppState} from 'react-native';
 import notifee,{AndroidImportance,AndroidVisibility,AndroidStyle} from '@notifee/react-native';
 import {validAccountId} from './identityProtocol';
-import {verifyCustodyWake} from './custodyProtocol';
+import {verifyCustodyWake,custodyWakeEnvelope,type CustodyEnvelope} from './custodyProtocol';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {rootWakeContext,rootWakeBlocked} from './rootCallWake';
 
@@ -64,8 +64,8 @@ async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>numbe
  try{await Promise.race([work,deadline]);}
  finally{finished=true;if(timer!==undefined)clearTimeout(timer);}
 }
-/** Signed hint only. Private keys and message content remain unavailable until local unlock. */
-export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void)=>Promise<void>){
+/** Signed hint with optional ciphertext. Plaintext remains unavailable until local unlock. */
+export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope)=>Promise<void>){
  setStage('context');
  const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048)return;
  let sender:string;try{sender=JSON.parse(d.event).sender;}catch{return;}if(!validAccountId(sender))return;
@@ -73,7 +73,7 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  const record=await createMobileIdentityRecordStore(Date.now).read(sender);
  const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event)return;setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified');
  const deadline=createMessageNotificationDeadline();
- const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress)).then(()=>{},()=>{setStage('recovery-failed');});
+ const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,custodyWakeEnvelope(data,event,Date.now())??undefined)).then(()=>{},()=>{setStage('recovery-failed');});
  // Three seconds without new progress, capped at ten seconds overall. A preview
  // publishes independently; retries and repeated milestones cannot extend this.
  await waitForRecovery(recovery,10000,deadline.remaining);
@@ -114,6 +114,10 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
   if(await currentRootMessageNotification(owner.account,sender)){
    await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);return;
   }
+  // Delivery can finish while Android creates/reads the notification channel.
+  if(await alreadyReceived(owner.account,sender,event.id)||await rootWakeBlocked(owner.account,sender)||String(AppState.currentState)==='active'){
+   await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);return;
+  }
   setStage('generic');
   deliveryDiagnosticEvent(owner.account,sender,event.id,'notification_requested');
   await notifee.displayNotification({id,title:'Axonic',body:'You may have new messages. Open Axonic to check.',
@@ -139,11 +143,16 @@ function notificationMessages(raw:unknown,next:NotificationMessage){
  return messages.sort((a,b)=>a.at-b.at||((a.orderId??a.id)<(b.orderId??b.id)?-1:(a.orderId??a.id)>(b.orderId??b.id)?1:0)||(a.sender<b.sender?-1:a.sender>b.sender?1:0)).slice(-25);
 }
 export async function finishRootMessageWake(owner:string,sender:string,id:string,preview?:RootMessagePreview){
+ const began=Date.now();
  await serial(async()=>{
-  const database=await db(),key=rootMessageNotificationId(owner,sender,preview?.group),current=await rootWakeContext();
+  console.info('[Axonic notification timing] queue-ms',Date.now()-began);
+  // These reads are independent; avoid one bridge round trip after another on a
+  // cold headless task. Account and lock checks still gate all presentation.
+  const [database,current]=await Promise.all([db(),rootWakeContext()]);
+  const key=rootMessageNotificationId(owner,sender,preview?.group);
   if(current?.account!==owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
-  const preferences=await readRootNotificationPreferences(owner);
-  const quiet=!preferences.messages||!preview||preview.read||await rootWakeBlocked(owner,sender)||await muted(owner,sender,preview?.group)||(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group));
+  const [preferences,blocked,isMuted]=await Promise.all([readRootNotificationPreferences(owner),rootWakeBlocked(owner,sender),muted(owner,sender,preview?.group)]);
+  const quiet=!preferences.messages||!preview||preview.read||blocked||isMuted||(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group));
   if(quiet){if(preview?.group)await cancelRootMessageNotification(owner,sender,id);await database.runAsync('UPDATE notices SET displayed=2 WHERE owner=? AND sender=? AND id=?',owner,sender,id);await cancelRootMessageNotification(owner,sender,id,preview?.group);return;}
   const prior=await database.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner,sender,id);if(prior?.displayed===2)return;
   await database.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
@@ -152,6 +161,7 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
    await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);return;
   }
   const channelId=await messageChannel(preferences.sound);
+  console.info('[Axonic notification timing] policy-channel-ms',Date.now()-began);
   // An unlock may end while the OS channel is being created.
   if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)return;
   // Group membership is known only after decryption; retire this message's generic hint.
@@ -163,7 +173,9 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   await notifee.displayNotification({id:key,title:preview.name,body:latest.text,data:{type:'root_neuron_message',account:owner,sender:latest.sender,messageId:latest.id,messageAt:String(latest.at),messagePreviews:JSON.stringify(messages),...(preview.group?{group:preview.group}:{})},
    android:{channelId,onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
     pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender}}))}}});
+  console.info('[Axonic notification timing] displayed-ms',Date.now()-began);
   await Native?.notificationReadActionInShade?.(key);
+  console.info('[Axonic notification timing] shade-action-ms',Date.now()-began);
   deliveryDiagnosticEvent(owner,sender,id,'notification_requested');
   if(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group))await cancelRootMessageNotification(owner,sender,id,preview.group);
   setStage('preview');

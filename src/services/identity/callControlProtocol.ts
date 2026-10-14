@@ -3,6 +3,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { verifyPublicSignature, recordDigest, validAccountId, verifyRecord, type IdentityRecord } from './identityProtocol.ts';
+import {createCallValidationCache} from './callValidationCache.ts';
 
 export type CallControlKind = 'invite' | 'ringing' | 'accept' | 'selected' | 'reject' | 'busy' | 'cancel' | 'end';
 export interface CallControl {
@@ -20,7 +21,11 @@ const body = (e: CallControl) => utf8ToBytes(JSON.stringify(['axonic-call-contro
 export const callControlDigest = (e: CallControl) => bytesToHex(sha256(body(e)));
 
 /** A valid signature is insufficient: require the exact latest locally pinned record. */
+const verifiedControls=createCallValidationCache<CallControl>();
 export function verifyCallControl(raw: string, pinned: IdentityRecord, now: number): CallControl | null {
+  try{return verifiedControls(raw,JSON.stringify(pinned),now,()=>verifyCallControlUncached(raw,pinned,now));}catch{return null;}
+}
+function verifyCallControlUncached(raw: string, pinned: IdentityRecord, now: number): CallControl | null {
   try {
     if (typeof raw !== 'string' || utf8ToBytes(raw).length > 6000 || !Number.isSafeInteger(now) || now < 0) return null;
     const e: CallControl = JSON.parse(raw);

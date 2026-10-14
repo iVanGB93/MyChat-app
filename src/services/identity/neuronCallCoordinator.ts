@@ -52,7 +52,8 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     const raw=await d.store.read(d.account,e.callId);if(!raw||!current())return false;
     const events=JSON.parse(raw).entries.map((entry:{raw:string})=>JSON.parse(entry.raw) as CallControl);
     const sequence=1+Math.max(0,...events.filter((x:CallControl)=>x.record.account===d.account&&x.device===d.device).map((x:CallControl)=>x.sequence));
-    const issuedAt=d.now(),expiresAt=['end','cancel'].includes(kind)?issuedAt+30000:Math.min(e.expiresAt,issuedAt+30000);
+    const now=d.now(),issuedAt=Math.max(now,e.issuedAt);
+    const expiresAt=['end','cancel'].includes(kind)?now+30000:Math.min(e.expiresAt,now+30000);
     if(expiresAt<=issuedAt)return false;
     const saved=await d.submit(d.sign({callId:e.callId,caller:e.caller,callee:e.callee,callerDevice:e.callerDevice,
       media:e.media,kind,invitation:callControlDigest(e),sequence,issuedAt,expiresAt,...extra}));

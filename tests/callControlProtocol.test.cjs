@@ -39,6 +39,36 @@ test('signatures bind participants, media, identity, sequence and call ID', () =
 });
 
 const durable = load('durableCallControl');
+test('cached call verification still rejects identity changes, tampering, expiry and mutated outputs',()=>{
+ const f=fixture(),accepted=c.verifyCallControl(f.invite,f.caller,now);assert(accepted);
+ accepted.record.devices[0].signing='0'.repeat(64);accepted.kind='end';
+ assert.equal(c.verifyCallControl(f.invite,f.caller,now).kind,'invite');
+ assert.equal(c.verifyCallControl(f.invite,{...f.caller,revision:f.caller.revision+1},now),null);
+ assert.equal(c.verifyCallControl(JSON.stringify({...JSON.parse(f.invite),signature:'0'.repeat(128)}),f.caller,now),null);
+ assert.equal(c.verifyCallControl(f.invite,f.caller,now+60000),null);
+ assert.equal(c.verifyCallControl(f.invite,f.caller,now-5001),null);
+});
+test('cached receipts remain bound to the exact event, identity and time',()=>{
+ const f=fixture(),delivery=load('callControlDelivery'),event=JSON.parse(f.invite);
+ const raw=delivery.signCallControlReceipt(event,f.callee,seed(5),now+1);
+ const result=delivery.verifyCallControlReceipt(raw,event,f.callee,now+1);assert(result);result.target='changed';
+ assert.equal(delivery.verifyCallControlReceipt(raw,event,f.callee,now+1).target,f.caller.account);
+ assert.equal(delivery.verifyCallControlReceipt(raw,{...event,media:'video'},f.callee,now+1),null);
+ assert.equal(delivery.verifyCallControlReceipt(raw,event,{...f.callee,revision:99},now+1),null);
+ assert.equal(delivery.verifyCallControlReceipt(raw,event,f.callee,now+60000),null);
+});
+test('receipt timestamps tolerate admitted clock skew without extending expiry or future tolerance',()=>{
+ const f=fixture(),event=JSON.parse(f.invite),d=load('callControlDelivery');
+ for(const skew of [1,2000,5000]){
+  const receipt=d.signCallControlReceipt(event,f.callee,seed(5),now-skew),r=JSON.parse(receipt);
+  assert.equal(r.issuedAt,event.issuedAt);assert.equal(r.expiresAt,now-skew+60000);
+  assert(d.verifyCallControlReceipt(receipt,event,f.callee,now-skew));
+  assert(d.verifyCallControlReceipt(receipt,event,f.callee,now));
+  assert.equal(d.verifyCallControlReceipt(receipt,event,f.callee,r.expiresAt),null);
+ }
+ assert.throws(()=>d.signCallControlReceipt(event,f.callee,seed(5),now-5001));
+ assert.throws(()=>d.signCallControlReceipt(event,f.callee,seed(5),event.expiresAt));
+});
 function memoryStore() {
   let value = null;
   return { read: async () => value,

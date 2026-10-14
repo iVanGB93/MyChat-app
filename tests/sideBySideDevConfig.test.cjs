@@ -2,6 +2,17 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { configureManifest } = require('../plugins/withSideBySideDev');
 
+test('upgrading an existing Dev Gradle configuration preserves following customizations and is idempotent', () => {
+  const { configureGradle } = require('../plugins/withSideBySideDev');
+  const existing = '// Axonic optional side-by-side development build\nandroid { }\n// Custom configuration\n';
+  const updated = configureGradle(existing);
+  assert(updated.endsWith('android { }\n// Custom configuration\n'));
+  assert(updated.includes("if (project.findProperty('axonicSideBySide') == 'true') {\n    react { debuggableVariants = [] }"));
+  assert.equal(configureGradle(updated), updated);
+  const fresh = configureGradle('android {}\n');
+  assert.equal(configureGradle(fresh), fresh);
+});
+
 test('side-by-side manifest keeps native classes and sharing filters while separating launcher identity', () => {
   const manifest = { application: [{ $: { 'android:name': '.MainApplication', 'android:label': '@string/app_name' },
     activity: [{ $: { 'android:name': '.MainActivity' }, 'intent-filter': [

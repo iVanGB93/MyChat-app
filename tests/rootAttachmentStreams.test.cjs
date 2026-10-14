@@ -2,7 +2,8 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {load}=require('./helpers/attachment.cjs');
 const digest='a'.repeat(64),owner='sender',recipient='receiver',checksum=b=>crypto.createHash('sha256').update(b).digest('hex');
 function fixture(t,options={}){
- const data=new Map(),dirs=new Set(),credits=[],source=crypto.randomBytes(524287),handlers=[],managers=[];let serial=0,valid=true,requests=0;
+ const data=new Map(),dirs=new Set(),credits=[],source=crypto.randomBytes(524287),handlers=[],managers=[];let serial=0,valid=true,requests=0,checks=0;
+ const live=async()=>{checks++;return valid;};
  function file(user,id,name='content'){
   const dir=user+'/'+id,key=dir+'/'+name;
   return {get exists(){return data.has(key);},parentDirectory:{get exists(){return dirs.has(dir);},create(){dirs.add(dir);},delete(){dirs.delete(dir);for(const k of data.keys())if(k.startsWith(dir+'/'))data.delete(k);}},
@@ -14,7 +15,7 @@ function fixture(t,options={}){
  dirs.add(owner+'/'+digest);data.set(owner+'/'+digest+'/content',source);
  function lanes(){
   let closed=false;const listeners=[],pair=[0,1].map(i=>({live:()=>!closed,ready:async()=>{},
-   send(value){queueMicrotask(()=>{if(!closed){listeners[1-i]?.[0](typeof value==='string'?value:value.slice().buffer);if(options.disconnect&&value instanceof Uint8Array)pair[i].close();}});},
+   send(value){if(options.silent)return;const deliver=()=>{if(!closed){listeners[1-i]?.[0](typeof value==='string'?value:value.slice().buffer);if(options.disconnect&&value instanceof Uint8Array)pair[i].close();}};if(options.delay)setTimeout(deliver,options.delay);else queueMicrotask(deliver);},
    async credit(value,authorize){credits.push({value,authorize});},listen(message,end){listeners[i]=[message,end];},
    close(){if(closed)return;closed=true;for(const l of listeners)l?.[1]();}}));return pair;
  }
@@ -25,12 +26,26 @@ function fixture(t,options={}){
    if(name==='./rootAttachmentFiles')return {rootAttachmentFile:file,rootAttachmentPartial:(user,id)=>file(user,id,'partial'),sweepRootStreamTemporaries(){},createRootStreamTemporary(user,id){const f=file(user,id);f.parentDirectory.create();f.create();return f;}};
    if(name==='./directAttachmentStream')return load('directAttachmentStream');throw Error(name);
   },out);
-  const network={available:()=>true,listen(h){handlers[i]=h;return ()=>handlers[i]=null;},open(){const pair=lanes();queueMicrotask(()=>{if(!handlers[1]?.(owner,options.wrongDevice?'wrong':'s',pair[1]))pair[1].close();});return pair[0];}};
-  managers[i]=out.createRootAttachmentStreams(network,async()=>{requests++;return JSON.stringify({status:await managers[0].serve(jobs[0],async()=>valid)?'streaming':'unavailable'});});
+  const network={available:()=>options.available!==false,listen(h){handlers[i]=h;return ()=>handlers[i]=null;},open(){const pair=lanes();queueMicrotask(()=>{if(!handlers[1]?.(owner,options.wrongDevice?'wrong':'s',pair[1]))pair[1].close();});return pair[0];}};
+  managers[i]=out.createRootAttachmentStreams(network,async()=>{requests++;if(options.requestThrows)throw Error('Route changed before stream startup');return JSON.stringify({status:await managers[0].serve(jobs[0],live)?'streaming':'unavailable'});});
  }
  t.after(()=>managers.forEach(m=>m.stop()));
- return {managers,jobs,data,dirs,source,credits,run:()=>managers[1].pull(jobs[1],async()=>valid),revoke:()=>valid=false};
+ return {managers,jobs,data,dirs,source,credits,get checks(){return checks;},run:()=>managers[1].pull(jobs[1],live),revoke:()=>valid=false};
 }
+
+test('delayed stream acknowledgements do not require continuous journal polling',async t=>{
+ const f=fixture(t,{delay:30});assert.equal(await f.run(),true);
+ t.diagnostic(`journal validations: ${f.checks}`);
+ assert(f.checks<80,'waiting for frames must not continuously poll the durable journal');
+ assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+});
+
+test('silent stream still checks revocation without waiting for a remote frame',async t=>{
+ const f=fixture(t,{silent:true}),pending=f.run();await new Promise(setImmediate);f.revoke();
+ const started=Date.now();assert.equal(await pending,false);
+ assert(Date.now()-started<1500,'silence must not suppress periodic lease checks');
+ assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
+});
 test('normal stream adapter verifies, stages for worker commit, and cleans its temporary directory',async t=>{
  const f=fixture(t);assert.equal(await f.run(),true);
  assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
@@ -50,4 +65,17 @@ test('stopping the runtime cancels its receiver and leaves no partial content',a
 test('revoked journal or permission lease cannot publish a stream',async t=>{
  const f=fixture(t);const pending=f.run();await new Promise(setImmediate);f.revoke();
  assert.equal(await pending,false);assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
+});
+
+test('an unavailable media lane is not a failed stream and can become ready',async t=>{
+ const options={available:false},f=fixture(t,options);
+ assert.equal(await f.run(),'unavailable');assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
+ options.available=true;assert.equal(await f.run(),true);
+});
+
+test('a request failure before a lane opens is retryable readiness and releases the incoming slot',async t=>{
+ const options={requestThrows:true},f=fixture(t,options);
+ assert.equal(await f.run(),'unavailable');assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
+ options.requestThrows=false;assert.equal(await f.run(),true);
+ assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
 });

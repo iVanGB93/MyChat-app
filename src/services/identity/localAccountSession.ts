@@ -1,6 +1,7 @@
 /** A remembered login lives in the OS keystore, never in public/local profile storage. */
 export function createLocalAccountSession(d: {
-  identity: { status(): {state: string; account: string | null}; unlock(password: string): Promise<void>; lock(): void };
+  identity: { status(): {state: string; account: string | null}; unlock(password: string): Promise<void>; lock(): void;
+    resume?(password:string,derivation:unknown):Promise<void>; rememberedDerivation?(password:string):unknown };
   readPolicy(): Promise<string | null>; writePolicy(value: string): Promise<void>;
   readCredential(): Promise<string | null>; writeCredential(value: string): Promise<void>; removeCredential(): Promise<void>;
 }) {
@@ -14,7 +15,7 @@ export function createLocalAccountSession(d: {
     if (autoLock || !account || d.identity.status().state !== 'unlocked') return;
     await serialize(async () => {
       if (own !== epoch || autoLock || d.identity.status().state !== 'unlocked' || d.identity.status().account !== account) return;
-      await d.writeCredential(JSON.stringify({version: 1, account, password}));
+      await d.writeCredential(JSON.stringify({version: 1, account, password, derivation:d.identity.rememberedDerivation?.(password)}));
       if (own !== epoch || autoLock || d.identity.status().state !== 'unlocked') { await d.removeCredential(); return; }
       // A successful explicit login clears a previous manual-lock marker.
       if (manuallyLocked) {
@@ -40,7 +41,7 @@ export function createLocalAccountSession(d: {
       const account = d.identity.status().account;
       const raw = await d.readCredential();
       if (!raw || !account || own !== epoch || d.identity.status().state !== 'locked') return;
-      let saved: {version:number;account:string;password:string};
+      let saved: {version:number;account:string;password:string;derivation?:unknown};
       try {
         saved = JSON.parse(raw);
         if (saved.version !== 1 || saved.account !== account || typeof saved.password !== 'string') throw Error('Invalid remembered login');
@@ -48,8 +49,13 @@ export function createLocalAccountSession(d: {
       if (own !== epoch || autoLock) return;
       // A failed native/storage operation is not proof that the saved credential
       // is invalid. Preserve it for Retry; manual/automatic lock still removes it.
-      await d.identity.unlock(saved.password);
-      if (own !== epoch || autoLock) d.identity.lock();
+      if(d.identity.resume)await d.identity.resume(saved.password,saved.derivation);
+      else await d.identity.unlock(saved.password);
+      if (own !== epoch || autoLock) {d.identity.lock();return;}
+      // Upgrade old remembered credentials, or refresh after a vault re-seal.
+      const derivation=d.identity.rememberedDerivation?.(saved.password);
+      if(derivation&&JSON.stringify(derivation)!==JSON.stringify(saved.derivation))
+        await remember(saved.password);
     },
     async setAutoLock(enabled: boolean, password?: string) {
       const own = ++epoch;

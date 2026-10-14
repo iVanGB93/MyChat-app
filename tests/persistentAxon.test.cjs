@@ -184,6 +184,28 @@ test('negotiated call control returns a verified durable receipt and tolerates s
   assert.equal(await f.sessions[0].callControlRequest(raw),null);
   assert.deepEqual(f.closed,[0,0]);
 });
+test('call control has bounded priority over queued recovery and push, without starving either',async t=>{
+ const calls=load('callControlProtocol'),receipts=load('callControlDelivery');
+ let release,entered=false,f;const gate=new Promise(r=>release=r);t.after(()=>release());
+ const order=[];
+ f=pair(t,{0:{onCallControl:async()=>null,onCustody:async()=>null,onPush:async()=>null},1:{
+  onCustody:async raw=>{order.push(raw);if(raw==='held'){entered=true;await gate;}return 'stored';},
+  onPush:async()=>{order.push('push');return 'registered';},
+  onCallControl:async raw=>{order.push('call');const b=f.identities[1];return receipts.signCallControlReceipt(JSON.parse(raw),b.record,b.signingSeed,now);}
+ }});
+ await Promise.all(f.sessions.map(s=>s.ready));const [a,b]=f.identities;
+ const raw=calls.signCallControl({record:a.record,callId:'ca'.repeat(32),caller:a.record.account,callee:b.record.account,
+  callerDevice:a.record.devices[0].id,media:'voice',kind:'invite',invitation:null,sequence:0,issuedAt:now,expiresAt:now+60000},a.signingSeed,now);
+ const held=f.sessions[0].custodyRequest('held');await settle(()=>entered);
+ const recovery=f.sessions[0].custodyRequest('recovery'),push=f.sessions[0].pushRequest('registration');
+ const one=f.sessions[0].callControlRequest(raw),two=f.sessions[0].callControlRequest(raw);
+ assert.equal(await f.sessions[0].callControlRequest(raw),null,'urgent reservations remain capped');
+ release();const results=await Promise.all([held,recovery,push,one,two]);
+ assert.deepEqual(results.slice(0,3),['stored','stored','registered']);assert(results[3]);assert(results[4]);
+ assert.deepEqual(order.slice(0,3),['held','call','call']);assert(order.includes('push'));assert(order.includes('recovery'));
+ assert.deepEqual(f.closed,[0,0]);
+});
+
 test('legacy peers do not advertise or receive call-control requests',async t=>{
   const f=pair(t,{0:{onCallControl:async()=>null}});
   await Promise.all(f.sessions.map(s=>s.ready));

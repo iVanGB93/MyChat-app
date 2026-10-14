@@ -173,10 +173,12 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
       const input=await timing.measure('prepare',()=>prepareRootAttachment({...row,recipient:record,current}));if(!current())return;
       prepared.push({input,reply:row.reply,group:row.group,selectedAt:row.createdAt});
      }
+     // A connected recipient can request bytes as soon as the descriptor is
+     // published. Persist every serving job before making the audience visible.
+     for(const item of prepared){await worker.enqueue(item.input,'outgoing');if(!current())return;}
      if(batch.length===1)await ledger.enqueueAttachment(prepared[0].input,pending.reply,pending.group,pending.createdAt);
      else await ledger.enqueueAttachments(prepared);
      if(!current())return;
-     for(const item of prepared){await worker.enqueue(item.input,'outgoing');if(!current())return;}
      const ids=new Set(batch.map(s=>s.id));
      await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(ids.has(rows[i].id))rows.splice(i,1);});
      for(const row of batch)removeRootAttachmentSource(account,row.id);
@@ -206,6 +208,16 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  let timer:ReturnType<typeof setTimeout>;
  async function pump(){let progressed=false;try{progressed=!!await tick();}finally{if(!stopped)timer=setTimeout(()=>void pump(),progressed?0:200);}}
  timer=setTimeout(()=>void pump(),0);
- return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',()=>worker.receive(...args)),stop(){if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
+ return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',async()=>{
+  const account=owner(),generation=epoch;if(!account)return null;
+  // New descriptors and blocking decisions can arrive between pump turns.
+  // Refresh only on a changed revision, before admitting a serving request.
+  if(ownChatRevision(account)!==policyRevision){
+   const cached=await snapshots.read();if(!cached||owner()!==account||epoch!==generation)return null;
+   applyPolicy(cached.state,account,cached.revision);
+  }
+  if(owner()!==account||epoch!==generation)return null;
+  return worker.receive(...args);
+ }),stop(){if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
 }
 

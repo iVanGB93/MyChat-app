@@ -53,11 +53,15 @@ function chunkLength(m:ChunkContext,index:number){
   ||!Number.isSafeInteger(m.bytes)||m.bytes<1||m.bytes>ATTACHMENT_MAX_BYTES||!Number.isSafeInteger(index)||index<0||index>=count(m.bytes))throw Error('Invalid attachment chunk');
  return Math.min(ATTACHMENT_CHUNK_BYTES,m.bytes-index*ATTACHMENT_CHUNK_BYTES);
 }
-function chunkContext(m:ChunkContext,index:number){
- const length=chunkLength(m,index);
+/** Canonical authenticated bytes shared with the optional native preparer. */
+export function attachmentChunkAAD(m:ChunkContext,index:number){
+ chunkLength(m,index);
  if(m.version===2&&(!validShared({version:2,shared:m.shared})||!hex(m.senderDevice,32)))throw Error('Invalid shared attachment');
  if(m.version!==2&&m.shared!==undefined)throw Error('Invalid attachment version');
- const aad=m.version===2?encode(['axonic-attachment-chunk-v2',m.shared!.id,m.sender,m.senderDevice,m.shared!.count,m.bytes,index]):encode(['axonic-attachment-chunk-v1',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
+ return JSON.stringify(m.version===2?['axonic-attachment-chunk-v2',m.shared!.id,m.sender,m.senderDevice,m.shared!.count,m.bytes,index]:['axonic-attachment-chunk-v1',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
+}
+function chunkContext(m:ChunkContext,index:number){
+ const length=chunkLength(m,index),aad=utf8ToBytes(attachmentChunkAAD(m,index));
  return {aad,nonce:sha256(aad).slice(0,24),length};
 }
 /** A fresh random key per attachment is carried only inside the encrypted chat descriptor. */

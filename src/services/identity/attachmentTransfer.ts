@@ -10,6 +10,8 @@ import {ATTACHMENT_BATCH_CHUNKS,ATTACHMENT_BULK_FRAME_BYTES,validAttachmentRange
 /** Private chat metadata. Never send this descriptor to a custodian outside encrypted chat. */
 export interface AttachmentDescriptor {manifest:AttachmentManifest;key:string;checksum:string;name:string;mime:string;caption?:string}
 export class AttachmentFileReset extends Error {}
+/** A route or authenticated source is temporarily not ready, not invalid data. */
+class AttachmentSourceUnavailable extends Error {}
 export const attachmentDescriptorFingerprint=(d:AttachmentDescriptor)=>JSON.stringify([attachmentDigest(d.manifest),d.key,d.checksum,d.name,d.mime,...(d.caption!==undefined?[d.caption]:[])]);
 export type AttachmentPhase='queued'|'uploading'|'downloading'|'confirming'|'complete'|'expired'|'cancelled';
 export interface AttachmentJob {
@@ -68,7 +70,7 @@ export function createAttachmentTransfer(d:{
   * false/throwing. True means a complete private file, not a delivery receipt:
   * commitFile below still verifies and publishes it. Never offered to custodians.
   */
- directStream?(job:AttachmentJob,live:()=>Promise<boolean>,expected:DirectAttachmentExpectation):Promise<boolean>;
+ directStream?(job:AttachmentJob,live:()=>Promise<boolean>,expected:DirectAttachmentExpectation):Promise<boolean|'unavailable'>;
  serveStream?(job:AttachmentJob,live:()=>Promise<boolean>):Promise<boolean>;
  readChunk(job:AttachmentJob,index:number):Promise<AttachmentChunk>;
  readChunks?(job:AttachmentJob,index:number,count:number):Promise<AttachmentChunk[]>;
@@ -98,7 +100,8 @@ export function createAttachmentTransfer(d:{
 
  async function request(peer:string,operation:string,job:AttachmentJob,extra:object={}){
   const raw=await d.request(peer,JSON.stringify({version:1,operation,digest:job.digest,...extra}));
-  if(!raw||raw.length>14000)throw Error('Attachment route unavailable');return JSON.parse(raw);
+  if(!raw)throw new AttachmentSourceUnavailable('Attachment route unavailable');
+  if(raw.length>14000)throw Error('Invalid attachment response');return JSON.parse(raw);
  }
  async function run(initial:AttachmentJob,epoch:number){
   let job=initial;const manifest=job.descriptor.manifest;
@@ -218,11 +221,14 @@ export function createAttachmentTransfer(d:{
     // isolated temporary file; failure must preserve the verified chunk prefix.
     // A failed stream must not loop ahead of the reliable encrypted fallback.
     if(streamRetry.size>=128)streamRetry.clear();streamRetry.set(job.digest,d.now()+60000);
-    let received=false;
+    let received:boolean|'unavailable'=false;
     try{received=await d.directStream(job,async()=>manifest.expires>d.now()&&await live(),
      {digest:job.digest,bytes:manifest.bytes,checksum:job.descriptor.checksum});}catch{}
+    // No stream was started. Keep chunk fallback moving, but do not suppress
+    // a newly ready media lane for the failure cooldown.
+    if(received==='unavailable')streamRetry.set(job.digest,d.now()+1000);
     if(!await live())return;
-    if(received){
+    if(received===true){
      const custodians=[...new Set([...job.custodians,relay])];
      if(custodians.length>10)throw Error('Too many attachment sources');
      // A crash here is safe: the normal final hash check runs again after restart.
@@ -245,8 +251,11 @@ export function createAttachmentTransfer(d:{
       if(!current()||manifest.expires<=d.now())throw Error('Attachment unavailable');
       const index=start+batch*negotiated,length=Math.min(negotiated,count-batch*negotiated);
       const raw=await d.bulkRequest!(relay,JSON.stringify({version:1,operation:'direct-get-batch',digest:job.digest,index,count:length}));
-      if(!raw||raw.length>ATTACHMENT_BULK_FRAME_BYTES-1024)throw Error('Attachment batch unavailable');
-      const response=JSON.parse(raw);if(response.status!=='ok'||response.index!==index||response.count!==length)throw Error('Attachment batch unavailable');
+      if(!raw)throw new AttachmentSourceUnavailable('Attachment batch route unavailable');
+      if(raw.length>ATTACHMENT_BULK_FRAME_BYTES-1024)throw Error('Invalid attachment batch');
+      const response=JSON.parse(raw);
+      if(response.status==='unavailable')throw new AttachmentSourceUnavailable('Attachment source not ready');
+      if(response.status!=='ok'||response.index!==index||response.count!==length)throw Error('Attachment batch unavailable');
       return unpackAttachmentBatch(manifest,index,length,response.data).map(chunk=>({status:'ok',chunk,custodians:response.custodians}));
     }):null;
     if(!bulk)results=await Promise.allSettled(Array.from({length:count},(_,offset)=>
@@ -260,6 +269,7 @@ export function createAttachmentTransfer(d:{
      else {const result=results[offset];if(result.status==='rejected')throw result.reason;r=result.value;}
      // decryptAttachmentChunk verifies the complete Merkle proof before decrypting.
      // Keep the requested-index check here; do not hash the same proof twice.
+     if(r.status==='unavailable')throw new AttachmentSourceUnavailable('Attachment source not ready');
      if(r.status!=='ok'||!r.chunk||r.chunk.index!==index)throw Error('Attachment chunk unavailable');
      const key=hexToBytes(job.descriptor.key);let plain:Uint8Array|undefined;
      try{plain=decryptAttachmentChunk(manifest,r.chunk,key,d.hashLeaf);if(!await live())return;await d.writeChunk(job,index,plain,current);}
@@ -290,9 +300,13 @@ export function createAttachmentTransfer(d:{
    }
   }catch(error){
    if(!await live())return;
-   if(job.relay){if(unavailable.size>=128)unavailable.clear();unavailable.set(job.digest+':'+job.relay,d.now()+10000);}
    const failures=Math.min(32,job.failures+1);
-   await save({relay:null,phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'||error instanceof AttachmentFileReset?0:job.cursor,failures,next:d.now()+Math.min(30000,500*2**Math.min(failures,6))}).catch(()=>{});
+   const delay=Math.min(30000,500*2**Math.min(failures,6));
+   // A short readiness race must not silently add a ten-second peer ban.
+   // Repeated unavailability still backs off; malformed data retains the ban.
+   const cooldown=error instanceof AttachmentSourceUnavailable?delay:Math.max(10000,delay);
+   if(job.relay){if(unavailable.size>=128)unavailable.clear();unavailable.set(job.digest+':'+job.relay,d.now()+cooldown);}
+   await save({relay:null,phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'||error instanceof AttachmentFileReset?0:job.cursor,failures,next:d.now()+delay}).catch(()=>{});
   }
  }
  return {

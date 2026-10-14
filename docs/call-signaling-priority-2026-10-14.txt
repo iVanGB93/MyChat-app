@@ -1,0 +1,42 @@
+Bounded direct call signaling priority — 2026-10-14
+
+Change in persistentAxon.ts
+Direct call-control and signed media signaling previously shared the two custody
+reservations and immediately returned null/false whenever push was waiting.
+They now have two independent urgent reservations, still using the single
+authenticated request/response exchange. They wait for active exchange/auth to
+finish; there is no preemption and no extra parallel wire exchange.
+After two call exchanges, a waiting background reservation takes a turn. Recovery,
+directory, push and call-relay polling honor this bounded priority. Attachment
+requests also yield while call reservations are outstanding, as they previously
+yielded to the custody reservation used by calls. Existing verification, queue
+timeouts, receipts, rate limits and authentication renewal remain unchanged.
+
+Evidence
+Real signed paired-session regression holds a custody request open, queues another
+recovery request and push registration, then queues two call requests. A third
+call is rejected by the cap. After releasing the active request, both calls are
+acknowledged before queued background work, which also completes. No disconnect.
+Focused persistent axon suite: 110 passed, 2 skipped.
+Full npm run check: 1126 passed, 3 skipped, no failures; typecheck/cycles/module
+boundaries/consolidation pass. git diff --check passes.
+
+Live phone com.axonic.dev and emulator-5554 com.axonic
+Explicit JS reload, identities preserved; direct RTC connection verified before
+test. Two warm voice calls both connected with bidirectional RTP audio bytes.
+Caller finding to confirmed ringing: 3779 ms and 3655 ms.
+Recipient acceptance to ICE connected: 6031 ms and 4978 ms.
+These results do not establish a consistent end-to-end speedup. The specific
+contention defect is fixed and tested, but other call setup delays remain.
+Text regression: 472,398,562 / 493,449,647 ms sender queue-to-delivered, polling
+every 100 ms. All six test messages delivered.
+Calls ended and temporary timing/prototype observers restored; official phone app
+untouched. No production build or AoN deployment. Wire protocol unchanged.
+
+Remaining candidate to profile: durableCallControl.restore repeatedly replays
+and verifies journal entries and receipts during state/receipt/outbox reads.
+No validation was removed or cached in this change; cost is not yet measured.
+
+Evidence files: builds/call-priority-focused.log, call-priority-check.log,
+call-priority-text.jsonl, call-priority-ringing.txt, call-priority-connected.txt,
+call-priority-repeat-ringing.txt, call-priority-repeat-connected.txt.

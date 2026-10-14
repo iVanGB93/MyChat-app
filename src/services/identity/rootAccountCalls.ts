@@ -39,7 +39,21 @@ export function createRootAccountCalls(d:{
  const coordinator=createNeuronCallCoordinator<string>({account,device,store:d.store,now:d.now,current,blocked,busy:()=>false,
   lookup:peer=>validAccountId(peer)?{user:peer,name:name(peer)}:null,
   resolve:async peer=>{await refresh();return validAccountId(peer)&&peer!==account?{account:peer,name:name(peer)}:null;},
-  readRecord,list:d.list,random:d.random,sign:input=>d.identity.signCall(input),submit:control.submit,
+  readRecord,list:d.list,random:d.random,sign:input=>d.identity.signCall(input),submit:async raw=>{
+   const saved=await control.submit(raw);if(!saved||!current())return false;
+   // Invite, ringing and acceptance should not wait for a periodic retry tick.
+   // Only saved, verified events reach here. Drain owns bounded single-flight
+   // delivery and rechecks the journal, device, policy and signed receipt.
+   const event=JSON.parse(raw) as CallControl,remote=event.caller===account?event.callee:event.caller;
+   const peers=d.network().callPeers().filter(p=>p.account===remote&&p.expiresAt>d.now()).slice(0,10);
+   for(const peer of peers)
+    void control.drain(event,peer).then(acknowledged=>{
+     // A receipt can satisfy selection confirmation without any new inbound
+     // event. Advance the call immediately rather than waiting for the clock.
+     if(acknowledged&&current())return coordinator.tick();
+    }).catch(()=>{});
+   return true;
+  },
   signMedia:input=>d.identity.signCallMedia(input),contexts:()=>d.network().mediaContexts(),
   sendMedia:(peer,remoteDevice,raw)=>d.network().callMediaRequest(peer,remoteDevice,raw),
   callRoute:(peer,remoteDevice)=>{

@@ -20,7 +20,7 @@ async function fixture(t,options={}){
  './rootNotificationRoute':{rootConversationVisible:()=>visible},
  '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null}},
  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:app},
- '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);onDisplay();},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},
+ '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);options.onChannel?.();},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);onDisplay();},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},
  './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>id===sender.account?sender:null})},
  './rootCallWake':{rootWakeContext:async()=>owner,rootWakeBlocked:async()=>blocked}};
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
@@ -267,4 +267,16 @@ test('equal-time group notification previews use the shared message ID rather th
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'ff'.repeat(32),{name:'Group',text:'first',at,group,orderId:'11'.repeat(32)});
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'00'.repeat(32),{name:'Group',text:'second',at,group,orderId:'22'.repeat(32)});
  assert.deepEqual(f.shown.at(-1).android.style.messages.map(m=>m.text),['first','second']);assert.equal(f.shown.at(-1).body,'second');
+});
+
+test('only ciphertext bound to the verified wake reaches inline recovery',async t=>{
+ const f=await fixture(t),data=c.createCustodyWake(f.envelope,f.sender,true);let received;
+ await f.mod.receiveRootMessageWake(data,async(...args)=>{received=args[5];f.delivered();});assert.deepEqual(received,f.envelope);
+ const bad=await fixture(t);let rejected='unset';
+ await bad.mod.receiveRootMessageWake({...bad.data,envelope:JSON.stringify({...bad.envelope,id:'00'.repeat(32)})},async(...args)=>{rejected=args[5];bad.delivered();});assert.equal(rejected,undefined);
+});
+
+test('delivery during channel setup suppresses a late generic notification',async t=>{
+ let delivered=()=>{};const f=await fixture(t,{onChannel:()=>delivered()});delivered=f.delivered;
+ await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,0);
 });

@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript');
 function fixture(mode){
- const timers=[],events=[];let release,lookupCount=0,prepares=0,listener,locked=false;
+ const timers=[],events=[];let release,lookupCount=0,prepares=0,listener,locked=false,revision=0,workerDeps;
  const gate=new Promise(r=>release=r),owner='axonic:1:'+'a'.repeat(64),peer='axonic:1:'+'b'.repeat(64);
  const selection={id:'c'.repeat(64),peer,name:'test',mime:'image/jpeg',failed:false};
  let rows=[selection];
@@ -8,9 +8,9 @@ function fixture(mode){
  const incoming={manifest:{expires:Date.now()+60000}};
  const snapshot={contacts:[{account:peer,accepted:true}],messages:[{peer,status:'pending',direction:'incoming',attachment:incoming}]};
  if(mode==='group')snapshot.groups=[{id:selection.group.id,accepted:true,members:[owner,peer,rows[1].peer]}];
- const worker={enqueue:async(_,direction)=>events.push(direction),tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
+ const worker={enqueue:async(_,direction)=>{if(mode==='save-failure'&&direction==='outgoing')throw Error('Storage unavailable');events.push(direction);},receive:async()=>workerDeps.allowed(peer)?'ready':'rejected',tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
  const deps={
- '../../modules/storage/chatStore':{ownChatRevision:()=>0},
+ '../../modules/storage/chatStore':{ownChatRevision:()=>revision},
  './localAccount':{localAccount:{status:()=>({account:owner,state:locked?'locked':'unlocked'}),subscribe:f=>{listener=f;return()=>{};}}},
  './localRootChat':{localRootChat:()=>({snapshot:async()=>snapshot,enqueueAttachment:async()=>events.push('publish'),enqueueAttachments:async items=>{assert.equal(items.length,2);assert.equal(prepares,2);events.push('publish-batch');}})},
  './attachmentPolicy':{...require('./helpers/attachment.cjs').load('attachmentPolicy'),indexAttachmentPolicy:()=>()=>true},
@@ -20,14 +20,14 @@ function fixture(mode){
  './rootGroups':{validGroupContext:()=>true,rootGroupAllowed:()=>true},
  './identityProtocol':{validAccountId:()=>true,verifyRecord:()=>true},
  './mobileAttachmentJobs':{createMobileAttachmentJobs:()=>({})},
- './attachmentTransfer':{createAttachmentTransfer:()=>worker},
+ './attachmentTransfer':{createAttachmentTransfer:d=>{workerDeps=d;return worker;}},
  './rootAttachmentFiles':{prepareRootAttachment:async()=>{prepares++;await gate;return incoming;},removeRootAttachmentSource:()=>events.push('remove')},
  '@react-native-async-storage/async-storage':{default:{getItem:async()=>JSON.stringify(rows),setItem:async(_k,s)=>rows=JSON.parse(s)}},
  };
  const out={};new Function('require','exports','setTimeout','clearTimeout','__DEV__',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>deps[n]??{},out,f=>{timers.push(f);return f;},()=>{},false);
  const runtime=out.startRootAttachmentRuntime({peers:()=>[],request:async()=>null,lookup:async()=>{lookupCount++;await gate;}});
  const pump=async()=>{assert(timers.length);timers.shift()();for(let n=0;n<12;n++)await new Promise(setImmediate);};
- return {runtime,events,pump,release,lock(){locked=true;listener();},lookupCount:()=>lookupCount,prepares:()=>prepares,rows:()=>rows};
+ return {runtime,events,pump,release,block(){snapshot.contacts[0].blocked=true;revision++;},lock(){locked=true;listener();},lookupCount:()=>lookupCount,prepares:()=>prepares,rows:()=>rows};
 }
 for(const mode of ['lookup','prepare'])test(`pending ${mode} cannot block incoming transfers or start duplicate work`,async t=>{
  const f=fixture(mode);t.after(()=>{f.runtime.stop();f.release();});
@@ -36,7 +36,7 @@ for(const mode of ['lookup','prepare'])test(`pending ${mode} cannot block incomi
  assert.equal(mode==='lookup'?f.lookupCount():f.prepares(),1);
  f.release();await new Promise(setImmediate);await f.pump();
  if(mode==='lookup')assert.equal(f.lookupCount(),1,'lookup retries are backed off');
- else {assert.equal(f.events.filter(x=>x==='publish').length,1);assert.equal(f.rows().length,0);}
+ else {assert.equal(f.events.filter(x=>x==='publish').length,1);assert.equal(f.rows().length,0);assert(f.events.indexOf('outgoing')<f.events.indexOf('publish'),'serving job exists before announcing the descriptor');}
 });
 test('locking during preparation cannot publish or remove a staged attachment',async t=>{
  const f=fixture('prepare');t.after(()=>f.runtime.stop());await f.pump();f.lock();f.release();
@@ -50,4 +50,18 @@ test('locking during preparation cannot publish or remove a staged attachment',a
  f.release();for(let n=0;n<20;n++)await new Promise(setImmediate);
  assert.equal(f.events.filter(e=>e==='publish-batch').length,1);assert.equal(f.events.filter(e=>e==='publish').length,0);
  assert.equal(f.rows().length,0);assert.equal(f.events.filter(e=>e==='outgoing').length,2);
+ assert(f.events.lastIndexOf('outgoing')<f.events.indexOf('publish-batch'),'all recipient jobs exist before publishing the group');
  });
+
+test('failed serving-job persistence cannot announce a descriptor',async t=>{
+ const f=fixture('save-failure');t.after(()=>f.runtime.stop());await f.pump();f.release();
+ for(let n=0;n<20;n++)await new Promise(setImmediate);
+ assert(!f.events.includes('publish'));assert(!f.events.includes('remove'));assert.equal(f.rows().length,1);
+});
+
+test('serving refreshes policy before the first pump and immediately honors blocking',async t=>{
+ const f=fixture('prepare');t.after(()=>{f.release();f.runtime.stop();});
+ assert.equal(await f.runtime.receive('request',{}),'ready');
+ f.block();assert.equal(await f.runtime.receive('request',{}),'rejected');
+ f.lock();assert.equal(await f.runtime.receive('request',{}),null);
+});

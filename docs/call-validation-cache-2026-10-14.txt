@@ -1,0 +1,46 @@
+Exact-input call validation reuse — 2026-10-14
+
+Measurement
+Read the previous synthetic call's local journal without modifying it. Repeatedly
+run canArchiveCallJournal (replays historical event/receipt validation); no archive
+operation is performed. Same journal: phone 5 events/3 receipts, 11862 characters;
+emulator 5 events/2 receipts, 10599 characters.
+Before: phone warmed runs ~29.8 ms; emulator ~45–50 ms.
+After: phone warmed runs ~11.9–12.2 ms; emulator ~5.3–8.6 ms.
+First runs and warmups recorded separately in evidence. Sequential microbenchmark,
+not a randomized end-to-end performance experiment.
+
+Implementation
+Existing signature verification already caches the pure signature result. Added
+successful complete call-control/receipt verification reuse with exact keys:
+event/receipt raw string, JSON of the complete pinned identity (and receipt's
+referenced event), and the exact validation timestamp. Changed timestamps always
+miss; changed record contents, signatures and event contents miss. Every cache
+miss executes the previous verifier unchanged. Historical replay uses the original
+admission time as before. Current-time admissions do not gain extended validity.
+Mutable journal state, permissions, replay decisions, CAS and failures are not
+cached. Returned objects are isolated by storing serialized successful values and
+parsing on hits; consumers cannot poison cached results by mutating an object.
+Two memory-only caches, each capped at 64 entries and 262144 combined key/value
+UTF-16 code units (engine overhead additional). No disk or network storage.
+
+Validation
+Full npm run check: 1130 passed, 3 skipped, no failures; typecheck, boundaries,
+cycles and consolidation pass. Added receipt-binding test afterward; final focused
+cache/control suite: 43 passed. git diff --check passes.
+Coverage includes event/identity/time changes, expired and future events, corrupt
+signatures, returned-object mutation, negative-result nonreuse, eviction/count and
+aggregate bounds, and receipt binding to event/record/time. Existing journal CAS,
+tamper, cancellation and protocol tests pass. Functional evidence, not a proof.
+
+Live test
+Both test clients explicitly reloaded, direct connection verified. Voice call
+connected with inbound/outbound RTP audio bytes on both endpoints. Caller finding
+to confirmed ringing: 3934 ms. Recipient acceptance to ICE connected: 7189 ms.
+No consistent full call-setup speedup established. Remaining delay cannot be
+attributed solely to historical validation. Call ended, observer/prototype hooks
+restored, official app untouched. No production build or AoN deployment.
+
+Evidence: builds/call-validation-before.jsonl, call-validation-after.jsonl,
+call-validation-check.log, call-validation-final-focused.log,
+call-validation-ringing.txt, call-validation-connected.txt.

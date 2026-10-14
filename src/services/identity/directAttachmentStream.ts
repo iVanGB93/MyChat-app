@@ -12,7 +12,9 @@ interface Writer {write(bytes:Uint8Array):void;close():void}
 export interface DirectAttachmentStreamAdapter {
  role:'send'|'receive';expected:DirectAttachmentExpectation;
  /** Includes unlocked owner, exact remote device, policy, job revision and expiry. */
- live():boolean;now():number;wait():Promise<unknown>;
+ live():boolean;now():number;
+ /** Idle waits may wake on incoming frames; burst yields must still yield to UI work. */
+ wait(idle?:boolean):Promise<unknown>;
  send(data:string|Uint8Array):void;close():void;
  /** Native admission must finish before telling the sender it may send bytes. */
  authorize?():Promise<void>;
@@ -101,7 +103,7 @@ export function createDirectAttachmentStream(d:DirectAttachmentStreamAdapter){
      // Yield after a bounded burst, not every buffer: per-buffer native timer
      // round trips otherwise dominate fast local links. Credit still caps memory.
      if(offset%(DIRECT_WINDOW_BYTES/2)===0)await d.wait();
-    }else await d.wait();
+    }else await d.wait(true);
    }
   }catch(error){abort(error);}
  }

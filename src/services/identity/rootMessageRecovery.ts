@@ -1,3 +1,4 @@
+import type {CustodyEnvelope} from './custodyProtocol';
 import {AppState} from 'react-native';
 import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
 import Native from '../../../modules/axonic-nearby';
@@ -5,7 +6,7 @@ import {localAccount,startLocalAccount} from './localAccount';
 import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
 let tail:Promise<unknown>=Promise.resolve();
 /** Only verified wakes reach this bounded recovery path; locked-account policy is preserved. */
-export function recoverRootMessage(account:string,_sender:string,_id:string,expires:number,progress?:(milestone:string)=>void){
+export function recoverRootMessage(account:string,_sender:string,_id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope){
  const result=tail.then(async()=>{
   if(expires<=Date.now())return;
   if(localAccount.status().account&&localAccount.status().account!==account)return;
@@ -20,7 +21,11 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    // A foreground wake can become a background task during this lease.
    // Grant it now rather than relying on the app state captured before recovery.
    console.info('[Axonic recovery] grant');Native?.axonMessageWake?.(30000);console.info('[Axonic recovery] granted');
-   network=startLocalAccountNetwork();network.resume();console.info('[Axonic recovery] resumed');const until=Math.min(expires,Date.now()+20000);
+   network=startLocalAccountNetwork();
+   // Persist and notify through the normal verified inbox before waiting for a connection.
+   // Relay polling still performs the signed receipt exchange, including after a restart.
+   if(envelope){try{if(await network.receiveWakeEnvelope(envelope))progress?.('inline-persisted');}catch{/* Fetch the durable relay copy if inline admission fails. */}}
+   network.resume();console.info('[Axonic recovery] resumed');const until=Math.min(expires,Date.now()+20000);
    while(Date.now()<until&&localAccount.status().state==='unlocked'&&localAccount.status().account===account){
     // Only authenticated sessions count; dialing/retries are not progress.
     for(const session of network.snapshot?.().sessions??[])if(session.state==='connected'&&session.account)progress?.('connected:'+session.account);

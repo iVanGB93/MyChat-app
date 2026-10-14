@@ -4,7 +4,7 @@ import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
 import {validAccountId,verifyRecord,type IdentityRecord} from './identityProtocol';
-import {attachmentDigest,ATTACHMENT_CHUNK_BYTES,ATTACHMENT_MAX_BYTES,ATTACHMENT_TTL,encryptAttachmentChunkBytes,attachmentLeafBytes,buildAttachmentTree,verifyAttachmentManifest,type AttachmentManifest} from './attachmentProtocol';
+import {attachmentDigest,ATTACHMENT_CHUNK_BYTES,ATTACHMENT_MAX_BYTES,ATTACHMENT_TTL,encryptAttachmentChunkBytes,attachmentChunkAAD,attachmentLeafBytes,buildAttachmentTree,verifyAttachmentManifest,type AttachmentManifest} from './attachmentProtocol';
 import {AttachmentFileReset,validAttachmentDescriptor,type AttachmentDescriptor,type AttachmentJob} from './attachmentTransfer';
 import {validAttachmentRange} from './attachmentBatch';
 const pause=()=>new Promise<void>(resolve=>setTimeout(resolve,0));
@@ -108,7 +108,19 @@ export async function prepareRootAttachment(input:{id:string;name:string;mime:st
   source.copy(content);check(input.current);if(content.size!==fields.bytes)throw Error('Attachment source changed');
   const nativeChecksum=Native?.attachmentStagedFileSha256?await Native.attachmentStagedFileSha256(owner,input.id,fields.bytes):null;
   check(input.current);if(nativeChecksum!==null&&!/^[a-f0-9]{64}$/.test(nativeChecksum))throw Error('Invalid attachment checksum');
-  sourceHandle=content.open();cipherHandle=cipher.open();const leaves:string[]=[],checksum=nativeChecksum===null?sha256.create():null;
+  const leaves:string[]=[],checksum=nativeChecksum===null?sha256.create():null;
+  if(Native?.attachmentPrepareBatch&&nativeChecksum!==null){
+   for(let index=0;index<Math.ceil(fields.bytes/ATTACHMENT_CHUNK_BYTES);index+=128){
+    check(input.current);
+    const count=Math.min(128,Math.ceil(fields.bytes/ATTACHMENT_CHUNK_BYTES)-index);
+    const aads=Array.from({length:count},(_,offset)=>attachmentChunkAAD(fields,index+offset));
+    const batch=await Native.attachmentPrepareBatch(owner,input.id,bytesToHex(key),fields.bytes,index,aads);
+    check(input.current);
+    if(!Array.isArray(batch)||batch.length!==count||!batch.every(v=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v)))throw Error('Invalid prepared attachment');
+    leaves.push(...batch);
+   }
+  }else{
+  sourceHandle=content.open();cipherHandle=cipher.open();
   // Batch native file calls, while retaining the exact 4-KiB encryption chunks,
   // nonce/AAD derivation and Merkle leaves used by older peers.
   for(let offset=0;offset<fields.bytes;offset+=16*ATTACHMENT_CHUNK_BYTES){
@@ -125,7 +137,9 @@ export async function prepareRootAttachment(input:{id:string;name:string;mime:st
    }finally{plain.fill(0);encryptedBytes.fill(0);}
    await pause();
   }
-  sourceHandle.close();sourceHandle=undefined;cipherHandle.close();cipherHandle=undefined;check(input.current);
+  sourceHandle.close();sourceHandle=undefined;cipherHandle.close();cipherHandle=undefined;
+  }
+  check(input.current);
   const tree=buildAttachmentTree(leaves),manifest=localAccount.signAttachment({...fields,root:tree.root});
   const descriptor:AttachmentDescriptor={manifest,key:bytesToHex(key),checksum:nativeChecksum??bytesToHex(checksum!.digest()),name:input.name,mime:input.mime,...(input.caption?{caption:input.caption}:{})};
   if(!validAttachmentDescriptor(descriptor))throw Error('Invalid file name or type');treeFile.write(JSON.stringify(leaves));

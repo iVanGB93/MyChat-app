@@ -10,6 +10,21 @@ function load(name) {
 const {createLocalAccountSession} = load('localAccountSession');
 const {displayIdentity, parseIdentityCode, chooseBackupWords, checkBackupWords} = load('identityPresentation');
 const account = 'axonic:1:' + 'ab'.repeat(32), password = 'a device-only test password';
+test('legacy secure credential upgrades after successful resume and lock still gates cached recovery',async()=>{
+ const f=fixture(),derivation={version:1,salt:'ab'.repeat(32),key:'cd'.repeat(32)};let resumes=0;
+ await f.session.remember(password);f.identity.lock();
+ f.identity.resume=async(value,saved)=>{resumes++;assert.equal(saved,undefined);await f.identity.unlock(value);};
+ f.identity.rememberedDerivation=()=>derivation;
+ await f.session.initialize();assert.deepEqual(JSON.parse(f.storage.credential).derivation,derivation);
+ await f.session.lock();await f.session.initialize();assert.equal(resumes,1);assert.equal(f.storage.credential,null);
+});
+test('manual lock during cached resume cannot unlock or repersist the credential',async()=>{
+ const f=fixture();await f.session.remember(password);f.identity.lock();let release,entered=false;
+ const gate=new Promise(r=>release=r);f.identity.resume=async p=>{entered=true;await gate;await f.identity.unlock(p);};
+ f.identity.rememberedDerivation=()=>({version:1,salt:'ab'.repeat(32),key:'cd'.repeat(32)});
+ const work=f.session.initialize();while(!entered)await new Promise(r=>setImmediate(r));await f.session.lock();release();await work;
+ assert.equal(f.identity.status().state,'locked');assert.equal(f.storage.credential,null);
+});
 function fixture(overrides = {}) {
   let state = 'unlocked';
   const storage = {policy: null, credential: null};

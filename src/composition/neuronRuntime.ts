@@ -1,3 +1,4 @@
+import type {CustodyEnvelope} from '../services/identity/custodyProtocol';
 import {loadRecoverySettings} from '../services/recoverySettings';
 import {createGroupCustodyCourier} from '../services/identity/groupCustodyCourier';
 import {createGroupCustodyService,groupCustodyWakeStore} from '../services/identity/groupCustodyService';
@@ -113,7 +114,7 @@ function createLocalAccountNetwork() {
       const store = createMobileCustodyStore(account),groupStore=createMobileGroupCustodyStore(account);
       const next: NonNullable<typeof custody> = { owner: account,group:createGroupCustodyService({owner:account,records,store:groupStore,now:Date.now,current:()=>custody===next&&owner()===account}),groupWake:createCustodyWakeForwarder({store:groupCustodyWakeStore(groupStore),records,now:Date.now,current:()=>!stopped&&custody===next&&owner()===account,peers:()=>runtime.pushPeers(),request:(peer,raw)=>runtime.pushRequest(peer,raw)}), service: createCustodyService({ owner: account, records,
         store, now: Date.now, current: () => custody === next && owner() === account }),
-        wake: createCustodyWakeForwarder({store, records, now: Date.now,
+        wake: createCustodyWakeForwarder({inlineEnvelope:true,store, records, now: Date.now,
           current: () => !stopped && custody === next && owner() === account,
           peers: () => runtime.pushPeers(), request: (peer, raw) => runtime.pushRequest(peer, raw)}) };
       custody = next;
@@ -217,6 +218,7 @@ function createLocalAccountNetwork() {
   const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
   ownAttachments=startRootAttachmentRuntime({...attachmentApi,streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
   return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot,
+    receiveWakeEnvelope:(envelope:CustodyEnvelope)=>localAccount.receiveCustody(envelope,operationalRecords,receiveMessage),
     recoveryComplete:(sender:string,id:string)=>{const status=delivery.snapshot();return !status.busy&&!status.collecting&&!status.queuedHints&&(courier.recoveryComplete(sender,id)||groupCourier.recoveryComplete(sender,id));},
     resume() { runtime.resume();courier.resume();groupCourier.resume();pump(); }, tick:pump, stop() { chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();unprofile();unconnected();profileRecovery.stop();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();groupCourier.stop();custody?.groupWake.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
 }
@@ -225,7 +227,7 @@ function createLocalAccountNetwork() {
 let sharedNetwork:{runtime:ReturnType<typeof createLocalAccountNetwork>;references:number}|null=null;
 export function startLocalAccountNetwork(){
  const shared=sharedNetwork??={runtime:createLocalAccountNetwork(),references:0};shared.references++;
- let released=false;return {snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,recoveryComplete:shared.runtime.recoveryComplete,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
+ let released=false;return {receiveWakeEnvelope:shared.runtime.receiveWakeEnvelope,snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,recoveryComplete:shared.runtime.recoveryComplete,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
 }
 
 

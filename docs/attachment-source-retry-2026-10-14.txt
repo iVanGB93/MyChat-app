@@ -1,0 +1,42 @@
+Attachment source readiness and recovery — 2026-10-14
+
+Finding
+The incoming worker treated an explicit unavailable response or absent route
+response like malformed attachment data. Its one-second first job retry was
+overridden by a separate ten-second source exclusion. A now-ready source could
+therefore remain unused for nine additional seconds.
+
+Change
+Classify absent responses and explicit unavailable download replies as temporary
+source unavailability. Align that source exclusion with the existing exponential
+job backoff (1, 2, 4, 8, 16, then 30 seconds). Successful verified progress resets
+failures as before. Malformed responses/proofs retain a minimum ten-second
+exclusion. Preserve verified prefixes, cancellation, final hash and signed receipt.
+No protocol or encryption changes; no AoN deployment or native rebuild needed.
+
+Validation
+npm run check: 1114 passed, 3 skipped, zero failures; typecheck, cycles, module
+boundaries and consolidation passed. git diff --check passed.
+New deterministic coverage: transient empty/unavailable replies, persistent
+unavailability backoff, malformed response exclusion, and partial bulk-download
+resumption after temporary unavailability.
+
+Live tests on com.axonic.dev phone R3GYC0H7PMY and emulator-5554 com.axonic:
+- Phone to emulator, 2,097,151 bytes: 2024 ms queue to signed completion;
+  preparation 277 ms; direct stream about 600 ms.
+- Emulator to phone, 524,287 bytes: intentionally closed only the media stream
+  after its first binary frame. Encrypted fallback completed in 3153 ms.
+- Next emulator-to-phone transfer, 5,242,879 bytes: direct stream used again;
+  4715 ms queue to signed completion, preparation 768 ms, stream 2665 ms.
+All receiver SHA-256 checks matched; no remaining jobs for these test messages.
+Timing differences use each device's own clock. These are individual runs, not
+a statistical throughput claim. Temporary-unavailability timing is proven by
+deterministic tests; live tests cover normal delivery and channel interruption.
+All temporary in-memory fault and timing hooks restored. Official phone app
+untouched. No production build created.
+
+Evidence (local ignored artifacts):
+builds/connection-retry-check.log
+builds/connection-retry-warm.jsonl
+builds/connection-retry-interrupted.jsonl
+builds/connection-retry-after-interruption.jsonl

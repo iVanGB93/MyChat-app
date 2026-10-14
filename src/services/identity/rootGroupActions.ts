@@ -21,16 +21,17 @@ export function enqueueGroupAction(s:RootChatState,owner:string,groupId:string,l
  const m=s.messages.find(m=>m.group?.id===groupId&&m.group.messageId===target.id&&(m.direction==='outgoing'?owner:m.peer)===target.author);if(!m)throw Error('Original group message unavailable');
  const prior=(s.groupActions??[]).filter(a=>targets(a,groupId,target)&&a.direction==='outgoing'&&family(a.kind)===family(kind));
  const retry=(s.groupActions??[]).filter(a=>a.direction==='outgoing'&&a.group.messageId===logicalId);
- if(retry.length){if(retry.some(a=>!targets(a,groupId,target)||a.kind!==kind||a.text!==text))throw Error('Group action ID conflict');return;}
- if((s.groupActions??[]).some(a=>targets(a,groupId,target)&&a.kind==='delete'))throw Error('Message was deleted');
- if(kind==='read'&&prior.length)return;
+ if(retry.length){if(retry.some(a=>!targets(a,groupId,target)||a.kind!==kind||a.text!==text))throw Error('Group action ID conflict');return false;}
+ if(kind==='read'&&prior.length)return false;
  const peers=g.members.filter(p=>p!==owner&&(kind!=='read'||p===target.author));if(!peers.length)throw Error('Add another member first');
  const revision=kind==='read'?1:Math.max(0,...prior.map(a=>a.revision))+1;
  const rows:RootGroupAction[]=peers.map(peer=>({id:rootGroupDeliveryId(logicalId,peer,'action'),peer,direction:'outgoing',group:{id:groupId,revision:g.revision,messageId:logicalId},target:{...target},kind,text,revision,at:now,status:'pending'}));
  if(rows.some(a=>!validGroupAction(a,owner)||!rootGroupAllowed(s,owner,a.peer,a.group)||new TextEncoder().encode(encodeGroupAction(a)).length>2048)||kind==='edit'&&m.attachment)throw Error('Invalid group action');
- if((s.groupActions?.length??0)+rows.length>10000)throw Error('Group action storage is full');
  if(rows.some(a=>s.messages.some(m=>m.id===a.id&&m.peer===a.peer&&m.direction==='outgoing')||s.groupPackets?.some(p=>p.id===a.id)||s.actions?.some(v=>v.id===a.id&&v.peer===a.peer&&v.direction==='outgoing')))throw Error('Group action ID conflict');
- (s.groupActions??=[]).push(...rows);
+ // Validate authorship, payload and ID collisions before accepting a repeat delete.
+ if((s.groupActions??[]).some(a=>targets(a,groupId,target)&&a.kind==='delete')){if(kind==='delete')return false;throw Error('Message was deleted');}
+ if((s.groupActions?.length??0)+rows.length>10000)throw Error('Group action storage is full');
+ (s.groupActions??=[]).push(...rows);return true;
 }
 export function receiveGroupAction(s:RootChatState,owner:string,from:string,id:string,body:unknown,now:number){
  const b=body as ReturnType<typeof groupActionBody>;if(!b||Object.keys(b).sort().join(',')!=='group,kind,revision,target,text')return false;

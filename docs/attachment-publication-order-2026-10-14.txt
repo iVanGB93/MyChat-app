@@ -1,0 +1,39 @@
+Attachment publication and serving readiness — 2026-10-14
+
+Finding and fix
+prepareSelection previously published the chat descriptor before persisting the
+outgoing attachment job. A connected recipient could request bytes during this
+gap and receive unavailable. Now all outgoing jobs are saved before single/group
+descriptor publication. Storage failure does not advertise an unservable file.
+Unpublished jobs remain subject to the existing chat policy and cannot be served.
+
+The serving entry point also refreshes its cached chat policy when ownChatRevision
+changes. Requests no longer depend on the next 200 ms pump to observe a new
+descriptor or block decision. Account and runtime epoch are checked after await.
+Protocol, encryption, final checksum and signed receipts are unchanged.
+
+Tests
+Scheduling tests verify publication order for single and group attachments,
+storage failure before publication, immediate permission refresh, blocking and
+locking. Full npm run check: 1119 passed, 3 skipped, no failures; typecheck,
+cycles, module boundaries and consolidation passed. git diff --check passed.
+
+Live synthetic 5242879-byte files, Dev phone and emulator:
+Phone to emulator run 1: queue-to-signed-completion 3240 ms;
+  publication-to-stream 413 ms; stream 1482 ms.
+Phone to emulator run 2: total 3430 ms;
+  publication-to-stream 471 ms; stream 1511 ms.
+Previous turn's same-direction run: total 4547 ms. These sequential samples are
+encouraging, not a randomized benchmark or a universal speed claim.
+Emulator to phone: total 5984 ms;
+  publication-to-stream 1581 ms; stream 2801 ms.
+Reverse direction still has additional startup and streaming delay; exact cause
+not established by these timings. Phone diagnostic lines show verified receive.
+All receiver hashes matched and all test transfer jobs finished. Temporary timing
+hooks restored. Official phone app untouched; no production build or deployment.
+
+Evidence: builds/attachment-publication-tests.log,
+builds/attachment-publication-check.log,
+builds/publication-speed-5mb-1.jsonl,
+builds/publication-speed-5mb-2.jsonl,
+builds/publication-speed-reverse-5mb.jsonl.

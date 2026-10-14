@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript'),crypto=require('node:crypto');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol');
-function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHash,nativeFileHash,bytes=2*65536+17}={}){
+function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHash,nativeFileHash,nativeBatch,bytes=2*65536+17}={}){
  const f=fixture(bytes),data=new Map(),directories=new Set(),calls={read:0,write:0,open:0,close:0,copy:0},buffers=[];
  const path=args=>args.map(v=>typeof v==='string'?v:v.uri).join('/');
  class Directory{
@@ -22,7 +22,7 @@ function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHas
  }
  const identity=f.ids[0],localAccount={status:()=>({account:identity.record.account}),publicRecord:()=>identity.record,callDevice:()=>identity.device.id,
   signAttachment:fields=>a.signAttachmentManifest(fields,identity.signingSeed,identity.record,now)};
- const out={};new Function('require','exports','Date',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentFiles.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>name==='expo-file-system'?{File,Directory,Paths:{document:'own'}}:name.includes('axonic-nearby')?{default:{identityRandomBytes:async()=>Buffer.from(f.key).toString('hex'),...(nativeStagedHash?{attachmentStagedFileSha256:(...args)=>nativeStagedHash(...args,data)}:{}),...(nativeFileHash?{attachmentFileSha256:(...args)=>nativeFileHash(...args,data)}:{})}}:name==='./localAccount'?{localAccount}:name.startsWith('./')?load(name.slice(2)):require(name),out,{now:()=>now});
+ const out={};new Function('require','exports','Date',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentFiles.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>name==='expo-file-system'?{File,Directory,Paths:{document:'own'}}:name.includes('axonic-nearby')?{default:{identityRandomBytes:async()=>Buffer.from(f.key).toString('hex'),...(nativeStagedHash?{attachmentStagedFileSha256:(...args)=>nativeStagedHash(...args,data)}:{}),...(nativeBatch?{attachmentPrepareBatch:(...args)=>nativeBatch(...args,data)}:{}),...(nativeFileHash?{attachmentFileSha256:(...args)=>nativeFileHash(...args,data)}:{})}}:name==='./localAccount'?{localAccount}:name.startsWith('./')?load(name.slice(2)):require(name),out,{now:()=>now});
  const input={id:f.manifest.id,name:'test.png',mime:'image/png',recipient:f.ids[1].record,current:()=>true};
  out.rootAttachmentSource(identity.record.account,input.id).write(f.plain);
  return {...f,out,input,data,calls,buffers};
@@ -146,4 +146,17 @@ test('shared file references reject traversal instead of reading another locatio
  const f=setup(t),owner=f.ids[0].record.account,digest='99'.repeat(32);
  f.data.set(`own/axonic-own-attachments-v1/${owner.slice(9)}/files/${digest}/shared.json`,Buffer.from(JSON.stringify({id:'../other'})));
  assert.throws(()=>f.out.rootAttachmentFile(owner,digest),/Invalid shared/);
+});
+
+for(const mode of ['ok','malformed','error','locked'])test('native batch preparation '+mode,async t=>{
+ let active=true,calls=0;const f=setup(t,{bytes:524289,
+ nativeStagedHash:async(owner,id,bytes,data)=>crypto.createHash('sha256').update(data.get('own/axonic-own-attachments-v1/'+owner.slice(9)+'/staging/'+id+'/content')).digest('hex'),
+ nativeBatch:async(owner,id,key,bytes,start,aads,data)=>{calls++;assert(aads.length<=128);if(mode==='error')throw Error('native batch failed');if(mode==='malformed')return ['bad'];if(mode==='locked')active=false;
+ const prefix='own/axonic-own-attachments-v1/'+owner.slice(9)+'/staging/'+id+'/',source=data.get(prefix+'content'),output=data.get(prefix+'ciphertext'),chunks=[],leaves=[];
+ const {xchacha20poly1305}=require('@noble/ciphers/chacha.js');
+ for(let n=0;n<aads.length;n++){const index=start+n,aad=Buffer.from(aads[n]),nonce=crypto.createHash('sha256').update(aad).digest().subarray(0,24),chunk=xchacha20poly1305(Buffer.from(key,'hex'),nonce,aad).encrypt(source.subarray(index*4096,(index+1)*4096));chunks.push(Buffer.from(chunk));leaves.push(a.attachmentLeafBytes(index,chunk));}
+ data.set(prefix+'ciphertext',Buffer.concat([output,...chunks]));return leaves;
+ }});f.input.current=()=>active;
+ if(mode==='ok'){const d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,digest=a.attachmentDigest(d.manifest);assert.equal(calls,2);assert.equal(f.calls.read,0);for(const index of [0,127,128]){const chunk=await f.out.readRootAttachmentChunk({owner,digest,descriptor:d},index);assert.equal(chunk.ciphertext,a.encryptAttachmentChunk(d.manifest,index,f.plain.slice(index*4096,(index+1)*4096),f.key));}}
+ else{await assert.rejects(f.out.prepareRootAttachment(f.input));assert(![...f.data.keys()].some(p=>p.includes('/files/')||p.endsWith('/ciphertext')||p.endsWith('/descriptor.json')));assert(f.out.rootAttachmentSource(f.ids[0].record.account,f.input.id).exists);}
 });

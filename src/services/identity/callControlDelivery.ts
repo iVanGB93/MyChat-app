@@ -5,6 +5,7 @@ import { verifyPublicSignature, recordDigest, verifyRecord, validAccountId, type
 import { callControlDigest, verifyCallControl, type CallControl } from './callControlProtocol.ts';
 import type { IdentityPeer } from './identityClient.ts';
 import type { IdentityRecordStore } from './identityAdmission.ts';
+import {createCallValidationCache} from './callValidationCache.ts';
 
 export interface CallControlReceipt {
   version: 1; record: IdentityRecord; device: string; callId: string; event: string;
@@ -17,14 +18,20 @@ export function signCallControlReceipt(event: CallControl, record: IdentityRecor
   if (!device) throw Error('Unauthorized receipt signer');
   const r: CallControlReceipt = { version: 1, record, device: device.id, callId: event.callId,
     event: callControlDigest(event), target: event.record.account, targetDevice: event.device,
-    issuedAt: now, expiresAt: Math.min(now + 60000, event.expiresAt, record.expiresAt), signature: '' };
+    // A verified event may be up to five seconds ahead of this device. Preserve
+    // causal ordering without waiting for our wall clock or extending expiry.
+    issuedAt: Math.max(now, event.issuedAt), expiresAt: Math.min(now + 60000, event.expiresAt, record.expiresAt), signature: '' };
   r.signature = bytesToHex(ed25519.sign(body(r), seed));
   const raw = JSON.stringify(r);
   if (!verifyCallControlReceipt(raw, event, record, now)) throw Error('Invalid call receipt');
   return raw;
 }
 /** Receipt means this exact event was durably admitted, not that the phone rang or media connected. */
+const verifiedReceipts=createCallValidationCache<CallControlReceipt>();
 export function verifyCallControlReceipt(raw: string, event: CallControl, latest: IdentityRecord, now: number): CallControlReceipt | null {
+  try{return verifiedReceipts(raw,JSON.stringify([event,latest]),now,()=>verifyCallControlReceiptUncached(raw,event,latest,now));}catch{return null;}
+}
+function verifyCallControlReceiptUncached(raw: string, event: CallControl, latest: IdentityRecord, now: number): CallControlReceipt | null {
   try {
     if (typeof raw !== 'string' || utf8ToBytes(raw).length > 6000) return null;
     const r: CallControlReceipt = JSON.parse(raw);

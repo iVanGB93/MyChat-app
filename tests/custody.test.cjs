@@ -441,6 +441,24 @@ test('custody wake retry survives forwarder restart and stops on owner change',a
  active=false;f.advance(30000);await forward.tick();assert.equal(calls,3);
 });
 
+test('new message wakes bypass a large backlog while oldest work retains a fair turn',async t=>{
+ const f=fixture(t),packets=[];
+ for(let i=0;i<120;i++)packets.push(await f.seal('backlog '+i));
+ const store={transaction:async change=>change(packets.map(packet=>({id:packet.id,expires:packet.expires,packet})))};
+ const sent=[];
+ const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store,records:f.records,current:()=>true,now:f.now,
+ peers:()=>['gateway'],request:async(_,raw)=>{sent.push(JSON.parse(JSON.parse(raw).data.event).id);return '{"status":"retry"}';}});
+ for(let i=0;i<3;i++){
+  const fresh=await f.seal('new '+i);packets.push(fresh);await forward.tick();
+  assert.equal(sent.at(-1),fresh.id,'new arrival should be attempted on the next tick');
+  await forward.tick();assert.equal(sent.length,i+1,'request rate is unchanged');f.advance(1000);
+ }
+ packets.push(await f.seal('continuous arrival'));await forward.tick();
+ assert.equal(sent.at(-1),packets[0].id,'oldest pending envelope gets every fourth turn');
+ f.advance(31000);await forward.tick();
+ assert.equal(sent.at(-1),packets.at(-1).id,'new work still precedes due offline retries');
+});
+
 test('custody wake suppresses legacy packets and expired or forged stored envelopes',async t=>{
  const f=fixture(t),e=await f.seal();let calls=0;
  const make=packet=>f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:{transaction:async change=>change([{id:packet.id,expires:packet.expires,packet}])},records:f.records,current:()=>true,now:f.now,
@@ -515,4 +533,22 @@ test('large recovery backlog drains exactly once despite lost ACK and courier re
  let courier=create();
  for(let i=0;i<60&&stored.size<packets.length;i++){await courier.tick();if(i===12){courier.stop();courier=create();}f.advance(5000);}
  assert.equal(stored.size,160);assert.equal(delivered.size,160);assert.equal(duplicate,1,'only the lost acknowledgement causes a duplicate receive');assert(requests<380);courier.stop();
+});
+
+test('inline wake carries bounded ciphertext bound to the signed event, with metadata fallback',async t=>{
+ const f=fixture(t),e=await f.seal(),p=f.protocol,data=p.createCustodyWake(e,f.ids[0].record,true);
+ const event=p.verifyCustodyWake(data,f.ids[0].record,e.recipient,e.recipientDevice,f.now());
+ assert.deepEqual(p.custodyWakeEnvelope(data,event,f.now()),e);
+ assert(!JSON.stringify(data).includes('offline synthetic message'));
+ assert(Buffer.byteLength(JSON.stringify(data))<=p.CUSTODY_WAKE_DATA_BYTES);
+ const big=await f.seal('x'.repeat(2048));assert.equal(p.createCustodyWake(big,f.ids[0].record,true).envelope,undefined);
+ for(const patch of [{id:'00'.repeat(32)},{recipient:f.ids[3].record.account},{ciphertext:'00'.repeat(40)},{signature:'00'.repeat(64)}])assert.equal(p.custodyWakeEnvelope({...data,envelope:JSON.stringify({...e,...patch})},event,f.now()),null);
+ assert.equal(p.custodyWakeEnvelope(data,event,e.expires),null);
+ assert.equal(p.custodyWakeEnvelope({...data,envelope:'invalid'},event,f.now()),null);
+});
+test('inline forwarder falls back for an old gateway without marking the message delivered',async t=>{
+ const f=fixture(t),e=await f.seal(),sent=[];await f.request(f.service(),0,'deposit',e);
+ const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({inlineEnvelope:true,store:f.store,records:f.records,current:()=>true,now:f.now,peers:()=>['gateway'],request:async(_,raw)=>{const q=JSON.parse(raw);sent.push(q);return JSON.stringify({status:q.data.envelope?'rejected':'forwarded'});}});
+ await forward.tick();assert.equal(sent.length,2);assert(sent[0].data.envelope);assert.equal(sent[1].data.envelope,undefined);
+ assert.equal((await f.store.transaction(r=>r[0].packet)).kind,'envelope');
 });

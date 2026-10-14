@@ -88,7 +88,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if(s.actions?.some(a=>a.peer===peer&&sameTarget(a.target,target)&&a.kind==='delete')){
     // A deletion may arrive after the UI selected unread messages. Do not
     // acknowledge deleted content or prevent other messages being marked read.
-    if(kind==='read')return false;
+    if(kind==='read'||kind==='delete')return false;
     throw Error('Message was deleted');
    }
    if(kind==='read'&&previous.length)return false;
@@ -144,7 +144,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   configureGroup:(id:string,patch:{accepted?:boolean;blocked?:boolean;muted?:boolean})=>run(async()=>{if(!patch||Object.keys(patch).some(k=>!['accepted','blocked','muted'].includes(k))||patch.accepted!==undefined&&typeof patch.accepted!=='boolean'||patch.blocked!==undefined&&typeof patch.blocked!=='boolean'||patch.muted!==undefined&&typeof patch.muted!=='boolean')throw Error('Invalid group preferences');const s=await read(),g=s.groups?.find(g=>g.id===id);if(!g)throw Error('Group unavailable');if(patch.accepted===true&&g.recoveryPending){if(g.admin!==d.owner||!d.signGroup)throw Error('Group recovery signing unavailable');delete g.recoveryPending;g.accepted=true;signGroups(s,rootGroupDeliveryId(g.id,d.owner,'confirm-group-recovery'));}if(patch.accepted!==undefined)g.accepted=patch.accepted;if(patch.blocked!==undefined)g.blocked=patch.blocked;if(patch.muted!==undefined)g.muted=patch.muted;await save(s);}),
   markGroupRead:(id:string)=>run(async()=>{const s=await read();let changed=false;for(const m of s.messages)if(m.group?.id===id&&m.direction==='incoming'&&!m.read){const g=s.groups?.find(g=>g.id===id);if(g?.accepted&&!g.blocked&&g.members.includes(d.owner)&&g.members.includes(m.peer)&&!s.contacts.some(c=>c.account===m.peer&&c.blocked)&&!s.groupActions?.some(a=>a.group.id===id&&a.target.id===m.group!.messageId&&a.target.author===m.peer&&a.kind==='delete'))enqueueGroupAction(s,d.owner,id,rootGroupDeliveryId(m.group.messageId,d.owner,'read'),{id:m.group.messageId,author:m.peer},'read','',d.now());m.read=true;m.readAt??=d.now();changed=true;}if(changed)await save(s);}),
   leaveGroup:(id:string,packetId:string)=>run(async()=>{const s=await read();leaveRootGroup(s,d.owner,id,packetId);signGroups(s,packetId);await save(s);}),
-  actGroup:(groupId:string,id:string,target:RootChatReply,kind:RootGroupAction['kind'],text='')=>run(async()=>{const s=await read();enqueueGroupAction(s,d.owner,groupId,id,target,kind,text,d.now());await save(s);}),
+  actGroup:(groupId:string,id:string,target:RootChatReply,kind:RootGroupAction['kind'],text='')=>run(async()=>{const s=await read();const applied=enqueueGroupAction(s,d.owner,groupId,id,target,kind,text,d.now());if(applied)await save(s);return applied;}),
   enqueueGroup:(groupId:string,id:string,text:string,reply?:RootChatReply)=>run(async()=>{
    const s=await read(),g=s.groups?.find(g=>g.id===groupId);if(!g||g.blocked||!g.accepted||!g.members.includes(d.owner)||!idValid(id)||!text.trim()||byteLength(text)>1600)throw Error('Accept an active group and enter a message up to 1,600 bytes');
    if(reply&&(!validGroupReply(reply)||!s.messages.some(m=>m.group?.id===groupId&&m.group.messageId===reply.id&&(m.direction==='outgoing'?d.owner:m.peer)===reply.author)))throw Error('Original group message unavailable');
@@ -182,7 +182,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   }),
 
   act:(peer:string,id:string,target:RootChatReply,kind:RootActionKind,text='')=>run(async()=>{
-   const s=await read();if(applyAction(s,peer,id,target,kind,text))await save(s);
+   const s=await read(),applied=applyAction(s,peer,id,target,kind,text);if(applied)await save(s);return applied;
   }),
   readBatch:(peer:string,items:{id:string;target:RootChatReply}[])=>run(async()=>{
    if(items.length>20)throw Error('Read batch too large');
