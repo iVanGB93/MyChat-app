@@ -62,16 +62,16 @@ export function makeStyles(Colors: any) {
       ...StyleSheet.absoluteFillObject,
       backgroundColor: '#000',
     },
+    selfView: {position:'absolute',width:110,zIndex:5,gap:6},
     pipWrap: {
-      position: 'absolute',
-      top: Platform.OS === 'ios' ? 60 : 40,
-      right: Spacing.md,
       width: 110,
       height: 150,
       borderRadius: Radius.lg,
       borderWidth: 1,
       borderColor: 'rgba(255,255,255,0.9)',
-      backgroundColor: 'rgba(255,255,255,0.12)',
+      backgroundColor: '#020413',
+      // Keep Android's rectangular native surface inside every rounded frame corner.
+      padding: Math.ceil(Radius.lg * (1 - Math.SQRT1_2)),
       shadowColor: Colors.primary,
       shadowOpacity: 0.45,
       shadowRadius: 10,
@@ -83,7 +83,7 @@ export function makeStyles(Colors: any) {
     pip: {
       flex: 1,
       backgroundColor: '#000',
-      borderRadius: Radius.lg,
+      borderRadius: Radius.lg - Math.ceil(Radius.lg * (1 - Math.SQRT1_2)) - 1,
       overflow: 'hidden',
     },
     overlay: {
@@ -144,12 +144,10 @@ export function makeStyles(Colors: any) {
     },
     quality: {
       backgroundColor: 'rgba(2,4,19,0.65)',
-      paddingHorizontal: 8,
+      paddingHorizontal: 4,
+      paddingVertical: 5,
       borderRadius: 8,
-      marginTop: 4,
-      fontSize: Font.size.xs,
-      fontWeight: '700',
-      letterSpacing: 0.8,
+      gap: 2,
     },
     actions: {
       flexDirection: 'row',

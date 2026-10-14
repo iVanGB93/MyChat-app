@@ -1,0 +1,67 @@
+Workspace cleanup — 2026-10-13
+
+Scope
+Reviewed Axonic (Django/website), Axonic-app (mobile), and Axonic-neuron (AoN).
+No deployment, production build, app installation, database wipe or Git commit.
+Concurrent UI/application edits were preserved.
+
+Completed
+Deleted 1,654 old generated files, totaling 4,436.9 MiB (4.33 GiB):
+  1,159 PNG screenshots and 1 JPG
+  374 logs, 37 JSONL diagnostic outputs and 65 UI XML dumps
+  18 superseded APKs
+Archived 852 files rather than deleting them:
+  489 historical one-off scripts
+  363 historical JSON/text reports
+Moved 7 generated AoN root logs into the mobile ignored archive.
+Moved the tracked, unreferenced compiled neuron-retry-release.tgz from the
+backend root into builds/archive/deployment-packages. Its local copy remains;
+Git now records its removal from source control if the user later commits.
+
+Selection safeguards
+Only old top-level outputs in the two builds folders were deletion candidates.
+Preserved references from maintained files and recent scripts across repositories,
+including transitive helper dependencies. Kept recent installers, the latest two
+installables per folder, referenced installables, extracted installed-app backups,
+device backups, databases, credential stores, signing material and deployment
+source snapshots. Protected path/size checks preceded every deletion/move.
+No recursive directory deletion was performed.
+
+Preserved for a reason
+  Source assets, including unused-looking splash artwork: original design assets
+    are not equivalent to generated screenshots.
+  Tracked documentation images and user-supplied attachments.
+  Native build outputs/caches and dependencies: the environment may be in use.
+  Historical device/database exports and encrypted test credentials.
+  Source snapshots and rollback archives whose exact reproducibility is unclear.
+
+Tests
+The maintained automated tests are small and retain relevant regression coverage.
+None was proven obsolete; no maintained test was deleted merely due to age.
+Three skipped tests are explicitly opt-in comparative performance benchmarks.
+Compatibility protocol tests still cover the shared AoN code and remain useful.
+Django tests remain alongside the website/backend compatibility implementations.
+Old live/migration scripts are archived as reference, not runnable test suites.
+See tests/README.txt for maintained commands, coverage areas and manual checks.
+
+Post-cleanup validation
+  Mobile npm run check: 1,039 passed, 3 optional benchmarks skipped, 0 failed.
+  TypeScript, service cycles, module boundaries and consolidation passed.
+  Consolidation: 265 reachable mobile modules plus 8 documented support roots.
+  AoN npm test: 169 passed, 0 failed.
+  Shared mobile/AoN source consistency passed.
+  Maintained static require() dependencies into builds: no missing paths found.
+These are the results for the working tree during this review; concurrent UI
+work added tests while this cleanup was in progress. No device test was needed
+for moving/deleting generated local artifacts.
+
+Organization and audit trail
+Each builds folder has README.txt explaining its retained tools and archives.
+New output should use builds/runs/YYYY-MM-DD-topic/; new installables should use
+builds/releases/. Existing active helper paths stay intact.
+Detailed plan and completed-action journal:
+  builds/cleanup-plan-2026-10-13.json
+  builds/cleanup-actions-2026-10-13.jsonl
+Both are ignored local files with paths/metadata only, not copies of contents.
+Additional moves: builds/archive/aon-root-logs/ (7 logs), and the backend's
+builds/archive/deployment-packages/neuron-retry-release.tgz.

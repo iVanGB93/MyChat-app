@@ -1,8 +1,10 @@
+import ScreenHeader from '../ui/ScreenHeader';
 import {KeyboardAvoidingScreen,KeyboardFormScrollView} from '../ui/KeyboardForm';
 import {KeyboardAwareTextInput as TextInput} from '../ui/KeyboardForm';
 import React, { useState } from 'react';
 
 import { Modal, View, Text, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+
 
 import { Ionicons } from '@expo/vector-icons';
 
@@ -48,23 +50,17 @@ export default function SharePreview({ items, visible, busy, destination, onRemo
 
     <Modal visible={visible} animationType="slide" onRequestClose={() => { if (!busy) onClose(); }}>
 
-      <KeyboardAvoidingScreen style={{backgroundColor:c.background,paddingTop:insets.top,paddingBottom:insets.bottom}}>
+      <KeyboardAvoidingScreen style={{backgroundColor:c.background,paddingBottom:insets.bottom}}>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', padding: 16, gap: 16 }}>
+        <ScreenHeader title="Review before sending" backLabel="Cancel sharing" disabled={busy} onBack={onClose}/>
 
-          <TouchableOpacity onPress={onClose} disabled={busy} accessibilityLabel="Cancel sharing"><Ionicons name="close" size={28} color={c.text} /></TouchableOpacity>
-
-          <Text style={{ flex: 1, color: c.text, fontSize: 20, fontWeight: '700' }}>Review before sending</Text>
-
-        </View>
-
-        <Text style={{ color: c.textSecondary, paddingHorizontal: 16 }}>{destination ? `To ${destination} · ` : ''}{items.length} selected</Text>
+        <Text style={{ color: c.textSecondary, paddingHorizontal: 16, paddingTop:12 }}>{destination ? `To ${destination} · ` : ''}{items.length} selected</Text>
 
         <KeyboardFormScrollView avoidKeyboard={false} scrollEnabled={!isDragging} contentContainerStyle={{ padding: 16, gap: 16 }}>
 
           {items.map((item) => (
 
-            <View key={item.id} style={{ backgroundColor: c.surface, borderRadius: 16, padding: 12, gap: 10 }}>
+            <View key={item.id} style={{ backgroundColor: c.surface, borderColor:c.neonBorder,borderWidth:1,borderRadius: 16, padding: 12, gap: 10 }}>
 
               {item.kind === 'image' ? visible && <View pointerEvents={busy ? 'none' : 'auto'}>
 
@@ -112,7 +108,7 @@ export default function SharePreview({ items, visible, busy, destination, onRemo
 
         </KeyboardFormScrollView>
 
-        {hasPendingEdits && <Text style={{ color: c.textSecondary, paddingHorizontal: 16 }}>Finish loading or apply/discard picture edits before sending.</Text>}
+        {hasPendingEdits && <Text style={{ color: c.textSecondary, paddingHorizontal: 16, paddingTop:12 }}>Finish loading or apply/discard picture edits before sending.</Text>}
 
         <TouchableOpacity disabled={busy || !items.length || hasPendingEdits} onPress={onSend} style={{ margin: 16, padding: 16, borderRadius: 14, alignItems: 'center', backgroundColor: c.primary, opacity: items.length && !hasPendingEdits ? 1 : 0.4 }}>
 

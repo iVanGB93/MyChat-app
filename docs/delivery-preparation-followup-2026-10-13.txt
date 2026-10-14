@@ -1,0 +1,71 @@
+Delivery, preparation and navigation follow-up — 2026-10-13
+
+Scope
+Both com.axonic.dev phones and the two existing emulator development clients.
+Official phone apps, identities and chat data preserved. No production build,
+commit, push or live AoN deployment in this follow-up.
+
+Changes
+1. Bound the entire direct-send attempt to six seconds, including preparation.
+   Previously the transport ACK timer started only after sealing. A stalled
+   preparation could occupy an outbox slot indefinitely. On deadline, perform
+   the ordinary custody fallback with the same message ID. Retain at most two
+   unresolved transport promises, avoiding duplicate direct attempts while an
+   old operation remains unresolved. Late results cannot mark delivery. Add
+   content-free timeout/in-flight/oldest-attempt diagnostics.
+2. Share a bounded avatar read cache between screens, including missing photos.
+   Invalidate on avatar changes, account switch and lock. Reject stale async
+   results and retry failed reads. Memoize the contact/group avatar peer set.
+3. Hash locally encrypted attachment bytes through an equivalent binary-input
+   leaf helper, removing the redundant hex-format validation of local output.
+   Network inputs retain their original validation. Encryption, canonical hash
+   bytes, chunk sizes, signatures and group payload reuse are unchanged.
+
+Rejected experiments
+More frequent eight-millisecond preparation yields increased Android timer
+overhead; one measured preparation took 2.36 seconds. Reverted that change.
+An alternative joined-string hex conversion did not show a reliable benefit
+in noisy phone measurements and was also removed.
+
+Validation
+npm run check: 1,046 passed, 3 optional benchmarks skipped, zero failures;
+TypeScript, dependency cycles, module boundaries and consolidation passed.
+AoN shared source synchronized; npm test: 169 passed. Source synchronization
+does not mean these changes have been deployed to either hosted instance.
+
+New regression cases cover direct preparation that never resolves, custody
+fallback, late ACK safety, bounded stalled operations, avatar cache eviction,
+invalidation/relocking, failed reads and binary/canonical leaf equivalence.
+Existing tests verify group media reuse, file integrity and lock-time cleanup.
+
+Four-device text test: all four messages received and acknowledged. Observed
+arrival upper bounds 1.37–3.41 seconds, ACK upper bounds 1.56–4.22 seconds.
+Sequential debugger polling contributes to these times. Final state: all four
+apps unlocked, five connected axons each, push registered, zero pending texts.
+
+Navigation: 18 successful tab changes; simultaneous 256 KiB transfers verified
+SHA-256 in both directions. Sparse Android frame samples had p95 36/32 ms;
+JS interval-lag p95 32.5/29.7 ms. These do not establish a smoothness improvement
+over the previous audit. The cache regression demonstrates less repeated work.
+
+Final three 1 MiB phone transfers: 3.679, 17.426, 2.954 seconds, all SHA-256
+verified. Routes reported internet. Preparation aggregate for those three:
+4,438 ms total, maximum 1,627 ms. Receiver network aggregate: 21,824 ms over
+100 operations; sender network aggregate: 24,080 ms over 73 operations. These
+overlap; do not sum them or treat them as per-message latency. The slow run
+used more fallback/chunk work. Its exact initiating cause remains unconfirmed.
+
+Limitations and next investigation
+The original long-lived text stall did not recur. Timeout protection fixes a
+reproducible unbounded-wait defect, but is not proof of that incident's cause.
+No reliable overall media speedup has been established. Investigate why a
+direct RTC stream intermittently falls back, capturing route transitions and
+stream failure categories during the individual transfer. Do not lower proof,
+integrity, authorization or durable-receipt requirements for speed.
+
+Evidence (ignored local generated outputs)
+builds/runs/2026-10-13-delivery-preparation-fixes/
+  check.log, aon-tests.log, text-and-event-loop.json, navigation-media.json,
+  media-final-1.json through media-final-3.json, final-state.json,
+  phone gfx-navigation reports. leaf-benchmark.json is exploratory/noisy and
+  must not be used to claim a preparation speedup.

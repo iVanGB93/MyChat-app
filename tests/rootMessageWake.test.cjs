@@ -240,6 +240,28 @@ test('decrypted preview updates the same hint without sounding twice; a later me
  assert.equal(f.shown.at(-1).android.onlyAlertOnce,false);
 });
 
+test('a repeated wake retires its stale generic alert after inbox delivery',async t=>{
+ const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,1);
+ f.delivered();await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,0);assert.equal(f.shown.length,1);
+});
+
+test('a deleted incoming message cannot produce a fresh generic alert from a relay retry',async t=>{
+ const f=await fixture(t);f.storage.set('@axonic_root_chat_v1:'+f.recipient.account,JSON.stringify({version:1,contacts:[],messages:[],removedMessages:[{peer:f.sender.account,id:f.envelope.id,direction:'incoming'}]}));
+ await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,0);
+});
+
+test('a repeated old hint does not clear a newer conversation alert',async t=>{
+ const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);f.delivered();
+ const n=[...f.displayed.values()][0];f.displayed.set(n.id,{...n,data:{...n.data,messageId:'ef'.repeat(32)}});
+ await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,1);
+});
+
+test('a repeated hint does not erase its decrypted preview',async t=>{
+ const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);f.delivered();
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'Unread message',at:Date.now()});
+ await f.mod.receiveRootMessageWake(f.data);assert.equal([...f.displayed.values()][0].body,'Unread message');
+});
+
 test('equal-time group notification previews use the shared message ID rather than recipient delivery ID',async t=>{
  const f=await fixture(t),at=Date.now(),group='a'.repeat(64);
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'ff'.repeat(32),{name:'Group',text:'first',at,group,orderId:'11'.repeat(32)});

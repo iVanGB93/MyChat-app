@@ -20,6 +20,7 @@ import {useKeepAwake} from 'expo-keep-awake';
 import {localAccountCalls,subscribeLocalAccountCalls} from '../../modules/messaging';
 import type {NeuronCallView} from '../../modules/messaging';
 import useWebRTCCore from '../../hooks/useWebRTCCore';
+import useRingingCameraPreview from '../../hooks/useRingingCameraPreview';
 import {useTheme} from '../../contexts/ThemeContext';
 import {ActionButton,makeStyles} from './CallAppearance';
 import {startCallAudio,getCallAudioRoutes,selectCallAudioRoute,observeCallAudioRoutes,restoreCallAudio,type CallAudioRoutes} from '../../services/call-audio-route';
@@ -30,12 +31,13 @@ export async function ensureRootCallPermissions(kind:'voice'|'video'){
 }
 export default function RootAccountCallScreen(){
  const [call,setCall]=useState<NeuronCallView<string>|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const confirmationCall=useRef<string|null>(null);
  const [avatarUri,setAvatarUri]=useState<string|null>(null);
  useEffect(()=>{let active=true;setAvatarUri(null);const owner=localAccount.status().account,peer=call?.peerUser;const refresh=async()=>{if(!owner||!peer)return;const uri=await readSharedAvatar(owner,peer);if(active)setAvatarUri(uri);};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[call?.peerUser]);
  const running=useRef(false),{colors}=useTheme(),[name,setName]=useState(''),[minimizedId,setMinimizedId]=useState<string|null>(null);
  useEffect(()=>{let alive=true;const peer=call?.peerUser;if(!peer)return;setName(shortIdentity(peer));const refresh=async()=>{try{const s=await conversations().snapshot();if(alive)setName(s.contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer));}catch{if(alive)setName(shortIdentity(peer));}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{alive=false;clearInterval(timer);};},[call?.peerUser]);
  useEffect(()=>{if(call?.status!=='ringing')return;let active=true;const owner=localAccount.status().account;if(owner)void readRootNotificationPreferences(owner).then(p=>{if(active&&p.sound)playLooping(call.outgoing?'caller_ringback':'ringtone');}).catch(()=>{});return()=>{active=false;stopLooping();};},[call?.status,call?.outgoing]);
- useEffect(()=>subscribeLocalAccountCalls(v=>{setCall(v);setError('');}),[]);
+ useEffect(()=>subscribeLocalAccountCalls(v=>{if(v?.outgoing&&v.status==='finding')confirmationCall.current=v.id;else if(v?.status!=='ended')confirmationCall.current=null;setCall(v);setError('');}),[]);
  useEffect(()=>{
   if(!call||call.outgoing||call.status!=='ringing')return;
   let confirmed=false,pending=false,active=true;
@@ -55,7 +57,12 @@ export default function RootAccountCallScreen(){
   try{await ensureRootCallPermissions(call.media);if(calls!==localAccountCalls()||!await calls?.accept(call.id))throw Error('This call is no longer available.');}
   catch(e){setError(e instanceof Error?e.message:'Unable to answer');}finally{running.current=false;setBusy(false);}
  };
+ const previewUrl=useRingingCameraPreview(call?.id,call?.media==='video'&&['ringing','connecting'].includes(call.status)&&minimizedId!==call.id);
  if(!call)return null;
+ // The outgoing confirmation sheet owns Finding and its failure/cancellation.
+ if(call.outgoing&&call.status==='finding'){confirmationCall.current=call.id;return null;}
+ if(call.outgoing&&call.status==='ended'&&confirmationCall.current===call.id)return null;
+ confirmationCall.current=null;
  const ended=call.status==='ended';
  const status=ended?call.reason??'Call ended':call.status==='finding'?'Finding…':call.status==='connecting'?'Connecting…':call.outgoing?'Ringing…':'Incoming '+call.media+' call';
  const minimized=minimizedId===call.id,minimize=()=>setMinimizedId(call.id),restore=()=>setMinimizedId(null);
@@ -64,7 +71,7 @@ export default function RootAccountCallScreen(){
  if(minimized)return ended?null:<MinimizedCall name={name} status={status} video={call.media==='video'} restore={restore} end={end}/>;
  return <Modal visible animationType="slide" onRequestClose={()=>ended?setCall(null):minimize()}>
   <StatusBar style="light"/>
-  {!call.outgoing&&call.status==='ringing'?<IncomingCallAppearance avatarUri={avatarUri} callerName={name} isVideo={call.media==='video'} busy={busy} error={error} handleAccept={()=>void answer()} handleReject={end}/>:<CallLayout avatarUri={avatarUri} name={name} status={status} video={call.media==='video'}>
+  {!call.outgoing&&call.status==='ringing'?<IncomingCallAppearance avatarUri={avatarUri} callerName={name} isVideo={call.media==='video'} localPreviewUrl={previewUrl} busy={busy} error={error} handleAccept={()=>void answer()} handleReject={end}/>:<CallLayout avatarUri={avatarUri} name={name} status={status} video={call.media==='video'} avatar={!previewUrl} background={previewUrl?<RTCView streamURL={previewUrl} objectFit="cover" mirror style={StyleSheet.absoluteFill} zOrder={0}/>:undefined}>
    {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
    <View style={{alignItems:'center',padding:24}}><EndButton ended={ended} onPress={()=>ended?setCall(null):end()}/></View>
   </CallLayout>}
@@ -105,13 +112,16 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  },[call.id,call.media]);
  const routeAudio=async(id:string)=>{if(audioBusy.current)return;audioBusy.current=true;setError('');try{setAudioRoutes(await selectCallAudioRoute(id));}catch(error){setError(error instanceof Error?error.message:'Unable to change audio output.');}finally{audioBusy.current=false;}};
  const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video',localVisible=rtc.isCameraOff?undefined:local;
+ const quality=rtc.callQuality;
  const background=video&&<>
   {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit="cover" mirror={!remote} style={styles.fullVideo} zOrder={0}/>}
   <Pressable accessibilityRole="button" accessibilityLabel={controls?'Hide call controls':'Show call controls'} onPress={()=>setControls(v=>!v)} style={StyleSheet.absoluteFill}/>
-  {remote&&local&&foreground&&<View pointerEvents="none" style={[styles.pipWrap,{top:insets.top+16,right:insets.right+16}]}>{rtc.isCameraOff?<View style={[styles.pip,{alignItems:'center',justifyContent:'center',gap:8}]}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>Camera off</Text></View>:<RTCView streamURL={local} objectFit="cover" mirror style={styles.pip} zOrder={1}/>}</View>}
+  {remote&&foreground&&<View testID="axonic-call-self-view" pointerEvents="none" style={[styles.selfView,{top:insets.top+16,right:insets.right+16}]}>
+   <View style={styles.pipWrap}><View style={styles.pip}>{rtc.isCameraOff||!local?<View style={{flex:1,alignItems:'center',justifyContent:'center',gap:8}}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>{rtc.isCameraOff?'Camera off':'No preview'}</Text></View>:<RTCView streamURL={local} objectFit="cover" mirror style={{flex:1}} zOrder={1}/>}</View></View>
+   {quality.level!=='unknown'&&<View testID="axonic-call-connection-quality" style={styles.quality}><Text style={{textAlign:'center',fontSize:11,fontWeight:'700',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}}>{quality.level.toUpperCase()}</Text>{(quality.roundTripTimeMs!=null||quality.packetLossPercent!=null)&&<Text style={{color:'#fff',fontSize:10,textAlign:'center'}}>{quality.roundTripTimeMs!=null?`${quality.roundTripTimeMs} ms`:''}{quality.roundTripTimeMs!=null&&quality.packetLossPercent!=null?' · ':''}{quality.packetLossPercent!=null?`${quality.packetLossPercent}% loss`:''}</Text>}</View>}
+  </View>}
  </>;
- const quality=rtc.callQuality;
- const status=rtc.recovering?'Reconnecting�':connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…';
+ const status=rtc.recovering?'Reconnecting…':connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…';
  const minimizeMedia=()=>{setOptions(false);minimize();};
  const homeWindow=Platform.OS==='android'&&!foreground;
  return <>
@@ -122,7 +132,7 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  <Modal visible={!homeWindow&&!minimized} animationType="slide" onRequestClose={minimizeMedia}>
  <CallLayout avatarUri={avatarUri} name={name} video={video} status={status} background={background} show={!video||controls} avatar={!video||(!remote&&!localVisible)}>
   {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
-  {video&&quality.level!=='unknown'&&<Text style={[styles.quality,{textAlign:'center',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}]}>{quality.level.toUpperCase()}{quality.roundTripTimeMs!=null?` • ${quality.roundTripTimeMs} ms`:''}{quality.packetLossPercent!=null?` • ${quality.packetLossPercent}% loss`:''}</Text>}
+
   <View style={[styles.actions,video&&{paddingHorizontal:8}]}>
    <ActionButton size={video?52:64} icon={rtc.isMuted?'mic-off':'mic'} label={rtc.isMuted?'Unmute':'Mute'} active={rtc.isMuted} onPress={rtc.toggleMute} Colors={colors}/>
    {video&&<ActionButton size={52} icon={rtc.isCameraOff?'videocam-off':'videocam'} label={rtc.isCameraOff?'Cam On':'Cam Off'} active={rtc.isCameraOff} onPress={rtc.toggleCamera} Colors={colors}/>}

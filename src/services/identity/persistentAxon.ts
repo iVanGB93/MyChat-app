@@ -44,7 +44,7 @@ export function createPersistentAxon(d: {
   onCallControl?(raw: string, peer: IdentityPeer): Promise<string | null>;
   onCallMedia?(raw: string, peer: IdentityPeer, localInstance: string): Promise<boolean>;
   onDirectory?(raw: string, peer: IdentityPeer): Promise<string>;
-  onCustody?(raw: string, peer: IdentityPeer): Promise<string>;
+  onCustody?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {groupCustody?:boolean};
   onSignal?(raw: string, peer: IdentityPeer): Promise<boolean>;
   testMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
   chatMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
@@ -53,7 +53,7 @@ export function createPersistentAxon(d: {
 }) {
   let stopped = false, closeReason: string | null = null, remote: string | null = null, peer: IdentityPeer | null = null;
   let deferredFrames: string[] = [], deferredBytes = 0;
-  let peerMessageTimestamps=false,peerProfileUpdates=false;
+  let peerMessageTimestamps=false,peerProfileUpdates=false,peerProfileOffers=false;
   let peerSharedAttachments=false,peerAttachments=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
   let mediaInbound=0,mediaWaiting=0,mediaWindow=1,mediaSuccesses=0;
   let lastMediaAt=-Infinity;
@@ -97,7 +97,7 @@ export function createPersistentAxon(d: {
   let peerPush = false, peerRelay = false, peerMediaRelay = false, peerMediaForward = false;
   let peerCalls = false;
   let peerMedia = false;
-  let peerTests = false, peerDirectory = false, peerCustody = false, peerChat = false;
+  let peerTests = false, peerDirectory = false, peerCustody = false, peerGroupCustody = false, peerChat = false;
   const chat = d.chatMessages ? createAxonNormalMessages({
     local: { account: d.record.account, device: publicDevice(d.signingSeed, d.chatMessages.encryptionSeed).id, instance: bytesToHex(d.instance) },
     encryptionSeed: d.chatMessages.encryptionSeed, peer: () => peer, store: d.store, now: d.now, random: d.random,
@@ -254,7 +254,7 @@ export function createPersistentAxon(d: {
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop('invalid-hello'); return; }
         peerAttachments=f.attachments===1&&d.wire.attachments!==false;
-        peerMessageTimestamps=f.messageTimestamps===1;peerProfileUpdates=f.profileUpdates===1;
+        peerMessageTimestamps=f.messageTimestamps===1;peerProfileUpdates=f.profileUpdates===1;peerProfileOffers=f.profileOffers===1;
         peerSharedAttachments=peerAttachments&&f.sharedAttachments===2;
         peerMediaLane=peerAttachments&&f.mediaLane===1&&d.wire.mediaLane===true;
         peerBulk=peerMediaLane&&f.bulkAttachments===1&&d.wire.bulkAttachments===true;
@@ -267,6 +267,7 @@ export function createPersistentAxon(d: {
         peerCalls = peerMedia || Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('call-control-v1');
         peerSignals = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('rtc-signals-v1');
         peerDirectory = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('identity-directory-v1');
+        peerGroupCustody = f.groupCustody===1;
         peerCustody = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('custody-v1');
         peerTests = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('test-messages-v2');
         peerChat = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('chat-text-v1');
@@ -357,7 +358,7 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(chat?{messageTimestamps:1,profileUpdates:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onCustody?.groupCustody?{groupCustody:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
     mediaRelayPeer:()=>peerMediaRelay && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
@@ -456,6 +457,7 @@ export function createPersistentAxon(d: {
       } catch { return null; }
       finally { custodyWaiting--; }
     },
+    supportsProfileOffers:()=>!!peer&&peer.expiresAt>d.now()&&!stopped&&peerProfileOffers,
     supportsProfileUpdates:()=>peerProfileUpdates&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsMessageTimestamps:()=>peerMessageTimestamps&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsSharedAttachments:()=>peerSharedAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
@@ -508,10 +510,11 @@ export function createPersistentAxon(d: {
         attachmentNext=d.now()+50;const result=await exchange('attachment',raw);return permitted()?result:null;
       }catch{return null;}finally{attachmentWaiting--;release();}
     },
+    supportsGroupCustody: () => peerGroupCustody && peerCustody && !!peer && !stopped && d.current() && peer.expiresAt>d.now(),
     supportsCustody: () => peerCustody && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async custodyRequest(raw: string): Promise<string | null> {
       const permitted = () => !!peer && peer.expiresAt > d.now() && peerCustody && !stopped && d.current();
-      if (!permitted() || raw.length > 8000 || (custodyWaiting >= 2 || pushWaiting > 0)) return null;
+      if (!permitted() || raw.length > (peerGroupCustody?16000:8000) || (custodyWaiting >= 2 || pushWaiting > 0)) return null;
       custodyWaiting++;
       try {
         // Bounded local contention must not immediately mark a healthy relay unavailable.

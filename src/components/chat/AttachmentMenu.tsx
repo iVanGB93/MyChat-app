@@ -16,7 +16,7 @@ export default function AttachmentMenu({visible,onClose,onCamera,onMultimedia,on
   {label:'Cancel',icon:'close' as const,action:onClose},
  ];
  return <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
-  <Pressable style={styles.modalBackdrop} onPress={onClose}>
+  <Pressable style={[styles.modalBackdrop,{backgroundColor:colors.overlay}]} onPress={onClose}>
    <Pressable onPress={event=>event.stopPropagation()} style={[styles.attachSheet,{backgroundColor:colors.surface,borderColor:colors.neonBorder,marginBottom:24+insets.bottom}]}>
     {rows.map((row,index)=><React.Fragment key={row.label}>
      {index>0&&<View style={[styles.attachDivider,{backgroundColor:colors.border}]}/>}

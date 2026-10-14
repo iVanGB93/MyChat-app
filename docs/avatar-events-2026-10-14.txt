@@ -1,0 +1,60 @@
+Event-driven avatar synchronization — 2026-10-14 UTC
+
+Implemented
+- Authenticated connection events, avatar publication and contact/group sharing
+  policy changes trigger synchronization. Removed the periodic avatar recovery
+  tick from the mobile and hosted runtime loops.
+- A negotiated profileOffers capability enables encrypted signed-manifest
+  announcements. Hash/revision/size/signature are exchanged before image bytes.
+- Matching images advance their signed revision without requesting the image.
+  Signed zero-byte removals clear cached avatars without an attachment transfer.
+- Changed/missing images create a durable request bound to the offered revision
+  and hash. Obsolete requests cannot trigger transfer of a newer version.
+- Ordinary encrypted image chunks, signatures, hashes, size/dimension limits,
+  receipts and retry persistence are preserved. A recovered/lost partial cache
+  can request all parts again. No avatar messages appear in conversation history.
+- Only eligible contacts and group members participate. Unknown routing peers,
+  blocked peers and hidden direct conversations remain excluded as before.
+- Failed announcements retry at most three times per event; no permanent poll.
+  Successful unchanged announcements are suppressed until reconnection/change.
+- Older clients retain compatible request/image handling through negotiation.
+  Production phone installations were not replaced and need a later app release
+  to obtain the new mobile behavior.
+
+Tests
+Mobile npm run check: 1,054 passed; 3 optional benchmarks skipped; zero failures.
+TypeScript, cycles, module boundaries and source consolidation passed.
+AoN npm test: 170 passed. Shared core synchronization check passed.
+Coverage includes tampering, rollback, same-version conflict, blocked peers,
+unchanged images, removal, old requests, bounded retries including exceptions,
+no periodic work, legacy negotiation and hosted avatar persistence.
+
+Live tests: two com.axonic.dev phones and both emulator development apps.
+A synthetic emulator avatar synchronized to the other three apps, followed by
+a different image, an identical-image revision, and signed removal. For the
+identical-image revision all three sender delivery entries remained requested
+false with zero acknowledged parts: no image transfer was requested.
+Latest observed all-recipient completion times: initial image 11.7 s, changed
+image 9.1 s, matching-hash observation 0.48 s, removal 1.48 s. These include
+debugger polling and are not precise wire latencies.
+
+Offline/restart: emulator-5556 was closed, the sender changed its avatar, and
+the recipient was reopened without reinstalling or clearing data. It received
+the new avatar automatically. No image was queued for it while offline.
+Cold startup/network reconnection plus observation took 67.6 seconds; that
+remaining reconnection latency is not solved by this avatar optimization.
+Synthetic avatar changes were restored afterward. Test conversations between
+the Dev identities were accepted for the sharing-permission checks.
+
+Deployment
+Both AoNs deployed with rollback copies/retained identity data.
+Final runtime SHA-256:
+102e3d622e3e1cb8a66e6158c78599213d631c198c67a90bdd9421aae7918c65
+Package 0.2.0, short revision 102e3d622e3e, 120 runtime modules.
+SecondNeuron deployment: 7230620c-b3e4-48d7-a2f9-1750e9767f55.
+No production mobile build, official phone install, commit or push performed.
+
+Local evidence
+builds/runs/2026-10-14-avatar-events/
+  check.log, aon-tests.log, live-avatars.json, reconnect.json,
+  synthetic avatar-one.jpg and avatar-two.jpg.

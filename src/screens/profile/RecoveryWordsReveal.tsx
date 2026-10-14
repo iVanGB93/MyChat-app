@@ -1,6 +1,6 @@
+import ScreenHeader from '../../components/ui/ScreenHeader';
 import React,{useEffect,useRef,useState} from 'react';
-import {AppState,Modal,Pressable,Text,View} from 'react-native';
-import {Ionicons} from '@expo/vector-icons';
+import {AppState,Modal,Text,View} from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {localAccount,localAccountBiometrics as biometrics} from '../../modules/identity';
 import {useTheme} from '../../contexts/ThemeContext';
@@ -36,8 +36,8 @@ export default function RecoveryWordsReveal({account,visible}:{account:string;vi
  return <>
   <Button title="SHOW RECOVERY WORDS" onPress={()=>{close();setOpen(true);}}/>
   <Modal visible={visible&&open} animationType="slide" onRequestClose={close}>
-   <View style={{flex:1,backgroundColor:colors.background,paddingTop:insets.top}}>
-    <View style={{flexDirection:'row',alignItems:'center',gap:16,padding:16,backgroundColor:colors.headerBg}}><Pressable accessibilityRole="button" accessibilityLabel="Close recovery words" onPress={close} style={{padding:4}}><Ionicons name="arrow-back" size={26} color={colors.headerText}/></Pressable><Text style={{color:colors.headerText,fontSize:18,fontWeight:'600'}}>Recovery words</Text></View>
+   <View style={{flex:1,backgroundColor:colors.background}}>
+    <ScreenHeader title="Recovery words" backLabel="Close recovery words" onBack={close}/>
     <KeyboardFormScrollView contentContainerStyle={{padding:20,paddingBottom:insets.bottom+24,gap:16}}>
      {phrase?<>
       <Text style={{color:colors.text,fontSize:18,fontWeight:'600'}}>Your {phrase.split(' ').length} recovery words</Text>

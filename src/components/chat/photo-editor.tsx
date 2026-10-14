@@ -1,3 +1,4 @@
+import ScreenHeader from '../ui/ScreenHeader';
 import {KeyboardFormScrollView} from '../ui/KeyboardForm';
 import {KeyboardAwareTextInput as TextInput} from '../ui/KeyboardForm';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -113,7 +114,7 @@ export default function PhotoEditor({ uri, onClose, onSave, embedded = false, on
   };
   const button = (text: string, action: () => void, disabled = false) => <TouchableOpacity accessibilityRole="button" disabled={busy || disabled} onPress={action} style={{ padding: 12, borderRadius: 12, backgroundColor: c.surfaceVariant, opacity: busy || disabled ? .45 : 1 }}><Text style={{ color: c.primary }}>{text}</Text></TouchableOpacity>;
   const content = <>
-      {!embedded && <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>{button('Cancel', onClose)}<Text style={{ color: c.text, fontSize: 20 }}>Edit picture</Text>{button('Done', () => void perform('save'), !photo || mode === 'crop' || !ready)}</View>}
+
       {busy && <ActivityIndicator color={c.primary} />}
       {photo && (mode === 'crop' ? <>
         <StickerCropEditor key={photo.uri} uri={photo.uri} size={Math.min(width, previewHeight)} disabled={busy} onChange={setCrop} onDragging={updateDragging} />
@@ -150,13 +151,14 @@ export default function PhotoEditor({ uri, onClose, onSave, embedded = false, on
           {button('Undo drawing', () => setStrokes((value) => value.slice(0, -1)), !strokes.length)}
         </View>
         {mode !== 'preview' && <Text style={{ color: c.textSecondary }}>{mode === 'draw' ? 'Draw on the photo with your finger.' : 'Type your text, then drag on the photo to position it.'}</Text>}
-        {mode === 'text' && <TextInput accessibilityLabel="Text on photo" placeholder="Add text to picture" placeholderTextColor={c.textSecondary} value={label} onChangeText={setLabel} editable={!busy} maxLength={60} style={{ color: c.text, backgroundColor: c.surface, padding: 12, borderRadius: 10 }} />}
+        {mode === 'text' && <TextInput accessibilityLabel="Text on photo" placeholder="Add text to picture" placeholderTextColor={c.textSecondary} value={label} onChangeText={setLabel} editable={!busy} maxLength={60} style={{ color: c.text, backgroundColor: c.inputBg, borderColor:c.neonBorder,borderWidth:1,padding: 14, borderRadius: 14 }} />}
         {mode !== 'preview' && <View style={{ flexDirection: 'row', gap: 10 }}>{['#ffffff', '#000000', '#ff5252', '#ffeb3b', '#00e5ff'].map((value) => <TouchableOpacity key={value} accessibilityLabel={`Use ${value} color`} disabled={busy} onPress={() => setColor(value)} style={{ backgroundColor: value, width: 38, height: 38, borderRadius: 19, borderWidth: color === value ? 3 : 1, borderColor: c.primary }} />)}</View>}
       </>}
       {embedded && dirty && <View style={{ flexDirection: 'row', gap: 8 }}>{button('Discard edits', onClose)}{button('Apply edits', () => void perform('save'), !photo || mode === 'crop' || !ready)}</View>}
     </>;
   if (embedded) return <View style={{ gap: 12 }}>{content}</View>;
   return <Modal animationType="slide" onRequestClose={() => { if (!busy) onClose(); }}>
-    <KeyboardFormScrollView scrollEnabled={!dragging} contentContainerStyle={{ flexGrow: 1, padding: 16, paddingTop: insets.top + 16, paddingBottom: insets.bottom + 16, gap: 14, backgroundColor: c.background }}>{content}</KeyboardFormScrollView>
+    <View style={{flex:1,backgroundColor:c.background}}><ScreenHeader title="Edit picture" disabled={busy} onBack={onClose} trailing={<TouchableOpacity accessibilityRole="button" accessibilityLabel="Save edited picture" disabled={busy||!photo||mode==='crop'||!ready} onPress={()=>void perform('save')} style={{minWidth:44,minHeight:44,justifyContent:'center',alignItems:'center',opacity:busy||!photo||mode==='crop'||!ready?0.4:1}}><Text style={{color:c.headerText,fontWeight:'700'}}>Done</Text></TouchableOpacity>}/>
+    <KeyboardFormScrollView scrollEnabled={!dragging} contentContainerStyle={{ flexGrow: 1, padding: 16, paddingTop: 16, paddingBottom: insets.bottom + 16, gap: 14, backgroundColor: c.background }}>{content}</KeyboardFormScrollView></View>
   </Modal>;
 }

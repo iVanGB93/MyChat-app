@@ -8,12 +8,24 @@ export const PROFILE_MAX_BYTES=16*1024,PROFILE_CHUNK_BYTES=640;
 export type ProfileManifest={root:string;revision:number;hash:string;bytes:number;signature:string};
 export type OwnProfile={manifest:ProfileManifest;data:string};
 export type ProfilePart={manifest:ProfileManifest;index:number;data:string};
-export type ProfileRequest={peer:string;id:string;known:string|null};
-export type ProfileDelivery={peer:string;acked:number[]};
+export type ProfileRequest={peer:string;id:string;known:string|null;target?:{revision:number;hash:string}};
+export type ProfileDelivery={peer:string;acked:number[];requested?:boolean};
 export type ProfileCache={current?:OwnProfile;pending?:{manifest:ProfileManifest;parts:(string|null)[]}};
 const hex=(v:unknown,n:number):v is string=>typeof v==='string'&&v.length===n&&/^[a-f0-9]*$/.test(v);
 const body=(m:Omit<ProfileManifest,'signature'>)=>utf8ToBytes(JSON.stringify(['axonic-private-avatar-v1',m.root,m.revision,m.hash,m.bytes,'image/jpeg']));
 export const profileHash=(bytes:Uint8Array)=>bytesToHex(sha256(bytes));
+export const profileOfferId=(owner:string,peer:string,m:ProfileManifest|null)=>profileHash(utf8ToBytes(JSON.stringify(['axonic-avatar-offer-v1',owner,peer,m])));
+/** Signed summaries advance unchanged avatars and removals without image bytes. */
+export function receiveProfileOffer(cache:ProfileCache,from:string,m:ProfileManifest,now:number):ProfileCache|null{
+ if(!validProfileManifest(m,from)||m.revision>now+300000)return null;
+ const prior=cache.pending?.manifest??cache.current?.manifest;
+ if(prior&&prior.revision>m.revision)return cache;
+ if(prior?.revision===m.revision&&prior.hash!==m.hash)return null;
+ if(cache.current?.manifest.hash===m.hash)return {current:{...cache.current,manifest:m}};
+ if(m.bytes===0){const current={manifest:m,data:''};return validOwnProfile(current,from)?{current}:null;}
+ if(cache.pending?.manifest.revision===m.revision)return cache;
+ return {...cache,pending:{manifest:m,parts:Array<string|null>(profileCount(m)).fill(null)}};
+}
 export const profileCount=(m:ProfileManifest)=>Math.max(1,Math.ceil(m.bytes/PROFILE_CHUNK_BYTES));
 export function validProfileManifest(m:unknown,owner:string):m is ProfileManifest{
  try{const v=m as ProfileManifest;return !!v&&Object.keys(v).sort().join(',')==='bytes,hash,revision,root,signature'&&hex(v.root,64)&&accountId(v.root)===owner&&Number.isSafeInteger(v.revision)&&v.revision>0&&v.revision<=8640000000000000&&hex(v.hash,64)&&Number.isSafeInteger(v.bytes)&&v.bytes>=0&&v.bytes<=PROFILE_MAX_BYTES&&hex(v.signature,128)&&verifyPublicSignature(hexToBytes(v.signature),body(v),hexToBytes(v.root),{zip215:false});}catch{return false;}

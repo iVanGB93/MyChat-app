@@ -10,16 +10,16 @@ function setup(){let owner=a,raw=null,counter=0,fail=false,random=async()=> (++c
  return {ledger,commands,owner:()=>owner,setOwner:v=>owner=v,setRandom:v=>random=v,setFail:v=>fail=v};
 }
 function delivery(f,overrides={}){const events=[];const worker=createMessageDelivery({owner:f.owner,ledger:()=>f.ledger,
- blocked:peers=>events.push(['blocked',peers]),collect:async()=>events.push(['collect']),send:async(...args)=>{events.push(['send',...args]);return false;},
+ connectedPeers:()=>[b,c],blocked:peers=>events.push(['blocked',peers]),collect:async()=>events.push(['collect']),send:async(...args)=>{events.push(['send',...args]);return false;},
  resolve:async peer=>events.push(['resolve',peer]),deposit:async(...args)=>events.push(['deposit',...args]),...overrides});return {worker,events};}
 
 test('failed messages back off while new messages and peer reconnection remain immediate',async()=>{
  const f=setup();let now=10000,peers=[],success=false;const sent=[];
  const first=await f.commands.sendText(b,'offline');const d=delivery(f,{now:()=>now,connectedPeers:()=>peers,send:async(peer,raw,id)=>{sent.push(id);return success;}});
- await d.worker.tick();assert.equal(sent.length,2);
- for(let i=0;i<10;i++)await d.worker.tick();assert.equal(sent.length,2);
- now+=2000;await d.worker.tick();assert.equal(sent.length,4);
- const next=await f.commands.sendText(c,'new');success=true;d.worker.wake(c,next);
+ await d.worker.tick();assert.equal(sent.length,0);
+ for(let i=0;i<10;i++)await d.worker.tick();assert.equal(sent.length,0);
+ now+=2000;await d.worker.tick();assert.equal(sent.length,0);
+ const next=await f.commands.sendText(c,'new');success=true;peers=[c];d.worker.wake(c,next);
  await until(async()=> (await f.ledger.snapshot()).messages.find(m=>m.id===next).status==='delivered');
  assert.equal(sent.at(-1),next);peers=[b];await d.worker.tick();
  assert.equal((await f.ledger.snapshot()).messages.find(m=>m.id===first).status,'delivered');d.worker.stop();
@@ -29,8 +29,8 @@ test('new message keeps priority after a disconnected first attempt without spin
  const id=await f.commands.sendText(b,'new after resume');let now=10000,ready=false;const sent=[];
  const d=delivery(f,{now:()=>now,send:async(peer,raw,key)=>{sent.push(key);return ready;}});
  d.worker.wake(b,id);await until(()=>d.worker.snapshot().attempts===1&&!d.worker.snapshot().busy);
- assert.deepEqual(sent,[id,id]);await new Promise(r=>setTimeout(r,20));assert.equal(d.worker.snapshot().attempts,1);
- now+=2000;ready=true;await d.worker.tick();assert.equal(sent[2],id);
+ assert.deepEqual(sent,[id]);await new Promise(r=>setTimeout(r,20));assert.equal(d.worker.snapshot().attempts,1);
+ now+=2000;ready=true;await d.worker.tick();assert.equal(sent[1],id);
  assert.equal((await f.ledger.snapshot()).messages.find(m=>m.id===id).status,'delivered');d.worker.stop();
 });
 test('UI text command persists a pending message without a network dependency',async()=>{const f=setup(),id=await f.commands.sendText(b,'offline');const s=await f.ledger.snapshot();assert.equal(s.messages[0].id,id);assert.equal(s.messages[0].status,'pending');assert.equal(s.messages[0].text,'offline');});
@@ -40,6 +40,22 @@ test('stale UI owner rejects a send before allocating an ID',async()=>{const f=s
 test('group creation and group sending use the same durable ledger commands',async()=>{const f=setup(),id=await f.commands.createGroup('Family',[b]);await f.commands.sendGroupText(id,'hello');const s=await f.ledger.snapshot();assert.equal(s.groups[0].name,'Family');assert.equal(s.messages[0].peer,b);assert.equal(s.messages[0].status,'pending');});
 test('editing through a command retains the original message and queues an action',async()=>{const f=setup(),id=await f.commands.sendText(b,'original');await f.commands.act(b,{id,author:a},'edit','changed');const s=await f.ledger.snapshot();assert.equal(s.messages[0].text,'original');assert.equal(s.actions[0].kind,'edit');});
 test('direct acknowledgement marks delivery without custody or key lookup',async()=>{const f=setup();await f.commands.sendText(b,'hello');const d=delivery(f,{send:async()=>true});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');assert.ok(!d.events.some(e=>e[0]==='resolve'||e[0]==='deposit'));});
+
+test('a stalled direct preparation falls back and late ACK cannot mark the message delivered',async()=>{
+ const f=setup(),id=await f.commands.sendText(b,'stalled');let finish,sends=0,now=10000;
+ const d=delivery(f,{now:()=>now,directTimeoutMs:10,send:()=>{sends++;return new Promise(r=>finish=r);}});
+ await d.worker.tick();assert.equal(d.worker.snapshot().busy,false);assert.equal(d.worker.snapshot().directTimeouts,1);
+ assert.equal(d.events.filter(e=>e[0]==='deposit').length,1);
+ now+=2000;await d.worker.tick();assert.equal(sends,1);assert.equal(d.events.filter(e=>e[0]==='deposit').length,2);
+ finish(true);await new Promise(r=>setImmediate(r));assert.equal((await f.ledger.snapshot()).messages.find(m=>m.id===id).status,'pending');
+ assert.equal(d.worker.snapshot().directInFlight,0);d.worker.stop();
+});
+test('two stalled direct routes cannot block a third recipient custody handoff',async()=>{
+ const f=setup(),other='axonic:1:'+'d'.repeat(64);for(const peer of [b,c,other])await f.commands.sendText(peer,'stalled');
+ let sends=0;const releases=[];const d=delivery(f,{directTimeoutMs:10,connectedPeers:()=>[b,c,other],send:()=>{sends++;return new Promise(r=>releases.push(r));}});
+ for(let i=0;i<3;i++)await d.worker.tick();assert.equal(sends,2);assert.equal(d.events.filter(e=>e[0]==='deposit').length,3);
+ assert.equal(d.worker.snapshot().busy,false);d.worker.stop();for(const release of releases)release(false);
+});
 
 async function until(check){for(let n=0;n<100;n++){if(await check())return;await new Promise(r=>setTimeout(r,2));}assert.fail('worker did not finish');}
 test('outbox wake notification follows successful durable enqueue only',async()=>{
@@ -71,8 +87,8 @@ test('stopping before a scheduled wake prevents sending',async()=>{
 test('custody deposit preserves pending status and the same wire ID',async()=>{const f=setup(),id=await f.commands.sendText(b,'hello');let now=10000;const d=delivery(f,{now:()=>now});await d.worker.tick();now+=2000;await d.worker.tick();const deposits=d.events.filter(e=>e[0]==='deposit');assert.equal(deposits.length,2);assert.equal(deposits[0][3],id);assert.deepEqual(deposits[0],deposits[1]);assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');});
 test('overlapping delivery ticks send a message only once',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish,count=0;const d=delivery(f,{send:()=>{count++;return new Promise(r=>finish=r);}});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));await d.worker.tick();assert.equal(count,1);finish(true);await first;});
 test('invalidated delivery cannot acknowledge even after the same account unlocks',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish;const d=delivery(f,{send:()=>new Promise(r=>finish=r)});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));f.setOwner(null);d.worker.invalidate();f.setOwner(a);finish(true);await first;assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');});
-test('stopping during key discovery prevents a late custody deposit',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish;const d=delivery(f,{resolve:()=>new Promise(r=>finish=r)});const first=d.worker.tick();while(!finish)await new Promise(r=>setImmediate(r));d.worker.stop();finish();await first;assert.ok(!d.events.some(e=>e[0]==='deposit'));});
-test('network errors preserve the outbox and release the tick for retry',async()=>{const f=setup();await f.commands.sendText(b,'hello');let n=0,now=10000;const d=delivery(f,{now:()=>now,send:async()=>{if(++n<=2)throw Error('offline');return true;}});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');now+=2000;await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');});
+test('background discovery releases delivery slots and stopping cannot send again',async()=>{const f=setup();await f.commands.sendText(b,'hello');let finish;const d=delivery(f,{connectedPeers:()=>[],resolve:()=>new Promise(r=>finish=r)});await d.worker.tick();await until(()=>!!finish);assert.equal(d.worker.snapshot().busy,false);assert.equal(d.events.filter(e=>e[0]==='deposit').length,1);d.worker.stop();finish();await new Promise(r=>setImmediate(r));assert.equal(d.events.filter(e=>e[0]==='deposit').length,1);});
+test('network errors preserve the outbox and release the tick for retry',async()=>{const f=setup();await f.commands.sendText(b,'hello');let n=0,now=10000;const d=delivery(f,{now:()=>now,send:async()=>{if(++n<=1)throw Error('offline');return true;}});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');now+=2000;await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');});
 test('blocked peers do not enter the transport or custody queue',async()=>{const f=setup();await f.commands.sendText(b,'hello');await f.ledger.configure(b,{blocked:true});const d=delivery(f);await d.worker.tick();assert.ok(!d.events.some(e=>e[0]==='send'));assert.deepEqual(d.events[0],['blocked',[b]]);});
 function callFixture(){let owner=a,connected=true,resolve=async()=>({status:'found'}),started=0;const session={start:async()=>{started++;return 'call';}};let active=session;const calls=createCallCommands({owner:()=>owner,calls:()=>active,connected:()=>connected,readinessTimeoutMs:20,resolve:peer=>resolve(peer)});return {calls,setOwner:v=>owner=v,setConnected:v=>connected=v,setResolve:v=>resolve=v,setCalls:v=>active=v,started:()=>started};}
 test('call startup waits for the permission-induced reconnect before starting once',async()=>{
@@ -112,16 +128,18 @@ test('failed inbox polling retries independently and stop prevents further polls
  d.worker.stop();await d.worker.tick();assert.equal(polls,2);
 });
 
-test('a newly discovered direct peer receives the same ID without a custody deposit',async()=>{
- const f=setup(),id=await f.commands.sendText(b,'hello');let found=false;const sent=[];
- const d=delivery(f,{send:async(peer,raw,key)=>{sent.push(key);return found;},resolve:async()=>{found=true;}});
- await d.worker.tick();assert.deepEqual(sent,[id,id]);assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');assert(!d.events.some(e=>e[0]==='deposit'));
+test('disconnected recipient goes straight to custody without a direct attempt or discovery',async()=>{
+ const f=setup(),id=await f.commands.sendText(b,'hello'),events=[];let sends=0,resolves=0;
+ const d=delivery(f,{connectedPeers:()=>[],send:async()=>{sends++;return false;},resolve:async()=>{resolves++;},deposit:async(peer,raw,key)=>{events.push(key);return true;}});
+ await d.worker.tick();assert.deepEqual(events,[id]);assert.equal(sends,0);assert.equal(resolves,0);assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');
 });
-test('blocking during discovery cancels the direct retry and custody deposit',async()=>{
+
+test('blocking during the connected direct attempt cancels custody fallback',async()=>{
  const f=setup();await f.commands.sendText(b,'hello');let sends=0;
- const d=delivery(f,{send:async()=>{sends++;return false;},resolve:async()=>{await f.ledger.configure(b,{blocked:true});}});
+ const d=delivery(f,{send:async()=>{sends++;await f.ledger.configure(b,{blocked:true});return false;}});
  await d.worker.tick();assert.equal(sends,1);assert(!d.events.some(e=>e[0]==='deposit'));
 });
+
 test('discovery failure does not prevent encrypted custody with an existing identity',async()=>{
  const f=setup();await f.commands.sendText(b,'hello');const d=delivery(f,{resolve:async()=>{throw Error('discovery unavailable');}});
  await d.worker.tick();assert(d.events.some(e=>e[0]==='deposit'));assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');
@@ -137,7 +155,7 @@ test('an offline recipient does not block a newly queued connected conversation'
 test('concurrent recipients remain bounded and a third queued recipient resumes when capacity returns',async()=>{
  const f=setup(),other='axonic:1:'+'d'.repeat(64),ids=[];for(const peer of [b,c,other])ids.push(await f.commands.sendText(peer,'hello'));
  const holds=new Map();let active=0,peak=0;
- const d=delivery(f,{send:async peer=>{active++;peak=Math.max(peak,active);await new Promise(r=>holds.set(peer,r));active--;return true;}});
+ const d=delivery(f,{connectedPeers:()=>[b,c,other],send:async peer=>{active++;peak=Math.max(peak,active);await new Promise(r=>holds.set(peer,r));active--;return true;}});
  for(let i=0;i<3;i++)d.worker.wake([b,c,other][i],ids[i]);
  await until(()=>holds.size===2);assert(!holds.has(other));holds.get(b)();await until(()=>holds.has(other));holds.get(c)();holds.get(other)();
  await until(async()=> (await f.ledger.snapshot()).messages.every(m=>m.status==='delivered'));d.worker.stop();assert.equal(peak,2);
@@ -153,3 +171,9 @@ test('group membership, group text, group reactions and direct edits share ackno
  assert(!d.events.some(e=>e[0]==='resolve'||e[0]==='deposit'));d.worker.stop();
 });
 
+
+test('shared handoff refreshes the whole audience after a direct attempt changes contact policy',async()=>{
+ const f=setup();await f.commands.sendText(b,'selected');await f.commands.sendText(c,'withdrawn');let audience;
+ const d=delivery(f,{connectedPeers:()=>[b],send:async()=>{await f.ledger.configure(c,{blocked:true});return false;},depositGroup:async messages=>{audience=messages.map(m=>m.peer);return true;}});
+ await d.worker.tick();assert.deepEqual(audience,[b]);assert.equal(d.events.filter(e=>e[0]==='deposit').length,0);d.worker.stop();
+});

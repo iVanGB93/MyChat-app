@@ -1,0 +1,46 @@
+Axonic screen design audit — October 13, 2026
+
+Scope: source-level inventory of 60 TSX files in screens, components and
+navigation, including routes and secondary modal surfaces. This is not a claim
+that every screen has been visually exercised on a phone in both themes.
+
+Coverage:
+- Startup, local login, identity creation, backup-word confirmation, recovery,
+  password setup, biometric login and account-locked presentation.
+- Chats, direct conversations, new chat, contact details, blocked identities,
+  call history, outgoing/incoming/connected/ended calls and audio/video options.
+- Create group, group chat, group information, group photo selection, direct
+  and group message information.
+- Profile, account security, recovery-word reveal, identity QR enlargement,
+  received-media settings, storage, network, advanced and delivery diagnostics.
+- Share/forward destination selectors, media review, attachment/message menus,
+  reactions, avatar actions, stickers, sticker creation/preview, photo editing,
+  QR scanning, full-screen media and confirmation dialogs.
+
+Changes:
+- Shared ScreenHeader for full-screen modals, with cyan title on the dark brand
+  header, a 44-point back control, safe-area ownership and optional trailing action.
+- Applied to account security, recovery words, network/delivery diagnostics,
+  group photo selection, stickers, photo editing, share/forward and media review.
+- Replaced fixed diagnostic top padding and undersized modal back controls.
+- Identity lookup now defaults to the current theme and uses the shared Button;
+  delivery diagnostics use themed outline actions and a primary Share Report button.
+- Message-info cards now share rounded neon borders; editor inputs and network
+  cards use the existing palette and borders. Sticker errors use the error token.
+- Message menus use consistent Ionicons instead of mixing emoji and text symbols;
+  attachment/message/sticker backdrops use the shared overlay token.
+- Fixed the malformed reconnecting ellipsis in the call screen.
+
+Specialized surfaces retained intentionally: black/white QR rendering for scanning,
+dark camera/image/video canvases for media visibility, and the branded call layout.
+The native OS file/photo/share/biometric surfaces are controlled by Android.
+
+Validation:
+- Full npm run check passed: TypeScript, unit tests, dependency cycles, module
+  boundaries and consolidation. Log: builds/screen-design-audit-check.log.
+- Focused recovery privacy, photo editing and recipient-picker checks passed;
+  test adapters were updated for the shared header and its trailing Done action.
+- Native changes or rebuilds are unnecessary for these UI edits.
+- Live visual verification remains pending: Metro was unreachable and the ADB
+  device inventory command stalled. No phone/emulator installation, production
+  build, deployment, commit, push or data change was performed for this audit.

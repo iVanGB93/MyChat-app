@@ -39,7 +39,9 @@ export function rootChatView(owner: string, state: RootChatState): RootChatState
    const actor = a.direction === 'outgoing' ? owner : a.peer, old = choices.get(actor);
    if (!old || old.revision < a.revision) choices.set(actor,a);
   }
-  return {...m,text:deleted?'Message deleted':!m.attachment&&edit?edit.text:m.text,deleted,edited:!!edit&&!deleted,
+  const reads=events.filter(a=>a.kind==='read'&&(!m.group||m.direction==='incoming'||a.direction==='incoming'&&a.peer===m.peer));
+  const readAt=m.readAt??(reads.length?Math.min(...reads.map(a=>a.at)):undefined);
+  return {...m,readAt,text:deleted?'Message deleted':!m.attachment&&edit?edit.text:m.text,deleted,edited:!!edit&&!deleted,
    read:m.group?(m.direction==='incoming'?m.read:events.some(a=>a.kind==='read'&&a.direction==='incoming'&&a.peer===m.peer)):events.some(a => a.kind === 'read'),reactions:deleted?[]:[...choices].filter(([,a]) => a.text).map(([author,a]) => ({author,text:a.text}))} as RootChatMessage;
  }).sort((a,b)=>compareRootMessages(a,b,owner))};
 }

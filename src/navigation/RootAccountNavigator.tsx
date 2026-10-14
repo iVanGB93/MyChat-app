@@ -1,3 +1,4 @@
+import {MessageStatusTimes} from '../components/chat/MessageStatusTimes';
 import {useForegroundPoll} from '../hooks/useForegroundPoll';
 import {useMessageStateClock} from '../modules/ui/useMessageStateClock';
 import {messageInfoDescription} from '../modules/messaging';
@@ -136,7 +137,7 @@ import {conversations} from '../modules/messaging';
 
 import type {RootChatState,RootChatMessage} from '../modules/messaging';
 
-import {localAccountCalls} from '../modules/messaging';
+import {localAccountCalls,subscribeLocalAccountCalls} from '../modules/messaging';
 
 import {ensureRootCallPermissions} from '../screens/calls/RootAccountCallScreen';
 
@@ -479,20 +480,39 @@ function BlockedUsers(){const {colors}=useTheme(),{state}=useOwnChat();return <F
 function MessageInfo({route}:Screen<'MessageInfo'>){
  const {colors}=useTheme(),{state}=useOwnChat(),message=state.messages.find(m=>m.peer===route.params.peer&&m.id===route.params.id&&m.direction===route.params.direction),insets=useSafeAreaInsets();
  const tracked=useMemo(()=>message?[message]:[],[message]),now=useMessageStateClock(tracked);
- return <ScrollView style={{flex:1,backgroundColor:colors.background}} contentContainerStyle={{padding:18,paddingBottom:insets.bottom+24,gap:20}}>{message?<><View style={{padding:16,borderRadius:18,backgroundColor:colors.surface,gap:14}}><Text selectable style={{color:colors.text,fontSize:17}}>{message.deleted?'This message was deleted.':message.attachment?.name||message.text}</Text><Text style={{color:colors.textSecondary}}>From</Text><Text style={{color:colors.text}}>{message.direction==='outgoing'?'You':nickname(state,message.peer)}</Text><Text style={{color:colors.textSecondary}}>Created</Text><Text style={{color:colors.text}}>{new Date(message.at).toLocaleString()}</Text><Text style={{color:colors.textSecondary}}>Type</Text><Text style={{color:colors.text}}>{message.attachment?.mime||'Text'}</Text></View><Text style={{color:colors.primary,fontSize:18,fontWeight:'700'}}>{deliveryStatusLabel(rootMessageStatus(message,now))}</Text><Text style={{color:colors.textSecondary}}>{messageInfoDescription(message,now)}</Text></>:<Text style={{color:colors.textSecondary}}>This message is no longer stored on this phone.</Text>}</ScrollView>;
+ return <ScrollView style={{flex:1,backgroundColor:colors.background}} contentContainerStyle={{padding:18,paddingBottom:insets.bottom+24,gap:20}}>{message?<><View style={{padding:16,borderRadius:16,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:colors.surface,gap:14}}><Text selectable style={{color:colors.text,fontSize:17}}>{message.deleted?'This message was deleted.':message.attachment?.name||message.text}</Text><Text style={{color:colors.textSecondary}}>From</Text><Text style={{color:colors.text}}>{message.direction==='outgoing'?'You':nickname(state,message.peer)}</Text><Text style={{color:colors.textSecondary}}>Created</Text><Text style={{color:colors.text}}>{new Date(message.at).toLocaleString()}</Text><Text style={{color:colors.textSecondary}}>Type</Text><Text style={{color:colors.text}}>{message.attachment?.mime||'Text'}</Text></View><Text style={{color:colors.primary,fontSize:18,fontWeight:'700'}}>{deliveryStatusLabel(rootMessageStatus(message,now))}</Text><Text style={{color:colors.textSecondary}}>{messageInfoDescription(message,now)}</Text><MessageStatusTimes message={message} now={now}/></>:<Text style={{color:colors.textSecondary}}>This message is no longer stored on this phone.</Text>}</ScrollView>;
 }
 
 function OutgoingCall({route,navigation}:Screen<'OutgoingCall'>){
 
- const {state}=useOwnChat(),[busy,setBusy]=useState(false),[error,setError]=useState(''),lock=useRef(false),proceed=useRef(false),mounted=useRef(true);
-
- useEffect(()=>()=>{mounted.current=false;},[]);
-
- useEffect(()=>navigation.addListener('beforeRemove',event=>{if(lock.current&&!proceed.current)event.preventDefault();}),[navigation]);
-
- async function start(){if(lock.current)return;lock.current=true;setBusy(true);setError('');try{const contact=state.contacts.find(c=>c.account===route.params.peer);if(contact?.blocked)throw Error('Unblock this identity before calling');const calls=localAccountCalls();if(calls?.snapshot()&&calls.snapshot()?.status!=='ended')throw Error('Finish your current call before starting another.');await startCall(route.params.peer,route.params.kind);if(mounted.current){proceed.current=true;navigation.goBack();}}catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Unable to start call');}finally{lock.current=false;if(mounted.current)setBusy(false);}}
-
- return <OutgoingCallAppearance name={nickname(state,route.params.peer)} kind={route.params.kind} busy={busy} error={error} start={()=>void start()} cancel={()=>{if(!lock.current)navigation.goBack();}}/>;
+ const {state}=useOwnChat(),[busy,setBusy]=useState(false),[finding,setFinding]=useState(false),[error,setError]=useState(''),lock=useRef(false),proceed=useRef(false),mounted=useRef(true),callId=useRef<string|null>(null);
+ const cancel=async()=>{
+  if(lock.current)return;lock.current=true;setBusy(true);
+  try{const id=callId.current;if(id)await localAccountCalls()?.end(id);if(mounted.current){proceed.current=true;navigation.goBack();}}
+  catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Unable to cancel call');}
+  finally{lock.current=false;if(mounted.current)setBusy(false);}
+ };
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+ useEffect(()=>navigation.addListener('beforeRemove',event=>{
+  if(proceed.current)return;if(lock.current){event.preventDefault();return;}
+  if(callId.current){event.preventDefault();void cancel();}
+ }),[navigation]);
+ const update=useCallback((call:ReturnType<NonNullable<ReturnType<typeof localAccountCalls>>['snapshot']>)=>{
+  if(!mounted.current||proceed.current||!callId.current||call?.id!==callId.current)return;
+  if(call.status==='finding'){setFinding(true);return;}
+  setFinding(false);
+  if(call.status==='ended'){callId.current=null;setError(call.reason||'Peer unavailable');return;}
+  proceed.current=true;navigation.goBack();
+ },[navigation]);
+ useEffect(()=>subscribeLocalAccountCalls(update),[update]);
+ async function start(){if(lock.current||callId.current)return;lock.current=true;setBusy(true);setError('');try{
+  const contact=state.contacts.find(c=>c.account===route.params.peer);if(contact?.blocked)throw Error('Unblock this identity before calling');
+  const calls=localAccountCalls();if(calls?.snapshot()&&calls.snapshot()?.status!=='ended')throw Error('Finish your current call before starting another.');
+  const id=await startCall(route.params.peer,route.params.kind);callId.current=id;
+  if(mounted.current){setFinding(true);update(localAccountCalls()?.snapshot()??null);}
+  else void localAccountCalls()?.end(id).catch(()=>{});
+ }catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Unable to start call');}finally{lock.current=false;if(mounted.current)setBusy(false);}}
+ return <OutgoingCallAppearance name={nickname(state,route.params.peer)} kind={route.params.kind} busy={busy} finding={finding} error={error} start={()=>void start()} cancel={()=>void cancel()}/>;
 
 }
 

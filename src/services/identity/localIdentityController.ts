@@ -1,3 +1,5 @@
+import {sealGroupCustody,openGroupCustody,verifyGroupCustodyPayload,type GroupCustodyPayload} from './groupCustodyProtocol';
+import {joinGroupCustodyMessage} from './groupCustodyMessages';
 import {signProfile} from './rootProfileProtocol';
 import { sealCustody, openCustody, verifyCustody, signCustodyReceipt, type CustodyEnvelope } from './custodyProtocol';
 import {signAttachmentManifest,signAttachmentReceipt,type AttachmentManifest} from './attachmentProtocol';
@@ -189,6 +191,10 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         // A lock racing the completed write leaves a cold-unlockable vault under the new password.
       }finally{secret.fill(0);if(verified)destroyIdentity(verified);}
     });},
+    async sealGroupCustody(id:string,text:string,recipients:Parameters<typeof sealGroupCustody>[0]['recipients']){
+      const e=epoch,source=identity;if(!source||busy)throw Error('Unlock the local account first');
+      const result=await sealGroupCustody({...source,id,text,recipients,now:now(),random});assertCurrent(e);if(source!==identity)throw Error('Account operation interrupted');return result;
+    },
     async sealCustody(recipient: IdentityRecord, recipientDevice: string, id: string, text: string) {
       const e = epoch, source = identity; if (!source || busy) throw Error('Unlock the local account first');
       const result = await sealCustody({ ...source, recipient, recipientDevice, id, text, now: now(), random });
@@ -196,11 +202,12 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       try { if (['axonic-root-action-v1','axonic-root-group-action-v1','axonic-avatar-part-v1','axonic-avatar-request-v1'].includes(JSON.parse(text)?.[0])) delete result.wakeSignature; } catch { /* Ordinary text retains its wake. */ }
       assertCurrent(e); if (source !== identity) throw Error('Account operation interrupted'); return result;
     },
-    async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>) {
+    async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>, group?:GroupCustodyPayload) {
       const e = epoch, source = identity; if (!source || busy) return null;
       if (!await verifyCustody(envelope, records, now())) return null;
       assertCurrent(e); if (source !== identity) return null;
-      const text = openCustody(envelope, source.record.account, source.signingSeed, source.encryptionSeed);
+      let text = openCustody(envelope, source.record.account, source.signingSeed, source.encryptionSeed);
+      if(group){if(!await verifyGroupCustodyPayload(group,records,now()))return null;assertCurrent(e);if(source!==identity)return null;const opened=openGroupCustody(group,envelope,text);text=joinGroupCustodyMessage(opened.text,opened.metadata,envelope.recipient,envelope.id);}
       if (!await persist({ from: envelope.sender, id: envelope.id, text })) return null;
       assertCurrent(e); if (source !== identity || envelope.expires <= now()) return null;
       return signCustodyReceipt(envelope, source.signingSeed, source.encryptionSeed);

@@ -1,3 +1,4 @@
+import ScreenHeader from '../ui/ScreenHeader';
 import type {StickerDraftStorage} from '../../services/sticker-draft-store';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, ScrollView, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
@@ -46,12 +47,9 @@ export default function StickerPicker({ ownerId, onClose, onSend, onSendImported
   const stickers = tab === 'All' || tab === 'Axonic' ? [...STICKERS] : ids.flatMap((id) => STICKERS.filter((s) => s.id === id));
   const customVisible = tab === 'All' ? customStickers : tab === 'Favorites' ? customStickers.filter((s) => s.favorite) : tab === 'Recent' ? customStickers.filter((s) => Number.isFinite(s.lastSentAt) && s.lastSentAt! > 0).sort((a, b) => b.lastSentAt! - a.lastSentAt!).slice(0, 24) : [];
   return <Modal visible animationType="slide" onRequestClose={() => { if (!sending.current) onClose(); }}>
-    <View style={{ flex: 1, backgroundColor: c.background, paddingTop: insets.top, paddingBottom: Math.max(insets.bottom, 12) }}>
-      <View style={{ padding: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-        <Text style={{ color: c.text, fontSize: 22, fontWeight: '700' }}>Stickers</Text>
-        <TouchableOpacity disabled={busy} onPress={onClose} accessibilityLabel="Close stickers" style={{ padding: 12 }}><Text style={{ color: c.primary }}>Close</Text></TouchableOpacity>
-      </View>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, gap: 8 }}>
+    <View style={{ flex: 1, backgroundColor: c.background, paddingBottom: Math.max(insets.bottom, 12) }}>
+      <ScreenHeader title="Stickers" backLabel="Close stickers" disabled={busy} onBack={onClose}/>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 16, paddingTop:16,gap: 8 }}>
         {['All', 'Axonic', 'Recent', 'Favorites', 'Create'].filter(name => allowCreate || name !== 'Create').map((name) => <TouchableOpacity disabled={busy} key={name} accessibilityRole="tab" accessibilityState={{ selected: tab === name }} onPress={() => { tabChosen.current = true; setSelected(undefined); setSelectedCustom(undefined); setTab(name); }} style={{ padding: 12, borderRadius: 20, backgroundColor: tab === name ? c.primary : c.surface }}><Text style={{ color: tab === name ? c.textInverse : c.text }}>{name}</Text></TouchableOpacity>)}
       </View>
       {tab === 'Create' ? <StickerStudio draftStorage={draftStorage} ownerId={ownerId} initialUri={initialUri} onBusy={(value) => { sending.current = value; setBusy(value); }} onSaved={() => setTab('All')} /> : <>

@@ -1,5 +1,16 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('crypto');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),random=n=>new Uint8Array(crypto.randomBytes(n));
+test('binary leaf preparation preserves canonical hashes and rejects invalid local bounds',()=>{
+ const native=value=>crypto.createHash('sha256').update(value).digest('hex');
+ for(const length of [17,18,1024,4112])for(const index of [0,1,63999]){
+  const bytes=random(length),wire=Buffer.from(bytes).toString('hex');
+  assert.equal(a.attachmentLeafBytes(index,bytes),a.attachmentLeaf(index,wire));
+  assert.equal(a.attachmentLeafBytes(index,bytes,native),a.attachmentLeaf(index,wire));
+ }
+ for(const index of [-1,0.5,64000])assert.throws(()=>a.attachmentLeafBytes(index,random(17)));
+ for(const length of [0,16,4113])assert.throws(()=>a.attachmentLeafBytes(0,random(length)));
+ assert.throws(()=>a.attachmentLeafBytes(0,random(17),()=> 'bad'));
+});
 test('binary preparation matches the original v1/v2 nonce, AAD and ciphertext serialization',()=>{
  const {xchacha20poly1305}=require('@noble/ciphers/chacha.js');
  const f=fixture(4097);

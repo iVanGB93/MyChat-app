@@ -1,6 +1,13 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function load(path,deps={}){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>deps[n]);return out;}
 const status=load('src/services/identity/rootMessageStatus.ts'),info=load('src/modules/messaging/messageInfoState.ts',{'../../services/identity/rootMessageStatus':status});
+test('status timeline preserves unknown historical times and expired custody evidence',()=>{
+ const legacy={direction:'outgoing',at:1,status:'delivered',read:true};
+ assert.deepEqual(info.messageInfoTimeline(legacy).map(r=>r.at),[undefined,undefined,undefined]);
+ const expired={direction:'outgoing',at:1,status:'pending',storedAt:20,networkStoredUntil:100};
+ const rows=info.messageInfoTimeline(expired,101);assert.equal(rows.find(r=>r.label==='First confirmed Stored').at,20);assert.equal(status.rootMessageStatus(expired,101),'pending');
+ const media={...expired,attachment:{},descriptorReceivedAt:50};assert.equal(info.messageInfoTimeline(media,101).find(r=>r.label==='Message information receipt confirmed').at,50);
+});
 test('private and group incoming media explanations do not claim full-file receipt',()=>{
  const m={status:'pending',attachment:{},direction:'incoming',read:true};assert.match(info.messageInfoDescription(m),/full attachment has not been received/);assert.equal(status.rootMessageStatus(m),'pending');
  assert.match(info.messageInfoDescription({...m,status:'delivered',read:false}),/complete attachment was received/);

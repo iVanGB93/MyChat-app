@@ -25,7 +25,7 @@ export function createDeviceRemoval(d:{read():Promise<string|null>;write(raw:str
   },
  };
 }
-const ownPrefixes=['@axonic_known_neurons_v1:','@axonic_root_chat_v1:','@axonic_root_profile_v1:','@axonic_local_username_v1:','@axonic_attachment_selections_v1:','@axonic_received_exports_v1:','@axonic_sticker_draft_v1:','@axonic_root_notifications_v1:','@axonic_root_notice_actions_v1:'];
+const ownPrefixes=['@axonic_group_outbox_v1:','@axonic_known_neurons_v1:','@axonic_root_chat_v1:','@axonic_root_profile_v1:','@axonic_local_username_v1:','@axonic_attachment_selections_v1:','@axonic_received_exports_v1:','@axonic_sticker_draft_v1:','@axonic_root_notifications_v1:','@axonic_root_notice_actions_v1:'];
 export function deviceRemovalKeys(keys:readonly string[],account:string){
  if(!validAccountId(account))throw Error('Invalid removal account');
  const exact=new Set([...ownPrefixes.map(p=>p+account),'@axonic_stickers:v1:root-'+account.slice(9),'@axonic_imported_stickers:v1:root-'+account.slice(9),
@@ -33,6 +33,7 @@ export function deviceRemovalKeys(keys:readonly string[],account:string){
  return keys.filter(k=>exact.has(k)||k.startsWith('@axonic_root_draft:'+account+':'));
 }
 export const deviceRemovalTables=[
+ ['axonic_group_custody_v1.db','group_custody','owner'],
  ['axonic_own_attachment_jobs_v1.db','jobs','owner'],['axonic_own_attachment_jobs_v1.db','finished_jobs','owner'],
  ['axonic_call_control_v1.db','call_journal','owner'],['axonic_call_control_v1.db','call_history','owner'],
  ['axonic_own_custody_v1.db','own_custody','owner'],['axonic_custody_v1.db','custody','owner'],

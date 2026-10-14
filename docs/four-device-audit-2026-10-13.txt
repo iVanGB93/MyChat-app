@@ -1,0 +1,93 @@
+Four-device stability and performance audit — October 13, 2026
+
+Scope
+Two connected Samsung SM-S948U1 phones using com.axonic.dev, plus emulator-5554
+and emulator-5556 using their existing com.axonic development clients. Both
+official phone installations were untouched. No production build, data wipe,
+phone reinstall or deployment was performed. Existing identities were preserved.
+Native Dev version names differed (1.1.13 and 1.1.14); Metro served current source.
+Concurrent UI work was preserved. These measurements are development samples,
+not a release benchmark or a claim that every feature is bug-free.
+
+Finding 1 — prolonged pending direct message (not fully resolved)
+A labeled synthetic text from the 737378d0 phone runtime to emulator 5556 stayed
+pending throughout the 45-second observation window and subsequent investigation,
+despite a connected peer session. Three other ring-test messages were received
+and acknowledged. The failed packet was accepted by an isolated in-memory copy
+of the recipient ledger; the live recipient callback trace saw no matching
+delivery during its bounded tracing window.
+The sender Dev process was restarted without clearing its data and reconnected
+through its existing Metro launcher entry. Later checks confirmed the same ID
+delivered at both ends. All four test outboxes ended empty. The group-polling
+change also triggered development refreshes, so restart is not isolated proof
+of the underlying cause. Do not label this transport/retry defect fixed.
+Next: expose bounded per-attempt route/phase/timing diagnostics and reproduce the
+stalled session before altering retry timeouts. Keep keys/content out of traces.
+
+Finding 2 — shared-group polling starvation (fixed in development source)
+groupCustodyCourier checked only relays.slice(0,3), permanently ignoring a fourth
+or later relay while ordering remained stable. A valid stored group delivery
+could therefore be missed. The bounded three-peer batch now rotates, deduplicates
+peers, and reaches every currently offered relay across successive passes.
+A regression test stores a valid encrypted grant on the fourth relay, verifies
+decryption and its signed acknowledgement on the second polling pass, and checks
+that duplicate peer entries do not consume an extra slot. All 15 group tests pass.
+The fix is mirrored into Axonic-neuron source and its suite passes. This audit
+did not deploy that newer source to live AoNs or publish an official mobile build.
+
+Delivery measurements
+The three successful ring messages were observed arriving after 4.1–4.4 seconds,
+and acknowledged after 4.5–4.6 seconds. Messages were enqueued sequentially and
+polled afterward, so these are coarse upper bounds, not precise wire latency.
+Enqueue observations were 158–366 ms, including debugger round trips.
+
+Media and navigation
+Two simultaneous 256 KiB synthetic attachments between the Dev phones delivered
+with byte-for-byte SHA-256 matches. Both were first observed complete around
+6.1 seconds while the harness switched Calls/Profile/Chats 18 times.
+No tab was missing and neither transfer failed.
+A separate 1 MiB synthetic file over the observed LAN connection was verified
+complete after 3.752 seconds, including preparation, transport, polling and hash
+verification. This single sample is about 0.27 MiB/s end-to-end, not link capacity.
+Sender aggregate timing after its restart: preparation 903 ms; checkpoints
+121 ms; file reads 70 ms. Recipient timing for this run: 256 writes totaling
+261 ms; three network operations totaling 671 ms; hash verification 3 ms.
+Stages on different devices overlap and must not simply be summed.
+Next speed targets: preparation/copy work and batching local writes, followed
+by repeated same-route trials with stage baselines. Do not increase concurrency
+blindly or weaken integrity/encryption to chase a single throughput sample.
+
+Smoothness
+With messaging/idle activity, phone event-loop p95 delays were 35/29 ms and maxima
+140/67 ms. Emulator 5556 recorded a 2.71-second maximum stall; emulator results
+must not be presented as phone UI measurements.
+During tab navigation plus media, phone event-loop p95 was 23/25 ms and maxima
+122/90 ms. Android gfxinfo counted 16/50 and 18/48 janky frames; both had 34 ms p95
+frame duration. Counts are sparse and device refresh rates affect the threshold.
+Navigation outliers remain: use focused frame traces to separate React/layout,
+image work and native transitions before changing the interface in the UI task.
+Initial Dev process logs showed no fatal JavaScript/Android crash in the sampled
+buffer. This is not proof that no crash occurred outside that buffer.
+
+Notification check
+Sent one labeled test to the second Dev phone while it was on the home screen.
+After 25 seconds, its notification had the sender label and the exact synthetic
+message preview, rather than the generic hint. The Dev app was restored afterward.
+This was a warm background test, not deep idle, process death or a Play Store test.
+
+Validation / final state
+Mobile npm run check: 1,040 passed, 3 optional benchmarks skipped, 0 failures;
+TypeScript, cycles, module boundaries and consolidation passed.
+AoN suite: 169 passed, 0 failed after shared-source sync.
+Final snapshots: all four identities unlocked, five connected peers each,
+push registration reported registered, zero pending outgoing messages.
+Temporary performance timers were stopped; the receive wrapper was restored.
+
+Evidence (ignored local artifacts)
+builds/runs/2026-10-13-four-device-audit/
+  inventory.json, text-and-event-loop.json, navigation-media.json,
+  media-throughput.json, background-notice.json, recovered-text.jsonl,
+  final-state.json, per-phone gfxinfo/memory/logcat samples,
+  automated-check.log, final-check.log, group-poll-tests.log, aon-tests.log.
+Harnesses remain in builds/audit-*.cjs with the retained shared CDP helpers.
+Tests used only synthetic content and the dedicated Dev/emulator identities.

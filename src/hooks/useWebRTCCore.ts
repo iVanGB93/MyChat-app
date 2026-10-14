@@ -1,4 +1,5 @@
 import {deliverCallSignal} from '../services/callSignalRetry';
+import {callCameraPreview} from '../services/callCameraPreview';
 /* ------------------------------------------------------------------ */
 /*  useWebRTC — peer-to-peer audio/video using react-native-webrtc    */
 /*  Mirrors the web app's signaling flow exactly:                      */
@@ -172,6 +173,8 @@ export default function useWebRTCCore({
     if (mediaAcquirePromiseRef.current) return mediaAcquirePromiseRef.current;
 
     mediaAcquirePromiseRef.current = (async () => {
+      await callCameraPreview.stop();
+      if(cleanedUp.current)throw Error('Call ended before acquiring local media');
       const constraints: any = {
         audio: true,
         video: callType === 'video'

@@ -76,6 +76,16 @@ export function decryptAttachmentChunk(m:AttachmentManifest,chunk:AttachmentChun
 export function attachmentLeaf(index:number,ciphertext:string,hashLeaf?:AttachmentLeafHash){
  if(!Number.isSafeInteger(index)||index<0||index>=count(ATTACHMENT_MAX_BYTES)||typeof ciphertext!=='string'
   ||ciphertext.length<34||ciphertext.length>(ATTACHMENT_CHUNK_BYTES+16)*2||!/^(?:[a-f0-9]{2})+$/.test(ciphertext))throw Error('Invalid attachment leaf');
+ return hashAttachmentLeaf(index,ciphertext,hashLeaf);
+}
+/** Locally encrypted bytes need no hex parsing/validation round trip. The
+ * canonical hash input is byte-for-byte identical to the network leaf format. */
+export function attachmentLeafBytes(index:number,ciphertext:Uint8Array,hashLeaf?:AttachmentLeafHash){
+ if(!Number.isSafeInteger(index)||index<0||index>=count(ATTACHMENT_MAX_BYTES)||!(ciphertext instanceof Uint8Array)
+  ||ciphertext.length<17||ciphertext.length>ATTACHMENT_CHUNK_BYTES+16)throw Error('Invalid attachment leaf');
+ return hashAttachmentLeaf(index,bytesToHex(ciphertext),hashLeaf);
+}
+function hashAttachmentLeaf(index:number,ciphertext:string,hashLeaf?:AttachmentLeafHash){
  const fields=['axonic-attachment-leaf-v1',index,ciphertext];
  if(!hashLeaf)return hash(fields);
  const digest=hashLeaf(JSON.stringify(fields));if(!hex(digest,32))throw Error('Invalid attachment hash result');return digest;

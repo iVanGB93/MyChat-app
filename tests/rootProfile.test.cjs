@@ -27,3 +27,34 @@ test('newer avatar/removal wins over delayed older packets and preserves nicknam
 test('request recovers an avatar after all prior packets were delivered without resending unchanged content',async()=>{const {a,b}=await pair();for(const row of chat.pendingRootChat(await a.api.snapshot(),sender))await a.api.delivered(recipient,row.id);await b.api.requestProfile(sender,'a'.repeat(64),image.manifest.hash);let row=chat.pendingRootChat(await b.api.snapshot(),recipient)[0];assert.equal(await a.api.receive(recipient,row.id,row.raw),true);assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,0);await b.api.delivered(sender,row.id);await b.api.requestProfile(sender,'b'.repeat(64),null);row=chat.pendingRootChat(await b.api.snapshot(),recipient)[0];assert.equal(await a.api.receive(recipient,row.id,row.raw),true);assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,p.profileCount(image.manifest));});
 test('unknown users, blocked users and clients without avatar capability are not sent photos',async()=>{const a=ledger(sender);await a.api.publishProfile(image);await a.api.configure(recipient,{accepted:true});assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,0);const b=ledger(recipient),row=p.profilePackets(sender,recipient,image,[])[0];assert.equal(await b.api.receive(sender,row.id,row.raw),false);await b.api.configure(sender,{accepted:true,blocked:true});assert.equal(await b.api.receive(sender,row.id,row.raw),false);});
 test('custody receipt lookup recognizes avatar packets without accepting another recipient or ID',async()=>{const {a}=await pair(),s=await a.api.snapshot(),row=chat.pendingRootChat(s,sender)[0],known=load('rootProfileSharing').knownProfileReceipt;assert.equal(known(s,sender,recipient,row.id),true);assert.equal(known(s,sender,sender,row.id),false);assert.equal(known(s,sender,recipient,'f'.repeat(64)),false);await a.api.delivered(recipient,row.id);assert.equal(known(await a.api.snapshot(),sender,recipient,row.id),true);});
+
+test('modern peers receive no unsolicited image packets; an authenticated request releases the image',async()=>{
+ const {a,b}=await pair();await a.api.rememberProfileOfferPeers([recipient]);assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,0);
+ await b.api.requestProfile(sender,'c'.repeat(64),null);const request=chat.pendingRootChat(await b.api.snapshot(),recipient)[0];
+ assert(await a.api.receive(recipient,request.id,request.raw));assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,p.profileCount(image.manifest));
+ const row=chat.pendingRootChat(await a.api.snapshot(),sender)[0];await a.api.delivered(recipient,row.id);
+ assert(await a.api.receive(recipient,request.id,request.raw));assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,p.profileCount(image.manifest),'lost partial cache can fetch all bytes again');
+});
+test('delayed fetch for an older offer cannot resend the current avatar revision',async()=>{
+ const {a}=await pair();await a.api.rememberProfileOfferPeers([recipient]);
+ const requestId='d'.repeat(64),wire=JSON.stringify(['axonic-avatar-fetch-v1',sender,requestId,{known:null,revision:image.manifest.revision,hash:image.manifest.hash}]);
+ await a.api.publishProfile(p.signProfile(jpeg(2300),now+1,root));
+ assert(await a.api.receive(recipient,requestId,wire));assert.equal(chat.pendingRootChat(await a.api.snapshot(),sender).length,0);
+});
+test('signed offers update matching revisions and removals without bytes and reject rollback/tampering',()=>{
+ const same=p.signProfile(jpeg(2300),now+1,root),removed=p.signProfile(new Uint8Array(),now+2,root);
+ const updated=p.receiveProfileOffer({current:image},sender,same.manifest,now+2);assert.deepEqual(updated.current,same);
+ const cleared=p.receiveProfileOffer(updated,sender,removed.manifest,now+2);assert.deepEqual(cleared.current,removed);
+ assert.equal(p.receiveProfileOffer(cleared,sender,image.manifest,now+2),cleared);
+ assert.equal(p.receiveProfileOffer({},sender,{...image.manifest,hash:'0'.repeat(64)},now),null);
+ assert.equal(p.receiveProfileOffer({},recipient,image.manifest,now),null);
+ const pending=p.receiveProfileOffer({},sender,image.manifest,now);assert.equal(pending.pending.parts.length,p.profileCount(image.manifest));
+});
+test('accepted offer queues one version-bound fetch; unknown or blocked contacts cannot trigger storage',async()=>{
+ let raw=null,called=0;const api=chat.createRootChatLedger({owner:recipient,current:()=>true,now:()=>now,read:async()=>raw,write:async v=>{raw=v;},receiveProfileOffer:async()=>{called++;return {known:null,needed:true};}});
+ const id=p.profileOfferId(sender,recipient,image.manifest),wire=JSON.stringify(['axonic-avatar-offer-v1',recipient,id,image.manifest]);
+ assert.equal(await api.receive(sender,id,wire),false);assert.equal(called,0);
+ await api.configure(sender,{accepted:true});assert(await api.receive(sender,id,wire));assert.equal(chat.pendingRootChat(await api.snapshot(),recipient).length,1);
+ assert(await api.receive(sender,id,wire));assert.equal(chat.pendingRootChat(await api.snapshot(),recipient).length,1);
+ await api.configure(sender,{blocked:true});assert.equal(await api.receive(sender,id,wire),false);assert.equal(called,2);
+});

@@ -21,13 +21,14 @@ function setup(preserveTransparency = false) {
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
     '../../contexts/ThemeContext': { useTheme: () => ({ colors: {} }) },
     './sticker-crop-editor': { default: 'Crop' },
+    '../ui/ScreenHeader': {default:'Header'},
     '../ui/KeyboardForm': {KeyboardFormScrollView:'Scroll',KeyboardAwareTextInput:'Input'},
   };
   const sandbox = { exports: {}, require: (name) => { assert.ok(mocks[name], name); return mocks[name]; } };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 } }).outputText, sandbox);
   const tree = sandbox.exports.default({ uri: 'file:///original.jpg', preserveTransparency, onDraggingChange: (active) => dragging.push(active), onClose() {}, onSave: (image) => saved.push(image) });
   const buttons = [];
-  function visit(node) { if (!node) return; if (Array.isArray(node)) return node.forEach(visit); if (node.type === 'Button') buttons.push(node); if (node.props?.onResponderGrant) canvases.push(node); visit(node.props?.children); }
+  function visit(node) { if (!node) return; if (Array.isArray(node)) return node.forEach(visit); if (node.type === 'Button') buttons.push(node); if (node.props?.onResponderGrant) canvases.push(node); visit(node.props?.children); visit(node.props?.trailing); }
   visit(tree);
   return { calls, saved, dragging, effects, canvas: canvases[0]?.props, press: async (label) => { const button = buttons.find((node) => node.props.children.props.children === label); assert.ok(button); assert.equal(button.props.disabled, false); button.props.onPress(); await new Promise(setImmediate); } };
 }

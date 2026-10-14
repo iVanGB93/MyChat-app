@@ -44,7 +44,7 @@ async function messageChannel(sound:boolean){
 async function alreadyReceived(owner:string,sender:string,id:string){
  const raw=await AsyncStorage.getItem('@axonic_root_chat_v1:'+owner);if(!raw)return false;
  const ledger=JSON.parse(raw);if(ledger.version!==1||!Array.isArray(ledger.messages))throw Error('Chat state unavailable');
- return [...ledger.messages,...(ledger.actions??[]),...(ledger.groupActions??[]),] .some((m:{id:string;peer:string;direction:string})=>m.id===id&&m.peer===sender&&m.direction==='incoming')||(ledger.groupSeen??[]).some((m:{id:string;peer:string})=>m.id===id&&m.peer===sender);
+ return [...ledger.messages,...(ledger.actions??[]),...(ledger.groupActions??[]),...(ledger.removedMessages??[])] .some((m:{id:string;peer:string;direction:string})=>m.id===id&&m.peer===sender&&m.direction==='incoming')||(ledger.groupSeen??[]).some((m:{id:string;peer:string})=>m.id===id&&m.peer===sender);
 }
 /** A stalled account/network startup must not withhold an already authenticated alert. */
 async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>number){
@@ -79,16 +79,24 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  await waitForRecovery(recovery,10000,deadline.remaining);
  await serial(async()=>{
   const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now())return;
-  const database=await db();let admitted=false;
+  const database=await db();let admitted=false,previouslyAlerted=false;
   await database.withExclusiveTransactionAsync(async tx=>{
    await tx.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
    const prior=await tx.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
-   if(prior?.displayed){setStage('already-notified');return;}
+   if(prior?.displayed){previouslyAlerted=prior.displayed===1;setStage('already-notified');return;}
    if(!prior){
     await tx.runAsync('INSERT INTO notices(owner,sender,id,expires) VALUES(?,?,?,?)',owner.account,sender,event.id,event.expires);}
    admitted=true;
   });
-  if(!admitted)return;
+  if(!admitted){
+   // A repeated relay hint may outlive its inbox delivery. Retire only the
+   // matching generic alert; never erase a decrypted preview or a newer hint.
+   if(previouslyAlerted&&await alreadyReceived(owner.account,sender,event.id)){
+    const current=await currentRootMessageNotification(owner.account,sender);
+    if(!current?.data?.messagePreviews)await cancelRootMessageNotification(owner.account,sender,event.id);
+   }
+   return;
+  }
   const id=rootMessageNotificationId(owner.account,sender);
   const suppress=await alreadyReceived(owner.account,sender,event.id)||await rootWakeBlocked(owner.account,sender)||await muted(owner.account,sender);
   if(suppress||AppState.currentState==='active'){

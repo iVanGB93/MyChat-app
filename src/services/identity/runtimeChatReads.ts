@@ -21,12 +21,12 @@ export function createRuntimeChatReads(d:{owner():string|null;revision(owner:str
 }
 
 /** Successful capability persistence is repeated only when owner/peer sets change. */
-export function createPeerCapabilityWriter(d:{owner():string|null;write(profile:string[],timestamp:string[]):Promise<void>}){
+export function createPeerCapabilityWriter(d:{owner():string|null;write(profile:string[],timestamp:string[],group:string[]):Promise<void>}){
  let saved='',busy=false,epoch=0;
- return {clear(){epoch++;saved='';},async update(profile:string[],timestamp:string[]){
+ return {clear(){epoch++;saved='';},async update(profile:string[],timestamp:string[],group:string[]=[]){
   const owner=d.owner();if(!owner||busy)return;
-  const p=[...new Set(profile)].sort(),t=[...new Set(timestamp)].sort(),key=JSON.stringify([owner,p,t]);
+  const p=[...new Set(profile)].sort(),t=[...new Set(timestamp)].sort(),g=[...new Set(group)].sort(),key=JSON.stringify([owner,p,t,g]);
   if(saved===key)return;busy=true;const generation=epoch;
-  try{await d.write(p,t);if(generation===epoch&&d.owner()===owner)saved=key;}finally{busy=false;}
+  try{await d.write(p,t,g);if(generation===epoch&&d.owner()===owner)saved=key;}finally{busy=false;}
  }};
 }

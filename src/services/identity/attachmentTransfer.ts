@@ -1,7 +1,7 @@
 import {createOrderedReadAhead} from './orderedReadAhead.ts';
 import type {DirectAttachmentExpectation} from './directAttachmentStream.ts';
 import {hexToBytes} from '@noble/hashes/utils.js';
-import {attachmentDigest,validAttachmentManifest,verifyAttachmentManifest,verifyAttachmentChunk,decryptAttachmentChunk,
+import {attachmentContentDigest,attachmentDigest,validAttachmentManifest,verifyAttachmentManifest,verifyAttachmentChunk,decryptAttachmentChunk,
  verifyAttachmentReceipt,ATTACHMENT_CHUNK_BYTES,type AttachmentManifest,type AttachmentChunk,type AttachmentReceipt,type AttachmentLeafHash} from './attachmentProtocol.ts';
 import {validAccountId,type IdentityRecord} from './identityProtocol.ts';
 import type {IdentityPeer} from './identityClient.ts';
@@ -150,6 +150,18 @@ export function createAttachmentTransfer(d:{
    const peers=d.peers().filter(p=>(manifest.version!==2||d.sharedPeers?.().includes(p))&&validAccountId(p)&&p!==job.owner&&(job.direction==='incoming'||p!==peer)&&(unavailable.get(job.digest+':'+p)??0)<=d.now()).sort((a,b)=>Number(b===peer)-Number(a===peer)).slice(0,10);
    if(!job.relay||!peers.includes(job.relay)||job.direction==='incoming'&&peers[0]===peer&&job.relay!==peer){
     if(!peers.length)return;
+    if(job.direction==='outgoing'&&manifest.version===2){
+     // All grants for the same encrypted media prefer one custodian. The relay's
+     // shared-prefix check then skips bytes already uploaded by a sibling job.
+     const content=attachmentContentDigest(manifest),siblings=(await d.store.list(job.owner)).filter(v=>v.direction==='outgoing'&&v.descriptor.manifest.version===2&&attachmentContentDigest(v.descriptor.manifest)===content);
+     if(!await live())return;
+     const audience=new Set(siblings.map(v=>v.descriptor.manifest.recipient));
+     const shared=peers.filter(p=>!audience.has(p));
+     const prior=siblings.find(v=>v.relay&&shared.includes(v.relay))?.relay;
+     const chosen=prior??shared[0];
+     if(chosen){peers.splice(peers.indexOf(chosen),1);peers.unshift(chosen);}
+    }
+
     await save({relay:peers[0],phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'?0:job.cursor});
    }
    const relay=job.relay!;

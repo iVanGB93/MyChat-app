@@ -1,3 +1,4 @@
+import ScreenHeader from './ui/ScreenHeader';
 import {KeyboardFormScrollView} from './ui/KeyboardForm';
 import React, {useState} from 'react';
 import {Modal, Text, TouchableOpacity, View} from 'react-native';
@@ -16,13 +17,8 @@ export default function NetworkDiagnostics({lookup}: Pick<React.ComponentProps<t
       <Ionicons name="chevron-forward" size={20} color={colors.textSecondary}/>
     </TouchableOpacity>
     <Modal visible={open} animationType="slide" onRequestClose={() => setOpen(false)}>
-      <View style={{flex: 1, backgroundColor: colors.background, paddingTop: insets.top}}>
-        <View style={{flexDirection: 'row', alignItems: 'center', padding: 16, gap: 16, backgroundColor: colors.headerBg}}>
-          <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to Network" onPress={() => setOpen(false)} hitSlop={8}>
-            <Ionicons name="arrow-back" size={26} color={colors.headerText}/>
-          </TouchableOpacity>
-          <Text accessibilityRole="header" style={{flex: 1, color: colors.headerText, fontSize: 18, fontWeight: '600'}}>Advanced diagnostics</Text>
-        </View>
+      <View style={{flex: 1, backgroundColor: colors.background}}>
+        <ScreenHeader title="Advanced diagnostics" backLabel="Back to Network" onBack={()=>setOpen(false)}/>
         <KeyboardFormScrollView contentContainerStyle={{padding: 18, paddingBottom: insets.bottom + 24}}>
           {open && <IdentityLookup lookup={lookup} color={colors.text} muted={colors.textSecondary} border={colors.border}/>}
         </KeyboardFormScrollView>

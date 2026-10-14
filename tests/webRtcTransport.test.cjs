@@ -21,6 +21,7 @@ function harness(failConfig=false,missing=false,rejectCandidates=false){
   const exports={};
   new Function('require','exports',code)(name=>{
     if(name==='./useWebRTCCore')return loadHook('useWebRTCCore');
+    if(name.includes('callCameraPreview'))return {callCameraPreview:{stop:async()=>{}}};
     if(name==='react')return {useRef:v=>({current:v}),useCallback:f=>f,useEffect:f=>effects.push(f),useState:v=>[v,()=>{}]};
     if(name==='react-native-webrtc')return {RTCPeerConnection:PC,RTCSessionDescription:class {constructor(d){Object.assign(this,d);}},
       RTCIceCandidate:class {constructor(d){Object.assign(this,d);}},mediaDevices:{getUserMedia:async()=>stream}};

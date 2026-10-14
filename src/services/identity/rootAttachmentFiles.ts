@@ -4,7 +4,7 @@ import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
 import {validAccountId,verifyRecord,type IdentityRecord} from './identityProtocol';
-import {attachmentDigest,ATTACHMENT_CHUNK_BYTES,ATTACHMENT_MAX_BYTES,ATTACHMENT_TTL,encryptAttachmentChunkBytes,attachmentLeaf,buildAttachmentTree,verifyAttachmentManifest,type AttachmentManifest} from './attachmentProtocol';
+import {attachmentDigest,ATTACHMENT_CHUNK_BYTES,ATTACHMENT_MAX_BYTES,ATTACHMENT_TTL,encryptAttachmentChunkBytes,attachmentLeafBytes,buildAttachmentTree,verifyAttachmentManifest,type AttachmentManifest} from './attachmentProtocol';
 import {AttachmentFileReset,validAttachmentDescriptor,type AttachmentDescriptor,type AttachmentJob} from './attachmentTransfer';
 import {validAttachmentRange} from './attachmentBatch';
 const pause=()=>new Promise<void>(resolve=>setTimeout(resolve,0));
@@ -119,7 +119,7 @@ export async function prepareRootAttachment(input:{id:string;name:string;mime:st
     checksum?.update(plain);let written=0;
     for(let at=0;at<plain.length;at+=ATTACHMENT_CHUNK_BYTES){
      check(input.current);const index=(offset+at)/ATTACHMENT_CHUNK_BYTES,bytes=encryptAttachmentChunkBytes(fields,index,plain.subarray(at,at+ATTACHMENT_CHUNK_BYTES),key);
-     try{encryptedBytes.set(bytes,written);written+=bytes.length;leaves.push(attachmentLeaf(index,bytesToHex(bytes),Native?.attachmentSha256?value=>Native!.attachmentSha256!(value):undefined));}finally{bytes.fill(0);}
+     try{encryptedBytes.set(bytes,written);written+=bytes.length;leaves.push(attachmentLeafBytes(index,bytes,Native?.attachmentSha256?value=>Native!.attachmentSha256!(value):undefined));}finally{bytes.fill(0);}
     }
     cipherHandle.writeBytes(encryptedBytes);
    }finally{plain.fill(0);encryptedBytes.fill(0);}

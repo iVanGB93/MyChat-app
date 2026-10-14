@@ -1,13 +1,14 @@
 import {withRootSharedFile} from '../../modules/storage';
-import {AttachmentPreviewContent,useAttachmentPreview} from './AttachmentPreview';
+import {useAttachmentPreview} from './AttachmentPreview';
 import React,{createContext,useContext,useRef,useState,useEffect} from 'react';
-import {Modal,Pressable,ScrollView,Text,View} from 'react-native';
+import {Image,Text,View} from 'react-native';
+import {Ionicons} from '@expo/vector-icons';
+import ConversationRecipientPicker from './ConversationRecipientPicker';
 import {useShareIntent} from 'expo-share-intent';
 import {localAccount,shortIdentity} from '../../modules/identity';
 import {conversations,messaging,queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,type RootChatState} from '../../modules/messaging';
 import {sharedItems,sharedBatch} from '../../modules/ui/sharedContent';
 import {useTheme} from '../../contexts/ThemeContext';
-import {chatRoomStyles as styles} from './chat-room-styles';
 
 type Pending={reviewed?:boolean;key:string;items:ReturnType<typeof sharedItems>;batch:ReturnType<typeof sharedBatch>};
 const Context=createContext<null|{pending:React.MutableRefObject<Pending|null>;intent:ReturnType<typeof useShareIntent>}>(null);
@@ -28,7 +29,7 @@ export default function RootSharePicker({onSent}:{onSent(target:string):void}){
  try{if(!pending.current||pending.current.key!==key){const items=sharedItems(intent.shareIntent);pending.current={key,items,batch:sharedBatch(items)};}}catch(e){validation=e instanceof Error?e.message:'Unable to read shared content.';}
  const draft=validation?null:pending.current;
  const close=()=>{if(busy||pending.current?.batch.busy)return;pending.current=null;setSelected('');setError('');intent.resetShareIntent();};
- const choices=[...(state?.contacts??[]).filter(c=>!c.blocked).map(c=>({id:c.account,name:c.alias||shortIdentity(c.account)})),...(state?.groups??[]).filter(g=>g.accepted&&!g.blocked&&g.members.includes(localAccount.status().account!)).map(g=>({id:'group:'+g.id,name:g.name}))];
+ const choices=[...(state?.contacts??[]).filter(c=>!c.blocked).map(c=>({id:c.account,name:c.alias||shortIdentity(c.account)})),...(state?.groups??[]).filter(g=>g.accepted&&!g.blocked&&g.members.includes(localAccount.status().account!)).map(g=>({id:'group:'+g.id,name:g.name,group:true}))];
  const target=draft?.batch.target||selected;
  async function send(){
   if(!draft||!target||busy)return;
@@ -53,14 +54,13 @@ export default function RootSharePicker({onSent}:{onSent(target:string):void}){
   }catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Unable to share. Try again.');}
   finally{if(mounted.current)setBusy(false);}
  }
- return <><Modal visible={!preview.isOpen} transparent animationType="fade" onRequestClose={close}><View style={styles.modalBackdrop}><View accessibilityViewIsModal style={[styles.forwardPanel,{backgroundColor:colors.surface,borderColor:colors.neonBorder}]}>
-  <Text style={[styles.forwardTitle,{color:colors.text}]}>Share to Axonic</Text>
-  <ScrollView style={{maxHeight:320}}>{draft?.items.map((item,i)=>'text' in item?<Text key={i} numberOfLines={3} style={{color:colors.textSecondary,padding:8}}>{item.text}</Text>:<AttachmentPreviewContent key={i} draft={item}/>)}</ScrollView>
-  {!!(error||validation||intent.error)&&<Text accessibilityRole="alert" style={{color:colors.error,padding:12}}>{error||validation||intent.error}</Text>}
-  <ScrollView style={{maxHeight:260}}>{choices.map(c=><Pressable key={c.id} disabled={busy||!!draft?.batch.target} accessibilityRole="radio" accessibilityState={{selected:target===c.id}} onPress={()=>setSelected(c.id)} style={styles.forwardRow}><Text style={[styles.forwardRowText,{color:target===c.id?colors.primary:colors.text}]}>{target===c.id?'✓ ':''}{c.name}</Text></Pressable>)}</ScrollView>
-  {!choices.length&&<Text style={{color:colors.textSecondary,padding:12}}>Start a conversation in Axonic, then share again.</Text>}
-  {!!draft?.batch.completed&&<Text style={{color:colors.textSecondary,padding:8}}>{draft.batch.completed} of {draft.items.length} items queued. Retry continues with the remaining items.</Text>}
-  <Pressable accessibilityLabel="Send shared content" disabled={busy||!target||!draft} onPress={()=>void send()} style={{padding:16,opacity:busy||!target||!draft?0.5:1}}><Text style={{color:colors.primary}}>{busy?'Queuing…':'Send'}</Text></Pressable>
-  <Pressable disabled={busy} onPress={close} style={{padding:16}}><Text style={{color:colors.primary}}>Cancel</Text></Pressable>
- </View></View></Modal>{preview.modal}</>;
+ const first=draft?.items[0],file=first&&!('text' in first)?first:null;
+ const content=first&&'text' in first?first.text:file?.caption||file?.name||'Shared content';
+ const previewContent=draft&&<View style={{flexDirection:'row',alignItems:'center',gap:12}}>
+  {file?.mime.startsWith('image/')?<Image source={{uri:file.uri}} accessibilityLabel="Shared image preview" style={{width:56,height:56,borderRadius:10}}/>:<Ionicons name={file?file.mime.startsWith('video/')?'videocam-outline':file.mime.startsWith('audio/')?'musical-notes-outline':'document-outline':'chatbubble-outline'} size={28} color={colors.primary}/>}
+  <View style={{flex:1,gap:4}}><Text style={{color:colors.primary,fontSize:12,fontWeight:'600'}}>{draft.items.length===1?'SHARED CONTENT':`${draft.items.length} ITEMS TO SHARE`}</Text><Text numberOfLines={2} style={{color:colors.text,fontSize:14}}>{content}</Text></View>
+ </View>;
+ return <><ConversationRecipientPicker visible={!preview.isOpen} title="Share to Axonic" choices={choices} selected={draft?target:''} busy={busy} locked={!!draft?.batch.target} loading={!state&&!error} preview={previewContent}
+  description={draft?.batch.completed?`${draft.batch.completed} of ${draft.items.length} items queued. Retry sends the remaining items.`:'Select a conversation. You can review media before sending.'}
+  error={error||validation||intent.error||undefined} submitLabel="Send" onSelect={setSelected} onSubmit={()=>void send()} onClose={close}/>{preview.modal}</>;
 }

@@ -1,7 +1,9 @@
+import {useTheme} from '../contexts/ThemeContext';
+import Button from './ui/Button';
 import {KeyboardAwareTextInput as TextInput} from './ui/KeyboardForm';
 import {parseIdentityInput} from '../modules/identity';
 import React, { useEffect, useRef, useState } from 'react';
-import { AppState, Pressable, Text, View } from 'react-native';
+import { AppState, Text, View } from 'react-native';
 import { type DirectoryLookupResult } from '../modules/identity';
 const messages: Record<DirectoryLookupResult['status'], string> = {
   found: 'Signed identity verified', conflict: 'Conflicting signed records found. No record selected.',
@@ -11,9 +13,10 @@ const messages: Record<DirectoryLookupResult['status'], string> = {
   unavailable: 'No usable replies. Connect to neurons and try again.', cancelled: 'Lookup interrupted. Try again.',
   busy: 'A lookup is already running.', invalid: 'Enter a complete Axonic identity code.',
 };
-export default function IdentityLookup({ lookup, color = '#e6edf7', muted = '#a2b4c8', border = '#49637f' }: {
+export default function IdentityLookup({ lookup, color:customColor, muted:customMuted, border:customBorder }: {
   lookup(account: string): Promise<DirectoryLookupResult>; color?: string; muted?: string; border?: string;
 }) {
+  const {colors}=useTheme(),color=customColor??colors.text,muted=customMuted??colors.textSecondary,border=customBorder??colors.neonBorder;
   const [account, setAccount] = useState(''), [busy, setBusy] = useState(false), [result, setResult] = useState<DirectoryLookupResult | null>(null);
   const generation = useRef(0), running = useRef(false);
   useEffect(() => {
@@ -32,11 +35,8 @@ export default function IdentityLookup({ lookup, color = '#e6edf7', muted = '#a2
     <Text style={{ color: muted, lineHeight: 22 }}>Ask connected neurons for a signed public identity record.</Text>
     <TextInput accessibilityLabel="Public identity code" placeholder="Paste an ID or identity link…" placeholderTextColor={muted} autoCapitalize="none" autoCorrect={false}
       value={account} maxLength={256} editable={!busy} onChangeText={value => { setAccount(value); setResult(null); }}
-      style={{ color, borderColor: border, borderWidth: 1, borderRadius: 10, padding: 12 }} />
-    <Pressable accessibilityRole="button" disabled={busy || !parseIdentityInput(account)} onPress={() => void find()}
-      style={{ borderColor: border, borderWidth: 1, borderRadius: 10, padding: 14, opacity: busy || !parseIdentityInput(account) ? 0.5 : 1 }}>
-      <Text style={{ color, textAlign: 'center' }}>{busy ? 'Checking neurons…' : 'Find identity'}</Text>
-    </Pressable>
+      style={{ color, borderColor: border, borderWidth: 1, backgroundColor:colors.inputBg,borderRadius: 14, padding: 14,minHeight:48,fontSize:16 }} />
+    <Button title="FIND IDENTITY" loading={busy} disabled={!parseIdentityInput(account)} onPress={()=>void find()}/>
     {result && <View accessibilityLiveRegion="polite" style={{ gap: 8 }}>
       <Text style={{ color, fontWeight: '600' }}>{messages[result.status]}</Text>
       {result.status === 'found' && <Text style={{ color: muted }}>Revision {result.packet?.record.revision} · returned by {result.sources.length} {result.sources.length === 1 ? 'neuron' : 'neurons'}</Text>}

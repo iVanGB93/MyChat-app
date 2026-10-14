@@ -1,0 +1,29 @@
+Video call UI live verification — October 13, 2026
+
+Tested two physical phones, R3GYC0H7PMY and R3GL10CNS1K, using only
+com.axonic.dev and their existing unlocked test identities. Video calls were
+placed and accepted in both directions. Both coordinators reached ready.
+
+Observed on device screenshots:
+- Outgoing and incoming ringing display the local front-camera preview.
+- Accepting hands the camera to connected media successfully.
+- Remote video and self-view render on both devices.
+- Connection status appears directly beneath the self-view, away from buttons.
+- The inner video and outer rounded border remain contained at all four corners.
+- Live quality reported GOOD, 0% loss (6–20 ms in the first call, 11 ms in
+  the second phone's final capture). These observations do not measure audio quality.
+
+The second phone initially ran Dev 1.1.10 and displayed the native audio-output
+update warning. Built a local arm64 debug client with axonicSideBySide=true,
+verified the APK application ID com.axonic.dev, and installed with adb install -r.
+It now runs Dev 1.1.14; its public test account matched before/after installation.
+The final live call no longer displayed the native update warning.
+
+Focused camera, ringing, minimized call and frame tests: 21 passed, zero failed.
+Build log: builds/video-preview-dev-update-build.log.
+Both test calls were ended. Metro remains in the existing managed session.
+Official com.axonic on both physical phones was untouched. No production build,
+data wipe, commit, push or deployment was performed.
+
+ADB server restart restored emulator responsiveness. The second AVD was restarted
+without snapshot loading or data wiping before physical-phone tests became available.

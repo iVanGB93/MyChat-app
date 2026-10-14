@@ -36,6 +36,7 @@ export function createIdentityNetwork(d: {
   let admit: ((candidate: NeuronCandidate, wire: AxonWire) => boolean) | null = null;
   let account: string | null = null, enabled = true, disposed = false, generation = 0;
   const sessions = new Set<Session>();
+  const connectedListeners=new Set<(peer:string)=>void>();
   let signaling: ReturnType<typeof createAxonSignaling> | null = null;
   const sendSignal = (via: string, raw: string) => [...sessions].some(s => s.snapshot().account === via && s.sendSignal(raw));
   const directory = createIntroductionDirectory(d.now);
@@ -85,6 +86,7 @@ export function createIdentityNetwork(d: {
           const link = await session.ready;
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
           if(!incoming){try{d.onConnected?.({...candidate});}catch{/* Locator persistence cannot hold an authenticated socket open. */}}
+          for(const listener of connectedListeners){try{listener(candidate.account);}catch{/* Observers do not own the connection. */}}
           return { peer: link.peer, close };
         } catch { close(); return null; }
         finally { if (!session || session.snapshot().state === 'closed') context.signal.removeEventListener('abort', close); }
@@ -96,6 +98,8 @@ export function createIdentityNetwork(d: {
   const unsubscribe = d.identity.subscribe(reconcile);
   reconcile();
   return {
+    subscribeConnected(listener:(peer:string)=>void){connectedListeners.add(listener);return()=>{connectedListeners.delete(listener);};},
+    profileOfferPeers:()=>[...sessions].filter(s=>s.supportsProfileOffers()).map(s=>s.snapshot().account!).filter(Boolean),
     sendSignal,
     mediaContexts: () => [...sessions].flatMap(s => { const c=s.mediaContext(); return c ? [c] : []; }),
     callMediaRequest(target: string, device: string, raw: string) {
@@ -149,6 +153,7 @@ export function createIdentityNetwork(d: {
     },
     profilePeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsProfileUpdates()).map(s=>s.snapshot().account!).filter(Boolean),
     timestampPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsMessageTimestamps()).map(s=>s.snapshot().account!).filter(Boolean),
+    groupCustodians:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsGroupCustody()).map(s=>s.snapshot().account!).filter(Boolean),
     sharedAttachmentPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsSharedAttachments()).map(s=>s.snapshot().account!).filter(Boolean),
     attachmentPeers(){const ranks={lan:0,private:1,internet:2};return (pool?.snapshot().connections??[]).filter(c=>c.state==='connected'&&[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).sort((a,b)=>ranks[a.route]-ranks[b.route]).map(c=>c.account);},
     attachmentRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.snapshot().state==='connected')?.attachmentRequest(raw)??Promise.resolve(null);},
