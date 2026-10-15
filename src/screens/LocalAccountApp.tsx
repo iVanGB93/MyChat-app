@@ -40,6 +40,7 @@ import { Font, Spacing, Radius } from '../theme';
 
 
 import React, { useEffect, useRef, useState } from 'react';
+import {startDiagnosticLifecycle} from '../modules/maintenance';
 
 import { AppState, Image, Switch, Share, StyleSheet, Text, View } from 'react-native';
 
@@ -53,6 +54,7 @@ import { localAccountNetworkSnapshot, startLocalAccountNetwork } from '../module
 /** Application shell for local identities and the neuron network. */
 
 export default function LocalAccountApp() {
+ useEffect(startDiagnosticLifecycle,[]);
  useEffect(startAppMaintenance,[]);
  useEffect(()=>{
   const ask=()=>void requestInitialNotificationPermission().catch(()=>{});

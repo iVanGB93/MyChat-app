@@ -5,13 +5,13 @@ import { DEFAULT_CUSTODY_LIMITS, validateCustodyRows, type CustodyRow, type Cust
 let opening: Promise<SQLite.SQLiteDatabase> | undefined;
 let tail: Promise<unknown> = Promise.resolve();
 /** Separate temporary relay database; never stores plaintext or private keys. */
-export function createMobileCustodyStore(owner: string): CustodyStore {
+export function createMobileCustodyStore(owner: string): CustodyStore & {inspect():Promise<CustodyRow[]>} {
   if (!validAccountId(owner)) throw Error('Invalid custody owner');
   const db = () => opening ??= SQLite.openDatabaseAsync('axonic_custody_v1.db', { useNewConnection: true }).then(async database => {
     await database.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS custody (owner TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL);');
     return database;
   }).catch(error => { opening = undefined; throw error; });
-  return { transaction<T>(change: (rows: CustodyRow[]) => T): Promise<T> {
+  return {async inspect(){const saved=await(await db()).getFirstAsync<{data:string}>('SELECT data FROM custody WHERE owner=?',owner);if(saved&&saved.data.length>DEFAULT_CUSTODY_LIMITS.bytes)throw Error('Custody store too large');const rows=saved?JSON.parse(saved.data):[];validateCustodyRows(rows);return rows;},transaction<T>(change: (rows: CustodyRow[]) => T): Promise<T> {
     const result = tail.then(async () => {
       let value!: T;
       await (await db()).withExclusiveTransactionAsync(async tx => {

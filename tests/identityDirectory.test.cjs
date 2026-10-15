@@ -77,7 +77,7 @@ test('three distinct replicas persist the owner record and an ordinary replaceme
 });
 
 test('fewer replicas do not block publication; failed storage does not count and another peer is tried',async()=>{
- const c=cluster();c.setPeers(c.hosts.slice(0,2));await c.worker.tick();assert.equal(c.worker.snapshot().confirmed,2);
+ const c=cluster();c.setPeers(c.hosts.slice(0,2));await c.worker.tick();assert.equal(c.worker.snapshot().confirmed,2);assert.equal(c.worker.snapshot().availablePeers,2);assert.equal(c.worker.snapshot().shortfall,1);assert.equal(c.worker.snapshot().reason,'insufficient_connected_directory_peers');
  c.setPeers(c.hosts);c.services.set(c.hosts[2],{receive:async()=>{throw Error('Disk unavailable');}});await c.worker.tick();assert.equal(c.worker.snapshot().confirmed,3);assert.equal(c.stores.get(c.hosts[3]).rows.length,1);
 });
 

@@ -1173,7 +1173,7 @@ test('first-contact custody resolves a signed sender record before decrypting an
  assert.equal(lookups,1);assert.equal(commits,1);assert.ok(await records.read(a.status().account));
  assert.equal(await load('custodyProtocol').verifyCustody(receipt,records,now),true);
  const composition=require('node:fs').readFileSync('src/composition/neuronRuntime.ts','utf8');
- assert.match(composition,/receiveCustody\(envelope,operationalRecords,receiveMessage\)/);
+ assert.match(composition,/receiveCustody\(envelope,operationalRecords,m=>receiveMessage\(m,relay\)\)/);
 });
 
 test('native ticks release queued custody polling when background JS timers are suspended',async t=>{

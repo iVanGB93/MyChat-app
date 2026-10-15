@@ -21,6 +21,7 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.functions.Queues
 
 class AxonicAppUpdateModule : Module() {
+  private var chatStorageRecovery: ChatStorageRecovery? = null
   private var flowPending = false
   private var observedUpdateManager: AppUpdateManager? = null
   private val installListener = InstallStateUpdatedListener { state ->
@@ -42,6 +43,25 @@ class AxonicAppUpdateModule : Module() {
   }
   override fun definition() = ModuleDefinition {
     Name("AxonicAppUpdate")
+    Constants("chatStorageRecoveryAvailable" to ChatStorageRecovery.supported)
+    AsyncFunction("checkChatStorageWrite") { owner: String, bytes: Double ->
+      require(bytes.isFinite() && bytes >= 0 && bytes == bytes.toLong().toDouble())
+      val context = requireNotNull(appContext.reactContext)
+      val store = chatStorageRecovery ?: ChatStorageRecovery(context.getDatabasePath("RKStorage"), java.io.File(context.noBackupFilesDir, "axonic-chat-recovery-v1")).also { chatStorageRecovery = it }
+      store.checkWrite(owner, bytes.toLong())
+    }
+    AsyncFunction("readChatStorage") { owner: String ->
+      val context = requireNotNull(appContext.reactContext)
+      val store = chatStorageRecovery ?: ChatStorageRecovery(context.getDatabasePath("RKStorage"), java.io.File(context.noBackupFilesDir, "axonic-chat-recovery-v1")).also { chatStorageRecovery = it }
+      store.read(owner)
+    }
+    // Invoked only by the explicit remove-account workflow, never normal recovery.
+    AsyncFunction("clearChatRecoverySnapshot") {
+      val context = requireNotNull(appContext.reactContext)
+      val directory = java.io.File(context.noBackupFilesDir, "axonic-chat-recovery-v1")
+      check(!directory.exists() || directory.deleteRecursively()) { "Could not remove recovery snapshot" }
+      chatStorageRecovery = null
+    }
     AsyncFunction("getDiagnosticBuildInfo") {
       val context = requireNotNull(appContext.reactContext)
       @Suppress("DEPRECATION")

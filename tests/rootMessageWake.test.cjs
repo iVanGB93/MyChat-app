@@ -12,12 +12,13 @@ async function fixture(t,options={}){
  const db={execAsync:async sql=>database.exec(sql),runAsync:async(sql,...args)=>database.prepare(sql).run(...args),
  getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
  withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(db);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
- const imports={
+ const imports={'../../modules/storage/chatStore':{ownChatStore:owner=>({read:async()=>storage.get('@axonic_root_chat_v1:'+owner)??null})},
  '../mobileDeliveryDiagnostics':{deliveryDiagnosticEvent:()=>{}},
  '../../../modules/axonic-nearby':{default:{notificationReadActionInShade:async()=>true,...options.native}},
  './rootMessageToast':{publishRootMessageToast:preview=>{toasts.push(preview);return true;}},
  './localAccount':{localAccount:{status:()=>({state:locked?'locked':'unlocked',account:owner?.account})}},
  './rootNotificationRoute':{rootConversationVisible:()=>visible},
+ '../diagnosticJournal':{diagnosticJournal:{record:()=>{}}},
  '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null}},
  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:app},
  '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);options.onChannel?.();},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);onDisplay();},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},

@@ -441,6 +441,25 @@ test('custody wake retry survives forwarder restart and stops on owner change',a
  active=false;f.advance(30000);await forward.tick();assert.equal(calls,3);
 });
 
+test('wake lease hints defer only their gateway and expose local versus remote work without identifiers',async t=>{
+ const f=fixture(t),e=await f.seal();await f.request(f.service(),0,'deposit',e);let peers=['local'];const calls=[];
+ const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,current:()=>true,now:f.now,peers:()=>peers,isLocalPeer:p=>p==='local',request:async p=>{calls.push(p);return JSON.stringify({status:'retry',retryAfterMs:120000});}});
+ await forward.tick();f.advance(30000);await forward.tick();assert.deepEqual(calls,['local']);
+ peers=['local','remote'];f.advance(1000);await forward.tick();assert.deepEqual(calls,['local','remote']);
+ f.advance(89000);await forward.tick();assert.deepEqual(calls,['local','remote','local']);
+ const d=forward.diagnostics();assert.equal(d.work.localGatewayCalls,2);assert.equal(d.work.remoteGatewayCalls,1);assert.equal(d.work.selectedItems,3);assert(d.work.requestPayloadBytes>0);assert.equal(d.pendingSample[0].requests,3);
+ assert(!JSON.stringify(d).includes(e.id));assert(!JSON.stringify(d).includes(e.recipient));assert.equal((await f.store.inspect())[0].packet.kind,'envelope');
+});
+
+test('oversized retry hints are capped and malformed hints preserve the existing retry schedule',async t=>{
+ for(const hint of [-1,'900000',null,NaN,Number.MAX_SAFE_INTEGER]){
+  const f=fixture(t),e=await f.seal();await f.request(f.service(),0,'deposit',e);let calls=0;
+  const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,current:()=>true,now:f.now,peers:()=>['gateway'],request:async()=>{calls++;return JSON.stringify({status:'retry',retryAfterMs:hint});}});
+  await forward.tick();f.advance(30000);await forward.tick();assert.equal(calls,hint===Number.MAX_SAFE_INTEGER?1:2);
+  if(hint===Number.MAX_SAFE_INTEGER){f.advance(870000);await forward.tick();assert.equal(calls,2);}
+ }
+});
+
 test('new message wakes bypass a large backlog while oldest work retains a fair turn',async t=>{
  const f=fixture(t),packets=[];
  for(let i=0;i<120;i++)packets.push(await f.seal('backlog '+i));

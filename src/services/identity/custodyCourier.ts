@@ -13,10 +13,10 @@ export function createCustodyCourier(d: {
   own: OwnCustodyStore; messages?: TestMessageStore; relays(): string[];
   /** Normal-chat adapter must durably apply the verified receipt before relay consumption. */
   held?(envelope:CustodyEnvelope):Promise<void>;
-  confirmReceipt?(receipt: CustodyReceipt, current: () => boolean): Promise<boolean>;
+  confirmReceipt?(receipt: CustodyReceipt, current: () => boolean, relay:string): Promise<boolean>;
   request(relay: string, raw: string): Promise<string | null>;
   seal(record: IdentityRecord, device: string, id: string, text: string): Promise<CustodyEnvelope>;
-  receive(envelope: CustodyEnvelope): Promise<CustodyReceipt | null>;
+  receive(envelope: CustodyEnvelope, relay:string): Promise<CustodyReceipt | null>;
 }) {
   let epoch = 0, stopped = false, resumeUntil = 0;
   const depositing = new Set<string>();
@@ -117,7 +117,7 @@ export function createCustodyCourier(d: {
                 skip.ids.push(packet.id); continue;
               }
               let receipt:CustodyReceipt|null=null;
-              try { receipt=await d.receive(packet); }
+              try { receipt=await d.receive(packet, relay); }
               catch { if(l.current())defer(packet.id);continue; }
               if(!receipt&&l.current()){defer(packet.id);continue;}
               if (receipt && l.current()) accepted = (await request(relay, { operation: 'receipt', packet: receipt }))?.status === 'accepted';
@@ -129,7 +129,7 @@ export function createCustodyCourier(d: {
               if (!l.current())continue;
               if (!e || packet.digest !== custodyDigest(e) || packet.recipient !== e.recipient || packet.recipientDevice !== e.recipientDevice || packet.expires !== e.expires) {defer(packet.id);continue;}
               if (d.confirmReceipt) {
-                if (!await d.confirmReceipt(packet, l.current)) {if(l.current())defer(packet.id);continue;}
+                if (!await d.confirmReceipt(packet, l.current, relay)) {if(l.current())defer(packet.id);continue;}
                 if (!l.current()) continue;
               } else {
                 const row = (await d.messages?.list(l.owner!) ?? []).find(r => r.direction === 'out' && r.id === packet.id && r.peer === packet.recipient);

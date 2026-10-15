@@ -1,6 +1,16 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function load(path,deps={}){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>deps[n]);return out;}
 const status=load('src/services/identity/rootMessageStatus.ts'),info=load('src/modules/messaging/messageInfoState.ts',{'../../services/identity/rootMessageStatus':status});
+test('route display distinguishes receipt paths, payload sources and unknown media',()=>{
+ const legacy={direction:'outgoing',status:'delivered',attachment:{}};
+ assert.equal(info.messageInfoRoutes(legacy).length,2);
+ assert(info.messageInfoRoutes(legacy).every(r=>r.value.startsWith('Unknown')));
+ const m={...legacy,messageDelivery:{version:1,method:'custody',scope:'receipt',relays:['relay-id'],at:100,partial:false}};
+ const rows=info.messageInfoRoutes(m);assert.match(rows[0].value,/original payload route unknown/);assert.match(rows[0].value,/relay-id/);assert.match(rows[1].value,/Unknown/);
+ m.attachmentDelivery={...m.messageDelivery,scope:'payload',method:'mixed',partial:true};
+ assert.match(info.messageInfoRoutes(m)[1].value,/Peer connection and relay custody/);
+ assert.match(info.messageInfoRoutes(m)[1].value,/Partial observation/);
+});
 test('status timeline preserves unknown historical times and expired custody evidence',()=>{
  const legacy={direction:'outgoing',at:1,status:'delivered',read:true};
  assert.deepEqual(info.messageInfoTimeline(legacy).map(r=>r.at),[undefined,undefined,undefined]);

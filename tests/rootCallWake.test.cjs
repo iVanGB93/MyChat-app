@@ -14,6 +14,7 @@ function fixture(){
   withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(db);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const native={displayNotification:async n=>shown.push(n),cancelNotification:async id=>cancelled.push(id)};
  const imports={
+  '../../modules/storage/chatStore':{ownChatStore:owner=>({read:async()=>storage.get('@axonic_root_chat_v1:'+owner)??null})},
   '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null,setItem:async(k,v)=>storage.set(k,v)}},
   'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'}},
   '@notifee/react-native':{default:native,AndroidCategory:{CALL:'call'},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0}},

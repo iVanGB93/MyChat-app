@@ -1,3 +1,4 @@
+import {deliveryEvidence,validDeliveryEvidence,type DeliveryEvidence} from './deliveryEvidence.ts';
 import {createOrderedReadAhead} from './orderedReadAhead.ts';
 import type {DirectAttachmentExpectation} from './directAttachmentStream.ts';
 import {hexToBytes} from '@noble/hashes/utils.js';
@@ -18,6 +19,8 @@ export interface AttachmentJob {
  version:1;owner:string;digest:string;direction:'outgoing'|'incoming';descriptor:AttachmentDescriptor;
  revision:number;phase:AttachmentPhase;cursor:number;relay:string|null;next:number;failures:number;receipt:AttachmentReceipt|null;
  custodians:string[];acknowledged:string[];
+ /** Verified byte sources, not offered custodians. Missing means legacy/unknown prefix. */
+ receivedSources?:string[];sourceCoverage?:boolean;delivery?:DeliveryEvidence;
 }
 export interface AttachmentJobStore {
  /** Move finished legacy rows out of the bounded work queue without deleting own receipts or files. */
@@ -44,6 +47,9 @@ export function validAttachmentJob(job:unknown):job is AttachmentJob {
   ||!Number.isSafeInteger(j.revision)||j.revision<0||!Number.isSafeInteger(j.cursor)||j.cursor<0||j.cursor>total(j)
   ||!['queued','uploading','downloading','confirming','complete','expired','cancelled'].includes(j.phase)
   ||!Number.isSafeInteger(j.next)||j.next<0||!Number.isSafeInteger(j.failures)||j.failures<0||j.failures>32
+  ||j.receivedSources!==undefined&&(!Array.isArray(j.receivedSources)||j.receivedSources.length>10||j.receivedSources.some(p=>!validAccountId(p))||new Set(j.receivedSources).size!==j.receivedSources.length)
+  ||j.sourceCoverage!==undefined&&typeof j.sourceCoverage!=='boolean'
+  ||j.delivery!==undefined&&!validDeliveryEvidence(j.delivery)
   ||j.relay!==null&&!validAccountId(j.relay)
   ||!Array.isArray(j.custodians)||j.custodians.length>10||j.custodians.some(p=>!validAccountId(p))||new Set(j.custodians).size!==j.custodians.length
   ||!Array.isArray(j.acknowledged)||j.acknowledged.some(p=>!j.custodians.includes(p))||new Set(j.acknowledged).size!==j.acknowledged.length)return false;
@@ -212,8 +218,9 @@ export function createAttachmentTransfer(d:{
     const recipient=await d.record(manifest.recipient);
     if(r.status!=='completed'||!recipient||!verifyAttachmentReceipt(r.receipt,manifest,recipient,d.now()))throw Error('No verified attachment receipt');
     if(!await live())return;
-    await publish({...job,receipt:r.receipt},current);if(!await live())return;
-    await save({receipt:r.receipt,phase:'complete',next:0,failures:0});return;
+    await save({receipt:r.receipt,delivery:deliveryEvidence('receipt',d.now(),relay),next:0,failures:0});
+    await publish(job,current);if(!await live())return;
+    await save({phase:'complete'});return;
    }
    if(job.cursor<total(job)&&relay===manifest.sender&&d.directStream
      &&(streamRetry.get(job.digest)??0)<=d.now()){
@@ -232,7 +239,7 @@ export function createAttachmentTransfer(d:{
      const custodians=[...new Set([...job.custodians,relay])];
      if(custodians.length>10)throw Error('Too many attachment sources');
      // A crash here is safe: the normal final hash check runs again after restart.
-     await save({cursor:total(job),custodians,next:0,failures:0});
+     await save({cursor:total(job),custodians,receivedSources:[relay],sourceCoverage:true,next:0,failures:0});
     }
    }
    if(job.cursor<total(job)){
@@ -283,7 +290,7 @@ export function createAttachmentTransfer(d:{
      // Files are written at fixed offsets. A crash before this checkpoint safely
      // replays at most one bounded burst; a failed chunk preserves its verified prefix.
      await reads?.stop();
-     if(verifiedCursor>start&&await live())await save({cursor:verifiedCursor,custodians,next:0,failures:0});
+     if(verifiedCursor>start&&await live())await save({cursor:verifiedCursor,custodians,receivedSources:[...new Set([...(job.receivedSources??[]),relay])].slice(0,10),sourceCoverage:start===0||job.sourceCoverage===true,next:0,failures:0});
     }
     // Finish a fully written file in this turn instead of waiting for another
     // scheduler pass. Partial windows still yield to the other transfer jobs.
@@ -293,7 +300,9 @@ export function createAttachmentTransfer(d:{
     await d.commitFile(job,current);if(!await live())return;
     const receipt=await d.signReceipt(manifest),recipient=await d.record(manifest.recipient);
     if(!recipient||!verifyAttachmentReceipt(receipt,manifest,recipient,d.now())||!await live())return;
-    await save({receipt,phase:'confirming'});
+    const sources=job.receivedSources??[],relays=sources.filter(p=>p!==manifest.sender);
+    const delivery:DeliveryEvidence|undefined=sources.length?{version:1,scope:'payload',method:relays.length?(sources.includes(manifest.sender)?'mixed':'custody'):'peer',relays,at:d.now(),partial:job.sourceCoverage!==true}:undefined;
+    await save({receipt,phase:'confirming',...(delivery?{delivery}:{})});
     // Persist the verified receipt before publishing. Remote receipt cleanup
     // remains resumable and does not delay showing the locally verified file.
     if(await live())await publish(job,current);
@@ -306,7 +315,7 @@ export function createAttachmentTransfer(d:{
    // Repeated unavailability still backs off; malformed data retains the ban.
    const cooldown=error instanceof AttachmentSourceUnavailable?delay:Math.max(10000,delay);
    if(job.relay){if(unavailable.size>=128)unavailable.clear();unavailable.set(job.digest+':'+job.relay,d.now()+cooldown);}
-   await save({relay:null,phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'||error instanceof AttachmentFileReset?0:job.cursor,failures,next:d.now()+delay}).catch(()=>{});
+   await save({relay:null,phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'||error instanceof AttachmentFileReset?0:job.cursor,...(error instanceof AttachmentFileReset?{receivedSources:[],sourceCoverage:true}:{}),failures,next:d.now()+delay}).catch(()=>{});
   }
  }
  return {
@@ -368,7 +377,7 @@ export function createAttachmentTransfer(d:{
      if(!current()||m.expires<=d.now()||latest.direction!=='outgoing'||['cancelled','expired'].includes(latest.phase)
       ||attachmentDescriptorFingerprint(latest.descriptor)!==fingerprint)return reply('unavailable');
      if(latest.receipt)return reply('completed');
-     if(await d.store.save({...latest,revision:latest.revision+1,receipt:input.receipt,next:0},latest.revision,current))return reply('completed');
+     if(await d.store.save({...latest,revision:latest.revision+1,receipt:input.receipt,delivery:deliveryEvidence('receipt',d.now()),next:0},latest.revision,current))return reply('completed');
      const refreshed=await d.store.get(owner,input.digest);if(!refreshed)return reply('unavailable');latest=refreshed;
     }
     return reply('unavailable');

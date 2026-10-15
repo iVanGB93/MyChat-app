@@ -1,0 +1,37 @@
+import React,{useEffect,useState} from 'react';
+import {Text,TouchableOpacity,View} from 'react-native';
+import {useIsFocused} from '@react-navigation/native';
+import {useTheme} from '../contexts/ThemeContext';
+import {useForegroundPoll} from '../hooks/useForegroundPoll';
+import {localAccountRelayInventory,subscribeRelayInventoryAccess,localAccountWakeDiagnostics} from '../modules/network';
+import {relayPacketDetails,type RelayInventory} from '../services/identity/relayInventory';
+
+export default function RelayInventoryPanel(){
+ const {colors}=useTheme(),focused=useIsFocused();
+ const [data,setData]=useState<RelayInventory|null>(null),[error,setError]=useState(''),[page,setPage]=useState(0),[expanded,setExpanded]=useState<string|null>(null);
+ const [wake,setWake]=useState<ReturnType<typeof localAccountWakeDiagnostics>>(null),[showWake,setShowWake]=useState(false);
+ useForegroundPoll(()=>setWake(localAccountWakeDiagnostics()),10000,focused);
+ useEffect(()=>subscribeRelayInventoryAccess(()=>{setData(null);setWake(null);setExpanded(null);setPage(0);}),[]);
+ useForegroundPoll(async current=>{try{const next=await localAccountRelayInventory();if(current()){setData(next);setError(next?'':'Unlock your account to inspect relay storage.');}}catch{if(current()){setData(null);setError('Relay storage could not be read. No records were changed.');}}},10000,focused);
+ const rows=data?.rows??[],last=Math.max(0,Math.ceil(rows.length/50)-1),selected=Math.min(page,last),visible=rows.slice(selected*50,(selected+1)*50);
+ const text={color:colors.textSecondary},button={padding:12,borderWidth:1,borderColor:colors.border,borderRadius:10};
+ return <View style={{marginTop:24,gap:12}}>
+  <Text accessibilityRole="header" style={{color:colors.text,fontSize:20,fontWeight:'700'}}>Packets held for others</Text>
+  <TouchableOpacity accessibilityRole="button" accessibilityState={{expanded:showWake}} onPress={()=>setShowWake(!showWake)}><Text style={{color:colors.primary}}>Wake work breakdown · {showWake?'Hide':'Show'}</Text></TouchableOpacity>
+  {showWake&&<><Text style={text}>Private and group message wakes only. Local scheduler checks are not network requests. Gateway acceptance is not phone delivery. Counters cover this runtime; tracked items are current gauges.</Text><Text selectable style={text}>{wake?JSON.stringify(wake,null,2):'No active wake scheduler.'}</Text></>}
+  <Text style={text}>Local relay storage only—not your own messages or a network-wide view. Metadata only; no content, keys or tokens. Refreshes every 10 seconds while visible.</Text>
+  <Text style={text}>Includes envelopes, receipts, group grants, media and the temporary call-control cache. Media chunks are grouped by content digest and counted once. Cleanup markers contain no payload. Identity caches and live audio/video streams are not stored message packets.</Text>
+  {error?<Text accessibilityRole="alert" style={text}>{error}</Text>:!data?<Text style={text}>Reading relay storage…</Text>:<>
+   <Text style={text}>{rows.length} metadata entries · Observed {new Date(data.observedAt).toLocaleTimeString()}</Text>
+   {!rows.length&&<Text style={text}>No packets or cleanup markers held for other users.</Text>}
+   {visible.map(r=><View key={r.key} style={{padding:12,borderWidth:1,borderColor:colors.border,borderRadius:12,gap:6}}>
+    <TouchableOpacity accessibilityRole="button" accessibilityState={{expanded:expanded===r.key}} onPress={()=>setExpanded(expanded===r.key?null:r.key)}>
+     <Text style={{color:colors.text,fontWeight:'600'}}>{r.kind}</Text><Text style={text}>{r.state} · {r.storage==='disk'?'Persistent storage':'Temporary memory'}</Text>
+     <Text style={text}>{r.id.slice(0,12)}… · {expanded===r.key?'Hide':'Show'} metadata</Text>
+    </TouchableOpacity>
+    {expanded===r.key&&relayPacketDetails(r).map(v=><View key={v.label}><Text style={text}>{v.label}</Text><Text selectable style={{color:colors.text}}>{v.value}</Text></View>)}
+   </View>)}
+   {rows.length>50&&<View style={{flexDirection:'row',alignItems:'center',gap:12}}><TouchableOpacity accessibilityRole="button" disabled={!selected} style={button} onPress={()=>setPage(selected-1)}><Text style={text}>Previous</Text></TouchableOpacity><Text style={text}>{selected+1} / {last+1}</Text><TouchableOpacity accessibilityRole="button" disabled={selected===last} style={button} onPress={()=>setPage(selected+1)}><Text style={text}>Next</Text></TouchableOpacity></View>}
+  </>}
+ </View>;
+}

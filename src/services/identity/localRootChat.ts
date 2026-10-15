@@ -1,4 +1,5 @@
 import {storeSharedAvatarPart,storeSharedAvatarOffer} from '../../modules/storage/sharedProfileStore';
+import {diagnosticJournal} from '../diagnosticJournal';
 import {publishRootMessageFeedback} from './rootMessageFeedback';
 import {ownChatStore} from '../../modules/storage/chatStore';
 import {captureDeliveryState,clearDeliveryCapture,mobileDeliveryDiagnostics} from '../mobileDeliveryDiagnostics';
@@ -8,7 +9,7 @@ import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {verifyAttachmentManifest,verifyAttachmentReceipt} from './attachmentProtocol';
 const ledgers=new Map<string,ReturnType<typeof createRootChatLedger>>();
 let diagnosticOwner=localAccount.status().account;
-localAccount.subscribe(()=>{const status=localAccount.status();if(status.account!==diagnosticOwner||status.removalPending)clearDeliveryCapture();diagnosticOwner=status.account;});
+localAccount.subscribe(()=>{const status=localAccount.status();if(status.account!==diagnosticOwner||status.removalPending||status.state!=='unlocked')clearDeliveryCapture();if(status.account!==diagnosticOwner||status.removalPending||status.state!=='unlocked')diagnosticJournal.clear();diagnosticOwner=status.account;});
 const queuedListeners=new Set<(owner:string,peer:string,id:string)=>void>();
 const profileListeners=new Set<()=>void>();
 export function subscribeRootProfileChanges(listener:()=>void){profileListeners.add(listener);return()=>{profileListeners.delete(listener);};}
@@ -22,6 +23,7 @@ export function localRootChat(){
    receiveProfileOffer:(peer,manifest)=>storeSharedAvatarOffer(owner,peer,manifest,()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner),
    write:async raw=>{await store.write(raw);try{if(mobileDeliveryDiagnostics.active())captureDeliveryState(owner,JSON.parse(raw));}catch{/* Diagnostics must never invalidate a committed message. */}},
    messageCommitted:(m,state)=>{
+    diagnosticJournal.record(m.direction==='incoming'?'message_committed_incoming':'message_committed_outgoing');
     // Outgoing attachment feedback occurs when selections are staged, before deferred preparation.
     if(m.direction==='outgoing'&&m.attachment)return;
     const muted=m.group?state.groups?.find(g=>g.id===m.group!.id)?.muted:state.contacts.find(c=>c.account===m.peer)?.muted;

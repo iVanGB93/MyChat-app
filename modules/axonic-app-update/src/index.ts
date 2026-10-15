@@ -19,6 +19,10 @@ export interface PlayUpdateInfo {
 }
 
 interface AxonicAppUpdateNativeModule {
+  chatStorageRecoveryAvailable?: boolean;
+  checkChatStorageWrite?: (owner:string,bytes:number)=>Promise<void>;
+  readChatStorage?: (owner:string)=>Promise<string|null>;
+  clearChatRecoverySnapshot?: ()=>Promise<void>;
   getDiagnosticBuildInfo?:()=>Promise<{applicationId:string;versionName:string|null;versionCode:string}>;
   getKeyboardOverlap?: (viewTag:number)=>Promise<{visible:boolean;overlap:number}|null>;
   addListener?: (event: string, listener: (state: { installStatus: number }) => void) => { remove(): void };
@@ -28,6 +32,10 @@ interface AxonicAppUpdateNativeModule {
 }
 
 const nativeModule = requireOptionalNativeModule<AxonicAppUpdateNativeModule>('AxonicAppUpdate');
+export const supportsChatStorageRecovery=()=>nativeModule?.chatStorageRecoveryAvailable!==false&&typeof nativeModule?.readChatStorage==='function';
+export const checkNativeChatWrite=async(owner:string,bytes:number)=>{if(supportsChatStorageRecovery())await nativeModule?.checkChatStorageWrite?.(owner,bytes);};
+export const clearChatRecoverySnapshot=async()=>{await nativeModule?.clearChatRecoverySnapshot?.();};
+export const readNativeChatStorage=(owner:string)=>{if(!nativeModule?.readChatStorage)throw Error('Chat recovery requires an updated native build');return nativeModule.readChatStorage(owner);};
 export async function getDiagnosticBuildInfo(){try{return await nativeModule?.getDiagnosticBuildInfo?.()??null;}catch{return null;}}
 export const supportsKeyboardOverlap=()=>typeof nativeModule?.getKeyboardOverlap==='function';
 export async function getKeyboardOverlap(viewTag:number){

@@ -84,6 +84,16 @@ test('connection quality sits beneath self-view and never above video call butto
  const quality=find(self,n=>n.props.testID==='axonic-call-connection-quality');assert(quality);
  assert(find(quality,n=>n.props.children?.includes('GOOD')));
  assert(!find(layout,n=>n.props.testID==='axonic-call-connection-quality'),'call actions contain no duplicate quality indicator');
+ assert.equal(find(find(tree,n=>n.props.testID==='axonic-minimize-call'),n=>n.type==='Icon').props.name,'chevron-forward');
+ find(layout.props.background,n=>n.props.accessibilityLabel==='Hide call controls').props.onPress();
+ tree=f.render(owner.type,owner.props);layout=find(tree,n=>n.type==='CallLayout');
+ assert.equal(layout.props.show,false);assert(!find(tree,n=>n.props.testID==='axonic-minimize-call'));
+ assert(!find(layout.props.background,n=>n.props.testID==='axonic-call-connection-quality'));
+ assert(find(layout.props.background,n=>n.props.testID==='axonic-call-self-view'),'self-view remains visible');
+ find(layout.props.background,n=>n.props.accessibilityLabel==='Show call controls').props.onPress();
+ tree=f.render(owner.type,owner.props);layout=find(tree,n=>n.type==='CallLayout');
+ assert.equal(layout.props.show,true);assert(find(tree,n=>n.props.testID==='axonic-minimize-call'));
+ assert(find(layout.props.background,n=>n.props.testID==='axonic-call-connection-quality'));
  f.call.media='voice';tree=f.render(owner.type,owner.props);assert(!find(find(tree,n=>n.type==='CallLayout').props.background,n=>n.props.testID==='axonic-call-self-view'));
 });
 

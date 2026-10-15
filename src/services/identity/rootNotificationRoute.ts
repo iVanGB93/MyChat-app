@@ -24,7 +24,7 @@ export async function pendingRootNotificationOpen(account:string){
  const target=rootNotificationTarget({type:'root_neuron_message',...JSON.parse(raw)});if(target?.account!==account)return null;
  if(!target.hintId)return target;
  // A signed wake identifies a delivery, not its conversation or unread status.
- const saved=await AsyncStorage.getItem('@axonic_root_chat_v1:'+account);
+ const saved=await ownChatStore(account).read();
  const state=saved?JSON.parse(saved):null;
  const message=state?.version===1&&Array.isArray(state.messages)?state.messages.find((m:{id:string;peer:string;direction:string})=>m.id===target.hintId&&m.peer===target.sender&&m.direction==='incoming'):null;
  if(!message||message.read||message.deleted)return {...target,inbox:true};
@@ -35,3 +35,4 @@ export async function pendingRootNotificationOpen(account:string){
  return {...target,...(group?{group}:{} )};
 }
 export async function finishRootNotificationOpen(){await AsyncStorage.removeItem(KEY);}
+import {ownChatStore} from '../../modules/storage/chatStore';

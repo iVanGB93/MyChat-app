@@ -33,7 +33,7 @@ export {createRootVoiceRecorder,rootVoiceRecordingActive} from '../../services/i
 export {startRootCallLease,stopRootCallLease,markRootCallConnected,rootCallMayRunBackground} from '../../services/identity/rootCallLifetime';
 
 export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';
-export {mobileDeliveryDiagnostics,startDeliveryCapture,clearDeliveryCapture} from '../../services/mobileDeliveryDiagnostics';
+export {mobileDeliveryDiagnostics,clearDeliveryCapture} from '../../services/mobileDeliveryDiagnostics';
 
 export {peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';
 

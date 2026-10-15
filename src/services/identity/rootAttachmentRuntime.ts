@@ -34,16 +34,28 @@ let selectionsTail:Promise<unknown>=Promise.resolve();
 const key=(owner:string)=>'@axonic_attachment_selections_v1:'+owner;
 async function selections(owner:string):Promise<Selection[]>{const raw=await AsyncStorage.getItem(key(owner)),rows=raw?JSON.parse(raw):[];
  if(!Array.isArray(rows)||rows.length>64||rows.some(r=>r.createdAt!==undefined&&(!Number.isSafeInteger(r.createdAt)||r.createdAt<0||r.createdAt>8640000000000000)||r.shared!==undefined&&(!/^[a-f0-9]{64}$/.test(r.shared.id)||!Number.isSafeInteger(r.shared.count)||r.shared.count<2||r.shared.count>9||!Number.isSafeInteger(r.shared.slot)||r.shared.slot<0||r.shared.slot>=r.shared.count)||!/^[a-f0-9]{64}$/.test(r.id)||!validAccountId(r.peer)||typeof r.name!=='string'||r.name.length>120||typeof r.mime!=='string'||r.mime.length>100||typeof r.failed!=='boolean'||r.caption!==undefined&&(typeof r.caption!=='string'||new TextEncoder().encode(r.caption).length>1600)||r.reply!==undefined&&!(r.group?validGroupReply(r.reply):validRootReply(r.reply,owner,r.peer))||r.group!==undefined&&!validGroupContext(r.group)))throw Error('Invalid attachment selections');return rows;}
-function changeSelections(owner:string,change:(rows:Selection[])=>void){const work=selectionsTail.then(async()=>{const rows=await selections(owner);change(rows);await AsyncStorage.setItem(key(owner),JSON.stringify(rows));});selectionsTail=work.catch(()=>{});return work;}
-export async function queueRootAttachmentSource(peer:string,uri:string,name:string,mime='application/octet-stream',expectedOwner?:string,reply?:RootChatReply,caption?:string){
+function changeSelections(owner:string,change:(rows:Selection[])=>void|Promise<void>){const work=selectionsTail.then(async()=>{const rows=await selections(owner);await change(rows);await AsyncStorage.setItem(key(owner),JSON.stringify(rows));});selectionsTail=work.catch(()=>{});return work;}
+export async function queueRootAttachmentSource(peer:string,uri:string,name:string,mime='application/octet-stream',expectedOwner?:string,reply?:RootChatReply,caption?:string,diagnosticId?:string){
  const owner=localAccount.status().account;if(!owner||expectedOwner&&owner!==expectedOwner||!validAccountId(peer)||peer===owner)throw Error('Choose a valid peer identity');
  if(reply!==undefined&&!validRootReply(reply,owner,peer))throw Error('Invalid reply');
  if(caption!==undefined&&(typeof caption!=='string'||new TextEncoder().encode(caption).length>1600))throw Error('Comment is too long');
  const safeName=name.replace(/[\x00-\x1f\x7f/\\]/g,'_').slice(0,120)||'Attachment';
  const safeMime=/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(mime.toLowerCase())?mime.toLowerCase():'application/octet-stream';
- const id=await Native!.identityRandomBytes!(32);if(localAccount.status().account!==owner)throw Error('Account changed');
- try{await changeSelections(owner,rows=>{if(localAccount.status().account!==owner)throw Error('Account changed');if(rows.length>=4)throw Error('Finish or remove a pending attachment first');stageRootAttachmentSource(owner,id,uri);rows.push({createdAt:Date.now(),id,peer,name:safeName,mime:safeMime,failed:false,...(caption?{caption}:{}),...(reply?{reply:{...reply}}: {})});});}
- catch(error){removeRootAttachmentSource(owner,id);throw error;}publishRootMessageFeedback({owner,peer,id,direction:'outgoing'});return id;
+ if(diagnosticId!==undefined&&(!/^[a-f0-9]{64}$/.test(diagnosticId)||mime!=='application/json'||name!==`axonic-diagnostic-v1-${diagnosticId}.json`))throw Error('Invalid diagnostic attachment');
+ const id=diagnosticId??await Native!.identityRandomBytes!(32);if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error('Account changed');
+ let staged=false;
+ try{await changeSelections(owner,async rows=>{if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error('Account changed');
+  if(diagnosticId){const old=rows.find(r=>r.id===id);if(old){if(old.peer!==peer||old.name!==safeName||old.mime!==safeMime||old.caption!==caption)throw Error('Diagnostic ID conflict');return;}
+   const state=await localRootChat().snapshot();
+   if(state.removedMessages?.some(m=>m.direction==='outgoing'&&m.id===id&&m.peer===peer)||state.actions?.some(a=>a.kind==='delete'&&a.target.id===id&&a.target.author===owner&&a.peer===peer))throw Error('This report was deleted. Capture a new report');
+   const sent=state.messages.find(m=>m.direction==='outgoing'&&m.id===id);if(sent){if(sent.peer!==peer||sent.attachment?.name!==safeName||sent.attachment?.mime!==safeMime)throw Error('Diagnostic ID conflict');return;}}
+  if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error('Account changed');if(rows.length>=4)throw Error('Finish or remove a pending attachment first');staged=true;stageRootAttachmentSource(owner,id,uri);rows.push({createdAt:Date.now(),id,peer,name:safeName,mime:safeMime,failed:false,...(caption?{caption}:{}),...(reply?{reply:{...reply}}: {})});});}
+ catch(error){if(staged){
+  // A storage error can have an uncertain commit outcome. Never remove a
+  // diagnostic payload that a durable selection may already reference.
+  const retained=diagnosticId?await selections(owner).then(rows=>rows.some(r=>r.id===id)).catch(()=>true):false;
+  if(!retained)removeRootAttachmentSource(owner,id);
+ }throw error;}publishRootMessageFeedback({owner,peer,id,direction:'outgoing'});return id;
 }
 /** Snapshot the audience before opening a native picker. Keep per-recipient transfer IDs; groups share one content key/ciphertext. */
 export async function rootGroupAttachmentAudience(groupId:string,reply?:RootChatReply){const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account');const s=await localRootChat().snapshot(),g=s.groups?.find(g=>g.id===groupId);if(!g||g.blocked||!g.accepted||!g.members.includes(owner))throw Error('Accept an active group first');if(reply&&!groupReplyAvailable(s,owner,groupId,reply))throw Error('Original group message unavailable');const peers=g.members.filter(p=>p!==owner);if(!peers.length||peers.some(p=>s.contacts.some(c=>c.account===p&&c.blocked)))throw Error('Choose an active group without blocked members');return {owner,peers,group:{id:groupId,revision:g.revision,messageId:await Native!.identityRandomBytes!(32)},...(reply?{reply:{...reply}}:{})};}
@@ -139,7 +151,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
   completed:async(job:AttachmentJob,current)=>{if(!current())throw Error('Account locked');
    if(!rootAttachmentFile(job.owner,job.digest).exists)throw Error('Own attachment unavailable');
    const peer=job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient;
-   if(!job.receipt||!await timing.measure('chat',()=>localRootChat().attachmentComplete(peer,job.descriptor.manifest.id,job.direction,job.receipt!)))throw Error('Attachment chat receipt unavailable');
+   if(!job.receipt||!await timing.measure('chat',()=>localRootChat().attachmentComplete(peer,job.descriptor.manifest.id,job.direction,job.receipt!,job.delivery)))throw Error('Attachment chat receipt unavailable');
    mediaExport.wake();
    if(timingEnabled)console.info('[Axonic attachment timing]',JSON.stringify({direction:job.direction,bytes:job.descriptor.manifest.bytes,stages:timing.snapshot()}));},
  });

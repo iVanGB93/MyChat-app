@@ -1,3 +1,4 @@
+import {deliveryEvidence} from '../../services/identity/deliveryEvidence';
 import {pendingRootChat} from '../../services/identity/rootChatLedger';
 import type {createRootChatLedger} from '../../services/identity/rootChatLedger';
 
@@ -81,7 +82,7 @@ export function createMessageDelivery(d: {
           attempt.phase='send';direct=await sendDirect(message.peer,message.raw,message.id,current);
         }
         lastOutcome=direct?'direct-ack':'direct-unavailable';
-        if(direct){if(current()){await ledger.delivered(message.peer,message.id);delivered=true;}}
+        if(direct){if(current()){await ledger.delivered(message.peer,message.id,deliveryEvidence('receipt',now()));delivered=true;}}
         else if(current()){
           // Recheck revocation after a failed direct attempt and before custody.
           const latest=await ledger.snapshot();if(!current()||!pendingRootChat(latest,owner).some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;

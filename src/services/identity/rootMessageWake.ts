@@ -1,4 +1,5 @@
 import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
+import {diagnosticJournal} from '../diagnosticJournal';
 import {createMessageNotificationDeadline} from './messageNotificationDeadline';
 import {rootMessageNotificationId,currentRootMessageNotification,cancelRootMessageNotification} from './rootMessageNotification';
 import {publishRootMessageToast} from './rootMessageToast';
@@ -6,7 +7,6 @@ import {readRootNotificationPreferences} from './rootNotificationPreferences';
 import {localAccount} from './localAccount';
 import Native from '../../../modules/axonic-nearby';
 import {rootConversationVisible} from './rootNotificationRoute';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import {AppState} from 'react-native';
 import notifee,{AndroidImportance,AndroidVisibility,AndroidStyle} from '@notifee/react-native';
@@ -16,19 +16,19 @@ import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {rootWakeContext,rootWakeBlocked} from './rootCallWake';
 
 function setStage(stage:string){console.info('[Axonic message wake]',stage);}
-export const rootMessageWakeFailed=()=>{setStage('failed');};
+export const rootMessageWakeFailed=()=>{setStage('failed');if(localAccount.status().state==='unlocked')diagnosticJournal.record('wake_failed');};
 let opening:Promise<SQLite.SQLiteDatabase>|undefined,tail:Promise<unknown>=Promise.resolve();
 function serial<T>(work:()=>Promise<T>){const result=tail.then(work);tail=result.catch(()=>{});return result;}
 function db(){return opening??=SQLite.openDatabaseAsync('axonic_root_message_wakes_v1.db',{useNewConnection:true}).then(async value=>{
  await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires);');return value;
 }).catch(error=>{opening=undefined;throw error;});}
 async function muted(owner:string,sender:string,group?:string){
- const raw=await AsyncStorage.getItem('@axonic_root_chat_v1:'+owner);if(!raw)return false;
+ const raw=await ownChatStore(owner).read();if(!raw)return false;
  const state=JSON.parse(raw);if(state.version!==1||!Array.isArray(state.contacts))throw Error('Contact policy unavailable');
  return !!group&&state.groups?.some((g:{id:string;muted?:boolean})=>g.id===group&&g.muted===true)||state.contacts.some((c:{account:string;muted?:boolean})=>c.account===sender&&c.muted===true);
 }
 async function unresolvedMutedGroup(owner:string,sender:string){
- const raw=await AsyncStorage.getItem('@axonic_root_chat_v1:'+owner);if(!raw)return false;
+ const raw=await ownChatStore(owner).read();if(!raw)return false;
  const state=JSON.parse(raw);return Array.isArray(state.groups)&&state.groups.some((g:{muted?:boolean;members?:string[]})=>g.muted===true&&g.members?.includes(sender));
 }
 async function messageChannel(sound:boolean){
@@ -42,7 +42,7 @@ async function messageChannel(sound:boolean){
  return id;
 }
 async function alreadyReceived(owner:string,sender:string,id:string){
- const raw=await AsyncStorage.getItem('@axonic_root_chat_v1:'+owner);if(!raw)return false;
+ const raw=await ownChatStore(owner).read();if(!raw)return false;
  const ledger=JSON.parse(raw);if(ledger.version!==1||!Array.isArray(ledger.messages))throw Error('Chat state unavailable');
  return [...ledger.messages,...(ledger.actions??[]),...(ledger.groupActions??[]),...(ledger.removedMessages??[])] .some((m:{id:string;peer:string;direction:string})=>m.id===id&&m.peer===sender&&m.direction==='incoming')||(ledger.groupSeen??[]).some((m:{id:string;peer:string})=>m.id===id&&m.peer===sender);
 }
@@ -124,6 +124,7 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
    data:{type:'root_neuron_message',account:owner.account,sender,messageId:event.id},
    android:{channelId,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
     pressAction:{id:'root-message-open',launchActivity:'default'},timeoutAfter:Math.max(1,event.expires-Date.now())}});
+  if(localAccount.status().state==='unlocked'&&localAccount.status().account===owner.account)diagnosticJournal.record('notification_fallback_posted');
   await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
  });
  // Keep the headless task alive for bounded recovery after the alert is visible.
@@ -174,6 +175,7 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
    android:{channelId,onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
     pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender}}))}}});
   console.info('[Axonic notification timing] displayed-ms',Date.now()-began);
+  if(localAccount.status().state==='unlocked'&&localAccount.status().account===owner)diagnosticJournal.record('notification_preview_posted',{milliseconds:Date.now()-began});
   await Native?.notificationReadActionInShade?.(key);
   console.info('[Axonic notification timing] shade-action-ms',Date.now()-began);
   deliveryDiagnosticEvent(owner,sender,id,'notification_requested');
@@ -182,3 +184,4 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);
  });
 }
+import {ownChatStore} from '../../modules/storage/chatStore';

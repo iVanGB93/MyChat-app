@@ -1,4 +1,5 @@
 import RecoverySettings from './RecoverySettings';
+import RelayInventoryPanel from './RelayInventoryPanel';
 import ScreenHeader from './ui/ScreenHeader';
 import {KeyboardFormScrollView} from './ui/KeyboardForm';
 import React, {useState} from 'react';
@@ -23,6 +24,7 @@ export default function NetworkDiagnostics({lookup}: Pick<React.ComponentProps<t
         <KeyboardFormScrollView contentContainerStyle={{padding: 18, paddingBottom: insets.bottom + 24}}>
           {open && <RecoverySettings/>}
           {open && <IdentityLookup lookup={lookup} color={colors.text} muted={colors.textSecondary} border={colors.border}/>}
+          {open && <RelayInventoryPanel/>}
         </KeyboardFormScrollView>
       </View>
     </Modal>

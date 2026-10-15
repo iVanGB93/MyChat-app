@@ -15,6 +15,8 @@ test('direct stream uses normal file verification and signed delivery receipt',a
  signReceipt:async m=>{events.push('receipt');return base.signReceipt(m);}}));
  await f.begin();await f.receiver.tick();await f.receiver.tick();
  assert.deepEqual(events,['stream','verify','receipt']);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.deepEqual((await f.job(1)).delivery,{version:1,scope:'payload',method:'peer',relays:[],at:now,partial:false});
+ assert.equal((await f.job(0)).delivery.scope,'receipt');assert.equal((await f.job(0)).delivery.method,'peer');
 });
 for(const failure of ['unavailable','disconnect'])test(`direct stream ${failure} falls back to encrypted chunks`,async t=>{
  let attempts=0;const f=directContext(t,()=>({directStream:async()=>{attempts++;if(failure==='disconnect')throw Error('lost channel');return false;}}));
@@ -85,6 +87,9 @@ test('custodian downloads never invoke plaintext direct stream',async t=>{
  const receiver=createAttachmentTransfer({...f.deps(1),directStream:async()=>{attempts++;return true;}});
  await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<8;n++)await receiver.tick();
  assert.equal(attempts,0);assert.equal((await f.job(1)).phase,'complete');
+ assert.equal((await f.job(1)).delivery.method,'custody');assert.equal((await f.job(1)).delivery.scope,'payload');
+ assert.deepEqual((await f.job(1)).delivery.relays,[f.ids[2].record.account]);
+ assert.equal((await f.job(1)).delivery.partial,false);
 });
 test('direct stream serving requires the exact recipient device and revokes on cancellation',async t=>{
  const f=context(t);let calls=0,lease;
@@ -106,6 +111,13 @@ test('a newly connected sender can stream a partially downloaded attachment',asy
  await f.begin();const j=await f.job(1);f.written.push(f.plain.slice(0,4096));
  await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
  await f.receiver.tick();await f.receiver.tick();assert.equal(receivedCursor,1);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.equal((await f.job(1)).delivery.partial,false);assert.equal((await f.job(1)).delivery.method,'peer');
+});
+test('legacy partial media does not invent the source of previously downloaded bytes',async t=>{
+ const f=directContext(t,()=>({}));await f.begin();const j=await f.job(1);
+ f.written.push(f.plain.slice(0,4096));await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
+ for(let i=0;i<8;i++)await f.receiver.tick();
+ assert.equal((await f.job(1)).phase,'complete');assert.equal((await f.job(1)).delivery.partial,true);
 });
 test('reused journal writer hides uncommitted checkpoints, rolls back on lock, and preserves compare-and-set',async t=>{
  const path=require('node:path'),os=require('node:os'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'axonic-journal-'));

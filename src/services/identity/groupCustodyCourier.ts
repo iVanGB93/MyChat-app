@@ -23,7 +23,7 @@ export function validateGroupOutbox(rows:GroupOutboxEntry[],owner:string){
 export function createGroupCustodyCourier(d:{owner():string|null;now():number;records:IdentityRecordStore;own:OwnCustodyStore;store:GroupOutboxStore;
  compatible(peer:string):Promise<boolean>;relays():string[];request(peer:string,raw:string):Promise<string|null>;allowed(peer:string):boolean;
  seal(id:string,text:string,recipients:Parameters<typeof sealGroupCustody>[0]['recipients']):Promise<GroupCustodyJob>;
- receive(e:CustodyEnvelope,p:GroupCustodyPayload):Promise<CustodyReceipt|null>;held(e:CustodyEnvelope):Promise<void>;heldGroup?(envelopes:CustodyEnvelope[]):Promise<void>;confirm(r:CustodyReceipt,current:()=>boolean):Promise<boolean>}){
+ receive(e:CustodyEnvelope,p:GroupCustodyPayload,relay:string):Promise<CustodyReceipt|null>;held(e:CustodyEnvelope):Promise<void>;heldGroup?(envelopes:CustodyEnvelope[]):Promise<void>;confirm(r:CustodyReceipt,current:()=>boolean,relay:string):Promise<boolean>}){
  let epoch=0,stopped=false,depositing=false,polling=false,nextPoll=0,pollCursor=0;let writes:Promise<unknown>=Promise.resolve();
  const lease=()=>{const owner=d.owner(),version=epoch;return {owner,current:()=>!!owner&&!stopped&&epoch===version&&d.owner()===owner};};
  const change=<T>(owner:string,current:()=>boolean,fn:(rows:GroupOutboxEntry[])=>Promise<T>|T)=>{
@@ -93,11 +93,11 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
      const response=await request(relay,{operation:'group-poll',exclude:exclude.slice(-128)});if(response?.status!=='ok'||!l.current()){if(response?.status==='retry'&&Number.isFinite(response.retryAfterMs))nextPoll=Math.max(nextPoll,d.now()+Math.min(60000,Math.max(1000,response.retryAfterMs)));break;}if(!response.packet){if(!rejected.size)drained.add(relay);break;}drained.delete(relay);
      const packet=parseCustody(JSON.stringify(response.packet),d.now());if(!packet||exclude.includes(packet.id))break;exclude.push(packet.id);let accepted=false;
      if(packet.kind==='envelope'&&packet.recipient===l.owner&&d.allowed(packet.sender)){
-      let receipt:CustodyReceipt|null=null;try{receipt=await d.receive(packet,response.payload);}catch{}
+      let receipt:CustodyReceipt|null=null;try{receipt=await d.receive(packet,response.payload,relay);}catch{}
       if(receipt&&l.current())accepted=(await request(relay,{operation:'group-receipt',id:response.job,packet:receipt}))?.status==='accepted';
      }else if(packet.kind==='receipt'&&packet.sender===l.owner&&await verifyCustody(packet,d.records,d.now())&&l.current()){
       const saved=await d.own.get(l.owner!,packet.id),e=saved?.envelope;
-      if(e&&custodyDigest(e)===packet.digest&&e.recipient===packet.recipient&&e.recipientDevice===packet.recipientDevice&&e.expires===packet.expires&&l.current()&&await d.confirm(packet,l.current)&&l.current()){
+      if(e&&custodyDigest(e)===packet.digest&&e.recipient===packet.recipient&&e.recipientDevice===packet.recipientDevice&&e.expires===packet.expires&&l.current()&&await d.confirm(packet,l.current,relay)&&l.current()){
        accepted=(await request(relay,{operation:'group-consume',sender:l.owner,id:response.job,messageId:packet.id,digest:packet.digest}))?.status==='accepted';
        // Keep the small encrypted grant until expiry for receipts from a backup.
        if(accepted&&l.current())await change(l.owner!,l.current,rows=>{const r=rows.find(r=>r.job.payload.id===response.job);if(r&&!r.consumed.includes(packet.id))r.consumed.push(packet.id);for(let n=rows.length-1;n>=0;n--)if(rows[n].consumed.length===rows[n].job.grants.length)rows.splice(n,1);});

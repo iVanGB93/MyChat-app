@@ -19,7 +19,7 @@ export function createIdentityDirectoryReplication(d: {
     return { packet: next ? packet : null, peers };
   }
   return {
-    snapshot() { state(); return { target: 3, confirmed: copies.size, replicas: [...copies].map(([peer, until]) => ({ peer, until })), publishing: running }; },
+    snapshot() { const {packet,peers}=state();return { target: 3, confirmed: copies.size, availablePeers:peers.length,shortfall:Math.max(0,3-copies.size),reason:!packet?'identity_unavailable':copies.size>=3?'target_met':peers.length<3?'insufficient_connected_directory_peers':'awaiting_confirmations',replicas: [...copies].map(([peer, until]) => ({ peer, until })), publishing: running }; },
     async tick() {
       if (running || stopped) return;
       const { packet, peers } = state(); if (!packet) return;

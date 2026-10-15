@@ -36,6 +36,7 @@ export function createCallControlRelay(d: {
     finally { busy = false; }
   }
   return {
+    metadata(owner:string){return !live()?[]:[...rows].filter(([,r])=>r.sender!==owner&&r.target!==owner).map(([key,r])=>({key:'call:'+key,kind:r.receipt?'call-control receipt':'call-control event',state:r.receipt?'receipt held':'held',storage:'memory' as const,id:key.split(':')[0],sender:r.sender,recipient:r.target,expiresAt:r.expiresAt}));},
     put(raw: string, targetDevice: string, peer: IdentityPeer): Promise<boolean> {
       if (typeof raw !== 'string' || utf8ToBytes(raw).length > 6000 || !/^[a-f0-9]{64}$/.test(targetDevice)) return Promise.resolve(false);
       return run(peer, false, async () => {

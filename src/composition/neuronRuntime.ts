@@ -1,3 +1,6 @@
+import {deliveryEvidence} from '../services/identity/deliveryEvidence';
+import {diagnosticJournal} from '../services/diagnosticJournal';
+import {relayInventory} from '../services/identity/relayInventory';
 import type {CustodyEnvelope} from '../services/identity/custodyProtocol';
 import {loadRecoverySettings} from '../services/recoverySettings';
 import {createGroupCustodyCourier} from '../services/identity/groupCustodyCourier';
@@ -57,15 +60,27 @@ let activeActivity:ReturnType<typeof createChatActivity>|null=null;
 export const peerTyping=(peer:string,group?:string)=>activeActivity?.typing(peer,group)??false;
 export const notifyPeerTyping=(peer:string,value:boolean,group?:string)=>activeActivity?.notify(peer,value,group)??Promise.resolve();
 let activeSnapshot: (() => ReturnType<ReturnType<typeof createLanIdentityRuntime>['snapshot']>) | null = null;
+let diagnosticNetworkStartedAt:number|null=null;
+export const localAccountDiagnosticNetworkEpoch=()=>activeSnapshot?diagnosticNetworkStartedAt:null;
 let activeLookup: ((account: string) => Promise<DirectoryLookupResult>) | null = null;
 export const localAccountLookupIdentity = (account: string) => activeLookup?.(account) ?? Promise.resolve(unavailableDirectoryLookup());
 let activePeerResolver:((account:string)=>Promise<PeerIdentityResult>)|null=null;
 export const ensureLocalPeerIdentity=(account:string)=>activePeerResolver?.(account)??Promise.resolve<PeerIdentityResult>({status:'unavailable'});
 let inspectDirectory: (() => ReturnType<ReturnType<typeof createMobileDirectory>['snapshot']>) | null = null;
+let inspectWake:(()=>{private:ReturnType<ReturnType<typeof createCustodyWakeForwarder>['diagnostics']>|null;group:ReturnType<ReturnType<typeof createCustodyWakeForwarder>['diagnostics']>|null})|null=null;
+export const localAccountWakeDiagnostics=()=>localAccount.status().state==='unlocked'?inspectWake?.()??null:null;
 export const localAccountDirectorySnapshot = () => inspectDirectory?.() ?? null;
 export const localAccountNetworkSnapshot = () => activeSnapshot?.() ?? null;
+export const subscribeRelayInventoryAccess=(listener:()=>void)=>localAccount.subscribe(listener);
+export async function localAccountRelayInventory(){
+ const status=localAccount.status(),account=status.state==='unlocked'&&!status.busy?status.account:null;if(!account)return null;
+ const [messages,groups,media]=await Promise.all([createMobileCustodyStore(account).inspect(),createMobileGroupCustodyStore(account).inspect(),createMobileAttachmentStore(account).inspect()]);
+ const after=localAccount.status();if(after.state!=='unlocked'||after.busy||after.account!==account)return null;
+ return relayInventory(account,Date.now(),messages,groups,media.rows,media.chunks,activeCalls?.relayMetadata()??[]);
+}
 /** Independent root-identity participation; no legacy user ID, JWT, or Axion session. */
 function createLocalAccountNetwork() {
+  diagnosticNetworkStartedAt=Date.now();
   if (!Native?.axonLanStart || !Native?.axonWssConnect) throw Error('Network transport unavailable in this build');
   const records = createMobileIdentityRecordStore(Date.now);
   const remembered=createRememberedNeurons({now:Date.now,read:account=>AsyncStorage.getItem('@axonic_known_neurons_v1:'+account),write:(account,raw)=>AsyncStorage.setItem('@axonic_known_neurons_v1:'+account,raw)});
@@ -128,11 +143,11 @@ function createLocalAccountNetwork() {
   const activity=createChatActivity({owner,now:Date.now,allowed:async(peer,group)=>{const s=await chatReads.read();if(s.contacts.some(c=>c.account===peer&&c.blocked))return false;return group?s.groups?.some(g=>g.id===group&&g.accepted&&!g.blocked&&g.members.includes(peer)&&g.members.includes(owner()!))===true:s.contacts.some(c=>c.account===peer&&c.accepted);},send:async(peer,raw)=>{if(AppState.currentState!=='active')return false;const id=await Native!.identityRandomBytes!(32);return runtime.sendChatMessage(peer,raw,id);}});
   activeActivity=activity;
   const native = Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> };
-  async function receiveMessage(message:{from:string;id:string;text:string}){
+  async function receiveMessage(message:{from:string;id:string;text:string},relay?:string){
     const account=owner();if(!account)return false;
     const ledger=localRootChat(),before=await ledger.snapshot();
     const seen=[...before.messages,...(before.actions??[]),...(before.groupActions??[]),].some(m=>m.id===message.id&&m.peer===message.from&&m.direction==='incoming')||before.groupSeen?.some(m=>m.id===message.id&&m.peer===message.from)===true;
-    const accepted=await ledger.receive(message.from,message.id,message.text);
+    const accepted=await ledger.receive(message.from,message.id,message.text,deliveryEvidence('payload',Date.now(),relay));
     if(accepted&&!seen){
       const state=rootChatView(account,await localRootChat().snapshot()),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
       const contact=state.contacts.find(c=>c.account===message.from),group=m?.group&&state.groups?.find(g=>g.id===m.group!.id);
@@ -178,20 +193,20 @@ function createLocalAccountNetwork() {
   const blocked=new Set<string>();
   const courier=createCustodyCourier({owner,allowed:peer=>!blocked.has(peer),now:Date.now,records:operationalRecords,own:createOwnCustodyStore(),
     relays:runtime.custodians,request:runtime.custodyRequest,seal:(...args)=>localAccount.sealCustody(...args),
-    receive:envelope=>localAccount.receiveCustody(envelope,operationalRecords,receiveMessage),
+    receive:(envelope,relay)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay)),
     held:envelope=>localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires),
-    confirmReceipt:async(receipt,current)=>{
+    confirmReceipt:async(receipt,current,relay)=>{
       if(!current())return false;const ledger=localRootChat(),state=await chatReads.read();
       if(!current()||![...state.messages,...(state.actions??[]),...(state.groupActions??[])].some(m=>m.id===receipt.id&&m.peer===receipt.recipient&&m.direction==='outgoing')&&!state.groupPackets?.some(m=>m.id===receipt.id&&m.peer===receipt.recipient)&&!knownProfileReceipt(state,owner()!,receipt.recipient,receipt.id))return false;
-      await ledger.delivered(receipt.recipient,receipt.id);return current();
+      await ledger.delivered(receipt.recipient,receipt.id,deliveryEvidence('receipt',Date.now(),relay));return current();
     },
   });
   const groupCourier=createGroupCustodyCourier({owner,now:Date.now,records:{...operationalRecords,read:async account=>account===owner()?localAccount.publicRecord():operationalRecords.read(account)},own:createOwnCustodyStore(),
     compatible:async peer=>(await chatReads.read()).groupCustodyPeers?.includes(peer)===true,relays:runtime.groupCustodians,request:runtime.custodyRequest,allowed:peer=>!blocked.has(peer),
     store:{read:async account=>{const raw=await AsyncStorage.getItem('@axonic_group_outbox_v1:'+account);if(raw&&raw.length>8*1024*1024)throw Error('Group outbox capacity');const rows=raw?JSON.parse(raw):[];if(!Array.isArray(rows)||rows.length>128)throw Error('Invalid group outbox');return rows;},write:(account,rows)=>AsyncStorage.setItem('@axonic_group_outbox_v1:'+account,JSON.stringify(rows))},
-    heldGroup:envelopes=>localRootChat().networkStoredGroup(envelopes),seal:localAccount.sealGroupCustody,receive:(envelope,payload)=>localAccount.receiveCustody(envelope,operationalRecords,receiveMessage,payload),
+    heldGroup:envelopes=>localRootChat().networkStoredGroup(envelopes),seal:localAccount.sealGroupCustody,receive:(envelope,payload,relay)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay),payload),
     held:envelope=>localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires),
-    confirm:async(receipt,current)=>{if(!current())return false;const state=await chatReads.read();if(!current()||![...state.messages,...(state.groupActions??[])].some(m=>m.direction==='outgoing'&&m.peer===receipt.recipient&&m.id===receipt.id))return false;await localRootChat().delivered(receipt.recipient,receipt.id);return current();}
+    confirm:async(receipt,current,relay)=>{if(!current())return false;const state=await chatReads.read();if(!current()||![...state.messages,...(state.groupActions??[])].some(m=>m.direction==='outgoing'&&m.peer===receipt.recipient&&m.id===receipt.id))return false;await localRootChat().delivered(receipt.recipient,receipt.id,deliveryEvidence('receipt',Date.now(),relay));return current();}
   });
   const unsub = localAccount.subscribe(() => { if (!owner()) {chatReads.clear();capabilities.clear();activity.clear();peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();groupCourier.invalidate();profileRecovery.invalidate();}else{profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});} });
   const unlimit = subscribeAllowedAxons(() => runtime.setLimit(allowedAxons()));
@@ -208,19 +223,21 @@ function createLocalAccountNetwork() {
     send:runtime.sendChatMessage,known:peer=>sharedAvatarHash(owner()!,peer),request:(peer,id,known)=>localRootChat().requestProfile(peer,id,known)});
   const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>profileRecovery.connected(peer));
   profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});
-  const pump = () => {  void capabilities.update(runtime.profilePeers(),runtime.timestampPeers(),runtime.groupCustodians()).catch(()=>{});loadRemembered(); runtime.tick(); service();void groupRecovery.tick().catch(()=>{});void custody?.wake.tick();void custody?.groupWake.tick();void custody?.group.replicate(runtime.groupCustodians(),runtime.custodyRequest).catch(()=>{}); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
+  let lastDiagnosticSample=0;
+  const pump = () => { if(owner()&&Date.now()-lastDiagnosticSample>=15000){lastDiagnosticSample=Date.now();const connections=runtime.snapshot().pool?.connections??[];diagnosticJournal.network(connections.filter(c=>c.state==='connected').length,connections.filter(c=>c.state==='authenticating').length);}  void capabilities.update(runtime.profilePeers(),runtime.timestampPeers(),runtime.groupCustodians()).catch(()=>{});loadRemembered(); runtime.tick(); service();void groupRecovery.tick().catch(()=>{});void custody?.wake.tick();void custody?.groupWake.tick();void custody?.group.replicate(runtime.groupCustodians(),runtime.custodyRequest).catch(()=>{}); void directory.tick().catch(() => {});void delivery.tick();void callService()?.tick().catch(()=>{});void push?.tick().catch(()=>{}); };
   const tick = setInterval(pump, 1000);
   let sweeping = false;
   const sweep = setInterval(() => { if (sweeping) return; const current = service(); if (!current) return;
     sweeping = true; void Promise.all([current.sweep(),custody?.group.sweep(),attachmentService()?.sweep()]).catch(() => {}).finally(() => { sweeping = false; }); }, 60_000);
   runtime.tick(); inspectDirectory = directory.snapshot; activeLookup = directory.lookup; activeSnapshot = runtime.snapshot;
+  inspectWake=()=>({private:custody?.wake.diagnostics()??null,group:custody?.groupWake.diagnostics()??null});
   activePeerResolver=peerResolver.resolve;
   const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
   ownAttachments=startRootAttachmentRuntime({...attachmentApi,streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
   return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot,
-    receiveWakeEnvelope:(envelope:CustodyEnvelope)=>localAccount.receiveCustody(envelope,operationalRecords,receiveMessage),
+    receiveWakeEnvelope:(envelope:CustodyEnvelope)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,'')),
     recoveryComplete:(sender:string,id:string)=>{const status=delivery.snapshot();return !status.busy&&!status.collecting&&!status.queuedHints&&(courier.recoveryComplete(sender,id)||groupCourier.recoveryComplete(sender,id));},
-    resume() { runtime.resume();courier.resume();groupCourier.resume();pump(); }, tick:pump, stop() { chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();unprofile();unconnected();profileRecovery.stop();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();groupCourier.stop();custody?.groupWake.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) activeSnapshot = null; stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
+    resume() { runtime.resume();courier.resume();groupCourier.resume();pump(); }, tick:pump, stop() { chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();unprofile();unconnected();profileRecovery.stop();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();groupCourier.stop();custody?.groupWake.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if (activeSnapshot === runtime.snapshot) {activeSnapshot = null;inspectWake=null;} stopped = true; custody = null; clearInterval(tick); clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
 }
 
 // Foreground UI and a headless wake share one transport; each releases only its own lease.

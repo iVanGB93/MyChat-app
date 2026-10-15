@@ -1,5 +1,17 @@
 import {rootMessageStatus,type MessageDeliveryInput} from '../../services/identity/rootMessageStatus';
 import type {RootChatMessage} from '../../services/identity/rootChatTypes';
+/** Shared by private info and each group recipient; never infer routes from Stored. */
+export function messageInfoRoutes(m:RootChatMessage){
+ return [{label:m.attachment?'Message information route':'Message route',evidence:m.messageDelivery},
+  ...(m.attachment?[{label:'Complete attachment route',evidence:m.attachmentDelivery}]:[])].map(({label,evidence:e})=>({label,
+   value:!e?'Unknown — no confirmed route recorded.':[
+    e.scope==='receipt'?'Confirmed receipt path (original payload route unknown).':'Confirmed payload sources.',
+    e.method==='peer'?'Authenticated peer connection.':e.method==='mixed'?'Peer connection and relay custody.':'Relay custody.',
+    e.relays.length?'Observed relay IDs: '+e.relays.join(', '):e.method==='custody'?'Relay identity not observed.':'',
+    e.partial?'Partial observation; earlier sources may be unknown.':'',
+    'Observed '+new Date(e.at).toLocaleString()+'. Network/TURN hops are not recorded.'
+   ].filter(Boolean).join(' ')}));
+}
 /** Local observations only: receipts do not carry a trusted remote wall-clock time. */
 export function messageInfoTimeline(m:RootChatMessage,now=Date.now()){
  const rows:{label:string;at?:number}[]=[];

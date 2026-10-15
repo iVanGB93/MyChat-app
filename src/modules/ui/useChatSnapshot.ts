@@ -7,6 +7,8 @@ import {localAccount} from '../identity';
 import {ownChatRevision} from '../storage/chatStore';
 import {createChatSnapshotCache} from './chatSnapshotCache';
 import {createAvatarSnapshotCache} from './avatarSnapshotCache';
+import {diagnosticJournal} from '../../services/diagnosticJournal';
+import {storageErrorText,storageRetryDelay} from '../storage/storageReadSafety';
 
 const avatarSnapshots=createAvatarSnapshotCache({current:owner=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner,
  read:(owner,peer)=>peer===owner?readProfileAvatar(owner):readSharedAvatar(owner,peer)});
@@ -25,19 +27,21 @@ export function useChatSnapshot(){
  useEffect(()=>{const sub=AppState.addEventListener('change',s=>setForeground(s==='active'));return()=>sub.remove();},[]);
  useEffect(()=>{
   if(!focused||!foreground)return;
-  let active=true,running=false;
+  let active=true,running=false,first=true,failures=0;
+  let timer:ReturnType<typeof setTimeout>|undefined;
   async function refresh(){
-   if(running)return;running=true;
+   if(running)return;running=true;const started=Date.now();
    try{
     const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked')return;
     const value=await snapshots.read(owner);
     if(!active||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
-    if(value)setState(value);
+    if(value){setState(value);if(first){diagnosticJournal.record('chat_snapshot_ready',{milliseconds:Date.now()-started});first=false;}}
     setError('');
-   }catch{if(active)setError('Unable to read chats. Your saved data was not replaced.');}
-   finally{running=false;}
+    failures=0;
+   }catch(error){failures++;if(active){if(first){diagnosticJournal.record('chat_snapshot_failed');first=false;}setError(storageErrorText(error));}}
+   finally{running=false;if(active)timer=setTimeout(()=>void refresh(),failures?storageRetryDelay(failures):700);}
   }
-  void refresh();const timer=setInterval(()=>void refresh(),700);
+  void refresh();
   return()=>{active=false;clearInterval(timer);};
  },[focused,foreground]);
  const avatarOwner=localAccount.status().state==='unlocked'?localAccount.status().account:null;

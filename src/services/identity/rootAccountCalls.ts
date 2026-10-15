@@ -97,6 +97,7 @@ export function createRootAccountCalls(d:{
  }
  return {
   coordinator,
+  relayMetadata:()=>relay.metadata(account),
   diagnostics:()=>({relay:pump.diagnostics(),call:coordinator.diagnostics()}),
   async receiveRelay(raw:string,peer:IdentityPeer){await refresh();return endpoint(raw,peer);},
   async relayMedia(raw:string,peer:IdentityPeer){await refresh();return mediaRelay(raw,peer);},

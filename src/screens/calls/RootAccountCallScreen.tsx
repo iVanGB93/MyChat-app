@@ -81,11 +81,16 @@ export default function RootAccountCallScreen(){
 function MinimizedCall({name,status,video,stream,restore,end}:{name:string;status:string;video:boolean;stream?:string;restore():void;end():void}){
  const insets=useSafeAreaInsets(),{colors}=useTheme();
  return <View testID="axonic-minimized-call" style={{position:'absolute',top:insets.top+12,right:insets.right+12,width:156,borderRadius:16,backgroundColor:colors.surface,borderWidth:1,borderColor:colors.primary,overflow:'hidden',elevation:12,zIndex:100}}>
-  <Pressable accessibilityRole="button" accessibilityLabel="Return to call" onPress={restore}>
-   {video&&stream?<View pointerEvents="none" style={{height:88}}><RTCView streamURL={stream} objectFit="cover" style={{flex:1}} zOrder={0}/></View>:<View style={{height:44,alignItems:'center',justifyContent:'center'}}><Ionicons name={video?'videocam':'call'} size={24} color={colors.primary}/></View>}
+  <View style={{height:video?196:124}}>
+   <Pressable accessible={false} onPress={restore} style={StyleSheet.absoluteFill}>
+    <View pointerEvents="none" style={{flex:1,alignItems:'center',justifyContent:'center'}}>{video&&stream?<RTCView streamURL={stream} objectFit="cover" style={StyleSheet.absoluteFill} zOrder={0}/>:<Ionicons name={video?'videocam':'call'} size={24} color={colors.primary}/>}</View>
+   </Pressable>
+   <Pressable accessibilityRole="button" accessibilityLabel="Return to call" onPress={restore} style={{position:'absolute',top:4,left:4,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="arrow-back" size={24} color="#fff"/></Pressable>
+   <Pressable accessibilityRole="button" accessibilityLabel="End call" onPress={end} style={{position:'absolute',bottom:8,alignSelf:'center',width:44,height:44,borderRadius:22,alignItems:'center',justifyContent:'center',backgroundColor:colors.error}}><Ionicons name="call" size={22} color="#fff" style={{transform:[{rotate:'135deg'}]}}/></Pressable>
+  </View>
+  <Pressable accessibilityRole="button" accessibilityLabel="Return to call details" onPress={restore}>
    <View style={{paddingHorizontal:10,paddingVertical:8}}><Text numberOfLines={1} style={{color:colors.text,fontWeight:'600'}}>{name}</Text><Text numberOfLines={1} style={{color:colors.textSecondary,fontSize:12}}>{status}</Text></View>
   </Pressable>
-  <Pressable accessibilityRole="button" accessibilityLabel="End call" onPress={end} style={{padding:10,alignItems:'center',backgroundColor:colors.error}}><Ionicons name="call" size={20} color="#fff" style={{transform:[{rotate:'135deg'}]}}/></Pressable>
  </View>;
 }
 
@@ -112,13 +117,14 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  },[call.id,call.media]);
  const routeAudio=async(id:string)=>{if(audioBusy.current)return;audioBusy.current=true;setError('');try{setAudioRoutes(await selectCallAudioRoute(id));}catch(error){setError(error instanceof Error?error.message:'Unable to change audio output.');}finally{audioBusy.current=false;}};
  const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video',localVisible=rtc.isCameraOff?undefined:local;
+ const showControls=!video||controls;
  const quality=rtc.callQuality;
  const background=video&&<>
   {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit="cover" mirror={!remote} style={styles.fullVideo} zOrder={0}/>}
   <Pressable accessibilityRole="button" accessibilityLabel={controls?'Hide call controls':'Show call controls'} onPress={()=>setControls(v=>!v)} style={StyleSheet.absoluteFill}/>
   {remote&&foreground&&<View testID="axonic-call-self-view" pointerEvents="none" style={[styles.selfView,{top:insets.top+16,right:insets.right+16}]}>
    <View style={styles.pipWrap}><View style={styles.pip}>{rtc.isCameraOff||!local?<View style={{flex:1,alignItems:'center',justifyContent:'center',gap:8}}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>{rtc.isCameraOff?'Camera off':'No preview'}</Text></View>:<RTCView streamURL={local} objectFit="cover" mirror style={{flex:1}} zOrder={1}/>}</View></View>
-   {quality.level!=='unknown'&&<View testID="axonic-call-connection-quality" style={styles.quality}><Text style={{textAlign:'center',fontSize:11,fontWeight:'700',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}}>{quality.level.toUpperCase()}</Text>{(quality.roundTripTimeMs!=null||quality.packetLossPercent!=null)&&<Text style={{color:'#fff',fontSize:10,textAlign:'center'}}>{quality.roundTripTimeMs!=null?`${quality.roundTripTimeMs} ms`:''}{quality.roundTripTimeMs!=null&&quality.packetLossPercent!=null?' · ':''}{quality.packetLossPercent!=null?`${quality.packetLossPercent}% loss`:''}</Text>}</View>}
+   {showControls&&quality.level!=='unknown'&&<View testID="axonic-call-connection-quality" style={styles.quality}><Text style={{textAlign:'center',fontSize:11,fontWeight:'700',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}}>{quality.level.toUpperCase()}</Text>{(quality.roundTripTimeMs!=null||quality.packetLossPercent!=null)&&<Text style={{color:'#fff',fontSize:10,textAlign:'center'}}>{quality.roundTripTimeMs!=null?`${quality.roundTripTimeMs} ms`:''}{quality.roundTripTimeMs!=null&&quality.packetLossPercent!=null?' · ':''}{quality.packetLossPercent!=null?`${quality.packetLossPercent}% loss`:''}</Text>}</View>}
   </View>}
  </>;
  const status=rtc.recovering?'Reconnecting…':connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…';
@@ -130,7 +136,7 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  </View>}
  {!homeWindow&&minimized&&<MinimizedCall name={name} status={status} video={video} stream={remote||localVisible} restore={restore} end={end}/>}
  <Modal visible={!homeWindow&&!minimized} animationType="slide" onRequestClose={minimizeMedia}>
- <CallLayout avatarUri={avatarUri} name={name} video={video} status={status} background={background} show={!video||controls} avatar={!video||(!remote&&!localVisible)}>
+ <CallLayout avatarUri={avatarUri} name={name} video={video} status={status} background={background} show={showControls} avatar={!video||(!remote&&!localVisible)}>
   {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
 
   <View style={[styles.actions,video&&{paddingHorizontal:8}]}>
@@ -141,7 +147,7 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
    {video?<ActionButton size={52} icon="options-outline" label="Options" onPress={()=>setOptions(true)} Colors={colors}/>:<ActionButton icon={audioRoutes?.devices.find(d=>d.id===audioRoutes.selectedId)?.kind==='bluetooth'?'bluetooth':'volume-high-outline'} label="Audio" onPress={()=>setOptions(true)} Colors={colors}/>}
   </View>
  </CallLayout>
- <Pressable accessibilityRole="button" accessibilityLabel="Minimize call" testID="axonic-minimize-call" onPress={minimizeMedia} style={{position:'absolute',top:insets.top+12,left:insets.left+12,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="chevron-down" size={28} color="#fff"/></Pressable>
+ {showControls&&<Pressable accessibilityRole="button" accessibilityLabel="Minimize call" testID="axonic-minimize-call" onPress={minimizeMedia} style={{position:'absolute',top:insets.top+12,left:insets.left+12,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="chevron-forward" size={28} color="#fff"/></Pressable>}
  </Modal>
  <Modal visible={!homeWindow&&!minimized&&options} transparent animationType="slide" onRequestClose={()=>setOptions(false)}>
   <View style={{flex:1,justifyContent:'flex-end',backgroundColor:'rgba(0,0,0,0.55)'}}><Pressable accessibilityLabel="Close call options" onPress={()=>setOptions(false)} style={StyleSheet.absoluteFill}/>

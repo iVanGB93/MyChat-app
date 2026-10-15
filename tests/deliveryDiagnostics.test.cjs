@@ -1,5 +1,18 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const out={};new Function('exports',ts.transpileModule(fs.readFileSync('src/services/deliveryDiagnostics.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out);
+test('rolling diagnostics start automatically, survive the old timeout, and clear without stopping',()=>{
+ let now=0;const d=out.createDeliveryDiagnostics(()=>now,true);
+ d.observe('a','pending','outgoing');now=16*60*1000;d.observe('a','delivered','outgoing');
+ assert.equal(d.snapshot().events.length,2);assert.equal(d.snapshot().expiresAt,null);
+ d.clear();assert.equal(d.snapshot().events.length,0);assert.equal(d.active(),true);
+ d.observe('b','read','incoming');assert.equal(d.snapshot().events.length,1);
+ now+=31*60*1000;assert.equal(d.snapshot().events.length,0);
+});
+test('rolling correlation capacity evicts old keys instead of disabling new observations',()=>{
+ const d=out.createDeliveryDiagnostics(()=>0,true);
+ for(let i=0;i<600;i++)d.observe('secret-'+i,'delivered','incoming');
+ const s=d.snapshot();assert.equal(s.events.length,256);assert.equal(s.events.at(-1).trace,'m600');assert(!JSON.stringify(s).includes('secret-'));
+});
 test('capture is opt-in and exports all four states without correlation keys or reconstructed history',()=>{
  let now=1000;const d=out.createDeliveryDiagnostics(()=>now);const key='private-account:private-message-id';
  d.observe(key,'pending','outgoing');assert.equal(d.snapshot().events.length,0);d.start();

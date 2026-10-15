@@ -1,6 +1,19 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const out=require('./helpers/attachment.cjs').load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),id='1'.repeat(64);
+test('confirmed routes persist, stay local, and cannot be overwritten by retries',async()=>{
+ const {deliveryEvidence}=require('./helpers/attachment.cjs').load('deliveryEvidence'),f=fixture();
+ const receipt=deliveryEvidence('receipt',100,b);
+ await f.ledger.enqueue(b,id,'route test');await f.ledger.networkStored(b,id,200000);
+ assert.equal((await f.ledger.snapshot()).messages[0].messageDelivery,undefined);
+ await f.ledger.delivered(b,id,receipt);await f.ledger.delivered(b,id,deliveryEvidence('receipt',200));
+ const m=(await f.ledger.snapshot()).messages[0];assert.deepEqual(m.messageDelivery,receipt);
+ assert.equal(out.encodeRootMessage(m).includes('receipt'),false);
+ const incoming=fixture(b),payload=deliveryEvidence('payload',120,a);
+ await incoming.ledger.receive(a,id,out.encodeRootMessage(m),payload);
+ await incoming.ledger.receive(a,id,out.encodeRootMessage(m),deliveryEvidence('payload',220));
+ assert.deepEqual((await incoming.ledger.snapshot()).messages[0].messageDelivery,payload);
+});
 test('duplicate delivery receipts do not rewrite history or repeat commit notifications',async()=>{
  let raw=null,writes=0,commits=0;
  const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async v=>{raw=v;writes++;},messageCommitted:()=>commits++});
