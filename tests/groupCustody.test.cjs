@@ -84,7 +84,7 @@ test('group edits and reactions reuse the common body without issuing new-messag
  const raw=JSON.stringify(['axonic-root-group-action-v1',f.ids[1].record.account,'11'.repeat(32),{group:{id:'aa'.repeat(32),messageId:'bb'.repeat(32),revision:1},target:{id:'cc'.repeat(32),author:f.ids[0].record.account},kind:'edit',revision:1,text:'Edited once'}]);
  const parts=packing.splitGroupCustodyMessage(raw);assert(parts);assert.equal(packing.joinGroupCustodyMessage(parts.text,parts.metadata,f.ids[1].record.account,'11'.repeat(32)),raw);
  const job=await g.sealGroupCustody({...f.ids[0],id:'dd'.repeat(32),text:parts.text,recipients:f.ids.slice(1,3).map((r,i)=>({record:r.record,device:r.device.id,id:String(i+1).repeat(64),metadata:parts.metadata})),now,random});
- assert(job.grants.every(e=>e.wakeSignature===undefined));assert(await g.verifyGroupCustodyJob(job,f.records,now));
+ assert(job.grants.every(e=>e.wakeMode==='silent'&&!!e.wakeSignature));assert(await g.verifyGroupCustodyJob(job,f.records,now));
 });
 
 test('replication cannot pin a supplied identity unless it verifies the exact group payload',async()=>{

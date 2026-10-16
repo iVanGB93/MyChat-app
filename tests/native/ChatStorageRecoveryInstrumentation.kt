@@ -123,6 +123,19 @@ class ChatStorageRecoveryInstrumentation : Instrumentation() {
         result.putInt("testCursorWindowBytes", 2 * 1024 * 1024)
         val reader = ChatStorageRecovery(source, backup)
         check(reader.read(owner) == raw) { "Recovery changed synthetic history" }
+        val timings64 = mutableListOf<Long>()
+        val timings512 = mutableListOf<Long>()
+        repeat(6) { iteration ->
+          for (size in if (iteration % 2 == 0) listOf(65536, 524288) else listOf(524288, 65536)) {
+            val began = System.nanoTime()
+            val recovered = reader.read(owner, size)
+            val milliseconds = (System.nanoTime() - began) / 1000000
+            check(recovered == raw) { "Chunk comparison changed history" }
+            (if (size == 65536) timings64 else timings512).add(milliseconds)
+          }
+        }
+        result.putString("read64KiBMs", timings64.joinToString(","))
+        result.putString("read512KiBMs", timings512.joinToString(","))
         check(reader.read("axonic:1:" + "cd".repeat(32)) == null)
         check(JSONObject(reader.read(owner)!!).getJSONArray("messages").length() == 2400)
         check(ChatStorageRecovery(source, backup).read(owner) == raw) { "Restart read failed" }

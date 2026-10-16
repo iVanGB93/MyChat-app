@@ -1,0 +1,26 @@
+Signed silent control wakes - 2026-10-15 EDT
+
+Finding/correction:
+- Phone localIdentityController, AoN hostedRootCustody and group custody already removed wakeSignature for actions/avatar updates. Therefore the reported phantom notification was NOT proven to originate from a current read receipt. Other callers, older packets and unknown fallback wakes remain possible.
+- Shared sealing now carries signed silent intent for these control payloads instead of caller-specific deletion. HostedChatNeuron also benefits from the shared default.
+
+Protocol contract:
+- Optional wakeMode='silent' is preserved by parsing and appended to the signed wake transcript. Adding/removing/changing it invalidates wake authentication.
+- Normal wake transcript unchanged. Envelope encryption/AAD, custody digest, delivery signature, receipt checks, replay/expiry/identity checks unchanged.
+- Silent intent is sender-controlled notification policy, not permission to apply a plaintext action. No plaintext action details are exposed; one control/presentation bit is visible.
+- Shared group grants derive silent intent from the common encrypted action body.
+- Updated receiver still attempts bounded recovery but does not display a generic notification for a verified silent wake, including while locked.
+- Legacy receivers reject new silent wake signatures (no false alert); normal polling/direct delivery still processes ciphertext. Old relays may strip the flag, making the wake unverifiable. Both hosted relays updated. Existing unmarked packets cannot be retrospectively classified from ciphertext.
+
+Validation:
+- Full mobile check:1175 passed,3 skipped,0 failed. Then added tampering/ciphertext regression and ran focused custody/group/wake tests:102 passed.
+- AoN core parity/build and194 tests passed.
+- Signed silent event injected into actual notification handler on BOTH Dev phones with recovery callback that does not decrypt: recovery invoked, zero displayed notifications. This is handler integration, not an FCM provider end-to-end silent test.
+- Ordinary encrypted notifications via FirstNeuron on iVan Dev: small screen-off and large background messages delivered with content previews (~4.87s observed); duplicate wake unchanged, muted update no new notice, completed replay rejected as completed.
+- Initial debugger setup timed out while display inactive; waking display and rerunning passed. No account data cleared.
+
+Deployment:
+- AoN commit d56cf02 pushed; runtime a22c34d11c944bfba4c1676b44d7ff0853e750c697fa6097fe19140382ac12bb verified on both hosts.
+- Railway deploy6f6f42e0-cbd5-45b9-9545-204ea7b140be. First identity preserved and rollback retained.
+- Includes earlier tested request handoff/shared diagnostics.
+- Dev bundle updated. No production mobile build or official app change. Play Store app needs a future release for this receiver behavior.

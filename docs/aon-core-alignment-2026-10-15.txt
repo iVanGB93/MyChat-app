@@ -1,0 +1,19 @@
+AoN/app alignment: relay diagnostics
+
+Canonical mobile protocol sources synchronized to AoN via sync:core; check:core passes.
+Commits: 3274f46 (categories), 2cc8d9b (proxy allowlist).
+Runtime SHA256: 6d29718fe96e56f51e285eb556f6a022d96fdac2032be51776ab8e9d76cee26f
+
+Both dashboards use shared relayCategories and relayPacketCategory. API category counts
+cover the complete inventory before pagination; omitted category preserves previous API.
+Authenticated inventory route was blocked by both proxy allowlists (404). Added only
+/api/relay-inventory; application session authentication and default-deny remain.
+FirstNeuron proxy syntax validated, original config backed up, identity preserved.
+
+Validation: full AoN run had 195 passing and one obsolete exact-string proxy assertion.
+Replaced that assertion with actual route-pattern matching; all five affected tests pass.
+App/core byte parity and TypeScript pass. No mobile source changes or production build.
+Live authenticated category/status checks recorded in builds/relay-category-*-status.py.
+No new delivery test or destructive cleanup performed in this task.
+
+Final live verification: both AoNs report runtime 6d29718fe96e. Both authenticated category APIs and dashboard category controls are present. FirstNeuron unauthenticated inventory returns 401. First snapshot: content 152, receipts 25, cleanup 120; Second snapshot: content 153, receipts 47, cleanup 98. Counts are local records, not unique undelivered messages.

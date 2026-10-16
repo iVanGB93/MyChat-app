@@ -1,0 +1,74 @@
+Axonic release audit — 2026-10-15
+
+Scope and safety
+Two physical Samsung phones, com.axonic.dev only. Official com.axonic unchanged.
+No production build, deployment, commit, or data wipe performed.
+Second Dev phone updated with the existing debug APK after a private local backup.
+Both phones on LAN, each with FirstNeuron and SecondNeuron connected.
+No emulators or separate-network/forced-idle scenarios exercised in this pass.
+
+Live results
+- Six labeled texts, three in each direction: sender enqueue-to-delivery ACK
+  562, 426, 364, 584, 547, 397 ms. Local enqueue 12–83 ms.
+- Synthetic 1 MiB file: sender completion 3.892 s; receiver SHA-256 matched.
+- Synthetic 5 MiB file: 13.805 s; repeated 13.950 s; receiver hashes matched.
+  LAN used encrypted 512 KiB batches. RTC direct streaming was unavailable on
+  this route; these results must not be presented as RTC streaming performance.
+- Repeated 5 MiB receive: 3,889 durable lease checks total 414 ms, 1,280 file
+  writes total 1,195 ms, network requests total 4,351 ms, preparation 542 ms
+  on sender. Stage totals are not exclusive or a complete wall-time breakdown.
+- Call control reached ringing in approximately 0.6 s and accepted/ready in
+  approximately 0.4 s. Harness did not observe an RTP peer connection/audio
+  statistics: actual bidirectional audio is NOT verified by this test.
+- Temporary transfer/call instrumentation removed and synthetic call ended.
+
+AoN health
+Both live AoNs reported runtime 806ac68ab0bf (129 modules), 3/10 connected,
+identity copies 3/3. FirstNeuron own outgoing queue 0. SecondNeuron own queue
+contained one stored message awaiting delivery, age 263 s at observation.
+That queue is not total relay custody; this observation does not diagnose its
+recipient or authorize resending that user's message.
+FirstNeuron CPU: 3.25% of one core over one 12-second sample, not a soak test.
+
+Findings and changes
+1. Shared-core synchronization missed callValidationCache.ts. Synchronizing the
+   newer mobile sources caused a fresh AoN compilation to fail even though the
+   old --check command reported matching files. Added that dependency and made
+   check:core also type-check the complete AoN package. Local synchronization,
+   compilation, and 194 hosted tests now pass. These local changes are NOT live.
+2. Added Dev/local aggregate leaseCheck timing; no payloads, keys, filenames or
+   identity labels in these counters. Disabled production timing avoids this
+   wrapper. Repeated checks are measurable but not the main LAN bottleneck.
+3. Corrected a timing-sensitive delivery test: it now verifies first priority,
+   one send of the new message, and retention of an unacknowledged older message,
+   without assuming the worker cannot start older work before the assertion.
+4. Added 100-duplicate-wake burst coverage (one lease, all observers notified)
+   and expiry-while-queued coverage (no new lease for expired work).
+5. Prior notification/control-message durable suppression, duplicate recovery
+   coalescing and native large-row read fixes remain in this working tree.
+
+Validation
+Full mobile check passed: 1,165 passed, 3 skipped, no failures; TypeScript,
+dependency cycles, module boundaries and consolidation passed. The two extra
+recovery cases were then run with the delivery/recovery suites successfully.
+Hosted check:core and all 194 tests passed after dependency synchronization.
+Logs: builds/deep-audit-check-20261015.log,
+builds/deep-audit-recovery-20261015.log,
+builds/deep-audit-aon-aligned-20261015.log.
+
+Release gates still open
+- Distinct wake hints still serialize bounded recovery leases; an unresolved
+  hint can hold later inline messages behind it for up to 20 seconds. Existing
+  tests reproduce 40 seconds for two unresolved hints. Duplicate coalescing
+  does not fix this distinct-message queue. Redesign needs shared lease ownership
+  and receipt-drain guarantees, not simply early transport teardown.
+- LAN media end-to-end throughput remains about 0.36 MiB/s in these samples.
+  Need isolate decryption/verification, scheduling gaps and serialization before
+  increasing memory/concurrency; checksum and cancellation checks must stay.
+- Re-run normal UI audio/video calls, screen-off and cold-start notifications,
+  duplicate/old generic alert routing, recovery after reconnect, and large-history
+  navigation. Accumulated gfxinfo is not a controlled typing/scrolling benchmark.
+- Deploy the tested AoN core alignment through the existing release workflow;
+  it has not been committed/pushed/deployed in this audit.
+- A few test devices and finite unit tests do not establish large-user capacity
+  or overnight reliability. No production-readiness claim is made yet.

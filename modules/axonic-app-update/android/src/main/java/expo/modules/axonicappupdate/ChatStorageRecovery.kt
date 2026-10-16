@@ -16,7 +16,7 @@ class ChatStorageRecovery(private val source: File, private val backupDirectory:
   private var verified = false
   companion object {
     private val lock = Any()
-    const val CHUNK_BYTES = 64 * 1024
+    const val CHUNK_BYTES = 512 * 1024
     const val MAX_DATABASE_BYTES = 64L * 1024 * 1024
     private fun openRead(file: File) = SQLiteDatabase.openDatabase(file.path, null, SQLiteDatabase.OPEN_READONLY,
       DatabaseErrorHandler { throw SQLiteException("AXONIC_STORAGE_CORRUPT") })
@@ -67,7 +67,8 @@ class ChatStorageRecovery(private val source: File, private val backupDirectory:
       if (pending.exists()) pending.delete()
     }
   }
-  fun read(owner: String): String? = synchronized(lock) {
+  fun read(owner: String, chunkBytes: Int = CHUNK_BYTES): String? = synchronized(lock) {
+    require(chunkBytes in 64 * 1024..CHUNK_BYTES) { "Invalid read chunk size" }
     require(Regex("axonic:1:[a-f0-9]{64}").matches(owner)) { "Invalid chat owner" }
     if (!source.exists()) return@synchronized null
     openRead(source).use { db ->
@@ -84,10 +85,10 @@ class ChatStorageRecovery(private val source: File, private val backupDirectory:
         var offset = 0L
         while (offset < length) {
           val chunk = db.rawQuery("SELECT substr(CAST(value AS BLOB),?,?) FROM catalystLocalStorage WHERE key=?",
-            arrayOf((offset + 1).toString(), CHUNK_BYTES.toString(), key)).use { cursor ->
+            arrayOf((offset + 1).toString(), chunkBytes.toString(), key)).use { cursor ->
             check(cursor.moveToFirst()) { "Chat value disappeared" }; cursor.getBlob(0)
           }
-          check(chunk.isNotEmpty() && chunk.size <= CHUNK_BYTES && offset + chunk.size <= length) { "Incomplete chat read" }
+          check(chunk.isNotEmpty() && chunk.size <= chunkBytes && offset + chunk.size <= length) { "Incomplete chat read" }
           result.write(chunk); offset += chunk.size
         }
         // Decode once: a chunk can end inside a multi-byte emoji or accented character.

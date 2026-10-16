@@ -118,7 +118,8 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
  const timingStarted=Date.now(),snapshotTimings=()=>({startedAt:timingStarted,observedAt:Date.now(),stages:timing.snapshot()});
  if(timingEnabled)activeTimings=snapshotTimings;
  const records=createMobileIdentityRecordStore(Date.now),journal=createMobileAttachmentJobs();
- const store={...journal,save:(...args:Parameters<typeof journal.save>)=>timing.measure('checkpoint',()=>journal.save(...args))};let stopped=false,busy=false,epoch=0,selectionCursor=0;
+ const store={...journal,save:(...args:Parameters<typeof journal.save>)=>timing.measure('checkpoint',()=>journal.save(...args)),
+  ...(timingEnabled&&journal.isCurrent?{isCurrent:(...args:Parameters<NonNullable<typeof journal.isCurrent>>)=>timing.measure('leaseCheck',()=>journal.isCurrent!(...args))}:{})};let stopped=false,busy=false,epoch=0,selectionCursor=0;
  const accepted=new Set<string>();const owner=()=>!stopped&&localAccount.status().state==='unlocked'&&!localAccount.status().busy?localAccount.status().account:null;
  let allowedJob:(job:AttachmentJob)=>boolean=()=>false;
  const snapshots=createAttachmentSnapshot({owner,revision:ownChatRevision,read:()=>localRootChat().snapshot()});

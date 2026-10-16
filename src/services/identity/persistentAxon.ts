@@ -38,7 +38,7 @@ export interface AxonWire {
 export function createPersistentAxon(d: {
   record: IdentityRecord; history?: IdentityRecord[]; signingSeed: Uint8Array; instance: Uint8Array; store: IdentityRecordStore;
   onAttachment?(raw:string,peer:IdentityPeer):Promise<string>;
-  onPush?(raw: string, peer: IdentityPeer): Promise<string>;
+  onPush?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {gateway?:boolean};
   onCallMediaRelay?(raw: string, peer: IdentityPeer): Promise<boolean>;
   onRelayedCallMedia?(raw: string, peer: IdentityPeer): Promise<boolean>;
   onCallRelay?(raw: string, peer: IdentityPeer): Promise<string>;
@@ -96,7 +96,7 @@ export function createPersistentAxon(d: {
     task.reject(Error('Attachment request timed out'));
     if(++consecutiveMediaTimeouts>=3)stop('repeated-media-timeout');
   }
-  let peerPush = false, peerRelay = false, peerMediaRelay = false, peerMediaForward = false;
+  let peerPushGateway = false, peerPush = false, peerRelay = false, peerMediaRelay = false, peerMediaForward = false;
   let peerCalls = false;
   let peerMedia = false;
   let peerTests = false, peerDirectory = false, peerCustody = false, peerGroupCustody = false, peerChat = false;
@@ -128,6 +128,13 @@ export function createPersistentAxon(d: {
   const started = d.now();
   // Local observations only: never serialized onto the wire.
   const quality={samples:0,responseMs:0,mediaSamples:0,mediaResponseMs:0,mediaBytesPerSecond:0,failures:0,updatedAt:0};
+  // Bounded local diagnostics; never included in protocol frames.
+  const requestTimings:Record<string,{samples:number;meanMs:number;maxMs:number}>={};
+  function observeRequest(name:string,start:number){
+    const elapsed=Math.max(0,d.now()-start),row=requestTimings[name];
+    if(row){row.meanMs+=(elapsed-row.meanMs)/++row.samples;row.maxMs=Math.max(row.maxMs,elapsed);}
+    else requestTimings[name]={samples:1,meanMs:elapsed,maxMs:elapsed};
+  }
   function observeResponse(start:number,media:boolean,bytes=0){
     const elapsed=Math.max(1,d.now()-start);quality.updatedAt=d.now();
     if(media){quality.mediaResponseMs=quality.mediaSamples?quality.mediaResponseMs*.8+elapsed*.2:elapsed;quality.mediaSamples++;if(bytes>=4096)quality.mediaBytesPerSecond=quality.mediaBytesPerSecond?quality.mediaBytesPerSecond*.8+(bytes*1000/elapsed)*.2:bytes*1000/elapsed;}
@@ -142,9 +149,11 @@ export function createPersistentAxon(d: {
   const introduce = d.introductions ? createIntroductionService({ ...d, peer: () => peer,
     current: () => !stopped && d.current(), list: d.introductions.list }) : null;
   // tick() is also driven by the native background wake clock on mobile.
-  const sleepers=new Set<{until:number;finish():void}>();
-  function wait(ms:number){return new Promise<void>(resolve=>{
-    const entry={until:d.now()+ms,finish(){clearTimeout(timer);sleepers.delete(entry);resolve();}};
+  const sleepers=new Set<{until:number;ready?:()=>boolean;finish():void}>();
+  // Only wake eligible control waiters; rate-limited media retains its timer.
+  function notifyWaiters(){for(const entry of [...sleepers])if(entry.ready?.())entry.finish();}
+  function wait(ms:number,ready?:()=>boolean){return new Promise<void>(resolve=>{
+    const entry={until:d.now()+ms,ready,finish(){clearTimeout(timer);sleepers.delete(entry);resolve();}};
     const timer=setTimeout(entry.finish,ms);sleepers.add(entry);
   });}
   let unsubscribe = () => {};
@@ -210,7 +219,7 @@ export function createPersistentAxon(d: {
       renewalAt = d.now() + 20_000;
     } catch { stop('authentication-error'); }
     finally {
-      authenticating = false;
+      authenticating = false; notifyWaiters();
       if(peer&&!stopped){const waiting=deferredFrames;deferredFrames=[];deferredBytes=0;for(const raw of waiting)void receive(raw);}
     }
   }
@@ -233,7 +242,7 @@ export function createPersistentAxon(d: {
     // A stalled route can delay arrival of the first lookup. Measuring the
     // next interval from its start compresses arrivals after recovery and
     // trips the receiver's ten-second admission limit.
-    finally { introducing = false; introduceAt = d.now() + 15_000; }
+    finally { introducing = false; introduceAt = d.now() + 15_000; notifyWaiters(); }
   }
   async function receive(raw: string) {
     try {
@@ -283,6 +292,7 @@ export function createPersistentAxon(d: {
         smallWindow=smallBatches&&d.wire.smallAttachmentWindow===4&&f.smallAttachmentWindow===4?4:2;smallBatchCredits=smallWindow;
         peerRelay = f.callRelay === 1;peerMediaRelay=f.callMediaRelay===1;peerMediaForward=f.callMediaForward===1;
         peerPush = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('push-registration-v1');
+        peerPushGateway = peerPush && f.pushGateway !== 0;
         peerMedia = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('call-control-v2');
         peerCalls = peerMedia || Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('call-control-v1');
         peerSignals = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('rtc-signals-v1');
@@ -345,10 +355,11 @@ export function createPersistentAxon(d: {
       }
       if (f.kind === 'response') {
         if (!pending || pending.id !== f.id) { stop('unexpected-response'); return; }
-        const task = pending; pending = null; clearTimeout(task.timer); if(task.operation!=='describe'&&task.operation!=='authenticate')observeResponse(task.started,task.operation==='attachment',f.body.length); task.resolve(f.body); return;
+        const task = pending; pending = null; clearTimeout(task.timer); observeRequest('roundTrip:'+task.operation,task.started); if(task.operation!=='describe'&&task.operation!=='authenticate')observeResponse(task.started,task.operation==='attachment',f.body.length); task.resolve(f.body); notifyWaiters(); return;
       }
       if (f.kind !== 'request' || inboundBusy) { stop(inboundBusy ? 'overlapping-request' : 'invalid-request'); return; }
       inboundBusy = true;
+      const handlerStarted=d.now();
       try {
         let response: string | null = null;
         if (f.operation === 'describe') {
@@ -379,7 +390,7 @@ export function createPersistentAxon(d: {
         if (f.operation === 'introductions' && introduce && peerIntroductions) response = await introduce(f.body);
         if (!response || stopped || !d.current()) { stop('request-rejected:'+(operations.includes(f.operation)?f.operation:'other')); return; }
         send({ version: 1, kind: 'response', id: f.id, body: response });
-      } finally { inboundBusy = false; }
+      } finally { observeRequest('handler:'+f.operation,handlerStarted); inboundBusy = false; }
     } catch { stop('receive-error'); }
   }
   try {
@@ -389,7 +400,7 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onCustody?.groupCustody?{groupCustody:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
     mediaRelayPeer:()=>peerMediaRelay && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
@@ -399,11 +410,11 @@ export function createPersistentAxon(d: {
       if(!permitted()||typeof raw!=='string'||new TextEncoder().encode(raw).length>12000||custodyWaiting>=2||pushWaiting>0)return false;
       custodyWaiting++;
       try {
-        for(let waits=0;permitted()&&(authenticating||introducing||pending||callPriority())&&waits<80;waits++)await wait(25);
+        for(let waits=0;permitted()&&(authenticating||introducing||pending||callPriority())&&waits<80;waits++)await wait(25,()=>!authenticating&&!introducing&&!pending&&!callPriority());
         if(!permitted()||authenticating||introducing||pending||callPriority())return false;
         const reply=await exchange(forward?'call-media-forward':'call-media-relay',raw);
         return permitted()&&JSON.parse(reply)?.accepted===true;
-      }catch{return false;}finally{custodyWaiting--;}
+      }catch{return false;}finally{custodyWaiting--;notifyWaiters();}
     },
     relayPeer: () => peerRelay && peer && !stopped && d.current() && peer.expiresAt > d.now() ? { ...peer } : null,
     async callRelayRequest(raw: string): Promise<string | null> {
@@ -412,12 +423,12 @@ export function createPersistentAxon(d: {
       custodyWaiting++;
       try {
         for (let waits = 0; permitted() && (authenticating || introducing || pending || callPriority()) && waits < 80; waits++)
-          await wait(25);
+          await wait(25,()=>!authenticating&&!introducing&&!pending&&!callPriority());
         if (!permitted() || authenticating || introducing || pending || callPriority()) return null;
         const result = await exchange('call-relay', raw);
         return permitted() && new TextEncoder().encode(result).length <= 13000 ? result : null;
       } catch { return null; }
-      finally { custodyWaiting--; }
+      finally { custodyWaiting--; notifyWaiters(); }
     },
     mediaContext: () => d.onCallMedia && peerMedia && peer && !stopped && d.current() && peer.expiresAt > d.now()
       ? { peer: { ...peer }, instance: bytesToHex(d.instance) } : null,
@@ -431,12 +442,12 @@ export function createPersistentAxon(d: {
       callWaiting++;
       try {
         for (let waits = 0; permitted() && (authenticating || introducing || pending || callMustYield()) && waits < 80; waits++)
-          await wait(25);
+          await wait(25,()=>!authenticating&&!introducing&&!pending&&!callMustYield());
         if (!permitted() || authenticating || introducing || pending || callMustYield() || event.expiresAt <= d.now()) return false;
         const reply = await exchange('call-media', raw);
         return permitted() && JSON.parse(reply)?.accepted === true;
       } catch { return false; }
-      finally { callWaiting--; }
+      finally { callWaiting--; notifyWaiters(); }
     },
     callPeer: () => d.onCallControl && peerCalls && peer && !stopped && d.current() && peer.expiresAt > d.now() ? { ...peer } : null,
     supportsCallControl: () => !!d.onCallControl && peerCalls && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
@@ -450,30 +461,30 @@ export function createPersistentAxon(d: {
       callWaiting++;
       try {
         for (let waits = 0; permitted() && (authenticating || introducing || pending || callMustYield()) && waits < 80; waits++)
-          await wait(25);
+          await wait(25,()=>!authenticating&&!introducing&&!pending&&!callMustYield());
         if (!permitted() || authenticating || introducing || pending || callMustYield() || event.expiresAt <= d.now()) return null;
         const reply = await exchange('call-control', raw);
         const latest = await d.store.read(peer!.account);
         const receipt = latest && verifyCallControlReceipt(reply, event, latest, d.now());
         return permitted() && receipt?.device === peer!.device ? reply : null;
       } catch { return null; }
-      finally { callWaiting--; }
+      finally { callWaiting--; notifyWaiters(); }
     },
     supportsDirectory: () => !!d.onDirectory && peerDirectory && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
-    supportsPush: () => !!d.onPush && peerPush && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
+    supportsPush: () => !!d.onPush && peerPushGateway && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async pushRequest(raw: string): Promise<string | null> {
       const permitted = () => !!d.onPush && !!peer && peer.expiresAt > d.now() && peerPush && !stopped && d.current();
       if (!permitted() || raw.length > 5000 || pushWaiting>=3) return null;
       // Stop new polling reservations briefly so registration cannot starve behind them.
       pushWaiting++;let reserved=false;
       try {
-        for(let waits=0;permitted()&&custodyWaiting>=2&&waits<160;waits++)await wait(25);
+        for(let waits=0;permitted()&&custodyWaiting>=2&&waits<160;waits++)await wait(25,()=>custodyWaiting<2);
         if(!permitted()||custodyWaiting>=2)return null;
         custodyWaiting++;reserved=true;
-        for(let waits=0;permitted()&&(authenticating||introducing||pending||callPriority())&&waits<160;waits++)await wait(25);
+        for(let waits=0;permitted()&&(authenticating||introducing||pending||callPriority())&&waits<160;waits++)await wait(25,()=>!authenticating&&!introducing&&!pending&&!callPriority());
         if(!permitted()||authenticating||introducing||pending||callPriority())return null;
         const result=await exchange('push',raw);return permitted()?result:null;
-      }catch{return null;}finally{if(reserved)custodyWaiting--;pushWaiting--;}
+      }catch{return null;}finally{if(reserved)custodyWaiting--;pushWaiting--;notifyWaiters();}
     },
     async directoryRequest(raw: string): Promise<string | null> {
       const permitted = () => !!d.onDirectory && !!peer && peer.expiresAt > d.now() && peerDirectory && !stopped && d.current();
@@ -481,12 +492,12 @@ export function createPersistentAxon(d: {
       custodyWaiting++;
       try {
         for (let waits = 0; permitted() && (authenticating || introducing || pending || callPriority()) && waits < 80; waits++)
-          await wait(25);
+          await wait(25,()=>!authenticating&&!introducing&&!pending&&!callPriority());
         if (!permitted() || authenticating || introducing || pending || callPriority()) return null;
         const result = await exchange('directory', raw);
         return permitted() ? result : null;
       } catch { return null; }
-      finally { custodyWaiting--; }
+      finally { custodyWaiting--; notifyWaiters(); }
     },
     supportsProfileOffers:()=>!!peer&&peer.expiresAt>d.now()&&!stopped&&peerProfileOffers,
     supportsProfileUpdates:()=>peerProfileUpdates&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
@@ -495,7 +506,7 @@ export function createPersistentAxon(d: {
     supportsAttachments:()=>peerAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachmentBulk:()=>peerBulk&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     attachmentBatchChunks:()=>smallBatches?3:128,
-    attachmentBatchWindow:()=>smallBatches?smallWindow:1,
+    attachmentBatchWindow:()=>smallBatches?smallWindow:2,
     async attachmentBulkRequest(raw:string):Promise<string|null>{
       const permitted=()=>peerBulk&&!!peer&&peer.expiresAt>d.now()&&!stopped&&d.current();
       if(!permitted()||raw.length>13000||bulkWaiting>=(smallBatches?smallWindow:2)||smallBatches&&!smallRequest(raw))return null;
@@ -534,7 +545,7 @@ export function createPersistentAxon(d: {
       attachmentTail=new Promise<void>(resolve=>{release=resolve;});
       await previous;
       try{
-        for(let waits=0;permitted()&&(authenticating||introducing||pending||custodyWaiting>0||pushWaiting>0||callWaiting>0||d.now()<attachmentNext)&&waits<80;waits++)await wait(25);
+        for(let waits=0;permitted()&&(authenticating||introducing||pending||custodyWaiting>0||pushWaiting>0||callWaiting>0||d.now()<attachmentNext)&&waits<80;waits++)await wait(25,()=>!authenticating&&!introducing&&!pending&&!custodyWaiting&&!pushWaiting&&!callWaiting&&d.now()>=attachmentNext);
         if(!permitted()||authenticating||introducing||pending||custodyWaiting>0||pushWaiting>0||callWaiting>0||d.now()<attachmentNext)return null;
         // Both endpoints can transfer at once. Reserve headroom within the shared
         // 3,600 incoming attachment frames/minute budget (requests plus responses).
@@ -551,7 +562,7 @@ export function createPersistentAxon(d: {
         // Bounded local contention must not immediately mark a healthy relay unavailable.
         // Use a bounded number of waits so clock changes cannot prolong the queue.
         for (let waits = 0; permitted() && (authenticating || introducing || pending || callPriority()) && waits < 80; waits++)
-          await wait(25);
+          await wait(25,()=>!authenticating&&!introducing&&!pending&&!callPriority());
         if (!permitted() || authenticating || introducing || pending || callPriority()) return null;
         let operation:string|undefined;try{operation=JSON.parse(raw)?.operation;}catch{/* Handler validates opaque payloads. */}
         if(operation==='poll'||operation==='group-poll'){
@@ -561,7 +572,7 @@ export function createPersistentAxon(d: {
         const result = await exchange('custody', raw);
         return permitted() ? result : null;
       } catch { return null; }
-      finally { custodyWaiting--; }
+      finally { custodyWaiting--; notifyWaiters(); }
     },
     sendTestMessage: (text: string, id?: string) => tests?.send(text, id) ?? Promise.resolve(false),
     async sendChatMessage(text:string,id:string){const start=d.now();const accepted=await (chat?.send(text,id)??Promise.resolve(false));if(accepted)observeResponse(start,false);return accepted;},
@@ -584,6 +595,6 @@ export function createPersistentAxon(d: {
       else if (peer && d.now() >= introduceAt) void discover();
     },
     snapshot: () => ({ state: stopped ? 'closed' : peer ? 'connected' : 'authenticating',
-      account: peer?.account ?? null, expiresAt: peer?.expiresAt ?? null, closeReason, mediaLane:peerMediaLane,bulkAttachments:peerBulk,mediaWindow,mediaInFlight:mediaPending.size,consecutiveMediaTimeouts, traffic: {...traffic},quality:{...quality} }),
+      account: peer?.account ?? null, expiresAt: peer?.expiresAt ?? null, closeReason, mediaLane:peerMediaLane,bulkAttachments:peerBulk,mediaWindow,mediaInFlight:mediaPending.size,consecutiveMediaTimeouts, traffic: {...traffic},quality:{...quality},requestTimings:Object.fromEntries(Object.entries(requestTimings).map(([name,row])=>[name,{...row}])) }),
   };
 }

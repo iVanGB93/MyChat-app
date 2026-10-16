@@ -1,0 +1,58 @@
+Audit fixes — 2026-10-15
+
+Notification recovery
+Removed the per-message FIFO wait. Concurrent verified hints now share a single
+300 ms network pump, while retaining separate bounded receipt-completion waits.
+Each runtime lease is released independently; native wake is released only when
+the last recovery ends. New inline content is admitted without waiting for an
+unrelated missing receipt. Expiry, locked-account and wrong-account checks remain.
+No delivery receipt is inferred merely from notification display or persistence.
+Tests cover duplicate bursts, later inline payloads, expiry, errors, transition to
+background, and two unresolved hints completing in one approximately 20-second
+window instead of approximately 40 seconds. This is deterministic test evidence,
+not a fresh real-world FCM/cold-start latency measurement.
+
+LAN media
+Enabled a maximum of two large encrypted batches in flight. Large-batch prefetch
+remains bounded to two batches; small RTC windows retain their negotiated limits.
+Failure tests prove only the verified contiguous prefix is checkpointed and all
+requests are drained. Cryptographic verification and final checksum are unchanged.
+Both Dev phones restarted to ensure their workers loaded the new implementation.
+Two final 5 MiB transfers completed in 13.188 and 12.523 seconds at the sender;
+both receiver SHA-256 checks matched. Earlier serial observations were 13.805 and
+13.950 seconds. Sample size is small; no general throughput guarantee is claimed.
+The remaining transfer time is still too high for a fast LAN and needs profiling.
+
+Validation
+Final mobile check: 1,170 passed, 3 skipped, 0 failed; TypeScript, module boundaries,
+consolidation and dependency-cycle checks passed. Hosted: 194 passed, 0 failed.
+Temporary Dev transfer hooks removed. Official phone apps/data unchanged.
+No production mobile build started.
+
+AoN release work
+Synchronized missing mobile core updates, including call validation caching and
+call priority changes previously absent from hosted sources. Added missing
+callValidationCache to sync-core; check:core now also runs TypeScript validation.
+Source committed/pushed in AoN aac1286; Railway entrypoint pinned in aa855fe.
+The first Railway upload selected generic Dockerfile and crashed. Corrected
+configuration uses deploy/Dockerfile.railway and /health readiness checking.
+FirstNeuron was deliberately kept running while SecondNeuron recovered.
+Final deployment verification
+The service override also ignored the repository Dockerfile-path setting; the
+second upload therefore failed the same way. Logs showed the generic entrypoint
+had not initialized /run/axonic/fcm.json. Recovered using the established staged
+Railway Dockerfile at /Dockerfile, without modifying stored credentials or data.
+Added scripts/stage-railway.mjs and docs/railway-staging.txt (commit 978cf16) to
+make the correct allowlisted packaging reproducible. Staged Dockerfile hash was
+verified against deploy/Dockerfile.railway. Config file alone is not sufficient.
+SecondNeuron deployment ca0bdcce-f0b5-4fa3-b324-f2f564d9a132 succeeded.
+FirstNeuron then updated with rollback /opt/axonic-neuron-before-audit-fixes-20261015.
+Both authenticated status endpoints confirm unchanged identities, 3/10 connected,
+3/3 identity copies, runtime a67d2c9b15d4ea4331d023684311acf039bb11d74307facd10525cbce17b373e
+(130 modules). FirstNeuron own queue empty; SecondNeuron retained one stored
+message awaiting delivery. That pre-existing user's message was not retried by us.
+Six final Dev text tests: 469, 593, 393, 312, 368, 516 ms to sender delivery ACK.
+
+Still pending: actual cold-start/FCM timing and overnight reliability; full normal
+UI call/audio verification; further LAN CPU/scheduling profiling. These fixes do
+not establish that every generic notification or all perceived lag is resolved.

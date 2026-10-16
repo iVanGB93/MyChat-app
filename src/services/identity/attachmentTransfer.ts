@@ -248,8 +248,12 @@ export function createAttachmentTransfer(d:{
     const start=job.cursor,bulk=relay===manifest.sender&&!!d.bulkRequest&&d.bulkPeers?.().includes(relay);
     const negotiated=bulk?(d.batchChunks?.(relay)??ATTACHMENT_BATCH_CHUNKS):downloadWindow;
     if(!Number.isSafeInteger(negotiated)||negotiated<1||negotiated>ATTACHMENT_BATCH_CHUNKS)throw Error('Invalid negotiated batch size');
-    const window=bulk&&negotiated<=3?(d.batchWindow?.(relay)??2):1;
-    if(!Number.isSafeInteger(window)||window<1||window>4)throw Error('Invalid negotiated batch window');
+    const requestedWindow=bulk?(d.batchWindow?.(relay)??(negotiated<=3?2:1)):1;
+    if(!Number.isSafeInteger(requestedWindow)||requestedWindow<1||requestedWindow>4)throw Error('Invalid negotiated batch window');
+    // LAN batches are larger than RTC batches. Overlap one read with verification
+    // of the previous batch, while bounding buffered plaintext-size equivalents
+    // to 1 MiB and retaining ordered verification/checkpointing.
+    const window=negotiated<=3?requestedWindow:Math.min(2,requestedWindow);
     const pipeline=bulk&&negotiated<=3;
     // At most four windows per turn; keep the negotiated request count in flight.
     const count=Math.min(window*negotiated*(pipeline?4:1),total(job)-start);

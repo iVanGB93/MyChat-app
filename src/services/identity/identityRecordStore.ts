@@ -40,8 +40,18 @@ export function createMobileIdentityRecordStore(now: () => number, capacity = 25
       const ancestry = JSON.parse(JSON.stringify(history)) as IdentityRecord[];
       if (snapshot.account !== account || !verifyRecord(snapshot, now())) return false;
       return serializeWrite(async () => {
+        const database=await db();
+        // An unchanged CAS has no write: linearize at a fresh primary-key read.
+        // Stay inside the shared writer queue, validate the stored record, and
+        // recheck time/ancestry. Changed records still use the SQL transaction.
+        const digest=recordDigest(snapshot);
+        if(expectedDigest===digest){
+          const row=database.getFirstSync<Row>('SELECT account, record, digest FROM identity_records WHERE account = ?',account);
+          const previous=parse(row);
+          if(row?.digest===digest)return compareRecord(snapshot,previous,now(),ancestry)==='accept';
+        }
         let accepted = false;
-        await (await db()).withExclusiveTransactionAsync(async tx => {
+        await database.withExclusiveTransactionAsync(async tx => {
           const row = await tx.getFirstAsync<Row>('SELECT account, record, digest FROM identity_records WHERE account = ?', account);
           const previous = parse(row);
           if ((row?.digest ?? null) !== expectedDigest || compareRecord(snapshot, previous, now(), ancestry) !== 'accept') return;

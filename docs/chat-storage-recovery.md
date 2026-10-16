@@ -15,7 +15,7 @@ The snapshot is private, in noBackupFilesDir/axonic-chat-recovery-v1. It contain
 sensitive app data, is not uploaded, and is not a portable Android Keystore backup.
 Attachments and all original database rows remain in place and are not migrated.
 
-Reads use 64 KiB BLOB substrings inside one SQLite read transaction, then decode
+Reads use 512 KiB BLOB substrings inside one SQLite read transaction, then decode
 UTF-8 once, preserving characters split across chunk boundaries. UI, call policy,
 message notification policy, and notification routing use the same reader.
 Existing ledger validation and AsyncStorage writes remain unchanged. No recovery
@@ -91,3 +91,15 @@ or Hermes. Native fixtures instantiate the patched real AsyncStorage supplier
 with an isolated Context, never the application's RKStorage. They check corrupt
 bytes survive open failure, schema refusal, an 8 MiB write/read, simulated no-space
 preflight, and real SQLite quota rollback. No real messages are transmitted.
+
+## Read-speed follow-up (2026-10-15)
+
+The recovered row was still queried in 64 KiB pieces on every native read.
+The production default is now 512 KiB, below the fixture's fixed 2 MiB window.
+The comparison parameter accepts only 64–512 KiB; JavaScript uses the default.
+On the connected Dev phone, six alternating reads of the identical synthetic
+3,966,130-byte, 2,400-message history took 172/189/174/170/187/177 ms with 64 KiB
+and 46/44/43/43/44/43 ms with 512 KiB. Every result matched byte-for-byte after
+UTF-8 decoding. Backup, corruption, restart/write visibility and storage-capacity
+tests also passed. These are native synthetic read timings, not whole-screen
+latency measurements or a verification of the official app's private history.

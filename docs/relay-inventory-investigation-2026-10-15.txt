@@ -1,0 +1,18 @@
+Relay inventory investigation - 2026-10-15 EDT
+
+UI:
+- Renamed to Relay storage for others. Separate selectable Held content, Delivery receipts, Cleanup markers, Expired records, Temporary controls.
+- Total count remains all metadata records; list/pagination filters selected category. Explanations distinguish metadata from unread/pending messages and network-wide state.
+- Category precedence: expired, memory, cleanup marker, receipt, held content. Media bytes can remain held separately from a media receipt/manifest.
+- Verified category rendering and cleanup filter on iVan Dev with ADB UI hierarchy/screenshot. Both Dev aggregate reads succeeded. No storage mutations or official-app changes.
+
+30 envelopes investigated:
+- iVan Dev holds14:11 outgoing read actions from other Dev phone (7 for prior Phone Dev identity efb3aa37,2 for previous emulator identity8d80cd78,2 for ephemeral notification test sender e1869c5e); matched sender ledger pending actions.
+- Other Dev holds16:recipient aa71e3ab is an older emulator/test identity found in prior public test artifacts.7 IDs match pending sender ledger messages;9 are not in current messages/actions/groupActions. Cannot infer their plaintext type from relay metadata. No emulators currently attached and recipient not connected to either test phone.
+- Remaining3 on iVan:2 fromFirstNeuron to5db9e434,1 between identities b1fbeb7a/d24eeba3. First's33831eae is confirmed own outgoing stored/pending by API and ledger.643ea337 not in its current message/action ledger;1c2aac12 not identified in saved test evidence. These2 remain unclassified.
+- All30 unexpired; observed ages about15min,38min,251min and611min.24h envelope retention minus30s skew headroom. No receipt on these local relay copies. No evidence from this inspection that retention cleanup has failed; missing local receipts cannot establish global non-delivery.
+- Final metadata totals unchanged: iVan22=14 envelopes+4 receipts+4 no-payload markers; other25=16 envelopes+9 markers.
+- No manual purge: valid recipient receipt or expiry must govern ciphertext deletion.
+
+Validation: npm run check1177passed,3skipped,0failed; type/cycle/module/consolidation passed. Final total-label punctuation correction manually inspected. No build, deployment, commit or push.
+Artifacts ignored in builds/:relay-investigation.json,relay-sender-status.jsonl,relay-categories-check.log,axonic-relay-ui.xml/png. Only metadata collected for investigation; no private keys or decrypted relay contents.

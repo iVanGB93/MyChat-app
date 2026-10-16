@@ -34,3 +34,19 @@ export function relayInventoryPage(snapshot:RelayInventory,offset=0,limit=50){
 export function relayPacketDetails(r:RelayPacketMetadata){
  return [['Packet ID',r.id],['Digest',r.digest],['Sender',r.sender],['Recipient',r.recipient],['Created',r.createdAt===undefined?undefined:new Date(r.createdAt).toLocaleString()],['Expires',r.expiresAt===undefined?undefined:new Date(r.expiresAt).toLocaleString()],['Received from relay',r.source],['Replicated to',r.replicatedTo],['Declared file bytes',r.declaredBytes],['Checkpoint chunks (not current storage)',r.checkpointChunks],['Chunks currently stored',r.chunkCount],['First / last chunk index',r.firstChunk===undefined?undefined:r.firstChunk+' / '+r.lastChunk],['Stored serialized chunk bytes',r.storedBytes]].filter(([,value])=>value!==undefined).map(([label,value])=>({label:String(label),value:String(value)}));
 }
+
+export const relayCategories = [
+ {id:'content',label:'Held content',description:'Encrypted envelopes, group grants and media. A stored copy alone does not prove the recipient is still waiting.'},
+ {id:'receipts',label:'Delivery receipts',description:'Delivery confirmations waiting to be collected; these are not unread messages.'},
+ {id:'cleanup',label:'Cleanup markers',description:'No message content. Temporary records prevent completed packets from being deposited again.'},
+ {id:'expired',label:'Expired records',description:'Past retention time and awaiting normal storage maintenance.'},
+ {id:'temporary',label:'Temporary controls',description:'Short-lived call-control records in memory.'},
+] as const;
+export type RelayCategory=typeof relayCategories[number]['id'];
+export function relayPacketCategory(row:RelayPacketMetadata,now:number):RelayCategory{
+ if(row.expiresAt!==undefined&&row.expiresAt<=now)return 'expired';
+ if(row.storage==='memory')return 'temporary';
+ if(row.kind.includes('cleanup marker'))return 'cleanup';
+ if(row.kind.includes('receipt'))return 'receipts';
+ return 'content';
+}

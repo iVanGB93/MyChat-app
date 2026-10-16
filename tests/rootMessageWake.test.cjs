@@ -27,7 +27,7 @@ async function fixture(t,options={}){
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
  const preferences={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationPreferences.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(preferences,n=>imports[n]??protocol(n.slice(2)));imports['./rootNotificationPreferences']=preferences;
  const mod={};new Function('exports','require','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)),options.setTimeout??setTimeout,clearTimeout);
- const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:'private text',now,random:async n=>new Uint8Array(n).fill(12)});
+ const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:options.silent?JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]):'private text',now,random:async n=>new Uint8Array(n).fill(12)});
  const data=c.createCustodyWake(envelope,sender);
  return {database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
  onDisplay:fn=>onDisplay=fn,delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
@@ -99,6 +99,18 @@ test('only verified signed wakes may request inbox recovery',async t=>{
  await f.mod.receiveRootMessageWake(f.data,recover);assert.equal(recovered,1);
 });
 
+test('control admitted before its first wake remains quiet even without a chat row',async t=>{
+ const f=await fixture(t);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id);
+ await f.mod.receiveRootMessageWake(f.data);
+ assert.equal(f.shown.length,0);
+});
+test('foreground group preview retires its matching generic direct notification',async t=>{
+ const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,1);
+ f.app.currentState='active';
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Group',text:'Hello',at:Date.now(),group:'ab'.repeat(32)});
+ assert.equal(f.toasts.length,1);assert.equal(f.displayed.size,0);
+});
 test('processed read/control envelopes never create a phantom message notification',async t=>{
  const f=await fixture(t);f.storage.set('@axonic_root_chat_v1:'+f.recipient.account,JSON.stringify({version:1,contacts:[],messages:[],actions:[{id:f.envelope.id,peer:f.sender.account,direction:'incoming'}]}));
  await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,0);
@@ -280,4 +292,14 @@ test('only ciphertext bound to the verified wake reaches inline recovery',async 
 test('delivery during channel setup suppresses a late generic notification',async t=>{
  let delivered=()=>{};const f=await fixture(t,{onChannel:()=>delivered()});delivered=f.delivered;
  await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,0);
+});
+
+test('signed silent read wake recovers but never alerts while account remains locked',async t=>{
+ const f=await fixture(t,{silent:true});f.lock();let recovered=0;
+ await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;});
+ await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;});
+ assert.equal(recovered,2);assert.equal(f.shown.length,0);
+ const e=JSON.parse(f.data.event);assert.equal(e.wakeMode,'silent');delete e.wakeMode;
+ await f.mod.receiveRootMessageWake({...f.data,event:JSON.stringify(e)},async()=>{recovered++;});
+ assert.equal(recovered,2,'stripping silent intent invalidates wake signature');assert.equal(f.shown.length,0);
 });

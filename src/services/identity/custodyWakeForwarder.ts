@@ -12,6 +12,11 @@ export function createCustodyWakeForwarder(d: {
   const attempts = new Map<string, {next:number;failures:number;forwarded:boolean;seen:Set<string>;defer:Map<string,number>;requests:number;last:string;at:number}>();
   const work={schedulerChecks:0,storeReads:0,selectedItems:0,localGatewayCalls:0,remoteGatewayCalls:0,requestPayloadBytes:0,responsePayloadBytes:0,elapsedMs:0};
   const outcomes:Record<string,number>={};
+  // Legacy peers can advertise the push protocol without providing a gateway.
+  // Remember an explicit unsupported reply across messages, but retry after a
+  // bounded interval so an upgraded peer can become useful without losing mail.
+  const unsupportedUntil=new Map<string,number>();
+  const gateways=()=>d.peers().slice(0,10).filter(p=>(unsupportedUntil.get(p)??0)<=d.now());
   let freshRun=0;
   const current = () => !stopped && d.current();
   return {
@@ -20,7 +25,7 @@ export function createCustodyWakeForwarder(d: {
       if (busy || !current() || d.now() < next) return;
       busy = true; next = d.now() + 1000;
       try {
-        const peers = d.peers().slice(0, 10); if (!peers.length) return;
+        const peers = gateways(); if (!peers.length) return;
         work.storeReads++;
         const rows = await readCustodyStore(d.store,rows => rows.filter(r => r.packet?.kind === 'envelope' && r.packet.wakeSignature && r.expires > d.now()).map(r => r.packet as CustodyEnvelope));
         const key = (r: CustodyEnvelope) => r.sender + r.id;
@@ -67,6 +72,10 @@ export function createCustodyWakeForwarder(d: {
             if (!current()) return;
             const status=['forwarded','retry','rejected','unsupported'].includes(reply?.status)?reply.status:'unavailable';
             state.last=status;state.at=d.now();outcomes[status]=(outcomes[status]??0)+1;
+            if(status==='unsupported'){
+              if(unsupportedUntil.size>=128&&!unsupportedUntil.has(peer))unsupportedUntil.delete(unsupportedUntil.keys().next().value!);
+              unsupportedUntil.set(peer,d.now()+300000);
+            }
             if(status==='retry'&&Number.isSafeInteger(reply.retryAfterMs)&&reply.retryAfterMs>0){if(state.defer.size<64||state.defer.has(peer))state.defer.set(peer,Math.min(packet.expires,d.now()+Math.min(900000,reply.retryAfterMs)));}
             if (status === 'forwarded') {state.next=packet.expires;state.failures=0;state.forwarded=true;return;}
           } catch {state.last='exception';state.at=d.now();outcomes.exception=(outcomes.exception??0)+1; /* Another gateway, then bounded retry. */ }
@@ -74,7 +83,7 @@ export function createCustodyWakeForwarder(d: {
       } catch { /* Storage/transport failures retain the encrypted envelope. */ }
       finally { busy = false; }
     },
-    diagnostics(){const peers=d.peers().slice(0,10),rows=[...attempts.values()],nextAt=(s:typeof rows[number])=>peers.length?Math.min(...peers.map(p=>Math.max(s.seen.size<64&&!s.seen.has(p)?d.now():s.next,s.defer.get(p)??0))):null;return {purpose:'Wake a recipient for retained message custody; not call wakes or message delivery',work:{...work},outcomes:{...outcomes},workScope:'Runtime counters. Gateway calls are adapter invocations, not confirmed transmissions; bytes are JSON payload bytes, not wire bytes; elapsedMs sums local and remote request time.',trackedEnvelopes:attempts.size,backingOff:rows.filter(s=>!s.forwarded&&(nextAt(s)??Infinity)>d.now()).length,acceptedEnvelopes:rows.filter(s=>s.forwarded).length,pendingSample:rows.filter(s=>!s.forwarded).slice(0,8).map(s=>({requests:s.requests,lastOutcome:s.last,lastObservedAt:s.at,nextRetryAt:nextAt(s)})),sampleScope:'Up to eight currently tracked items; no message/account IDs; not lifetime unique counts',retryPolicy:'30s exponential backoff capped at 15 minutes; honor per-gateway retry delays up to 15 minutes; new gateways get one prompt attempt; reconnects do not reset backoff; gateway acceptance is not delivery'};},
-    stop() { stopped = true; attempts.clear(); },
+    diagnostics(){const peers=gateways(),rows=[...attempts.values()],nextAt=(s:typeof rows[number])=>peers.length?Math.min(...peers.map(p=>Math.max(s.seen.size<64&&!s.seen.has(p)?d.now():s.next,s.defer.get(p)??0))):null;return {purpose:'Wake a recipient for retained message custody; not call wakes or message delivery',work:{...work},outcomes:{...outcomes},workScope:'Runtime counters. Gateway calls are adapter invocations, not confirmed transmissions; bytes are JSON payload bytes, not wire bytes; elapsedMs sums local and remote request time.',trackedEnvelopes:attempts.size,backingOff:rows.filter(s=>!s.forwarded&&(nextAt(s)??Infinity)>d.now()).length,acceptedEnvelopes:rows.filter(s=>s.forwarded).length,pendingSample:rows.filter(s=>!s.forwarded).slice(0,8).map(s=>({requests:s.requests,lastOutcome:s.last,lastObservedAt:s.at,nextRetryAt:nextAt(s)})),sampleScope:'Up to eight currently tracked items; no message/account IDs; not lifetime unique counts',retryPolicy:'30s exponential backoff capped at 15 minutes; honor per-gateway retry delays up to 15 minutes; new gateways get one prompt attempt; reconnects do not reset backoff; gateway acceptance is not delivery'};},
+    stop() { stopped = true; attempts.clear(); unsupportedUntil.clear(); },
   };
 }

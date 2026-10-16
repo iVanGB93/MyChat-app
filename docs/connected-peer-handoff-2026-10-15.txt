@@ -1,0 +1,21 @@
+Connected-peer queue handoff - 2026-10-15 EDT
+
+Implemented in persistentAxon.ts:
+- Existing bounded control contention waits now carry an eligibility predicate.
+- Response completion, authentication/discovery completion and released reservations wake eligible waiters immediately.
+- Existing 25ms timer/native-tick fallback, reservation limits, bounded attempts, call fairness, authorization and frame limits remain.
+- Rate-limited pipelined media waits unchanged. No new wire fields, probes, encryption or signature changes.
+
+Evidence:
+- Deterministic regression holds the first custody handler, queues another request, releases the first and drains promise continuations without timers: second request reaches the handler immediately. The previous polling path cannot pass this test.
+- Full npm run check passed: 1174 passed, 3 skipped, zero failed; type/cycle/module/consolidation checks passed.
+- Both authorized com.axonic.dev phones loaded the change via Metro. Six labeled local-chat test messages delivered (sender observed durable delivery): 756,535,511 ms one direction; 416,522,518 ms reverse. Enqueue 8-124ms. Observation includes 100ms polling; not raw RTT or a controlled before/after speed claim.
+- Existing LAN and AoN sessions were inspected through local diagnostics. Test used Dev identities only; official apps untouched.
+
+Rejected candidate:
+- ASCII-regex fast byte count was slower than TextEncoder for 700KB frames on both phones (12.57 vs9.76ms;2.67vs1.87ms in small samples). No production change made for it.
+
+Scope/limits:
+- Eliminates up to the polling interval of avoidable idle handoff per contended control exchange; does not promise a fixed whole-message speedup.
+- Wi-Fi variability, storage and UI scheduling remain contributors. No production build, commit, push or AoN deployment this turn.
+- Ignored artifacts: builds/peer-handoff-check.log, peer-handoff-tests.log, peer-handoff-texts.jsonl, peer-handoff-live.jsonl, frame-size-bench.json.

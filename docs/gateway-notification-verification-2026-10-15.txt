@@ -1,0 +1,35 @@
+Gateway selection and background notification verification - 2026-10-15 EDT
+
+Fix:
+- Mobile axon hello advertises pushGateway=0 while retaining push registration/request support.
+- supportsPush excludes explicitly non-gateway peers; legacy peers remain compatible.
+- An authenticated unsupported wake response suppresses that gateway across messages for five minutes (bounded 128-entry cache). Other gateways and existing exponential retry rules remain available.
+
+Automated validation:
+- Mobile npm run check: 1172 passed, 3 skipped, no failures; type/cycle/module/consolidation checks passed.
+- AoN shared core and suite: 194 passed.
+- Regression coverage: client registration still works; legacy unsupported gateway is skipped across 11 envelopes and reconsidered after expiry, without deleting custody.
+
+Deployment:
+- Both AoNs verified healthy on runtime 11fcd484dc16c366485d73482cd33a613f1bab4462e4743b2ea5a611de3f23b8.
+- Source commit 1f4fff4 pushed. Both identities preserved. FirstNeuron rollback retained.
+- SecondNeuron deployment c489ff76-7408-408c-aa40-e10d0f36efd9 via stage-railway.mjs.
+
+Live verification on both com.axonic.dev phones:
+- Small encrypted test: screen off, signed receipt and content preview, one local message; observed completion 4.878 / 4.882 seconds.
+- Large metadata-only wake test: app background, signed receipt and content preview, one local message; 2.861 / 4.878 seconds.
+- Duplicate wake: no additional notification or local message.
+- Muted: delivered without a notification for the new message (previous notification remained unchanged).
+- Repeated completed deposit: completed response, no new delivery.
+- Timings include polling and notification inspection, not precise FCM latency.
+- Test artifacts: builds/gateway-notifications-{serial}-20261016.json.
+
+Post-deployment snapshot:
+- First at 206s uptime: unsupported responses 2, gateway attempts 378, remote session calls 182, forwarded 16; actual provider calls 6, sent 6, errors 0.
+- Second at 365s uptime: unsupported responses 3, gateway attempts 581, remote session calls 291, forwarded 16; actual provider calls 0, errors 0.
+- Epochs differ; these are not before/after rate comparisons. Remaining no-authorized-destination retries are not fixed by gateway classification.
+
+Limits:
+- Screen-off/background tests; not process-dead, deep-idle, or overnight validation.
+- Dev bundle updated; official apps untouched. No production mobile build created.
+- Only generated test messages sent to the authorized Dev identities.

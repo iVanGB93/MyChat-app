@@ -53,6 +53,13 @@ async function settle(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 5)); }
   assert.fail('condition did not settle');
 }
+test('a push client can register with a gateway without advertising itself as a gateway',async t=>{
+ const f=pair(t,{0:{onPush:Object.assign(async()=>'{"status":"unsupported"}',{gateway:false})},1:{onPush:async()=>'{"status":"registered"}'}});
+ await Promise.all(f.sessions.map(s=>s.ready));
+ assert.equal(f.sessions[0].supportsPush(),true);assert.equal(f.sessions[1].supportsPush(),false);
+ assert.equal(JSON.parse(await f.sessions[0].pushRequest('{"operation":"register"}')).status,'registered');
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+});
 
 for(const mode of ['success','lock','deadline','count-limit','byte-limit'])test(`early custody traffic waits for authentication with bounded lifetime (${mode})`,async t=>{
  let release,held=false,delayRead=false,index=0,handled=0;
@@ -1405,7 +1412,7 @@ for(const modes of [['small4','small4'],['small4','small'],['small','small4']])t
 
 test('quality observes existing exchanges without adding wire frames or advertising scores',async t=>{
  let f;f=pair(t,{0:{onCustody:async()=> 'ok'},1:{onCustody:async()=>{f.advance(75);return 'ok';}}});await Promise.all(f.sessions.map(s=>s.ready));
- const before=f.transport.history.map(h=>h.length);assert.equal(await f.sessions[0].custodyRequest('poll'),'ok');const q=f.sessions[0].snapshot().quality;assert.equal(q.samples,1);assert.equal(q.responseMs,75);
+ const before=f.transport.history.map(h=>h.length);assert.equal(await f.sessions[0].custodyRequest('poll'),'ok');const q=f.sessions[0].snapshot().quality;assert.equal(q.samples,1);assert.equal(q.responseMs,75);assert.equal(f.sessions[0].snapshot().requestTimings['roundTrip:custody'].meanMs,75);assert.equal(f.sessions[1].snapshot().requestTimings['handler:custody'].meanMs,75);
  assert.deepEqual(f.transport.history.map((h,i)=>h.length-before[i]),[1,1]);assert.ok(f.transport.history.flat().every(raw=>!raw.includes('quality')&&!raw.includes('responseMs')));
  f.transport.blackhole();const work=f.sessions[0].custodyRequest('poll');await new Promise(r=>setImmediate(r));f.advance(4001);f.sessions[0].tick();await work;assert.equal(f.sessions[0].snapshot().quality.failures,1);
 });
@@ -1455,4 +1462,14 @@ test('recovery budget survives socket replacement and clock rollback; invalid se
  assert(p.reserveRecoveryPoll(owner,peer,now-5000)>0);
  assert.throws(()=>p.setRecoveryPolicy({pollsPerMinute:Infinity,custodyFramesPerMinute:512}));
  assert.throws(()=>p.setRecoveryPolicy({pollsPerMinute:60,custodyFramesPerMinute:0}));
+});
+
+test('queued custody hands off on reply without waiting for the polling timer',async t=>{
+ let release;const seen=[];const f=pair(t,{0:{onCustody:async()=> 'ok'},1:{onCustody:async raw=>{seen.push(raw);if(raw==='first')await new Promise(r=>release=r);return 'ok';}}});
+ await Promise.all(f.sessions.map(s=>s.ready));const first=f.sessions[0].custodyRequest('first');await settle(()=>!!release);
+ const second=f.sessions[0].custodyRequest('second');assert.deepEqual(seen,['first']);release();
+ // Drain promise continuations, not a wall-clock timeout: the old 25ms polling path cannot run here.
+ for(let i=0;i<30;i++)await Promise.resolve();
+ assert.deepEqual(seen,['first','second']);assert.deepEqual(await Promise.all([first,second]),['ok','ok']);
+ assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
 });

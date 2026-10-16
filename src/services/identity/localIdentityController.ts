@@ -198,8 +198,6 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
     async sealCustody(recipient: IdentityRecord, recipientDevice: string, id: string, text: string) {
       const e = epoch, source = identity; if (!source || busy) throw Error('Unlock the local account first');
       const result = await sealCustody({ ...source, recipient, recipientDevice, id, text, now: now(), random });
-      // Silent history updates synchronize at unlock; they must not create message notifications.
-      try { if (['axonic-root-action-v1','axonic-root-group-action-v1','axonic-avatar-part-v1','axonic-avatar-request-v1'].includes(JSON.parse(text)?.[0])) delete result.wakeSignature; } catch { /* Ordinary text retains its wake. */ }
       assertCurrent(e); if (source !== identity) throw Error('Account operation interrupted'); return result;
     },
     async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>, group?:GroupCustodyPayload) {

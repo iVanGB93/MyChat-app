@@ -79,7 +79,13 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  await waitForRecovery(recovery,10000,deadline.remaining);
  await serial(async()=>{
   const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now())return;
-  const database=await db();let admitted=false,previouslyAlerted=false;
+  const database=await db();
+  if(event.wakeMode==='silent'){
+   // Presentation intent is covered by the sender's wake signature, even while locked.
+   await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner.account,sender,event.id,event.expires);
+   await cancelRootMessageNotification(owner.account,sender,event.id);setStage('silent-control');return;
+  }
+  let admitted=false,previouslyAlerted=false;
   await database.withExclusiveTransactionAsync(async tx=>{
    await tx.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
    const prior=await tx.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
@@ -154,10 +160,16 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   if(current?.account!==owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
   const [preferences,blocked,isMuted]=await Promise.all([readRootNotificationPreferences(owner),rootWakeBlocked(owner,sender),muted(owner,sender,preview?.group)]);
   const quiet=!preferences.messages||!preview||preview.read||blocked||isMuted||(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group));
-  if(quiet){if(preview?.group)await cancelRootMessageNotification(owner,sender,id);await database.runAsync('UPDATE notices SET displayed=2 WHERE owner=? AND sender=? AND id=?',owner,sender,id);await cancelRootMessageNotification(owner,sender,id,preview?.group);return;}
+  if(quiet){if(preview?.group)await cancelRootMessageNotification(owner,sender,id);
+   // Direct delivery can finish before the first wake creates a notice row.
+   // Remember consumed control/read/muted packets too, so a delayed hint cannot
+   // manufacture a new-message alert for a packet with no unread conversation.
+   await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);
+   await cancelRootMessageNotification(owner,sender,id,preview?.group);return;}
   const prior=await database.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner,sender,id);if(prior?.displayed===2)return;
   await database.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
   if(AppState.currentState==='active'&&publishRootMessageToast({account:owner,sender,...(preview.group?{group:preview.group}:{}),name:preview.name,text:preview.text})){
+   if(preview.group)await cancelRootMessageNotification(owner,sender,id);
    await cancelRootMessageNotification(owner,sender,id,preview?.group);setStage('preview');
    await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);return;
   }

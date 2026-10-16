@@ -13,6 +13,7 @@ export interface CustodyEnvelope {
   ephemeral: string; nonce: string; ciphertext: string; signature: string;
   /** Optional signed public wake metadata; older custodians can ignore it. */
   wakeSignature?: string;
+  wakeMode?: 'silent';
 }
 export interface CustodyReceipt {
   version: 1; kind: 'receipt'; id: string; sender: string; recipient: string;
@@ -25,9 +26,9 @@ const header = (e: CustodyEnvelope) => ['axonic-custody-envelope-v1', e.id, e.se
 const signedEnvelope = (e: CustodyEnvelope) => bytes([...header(e), e.ciphertext]);
 const signedReceipt = (r: CustodyReceipt) => bytes(['axonic-custody-receipt-v1', r.id, r.sender, r.recipient, r.recipientDevice, r.expires, r.digest]);
 export const custodyDigest = (e: CustodyEnvelope) => bytesToHex(sha256(bytes([bytesToHex(signedEnvelope(e)), e.signature])));
-type CustodyWake = {version:1;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;expires:number;digest:string;signature:string};
-const wakeBody=(e:CustodyWake)=>bytes(['axonic-custody-wake-v1',e.version,e.id,e.sender,e.senderDevice,e.recipient,e.recipientDevice,e.expires,e.digest]);
-const wakeFields=(e:CustodyEnvelope):CustodyWake=>({version:1,id:e.id,sender:e.sender,senderDevice:e.senderDevice,recipient:e.recipient,recipientDevice:e.recipientDevice,expires:e.expires,digest:custodyDigest(e),signature:e.wakeSignature??''});
+type CustodyWake = {version:1;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;expires:number;digest:string;signature:string;wakeMode?:'silent'};
+const wakeBody=(e:CustodyWake)=>bytes(['axonic-custody-wake-v1',e.version,e.id,e.sender,e.senderDevice,e.recipient,e.recipientDevice,e.expires,e.digest,...(e.wakeMode==='silent'?['silent']:[])]);
+const wakeFields=(e:CustodyEnvelope):CustodyWake=>({version:1,id:e.id,sender:e.sender,senderDevice:e.senderDevice,recipient:e.recipient,recipientDevice:e.recipientDevice,expires:e.expires,digest:custodyDigest(e),signature:e.wakeSignature??'',...(e.wakeMode==='silent'?{wakeMode:'silent' as const}:{})});
 // Conservative data budget leaves room for FCM routing fields. No plaintext is added.
 export const CUSTODY_WAKE_DATA_BYTES=3500;
 export function createCustodyWake(e:CustodyEnvelope,record:IdentityRecord,inline=false){
@@ -51,6 +52,7 @@ export function verifyCustodyWake(data:unknown,record:IdentityRecord,account:str
     const e=JSON.parse(d.event) as CustodyWake;
     if(e.version!==1||e.sender!==record.account||e.recipient!==account||e.recipientDevice!==device||e.sender===e.recipient
       ||!hex(e.id,32)||!hex(e.senderDevice,32)||!hex(e.digest,32)||!hex(e.signature,64)||!Number.isSafeInteger(e.expires)||e.expires<=now||e.expires>now+CUSTODY_TTL)return null;
+    if(e.wakeMode!==undefined&&e.wakeMode!=='silent')return null;
     const signer=record.devices.find(v=>v.id===e.senderDevice);
     return signer&&ed25519.verify(hexToBytes(e.signature),wakeBody(e),hexToBytes(signer.signing),{zip215:false})?e:null;
   }catch{return null;}
@@ -66,8 +68,9 @@ export function parseCustody(raw: string, now: number): CustodyEnvelope | Custod
       && typeof p.ciphertext === 'string' && p.ciphertext.length >= 34 && p.ciphertext.length <= 4128 && /^(?:[a-f0-9]{2})+$/.test(p.ciphertext)
       && Number.isSafeInteger(p.created) && p.created >= 0 && p.created <= now + 30000 && p.expires > p.created && p.expires - p.created <= CUSTODY_TTL) {
       const { version, kind, id, sender, senderDevice, recipient, recipientDevice, created, expires, ephemeral, nonce, ciphertext, signature } = p;
+      if(p.wakeMode!==undefined&&p.wakeMode!=='silent')return null;
       if(p.wakeSignature!==undefined&&!hex(p.wakeSignature,64))return null;
-      return { version, kind, id, sender, senderDevice, recipient, recipientDevice, created, expires, ephemeral, nonce, ciphertext, signature,...(p.wakeSignature?{wakeSignature:p.wakeSignature}:{}) };
+      return { version, kind, id, sender, senderDevice, recipient, recipientDevice, created, expires, ephemeral, nonce, ciphertext, signature,...(p.wakeSignature?{wakeSignature:p.wakeSignature}:{}),...(p.wakeMode==='silent'?{wakeMode:'silent' as const}:{}) };
     }
     if (p.kind === 'receipt' && hex(p.digest, 32)) {
       const { version, kind, id, sender, recipient, recipientDevice, expires, digest, signature } = p;
@@ -86,8 +89,12 @@ export async function verifyCustody(p: CustodyEnvelope | CustodyReceipt, records
     return ed25519.verify(hexToBytes(p.signature), p.kind === 'envelope' ? signedEnvelope(p) : signedReceipt(p), hexToBytes(device.signing), { zip215: false });
   } catch { return false; }
 }
+/** Sender-controlled presentation intent; never authorizes plaintext actions. */
+export function silentCustodyText(text:string){
+  try{return ['axonic-root-action-v1','axonic-root-group-action-v1','axonic-avatar-part-v1','axonic-avatar-request-v1'].includes(JSON.parse(text)?.[0]);}catch{return false;}
+}
 export async function sealCustody(d: { record: IdentityRecord; signingSeed: Uint8Array; encryptionSeed: Uint8Array;
-  recipient: IdentityRecord; recipientDevice: string; id: string; text: string; now: number; random(n: number): Promise<Uint8Array> }): Promise<CustodyEnvelope> {
+  recipient: IdentityRecord; recipientDevice: string; id: string; text: string; silent?:boolean; now: number; random(n: number): Promise<Uint8Array> }): Promise<CustodyEnvelope> {
   const device = publicDevice(d.signingSeed, d.encryptionSeed), recipient = d.recipient.devices.find(v => v.id === d.recipientDevice);
   if (!verifyRecord(d.record, d.now) || !verifyRecord(d.recipient, d.now) || !d.record.devices.some(v => v.id === device.id)
     || !recipient || d.record.account === d.recipient.account || !hex(d.id, 32) || typeof d.text !== 'string'
@@ -99,7 +106,7 @@ export async function sealCustody(d: { record: IdentityRecord; signingSeed: Uint
     const e: CustodyEnvelope = { version: 1, kind: 'envelope', id: d.id, sender: d.record.account, senderDevice: device.id,
       // Leave headroom for a slower peer without extending its retention cap.
       recipient: d.recipient.account, recipientDevice: recipient.id, created: d.now, expires: d.now + CUSTODY_TTL - 30_000,
-      ephemeral: bytesToHex(x25519.getPublicKey(secret)), nonce: bytesToHex(nonce), ciphertext: '', signature: '' };
+      ephemeral: bytesToHex(x25519.getPublicKey(secret)), nonce: bytesToHex(nonce), ciphertext: '', signature: '',...(d.silent||silentCustodyText(d.text)?{wakeMode:'silent' as const}:{}) };
     const aad = bytes(header(e)); shared = x25519.getSharedSecret(secret, hexToBytes(recipient.encryption));
     key = hkdf(sha256, shared, sha256(aad), utf8ToBytes('axonic-custody-key-v1'), 32);
     e.ciphertext = bytesToHex(xchacha20poly1305(key, nonce, aad).encrypt(plain));

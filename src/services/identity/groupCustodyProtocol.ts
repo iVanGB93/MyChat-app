@@ -5,7 +5,7 @@ import {xchacha20poly1305} from '@noble/ciphers/chacha.js';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes,utf8ToBytes} from '@noble/hashes/utils.js';
 import {publicDevice,validAccountId,verifyRecord,type IdentityRecord} from './identityProtocol.ts';
-import {custodyDigest,sealCustody,parseCustody,verifyCustody,CUSTODY_TTL,type CustodyEnvelope} from './custodyProtocol.ts';
+import {custodyDigest,sealCustody,silentCustodyText,parseCustody,verifyCustody,CUSTODY_TTL,type CustodyEnvelope} from './custodyProtocol.ts';
 import type {IdentityRecordStore} from './identityAdmission.ts';
 export const GROUP_CUSTODY_BYTES=60000;
 type Recipient={id:string;recipient:string;recipientDevice:string;digest:string};
@@ -54,9 +54,7 @@ export async function sealGroupCustody(d:{record:IdentityRecord;signingSeed:Uint
  const digest=contentDigest(payload),grants:CustodyEnvelope[]=[];
  for(const r of d.recipients){if(typeof r.metadata!=='string'||utf8ToBytes(r.metadata).length>1400)throw Error('Group recipient metadata too large');
  const text=JSON.stringify(['axonic-group-grant-v1',d.id,digest,bytesToHex(key),r.metadata]);
- const envelope=await sealCustody({...d,recipient:r.record,recipientDevice:r.device,id:r.id,text});
- // Reactions and edits must not create a new-message notification.
- try{if(JSON.parse(d.text)?.[0]==='axonic-root-group-action-v1')delete envelope.wakeSignature;}catch{}
+ const envelope=await sealCustody({...d,recipient:r.record,recipientDevice:r.device,id:r.id,text,silent:silentCustodyText(d.text)});
  grants.push(envelope);}
  payload.recipients=grants.map(e=>({id:e.id,recipient:e.recipient,recipientDevice:e.recipientDevice,digest:custodyDigest(e)}));
  payload.signature=bytesToHex(ed25519.sign(signed(payload),d.signingSeed));

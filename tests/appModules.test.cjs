@@ -66,9 +66,9 @@ test('outbox wake notification follows successful durable enqueue only',async()=
 });
 test('wake sends the newly queued message without a periodic tick and preserves older outbox work',async()=>{
  const f=setup();await f.commands.sendText(c,'older');const id=await f.commands.sendText(b,'now');const sent=[];
- const d=delivery(f,{send:async(peer,raw,id)=>{sent.push(id);return true;}});
+ const d=delivery(f,{send:async(peer,raw,key)=>{sent.push(key);return key===id;}});
  d.worker.wake(b,id);await until(async()=> (await f.ledger.snapshot()).messages.find(m=>m.id===id).status==='delivered');d.worker.stop();
- assert.deepEqual(sent,[id]);assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');
+ assert.equal(sent[0],id);assert.equal(sent.filter(key=>key===id).length,1);assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');
 });
 test('wake during an active send is retained without concurrent duplicate sends',async()=>{
  const f=setup(),first=await f.commands.sendText(b,'first');let release,active=0,peak=0;const sent=[];

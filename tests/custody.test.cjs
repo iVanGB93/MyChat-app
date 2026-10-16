@@ -432,6 +432,18 @@ test('ordinary custody forwards only signed wake metadata and retries other peer
  await f.request(service,2,'receipt',receipt);f.advance(1000);await forward.tick();assert.equal(sent.length,2);
 });
 
+test('unsupported legacy gateways are deferred across messages without blocking another gateway',async t=>{
+ const f=fixture(t),service=f.service(),sent=[];
+ await f.request(service,0,'deposit',await f.seal());
+ const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,current:()=>true,now:f.now,
+ peers:()=>['legacy','gateway'],request:async peer=>{sent.push(peer);return JSON.stringify({status:peer==='legacy'?'unsupported':'retry'});}});
+ await forward.tick();assert.deepEqual(sent,['legacy','gateway']);
+ for(let i=0;i<10;i++){await f.request(service,0,'deposit',await f.seal());f.advance(1000);await forward.tick();}
+ assert.equal(sent.filter(p=>p==='legacy').length,1);assert(sent.filter(p=>p==='gateway').length>1);
+ f.advance(300000);await forward.tick();assert.equal(sent.filter(p=>p==='legacy').length,2);
+ assert.equal((await f.store.inspect()).filter(r=>r.packet?.kind==='envelope').length,11);
+});
+
 test('custody wake retry survives forwarder restart and stops on owner change',async t=>{
  const f=fixture(t),e=await f.seal();await f.request(f.service(),0,'deposit',e);let calls=0,active=true;
  const make=()=>f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,current:()=>active,now:f.now,
@@ -570,4 +582,14 @@ test('inline forwarder falls back for an old gateway without marking the message
  const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({inlineEnvelope:true,store:f.store,records:f.records,current:()=>true,now:f.now,peers:()=>['gateway'],request:async(_,raw)=>{const q=JSON.parse(raw);sent.push(q);return JSON.stringify({status:q.data.envelope?'rejected':'forwarded'});}});
  await forward.tick();assert.equal(sent.length,2);assert(sent[0].data.envelope);assert.equal(sent[1].data.envelope,undefined);
  assert.equal((await f.store.transaction(r=>r[0].packet)).kind,'envelope');
+});
+test('silent custody wake intent is signed and does not alter encrypted delivery',async t=>{
+ const f=fixture(t),p=f.protocol,text=JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]),e=await f.seal(text);
+ assert.equal(e.wakeMode,'silent');assert(await p.verifyCustody(e,f.records,f.now()));
+ assert.equal(p.openCustody(e,f.ids[2].record.account,f.ids[2].signingSeed,f.ids[2].encryptionSeed),text);
+ const parsed=p.parseCustody(JSON.stringify(e),f.now());assert.equal(parsed.wakeMode,'silent');
+ const data=p.createCustodyWake(parsed,f.ids[0].record,true),verify=d=>p.verifyCustodyWake(d,f.ids[0].record,f.ids[2].record.account,f.ids[2].device.id,f.now());
+ assert.equal(verify(data).wakeMode,'silent');const event=JSON.parse(data.event);delete event.wakeMode;assert.equal(verify({...data,event:JSON.stringify(event)}),null);
+ const regular=await f.seal(),normal=p.createCustodyWake(regular,f.ids[0].record);assert(verify(normal));
+ assert.equal(verify({...normal,event:JSON.stringify({...JSON.parse(normal.event),wakeMode:'silent'})}),null);
 });

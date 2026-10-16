@@ -1,0 +1,24 @@
+Peer response investigation - 2026-10-15 EDT
+
+Scope: both com.axonic.dev phones. No production build, official-app change, AoN deployment, or user messages.
+
+Observed:
+- Initial nearby application response averages 106/61 ms versus AoNs 35-49 ms. Both nearby links rank first because ranking also favors LAN.
+- Eight ICMP probes per direction on Wi-Fi: mean 25.558/22.339 ms; maxima 71.436/98.903 ms. One direction returned 7/8 replies within the short run; not a reliable loss-rate estimate.
+- Native LAN already enables TCP_NODELAY.
+- Added local per-operation count/mean/max round-trip and handler timings, no additional frames or payload logging. This distinguishes transport/scheduling time from receiver handler time; it does not isolate JS scheduling from the native bridge.
+- Request mixes differ: AoNs have more push/custody samples, LAN includes introductions and directory work. Existing displayed response average is not a standardized ping.
+
+Improvement:
+- Mobile identity store unchanged compare-and-set now confirms a fresh durable row without opening a separate exclusive write connection/transaction.
+- Serialized writer queue preserved. Fresh stored signature/digest validation and compareRecord checks preserved; changed records still use atomic SQL transactions. No cached authorization or cryptographic wire change.
+- Linearization point for unchanged successful CAS is fresh SQL read, with synchronous validation before return. A concurrent later change can follow as with the prior transaction. Expected digest mismatch, newer revisions, corruption and expiry cannot be accepted by the fast path.
+- Regression tests cover no-write confirmations, concurrent pins, corruption, stale expected digest, expiry and history.
+
+Measurements:
+- 12 repeated unchanged confirmations per phone, before/after: mean 8.290 -> 4.428 ms; 11.862 -> 7.146 ms. Small local samples in Dev; not whole-app or network throughput results.
+- Final live nearby response averages 96/62 ms, all six sessions connected with zero recorded failures. Overall network improvement is not established; Wi-Fi and application scheduling variance remains.
+- npm run check: 1173 passed, 3 skipped, zero failures; type/module/cycle/consolidation checks passed.
+- Artifacts in ignored builds/: peer-record-before/after.json; peer-timing-baseline/after/settled.jsonl; peer-response-check.log.
+
+Next useful investigation: native bridge/write scheduling and foreground Wi-Fi variability, measured independently; avoid permanent high-power Wi-Fi locks or extra periodic ping traffic without evidence and battery evaluation.

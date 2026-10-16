@@ -39,3 +39,13 @@ test('RAM cache is allowlisted and pagination reaches every entry without mutati
  assert(snapshot.rows.every(r=>r.storage==='memory'));assert.throws(()=>relayInventoryPage(snapshot,-1));assert.throws(()=>relayInventoryPage(snapshot,0,101));
  assert(relayPacketDetails(snapshot.rows[0]).some(r=>r.label==='Expires'));
 });
+
+test('diagnostic categories distinguish content, receipts, markers, expiry and memory',()=>{
+ const {relayPacketCategory}=load('relayInventory');const base={key:'x',id:'x',kind:'message envelope',state:'held',storage:'disk',expiresAt:now+1};
+ assert.equal(relayPacketCategory(base,now),'content');
+ assert.equal(relayPacketCategory({...base,kind:'message receipt'},now),'receipts');
+ assert.equal(relayPacketCategory({...base,kind:'group cleanup marker'},now),'cleanup');
+ assert.equal(relayPacketCategory({...base,kind:'message receipt',expiresAt:now},now),'expired');
+ assert.equal(relayPacketCategory({...base,storage:'memory'},now),'temporary');
+ assert.equal(relayPacketCategory({...base,kind:'encrypted media chunks',expiresAt:undefined},now),'content');
+});

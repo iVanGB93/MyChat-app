@@ -1,0 +1,38 @@
+Notification and lag investigation, 2026-10-15
+
+Observed official phone: com.axonic 1.1.18 (89). Android reported 37% app CPU
+in its sampled window, 176/2818 janky frames, and 1108 high-input-latency events.
+These are accumulated/system samples, not controlled before/after measurements.
+React Native logs showed repeated bounded recovery leases, connection turnover,
+and generic notification generation. No official app data was extracted or changed.
+
+Fixed a notification race: finishRootMessageWake previously UPDATEd an absent
+notices row when a control/read/muted packet arrived before its first wake.
+It now UPSERTs the handled marker, so delayed hints cannot create phantom alerts
+for these already-consumed packets. Foreground group toasts now also retire the
+matching generic sender notice. Decrypted previews and newer notices remain safe.
+
+Identical in-flight wake recoveries now share one serialized recovery job, with
+progress fanout. Completed/failed jobs release their slot. A later inline payload
+is not discarded when joining would lose its separate admission opportunity.
+The durable receipt exchange and background lease cleanup are unchanged.
+
+Native history read queries increased from 64 to 512 KiB. Synthetic phone tests
+showed approximately 4x faster reads; details in chat-storage-recovery.md.
+No data/schema migration, cache of authorization decisions, or history deletion.
+
+Verification:
+- Notification-before-wake/control, group-toast cleanup and duplicate recovery
+  regressions pass, including subsequent retry and later-inline admission.
+- Full npm run check passed on rerun. Initial run while Gradle compiled hit the
+  existing appModules wake-order timing-sensitive test (older work ran before stop).
+- Updated com.axonic.dev only, preserving data; private Dev tar backup retained
+  in ignored builds/dev-before-lag-fix-20261015.tar. Contains sensitive test data.
+- Native synthetic instrumentation PASS; no real chat messages sent.
+- No new production build, official installation, deployment, commit or push.
+
+Remaining: production notification/foreground latency must be rechecked on an
+approved future release. Generic fallbacks remain possible when a valid wake
+cannot yet be decrypted/fetched; this does not claim all such alerts are fixed.
+Local evidence: builds/lag-storage-phone-results.txt,
+builds/lag-notification-check-final.log, builds/phone-lag-20261015.log.

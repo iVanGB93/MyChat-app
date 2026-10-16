@@ -237,6 +237,20 @@ test('RTC pipeline replenishes a verified batch before a slower adjacent batch c
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
 
+for(const fail of [false,true])test(`large batch prefetch is capped at two and preserves verified prefix: failure=${fail}`,async t=>{
+ const f=context(t,512*1024+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let active=0,peak=0;
+ const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchWindow:()=>4,
+ request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
+  active++;peak=Math.max(peak,active);const index=JSON.parse(raw).index;
+  try{await new Promise(setImmediate);if(fail&&index===128)throw Error('lost second batch');return await sender.receive(raw,peer);}finally{active--;}
+ }});
+ await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
+ assert.equal(peak,2);assert.equal(active,0);
+ assert.equal((await f.job(1)).cursor,fail?128:129);
+ assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(fail?f.plain.slice(0,512*1024):f.plain));
+});
+
 test('direct 512 KiB batches deliver a larger file with two batch reads and a verified receipt',async t=>{
  const f=context(t,787252),baseSender=f.deps(0);let reads=0;
  const sender=createAttachmentTransfer({...baseSender,readChunk:()=>{throw Error('Single read used');},readChunks:async(job,index,count)=>{reads++;return Promise.all(Array.from({length:count},(_,n)=>baseSender.readChunk(job,index+n)));}});await sender.enqueue(f.descriptor,'outgoing');

@@ -167,7 +167,7 @@ function createLocalAccountNetwork() {
     onConnected:peer=>{const account=owner();if(account)void remembered.remember(account,peer).catch(()=>{});},
     identity: localAccount, native, store: records, now: Date.now, limit: allowedAxons(),
     // Advertise the registration protocol as a client; ordinary phones do not mint FCM leases.
-    onPush:async()=>JSON.stringify({status:'unsupported'}),
+    onPush:Object.assign(async()=>JSON.stringify({status:'unsupported'}),{gateway:false}),
     onAttachment:async(raw,peer)=>(await ownAttachments?.receive(raw,peer))??attachmentService()?.receive(raw,peer)??'{"status":"rejected"}',
     onCallControl:async(raw,peer)=>{try{return await callService()?.receive(raw,peer)??null;}catch{return null;}},
     onCallRelay:async(raw,peer)=>{try{return await callService()?.receiveRelay(raw,peer)??'{}';}catch{return '{}';}},

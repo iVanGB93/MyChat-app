@@ -2,7 +2,7 @@ const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), ts = require('typescript'), crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 function fixture() {
-  const database = new DatabaseSync(':memory:'), cache = new Map(); let writing = false;
+  const database = new DatabaseSync(':memory:'), cache = new Map(); let writing = false, transactions=0;
   const tx = { getFirstSync: (sql, ...args) => database.prepare(sql).get(...args) ?? null, getFirstAsync: async (sql, ...args) => database.prepare(sql).get(...args) ?? null,
     runAsync: async (sql, ...args) => database.prepare(sql).run(...args) };
   const sqlite = { openDatabaseAsync: async () => ({ ...tx, execAsync: async sql => database.exec(sql),
@@ -10,7 +10,7 @@ function fixture() {
       // Match Expo's separate write connections: overlapping writers can fail,
       // rather than silently serializing them in the test adapter.
       if (writing) throw Error('database is locked');
-      writing = true; database.exec('BEGIN IMMEDIATE');
+      transactions++; writing = true; database.exec('BEGIN IMMEDIATE');
       try { await work(tx); database.exec('COMMIT'); } catch (e) { database.exec('ROLLBACK'); throw e; }
       finally { writing = false; }
     } }) };
@@ -23,7 +23,7 @@ function fixture() {
     new Function('require', 'exports', code)(n => n === 'expo-sqlite' ? sqlite : n.startsWith('./') ? load(n.slice(2).replace(/\.(js|ts)$/, '')) : require(n), exports);
     cache.set(name, exports); return exports;
   }
-  return { database, load };
+  return { database, load, transactions:()=>transactions };
 }
 test('mobile record store uses real SQLite for immutable identity updates, capacity and rollback rejection', async t => {
   const f = fixture(); t.after(() => f.database.close());
@@ -67,4 +67,16 @@ test('SQLite atomically catches up through expired signed history and refuses mi
   assert.equal(await store.compareAndSet(first.account,p.recordDigest(first),state.record),false);
   assert.equal(await store.compareAndSet(first.account,p.recordDigest(first),state.record,state.history),true);
   assert.equal((await store.read(first.account)).revision,3);
+});
+
+test('unchanged pins avoid write transactions but recheck durable state and expiry',async t=>{
+ const f=fixture();t.after(()=>f.database.close());const p=f.load('identityProtocol');let now=1800000000000;
+ const root=crypto.randomBytes(32),device=p.publicDevice(crypto.randomBytes(32),crypto.randomBytes(32));
+ const record=p.issueRecord(root,[device],now),store=f.load('identityRecordStore').createMobileIdentityRecordStore(()=>now),digest=p.recordDigest(record);
+ assert.equal(await store.compareAndSet(record.account,null,record),true);const before=f.transactions();
+ for(let i=0;i<5;i++)assert.equal(await store.compareAndSet(record.account,digest,record),true);
+ assert.equal(f.transactions(),before);
+ const next=p.issueRecord(root,[device],now+1,record);assert.equal(await store.compareAndSet(record.account,digest,next),true);
+ assert.equal(await store.compareAndSet(record.account,digest,record),false,'stale expected digest cannot undo newer state');
+ now=next.expiresAt;assert.equal(await store.compareAndSet(next.account,p.recordDigest(next),next),false,'expiry is not cached');
 });
