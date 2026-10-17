@@ -10,6 +10,7 @@ import {ensureCallChannel} from '../callNotificationChannel';
 import type {CallControl} from './callControlProtocol';
 import type {NeuronCallView} from './neuronCallCoordinator';
 import {DEVICE_REMOVAL_KEY} from './deviceRemoval';
+import {NETWORK_WORK_RESET_KEY} from './networkWorkReset';
 const KEY='@axonic_root_call_wake_owner_v1';
 let opening:Promise<SQLite.SQLiteDatabase>|undefined;
 let tail:Promise<unknown>=Promise.resolve();
@@ -22,7 +23,7 @@ export async function registerRootCallWakeOwner(account:string,device:string){
  await AsyncStorage.setItem(KEY,JSON.stringify({account,device}));
 }
 export async function rootWakeContext(){
- if(await AsyncStorage.getItem(DEVICE_REMOVAL_KEY))return null;
+ if(await AsyncStorage.getItem(DEVICE_REMOVAL_KEY)||await AsyncStorage.getItem(NETWORK_WORK_RESET_KEY))return null;
  const [raw,vault]=await Promise.all([AsyncStorage.getItem(KEY),AsyncStorage.getItem('@axonic_local_account_v1')]);
  if(!raw||!vault)return null;const owner=JSON.parse(raw),record=JSON.parse(vault).record;
  return validAccountId(owner.account)&&record?.account===owner.account&&record.devices?.some((d:{id:string})=>d.id===owner.device)?owner as {account:string;device:string}:null;

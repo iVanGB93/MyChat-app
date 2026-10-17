@@ -9,3 +9,20 @@ test('denied permission and short clips cannot be sent',async()=>{const f=setup(
 test('failed send releases recorder activity so future recording is possible',async()=>{const f=setup(),c=f.create();await c.start();f.d.now=()=>3000;f.d.enqueue=async()=>{throw Error('Disk full');};await assert.rejects(c.send(),/Disk full/);assert(!f.out.rootVoiceRecordingActive());await c.start();assert(f.events.filter(e=>e==='record').length===2);await c.cancel();});
 
 test('native stop failure still restores audio mode and releases activity',async()=>{const f=setup(),c=f.create();await c.start();f.d.stop=async()=>{throw Error('Recorder stopped');};await assert.rejects(c.send(),/Recorder stopped/);assert(f.events.some(e=>Array.isArray(e)&&e[0]==='mode'&&e[1]===false));assert(!f.out.rootVoiceRecordingActive());});
+
+test('idle background cancellation and unmount leave the call audio route untouched',async()=>{
+ const f=setup(),c=f.create();await c.cancel();await c.cancel();await c.dispose();
+ assert(!f.events.includes('stop'));assert(!f.events.some(Array.isArray));
+});
+
+test('cancellation before audio acquisition never resets another audio owner',async()=>{
+ const f=setup();let release;f.d.permission=()=>new Promise(resolve=>release=resolve);
+ const c=f.create(),start=c.start();await Promise.resolve();const cancel=c.cancel();release(true);
+ await start;await cancel;await c.dispose();assert(!f.events.some(Array.isArray));assert(!f.events.includes('stop'));
+});
+
+test('recording releases audio exactly once despite repeated background cleanup',async()=>{
+ const f=setup(),c=f.create();await c.start();await c.cancel();await c.cancel();await c.dispose();
+ assert.equal(f.events.filter(e=>e==='stop').length,1);
+ assert.equal(f.events.filter(e=>Array.isArray(e)&&e[0]==='mode'&&e[1]===false).length,1);
+});

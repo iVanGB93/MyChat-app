@@ -1,0 +1,50 @@
+Navigation and call-history follow-up (October 16 local / October 17 UTC)
+
+Changes
+- Calls history uses a SQLite display projection: owner, call ID and first event.
+  The remaining signed signaling entries do not cross the native/JS boundary.
+  This is display-only; signaling admission and durable verification are unchanged.
+  Malformed JSON, wrong ownership/IDs, invalid participants/media/timestamps,
+  empty/non-array entries and oversized documents remain rejected. The projection
+  uses a conservative 800000-byte document limit (previous JS check was characters).
+  No persistent schema changes or stale history cache.
+- Calls FlatList is memoized across focus-only renders. Data, avatars/nicknames,
+  theme, navigation and calendar-day changes still rebuild its display.
+
+Validation
+- Full npm run check: 1211 tests, 1208 pass, 3 skipped, 0 failures; typecheck,
+  cycles, module boundaries and consolidation pass.
+- Real SQLite regression: a synthetic ~600 KB journal returns under 2 KB to JS.
+  Both active and archived projections tested; duplicates, external updates,
+  malformed and oversized records, CAS, ownership and reopen behavior covered.
+- Actual Dev phone queries: 34 calls / 11 ms and 12 calls / 7 ms, one observation
+  per phone. These are not before/after benchmarks.
+
+Phone measurements
+- com.axonic.dev only, serials R3GYC0H7PMY and R3GL10CNS1K. Official apps untouched.
+- Ten-minute navigation run after SQL change: 601 seconds, 114 tab changes each.
+  Views stabilized at 627/428 (one final sample 430 on second phone); one Activity.
+  Final PSS 592835/583196 KiB; initial post-reload 594175/590015 KiB.
+  Memory fluctuated, remaining high; no claim of eliminated native leak.
+  Median frames 26/24 ms; p95 32/32 ms; p99 48/48 ms.
+  117/121 and 116/118 frames missed deadlines. These sparse tab-change frames
+  are not continuous scrolling FPS and are not production measurements.
+- Separate two-minute run after Calls memoization: 122 seconds, 23 changes each.
+  Final PSS 586435/580692 KiB, views 627/428, one Activity each.
+  Median 27/23 ms; p95 40/29 ms; p99 46/53 ms. Too small/noisy to claim a
+  measured frame-time improvement from memoization.
+- Mid-run Hermes live allocations ~26/24 MiB, heaps ~44/36 MiB. iVan native
+  heap PSS ~258 MiB, bitmap allocations ~7 MiB, graphics ~83 MiB. Whole-process
+  memory is not explained by the live JS heap or bitmap cache alone.
+
+Evidence (ignored builds directory)
+navigation-history-ten-minute.json
+navigation-history-memo-verification.json
+navigation-history-final-check.log
+
+Remaining
+Native UI-thread tab-transition work and high native/process memory remain
+unresolved. Longer Dev runs did not prove a leak or a memory reduction. Next
+measurement should attribute native allocations/render work rather than clearing
+caches speculatively. No production build, deployment, data wipe or real-user
+message was performed.

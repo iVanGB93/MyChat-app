@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.1.19",
+  "version": "1.1.21",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -9,8 +9,8 @@
     "web": "expo start --web",
     "fix:gradle9": "node scripts/patch-react-native-gradle-plugin.cjs",
     "fix:rtc-identity": "node scripts/patch-webrtc-identity.cjs",
-    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety",
-    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety",
+    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && node scripts/patch-webrtc-screen-capture.cjs && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety",
+    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && node scripts/patch-webrtc-screen-capture.cjs && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --test tests/*.test.cjs",
     "test:rtc-native": "node scripts/test-native-identity-guard.cjs",

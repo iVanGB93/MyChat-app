@@ -20,7 +20,7 @@ export function createAttachmentSnapshot(d:{owner():string|null;revision(owner:s
 export function indexAttachmentPolicy(snapshot:RootChatState,owner:string){
  const seen=new Set<string>(),allowed=new Set<string>();
  for(const message of snapshot.messages){
-  if(!message.attachment)continue;
+  if(!message.attachment||message.networkCancelledAt!==undefined)continue;
   const digest=attachmentDigest(message.attachment.manifest);
   // Match the prior Array.find behavior if duplicate references exist.
   if(seen.has(digest))continue;seen.add(digest);

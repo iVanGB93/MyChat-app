@@ -23,7 +23,7 @@ export default function RootGroupMessageInfo({route}:NativeStackScreenProps<Root
    <Text selectable style={{color:colors.text,fontSize:17}}>{info.message.deleted?'Message deleted':info.message.attachment?.caption||info.message.attachment?.name||info.message.text}</Text>
    <Text style={{color:colors.textSecondary}}>From: {name(author)}</Text>
    <Text style={{color:colors.textSecondary}}>Created: {new Date(info.at).toLocaleString()}</Text>
-   {!!info.recipients.length&&<Text style={{color:colors.textSecondary}}>{info.pending} pending · {info.stored} stored on Axonic network · {info.delivered-info.read} delivered (not read) · {info.read} read</Text>}
+   {!!info.recipients.length&&<Text style={{color:colors.textSecondary}}>{info.pending} pending · {info.stored} stored on Axonic network · {info.delivered-info.read} delivered (not read) · {info.read} read{info.cancelled?` · ${info.cancelled} canceled by reset`:''}</Text>}
   </View>
   {!info.recipients.length&&<View style={{gap:8}}><Text style={{color:colors.primary,fontSize:18,fontWeight:'700'}}>{deliveryStatusLabel(info.status)}</Text><Text style={{color:colors.textSecondary}}>{info.description}</Text><MessageStatusTimes message={info.message} now={now}/></View>}
   {!!info.recipients.length&&<Text accessibilityRole="header" style={{color:colors.text,fontWeight:'700'}}>Recipients</Text>}

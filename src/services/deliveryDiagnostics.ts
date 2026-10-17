@@ -1,4 +1,4 @@
-export type DeliveryStage='pending'|'stored'|'delivered'|'read';
+export type DeliveryStage='pending'|'stored'|'delivered'|'read'|'cancelled';
 export type DiagnosticEvent=DeliveryStage|'wake_verified'|'notification_requested'|'recovery_started'|'recovery_finished';
 type Row={trace:string;at:number;event:DiagnosticEvent;direction:'incoming'|'outgoing';initialObservation:boolean;foreground:boolean|null};
 /** Bounded, volatile, content-free observations. Raw correlation keys never leave this instance. */
@@ -19,6 +19,6 @@ export function createDeliveryDiagnostics(now=Date.now,rolling=false){
   snapshot(){trim();return {schemaVersion:1,active:active(),mode:rolling?'rolling':'manual',retentionMinutes:rolling?30:15,maximumEvents:256,startedAt,expiresAt:rolling||startedAt===null?null:until,observedAt:now(),droppedEvents:dropped,
    timestampMeaning:'Local observation time, not remote occurrence time. Initial observations do not reconstruct past transitions. Read reflects user behavior, not delivery latency. Notification requested does not prove visible display.',
    scope:'This capture only; temporary aliases cannot be joined automatically across devices. No contents, accounts, message IDs, tokens, addresses, or contact names.',
-   states:{pending:'Pending',stored:'Stored on Axonic network; not device delivery',delivered:'Received by the destination device',read:'Read by recipient'},events:events.map(e=>({...e}))};},
+   states:{cancelled:'Local work canceled by network reset; not proof of delivery or loss',pending:'Pending',stored:'Stored on Axonic network; not device delivery',delivered:'Received by the destination device',read:'Read by recipient'},events:events.map(e=>({...e}))};},
  };
 }

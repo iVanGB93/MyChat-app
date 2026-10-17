@@ -7,7 +7,8 @@ test('generic wake opens the inbox until its actual unread conversation is known
  const f=fixture();await f.out.queueRootNotificationOpen(f.data);assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,true);
  const m={id:f.id,peer:f.sender,direction:'incoming'};f.save({messages:[m]});assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,undefined);
  f.save({messages:[{...m,group:{id:f.group}}],groups:[{id:f.group}]});assert.equal((await f.out.pendingRootNotificationOpen(f.account)).group,f.group);
- for(const patch of [{read:true},{deleted:true},{group:{id:f.group}}]){f.save({messages:[{...m,...patch}]});assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,true);}
+ f.save({messages:[{...m,read:true}]});assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,undefined);
+ for(const patch of [{deleted:true},{group:{id:f.group}}]){f.save({messages:[{...m,...patch}]});assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,true);}
  assert.equal(await f.out.pendingRootNotificationOpen(f.sender),null);
 });
 test('decrypted previews and in-app toasts retain their known conversation route',async()=>{
@@ -16,10 +17,10 @@ test('decrypted previews and in-app toasts retain their known conversation route
  await f.out.finishRootNotificationOpen();assert.equal(await f.out.pendingRootNotificationOpen(f.account),null);
 });
 
-test('signed read and delete actions prevent stale hints from reopening a finished conversation',async()=>{
+test('read messages retain their conversation route while deleted messages explain their absence',async()=>{
  for(const kind of ['read','delete']){const f=fixture(),m={id:f.id,peer:f.sender,direction:'incoming',text:'test',at:1,status:'delivered'};
  f.save({messages:[m],actions:[{id:'ee'.repeat(32),peer:f.sender,direction:kind==='read'?'outgoing':'incoming',kind,target:{id:f.id,author:f.sender},revision:1,text:'',at:2,status:'delivered'}]});
- await f.out.queueRootNotificationOpen(f.data);assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,true);}
+ await f.out.queueRootNotificationOpen(f.data);assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,kind==='delete'?true:undefined);}
 });
 
 test('a deleted group message resolves to the inbox rather than its sender private chat',async()=>{

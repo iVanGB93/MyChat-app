@@ -1,0 +1,40 @@
+Android video-call screen sharing — October 16, 2026
+
+Options > Share screen replaces the existing video sender with a display-capture
+track. The microphone, call transport and original camera track remain call-owned.
+The camera is disabled during sharing and returns to its preceding enabled/off
+state on Stop share. Flip is hidden during sharing. The preview is unmirrored;
+the remote video uses contain so a shared display is not cropped.
+
+Scope: entire-display capture with microphone audio; no system-audio capture or
+simultaneous camera-plus-screen stream. Android requests session consent. Native
+MediaProjection foreground service permission, WebRTC startup configuration and
+notification resources are preserved by withForegroundService. The version-guarded
+postinstall patch requests default-display capture on Android 14+ and uses the
+older permission intent on earlier Android. Single-app capture produced no frames
+in the phone test and is outside this initial version; the final system prompt
+defaults to the entire display. Older clients cannot start capture until updated.
+
+Verification:
+- Full npm run check: 1,207 passed, zero failed, three skipped. TypeScript,
+  module boundaries, cycles and consolidation passed.
+- Controller tests cover denied permission, repeated starts, late capture after
+  hangup/cancel, OS capture stop, camera-off restoration, sender failure and cleanup.
+- Built local arm64 com.axonic.dev 1.1.19 and updated phone R3GYC0H7PMY with -r.
+  Its existing public identity was preserved. Official com.axonic was untouched.
+- Updated the separate x86_64 emulator development client without wiping data.
+  Its local-account slot was empty; created Screen Share Test and saved recovery
+  credentials in Windows Credential Manager (no secrets in files or console).
+- Live phone-to-emulator video: camera -> shared screen received -> camera received.
+  Screen continued while Settings was foreground and the call remained connected.
+- A native disposal crash found in the first live test was corrected by using
+  the capture stream directly for preview, avoiding duplicate stream ownership.
+  The camera return was then verified live without the crash.
+- Final full-display build: system consent defaults to entire screen. Native
+  dumpsys confirmed RECORD_CONTENT_DISPLAY, display 0, task -1 while sharing.
+  Ending the live call changed the system projection state to null.
+- No real-user messages/calls, production build, publication, commit or deployment.
+
+Logs: builds/screen-sharing-release-check.log,
+builds/screen-sharing-full-display-build.log,
+builds/screen-sharing-emulator-build.log.

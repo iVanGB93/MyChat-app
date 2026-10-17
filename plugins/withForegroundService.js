@@ -46,6 +46,7 @@ function withManifest(config) {
     addPerm('android.permission.FOREGROUND_SERVICE');
     addPerm('android.permission.FOREGROUND_SERVICE_MICROPHONE');
     addPerm('android.permission.FOREGROUND_SERVICE_CAMERA');
+    addPerm('android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION');
 
     // Remove the obsolete special-use declaration. Axonic only starts this
     // service for a user-visible voice/video call, which is covered by the
@@ -146,6 +147,13 @@ function withNativeFiles(config) {
     'android',
     (cfg) => {
       const projectRoot = cfg.modRequest.projectRoot;
+      const captureResources = path.join(projectRoot, 'android', 'app', 'src', 'main', 'res', 'values');
+      fs.mkdirSync(captureResources, {recursive:true});
+      fs.writeFileSync(path.join(captureResources, 'axonic_screen_capture.xml'), `<resources>
+    <item type="drawable" name="ic_notification">@drawable/notification_icon</item>
+    <string name="media_projection_notification_title">Axonic · Screen sharing</string>
+    <string name="media_projection_notification_text">Your screen is visible to the other caller.</string>
+</resources>\n`);
       const srcDir = path.join(projectRoot, 'plugins', 'android');
       const pkg = (cfg.android?.package || cfg.expo?.android?.package || 'com.axonic').replace(/\./g, '/');
       const javaDir = path.join(
@@ -188,6 +196,8 @@ function withNativeFiles(config) {
       const mainAppPath = path.join(javaDir, 'MainApplication.kt');
       if (fs.existsSync(mainAppPath)) {
         let content = fs.readFileSync(mainAppPath, 'utf-8');
+        const captureSetup = 'com.oney.WebRTCModule.WebRTCModuleOptions.getInstance().enableMediaProjectionService = true';
+        if (!content.includes(captureSetup)) content = content.replace('super.onCreate()', `super.onCreate()\n    ${captureSetup}`);
         const marker = 'add(MyChatServicePackage())';
         if (!content.includes(marker)) {
           content = content.replace(
@@ -197,6 +207,7 @@ function withNativeFiles(config) {
           fs.writeFileSync(mainAppPath, content, 'utf-8');
           console.log('[withForegroundService] Patched MainApplication.kt');
         }
+        fs.writeFileSync(mainAppPath, content, 'utf-8');
       } else {
         console.warn('[withForegroundService] WARNING: MainApplication.kt not found at', mainAppPath);
       }

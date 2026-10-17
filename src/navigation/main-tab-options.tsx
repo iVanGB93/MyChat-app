@@ -32,7 +32,8 @@ function TabIcon({ label, focused }: { label: string; focused: boolean }) {
 
 
 export function useMainTabOptions(){const {colors:Colors}=useTheme();const insets=useSafeAreaInsets();return useCallback(({route}:{route:{name:string}}):BottomTabNavigationOptions => ({
-        freezeOnBlur: true,
+        // Screen hooks pause their own polling; freezing adds a Suspense thaw on each tab switch.
+        freezeOnBlur: false,
         headerStyle: {
           backgroundColor: Colors.headerBg,
           elevation: 0,

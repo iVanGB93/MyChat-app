@@ -91,7 +91,10 @@ export async function verifyCustody(p: CustodyEnvelope | CustodyReceipt, records
 }
 /** Sender-controlled presentation intent; never authorizes plaintext actions. */
 export function silentCustodyText(text:string){
-  try{return ['axonic-root-action-v1','axonic-root-group-action-v1','axonic-avatar-part-v1','axonic-avatar-request-v1'].includes(JSON.parse(text)?.[0]);}catch{return false;}
+  try{return ['axonic-root-action-v1','axonic-root-group-action-v1',
+    'axonic-avatar-part-v1','axonic-avatar-request-v1','axonic-avatar-fetch-v1','axonic-avatar-offer-v1',
+    'axonic-group-members-v1','axonic-group-leave-v1','axonic-group-recover-v1','axonic-group-backup-v1','axonic-group-recovery-offer-v1',
+  ].includes(JSON.parse(text)?.[0]);}catch{return false;}
 }
 export async function sealCustody(d: { record: IdentityRecord; signingSeed: Uint8Array; encryptionSeed: Uint8Array;
   recipient: IdentityRecord; recipientDevice: string; id: string; text: string; silent?:boolean; now: number; random(n: number): Promise<Uint8Array> }): Promise<CustodyEnvelope> {

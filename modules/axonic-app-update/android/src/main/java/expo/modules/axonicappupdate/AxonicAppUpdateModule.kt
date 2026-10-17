@@ -43,7 +43,7 @@ class AxonicAppUpdateModule : Module() {
   }
   override fun definition() = ModuleDefinition {
     Name("AxonicAppUpdate")
-    Constants("chatStorageRecoveryAvailable" to ChatStorageRecovery.supported)
+    Constants("chatStorageRecoveryAvailable" to ChatStorageRecovery.supported, "callScreenSharingAvailable" to true)
     AsyncFunction("checkChatStorageWrite") { owner: String, bytes: Double ->
       require(bytes.isFinite() && bytes >= 0 && bytes == bytes.toLong().toDouble())
       val context = requireNotNull(appContext.reactContext)

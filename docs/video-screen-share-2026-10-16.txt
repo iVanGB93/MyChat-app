@@ -1,0 +1,41 @@
+Video layout and screen-sharing phone verification (October 16 local)
+
+Observed baseline
+- Remote camera video always used contain, leaving unused space.
+- Screen capture did reach the other Dev phone, including the home screen.
+  A blanket transport failure was not reproduced. Sharing while the full call
+  view remained visible produced confusing repeated video/controls.
+- react-native-webrtc RTCRtpSender.replaceTrack catches native rejection and
+  returns without updating its JS track, allowing our previous code to claim
+  sharing even after that failure path.
+
+Changes
+- Camera video fills the call stage; shared display uses contain to preserve
+  the complete screen. Preview mirrors camera only.
+- A small ordered WebRTC data channel carries versioned presentation hints,
+  over the existing authenticated call connection. No AoN protocol/deploy needed.
+  Bounded hints cannot authorize calls, alter identity or trigger capture.
+  Older peers without hints remain compatible with the call, but cannot
+  automatically select the shared-screen fit mode.
+- Successful capture minimizes the sender's call into the existing app overlay.
+  Receiver hides its own controls/self-view initially so content is visible;
+  tapping the received screen brings controls back.
+- Track replacement verifies sender track ID before declaring sharing active.
+  A swallowed native rejection releases capture and leaves camera enabled.
+
+Verification
+- Both com.axonic.dev phones used; official apps unchanged.
+- Baseline and updated real video calls; screen capture sent in both directions.
+- Receiver decoded 1440x3120 shared display frames. Sender's encoded frame count
+  advanced 403 to 604 and receiver decoded count 3874 to 4076 across the final
+  home-screen check. Receiver screenshot confirmed home screen, not just a status.
+- Cancel capture: call remained connected with camera frames flowing.
+- Stop share on second phone: first phone returned from 1440x3120 screen frames
+  to 1280x720 camera frames, without ending the call.
+- Calls ended, capture released, temporary JS peer-connection probes restored.
+- Full check passed (1209 pass, 3 skipped) before two additional targeted tests.
+  Final focused suite: 22 passed, including camera/screen fit and invalid hints.
+- No production build, installation, push or deployment performed.
+
+Ignored local evidence: builds/screen-sharing-phone-fix-check.log,
+builds/share-phone-qa.cjs, builds/share-qa-fixed.png, builds/share-fixed-home.png.

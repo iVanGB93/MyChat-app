@@ -8,10 +8,14 @@ import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
 // A missing relay receipt must not delay admission of the next inline message.
 let leases=0;
 let pumping:Promise<void>|undefined;
+let lastPumpAt=0;
 function pump(network:ReturnType<typeof startLocalAccountNetwork>){
  if(pumping)return pumping;
  const work=Promise.resolve().then(async()=>{
-  network.tick();
+  // Observe receipt completion promptly without rerunning every network service
+  // at the 300ms observation cadence. Concurrent hints share this budget.
+  const now=Date.now();
+  if(now-lastPumpAt>=1000||now<lastPumpAt){lastPumpAt=now;network.tick();}
   if(Native?.axonMessageWait)await Native.axonMessageWait(300);
   else await new Promise<void>(resolve=>setTimeout(resolve,300));
  });

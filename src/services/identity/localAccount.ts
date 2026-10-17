@@ -8,11 +8,26 @@ import { createLocalAccountSession, createLocalAccountStartup } from './localAcc
 import {createDeviceRemoval,DEVICE_REMOVAL_KEY} from './deviceRemoval';
 import {purgeDeviceAccountData} from './deviceRemovalStorage';
 import {createRememberedDerivation} from './rememberedDerivation';
+import {createNetworkWorkReset,NETWORK_WORK_RESET_KEY} from './networkWorkReset';
+import {purgeNetworkWork} from './networkWorkResetStorage';
 const VAULT = '@axonic_local_account_v1';
 const DEVICE = 'axonic_local_account_device_v1';
 const BIOMETRIC = 'axonic_local_account_biometric_v1';
 const biometricOptions = { keychainService: 'axonic-local-biometric-v1', requireAuthentication: true,
   authenticationPrompt: 'Unlock your Axonic account', keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY };
+const networkReset=createNetworkWorkReset({
+ read:()=>AsyncStorage.getItem(NETWORK_WORK_RESET_KEY),write:raw=>AsyncStorage.setItem(NETWORK_WORK_RESET_KEY,raw),clear:()=>AsyncStorage.removeItem(NETWORK_WORK_RESET_KEY),
+ vaultAccount:async()=>{const raw=await AsyncStorage.getItem(VAULT);return raw?JSON.parse(raw)?.record?.account??null:null;},purge:purgeNetworkWork,
+});
+export async function requestLocalNetworkReset(account:string,confirmed:true){
+ const s=localAccount.status();if(confirmed!==true||s.busy||s.state!=='unlocked'||s.account!==account)throw Error('Unlock your account before resetting network work');
+ await networkReset.request(account,Date.now());localAccount.lock();
+}
+export async function closeForNetworkReset(){
+ if(!await AsyncStorage.getItem(NETWORK_WORK_RESET_KEY))throw Error('No network reset is pending');
+ if(!Native?.closeForDeviceRemoval)throw Error('Use Force stop in Android app settings, then reopen Axonic to finish the network reset.');
+ Native.closeForDeviceRemoval();
+}
 const rememberedDerivation=createRememberedDerivation(async(password,salt)=>{
   if (!Native?.identityScrypt) throw Error('This build needs the secure identity module');
   const began=Date.now();
@@ -34,7 +49,7 @@ const removal=createDeviceRemoval({
 });
 export const localAccount = createLocalIdentityController({
   beginRemoval:removal.request,
-  readVault: async()=>{await removal.assertAvailable();return AsyncStorage.getItem(VAULT);}, writeVault: async value=>{await removal.assertAvailable();await AsyncStorage.setItem(VAULT,value);},
+  readVault: async()=>{await removal.assertAvailable();await networkReset.assertAvailable();return AsyncStorage.getItem(VAULT);}, writeVault: async value=>{await removal.assertAvailable();await networkReset.assertAvailable();await AsyncStorage.setItem(VAULT,value);},
   readDeviceSecret: () => SecureStore.getItemAsync(DEVICE),
   writeDeviceSecret: value => SecureStore.setItemAsync(DEVICE, value, { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY }),
 }, async size => {
@@ -76,7 +91,7 @@ export const localAccountUsername = {
 };
 
 export const startLocalAccount = createLocalAccountStartup({
- inspect:async()=>{const began=Date.now();await removal.beforeStartup();if(!localAccount.status().account)await localAccount.inspect();console.info('[Axonic account timing] inspect-ms',Date.now()-began);},
+ inspect:async()=>{const began=Date.now();await removal.beforeStartup();await networkReset.beforeStartup();if(!localAccount.status().account)await localAccount.inspect();console.info('[Axonic account timing] inspect-ms',Date.now()-began);},
  initialize:async()=>{const began=Date.now();await localAccountSession.initialize();console.info('[Axonic account timing] resume-ms',Date.now()-began);},
 });
 

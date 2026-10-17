@@ -105,7 +105,10 @@ export default function VoiceMessageBubble({
     }
   };
 
-  useEffect(()=>{if(!playbackAllowed)return;const timer=setInterval(()=>{if(!playbackAllowed())player.pause();},250);return()=>clearInterval(timer);},[playbackAllowed,player]);
+  // Idle bubbles must not poll call/recording state four times a second.
+  // Starting playback checks synchronously above; only active playback needs
+  // the ongoing interruption guard.
+  useEffect(()=>{if(!playbackAllowed||!isPlaying)return;const timer=setInterval(()=>{if(!playbackAllowed())player.pause();},250);return()=>clearInterval(timer);},[playbackAllowed,player,isPlaying]);
 
   // Stop playback if the file disappears (e.g. message deleted)
   useEffect(() => {

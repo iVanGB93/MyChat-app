@@ -43,12 +43,13 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   check();const raw=await d.read();check();if(raw===null){knownMessages.clear();return {version:1,messages:[],contacts:[]};}
   const s=JSON.parse(raw) as RootChatState;
   if(raw!==validatedRaw){
+  if(s.networkResetAt!==undefined&&!validCreationTime(s.networkResetAt)||s.cancelledNetworkWork!==undefined&&(!Array.isArray(s.cancelledNetworkWork)||s.cancelledNetworkWork.length>50000||s.cancelledNetworkWork.some(m=>!validPeer(m.peer)||!idValid(m.id))))throw Error('Invalid network reset history');
   if(s.groupCustodyPeers!==undefined&&(!Array.isArray(s.groupCustodyPeers)||s.groupCustodyPeers.length>500||s.groupCustodyPeers.some(p=>!validPeer(p)))||!validProfileStorage(s,d.owner)||s.timestampPeers!==undefined&&(!Array.isArray(s.timestampPeers)||s.timestampPeers.length>500||s.timestampPeers.some(p=>!validPeer(p)))||s.version!==1||!Array.isArray(s.messages)||!Array.isArray(s.contacts)||s.messages.length>5000||s.contacts.length>500
    ||s.hiddenChats!==undefined&&(!Array.isArray(s.hiddenChats)||s.hiddenChats.length>564||s.hiddenChats.some(k=>!validChat(k)))
    ||s.removedMessages!==undefined&&(!Array.isArray(s.removedMessages)||s.removedMessages.length>20000||s.removedMessages.some(m=>!validPeer(m.peer)||!idValid(m.id)||!['incoming','outgoing'].includes(m.direction)))
    ||(s.imports!==undefined&&(!Array.isArray(s.imports)||s.imports.length>10||s.imports.some(v=>typeof v!=='string'||v.length>100)))
    ||s.messages.some(m=>[m.messageDelivery,m.attachmentDelivery].some(v=>v!==undefined&&!validDeliveryEvidence(v)))
-   ||s.messages.some(m=>[m.queuedAt,m.storedAt,m.deliveredAt,m.readAt,m.descriptorReceivedAt].some(v=>v!==undefined&&!validCreationTime(v)))
+   ||s.messages.some(m=>[m.networkCancelledAt,m.queuedAt,m.storedAt,m.deliveredAt,m.readAt,m.descriptorReceivedAt].some(v=>v!==undefined&&!validCreationTime(v)))
    ||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.createdAt!==undefined&&(!validCreationTime(m.createdAt)||m.at!==m.createdAt)||!idValid(m.id)||!validPeer(m.peer)||!['incoming','outgoing'].includes(m.direction)||typeof m.text!=='string'||!m.text||byteLength(m.text)>1600||!Number.isSafeInteger(m.at)||!['pending','delivered'].includes(m.status)
     ||m.reply!==undefined&&(!(m.group?validGroupReply(m.reply):validRootReply(m.reply,d.owner,m.peer)))
     ||m.descriptorDelivered!==undefined&&typeof m.descriptorDelivered!=='boolean'
@@ -121,6 +122,18 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   if(notices.length){await save(s);for(const {peer,id} of notices)d.queued?.(peer,id);}
  }
  return {
+  cancelNetworkWork:(at:number)=>run(async()=>{
+   if(!validCreationTime(at))throw Error('Invalid reset time');const s=await read();
+   // Record cancellation, never a fabricated delivered/read acknowledgment.
+   const keys=new Map((s.cancelledNetworkWork??[]).map(m=>[m.peer+':'+m.id,m]));
+   // Include blocked work as well: unblocking must not resurrect a canceled send.
+   for(const m of pendingRootChat({...s,contacts:s.contacts.map(c=>({...c,blocked:false}))},d.owner))keys.set(m.peer+':'+m.id,{peer:m.peer,id:m.id});
+   for(const m of [...s.messages,...(s.actions??[]),...(s.groupActions??[]),...(s.groupPackets??[])])if(('direction' in m?m.direction==='outgoing':true)&&m.status==='pending')keys.set(m.peer+':'+m.id,{peer:m.peer,id:m.id});
+   if(keys.size>50000)throw Error('Network cancellation history is full');
+   s.cancelledNetworkWork=[...keys.values()];s.networkResetAt=at;
+   for(const m of s.messages)if(m.status==='pending')m.networkCancelledAt??=at;
+   await save(s);
+  }),
   snapshot:()=>run(read),
   rememberProfilePeers:(peers:string[])=>run(async()=>{if(!peers.length)return;const s=await read(),before=(s.profilePeers??[]).length,known=new Set(s.profilePeers??[]);for(const p of peers)if(validPeer(p)&&known.size<500)known.add(p);if(known.size!==before){s.profilePeers=[...known];await save(s);}}),
   rememberProfileOfferPeers:(peers:string[])=>run(async()=>{const s=await read(),known=new Set(s.profileOfferPeers??[]),before=known.size;for(const p of peers)if(validPeer(p)&&known.size<500)known.add(p);if(before!==known.size){s.profileOfferPeers=[...known];await save(s);}}),
@@ -312,12 +325,12 @@ export const encodeRootChat=(recipient:string,id:string,text:string,reply?:RootC
 export const encodeRootAttachment=(recipient:string,id:string,descriptor:AttachmentDescriptor,reply?:RootChatReply)=>JSON.stringify(reply?['axonic-root-attachment-reply-v1',recipient,id,{descriptor,reply}]:['axonic-root-attachment-v1',recipient,id,descriptor]);
 export const encodeRootMessage=(m:RootChatMessage)=>{const raw=m.group?encodeRootGroupMessage(m):m.attachment?encodeRootAttachment(m.peer,m.id,m.attachment,m.reply):encodeRootChat(m.peer,m.id,m.text,m.reply);if(m.group||m.createdAt===undefined)return raw;const a=JSON.parse(raw);a.push(m.createdAt);return JSON.stringify(a);};
 
-export const pendingRootChat=(s:RootChatState,owner?:string)=>[
+export const pendingRootChat=(s:RootChatState,owner?:string)=>{const cancelled=new Set(s.cancelledNetworkWork?.map(m=>m.peer+':'+m.id));return [
  ...(s.groupPackets??[]).filter(p=>p.status==='pending').map(p=>({peer:p.peer,id:p.id,raw:p.raw})),
  ...s.messages.filter(m=>m.direction==='outgoing'&&m.status==='pending'&&!(m.attachment&&m.descriptorDelivered)&&(!m.group||!!owner&&rootGroupAllowed(s,owner,m.peer,m.group)&&s.groups?.find(g=>g.id===m.group!.id)?.accepted)).map(m=>({peer:m.peer,id:m.id,raw:encodeRootMessage(m)})),
  ...(s.groupActions??[]).filter(a=>a.direction==='outgoing'&&a.status==='pending'&&!!owner&&rootGroupAllowed(s,owner,a.peer,a.group)&&s.groups?.find(g=>g.id===a.group.id)?.accepted).map(a=>({peer:a.peer,id:a.id,raw:encodeGroupAction(a)})),
  ...(s.actions??[]).filter(a=>a.direction==='outgoing'&&a.status==='pending').map(a=>({peer:a.peer,id:a.id,raw:encodeRootAction(a)}))
  ,...(owner?pendingProfiles(s,owner):[])
-].filter(m=>!s.contacts.find(c=>c.account===m.peer)?.blocked);
+].filter(m=>!cancelled.has(m.peer+':'+m.id)&&!s.contacts.find(c=>c.account===m.peer)?.blocked);};
 
 

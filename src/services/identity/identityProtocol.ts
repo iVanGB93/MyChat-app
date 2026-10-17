@@ -34,7 +34,17 @@ const hex = (v: unknown, n: number): v is string => typeof v === 'string' && v.l
 export const validAccountId = (v: unknown): v is string => typeof v === 'string' && /^axonic:1:[0-9a-f]{64}$/.test(v);
 const time = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
 const wire = (v: unknown[]) => utf8ToBytes(JSON.stringify(v));
-const hash = (v: unknown[]) => bytesToHex(sha256(wire(v)));
+// Public deterministic hashes only; no acceptance, expiry or mutable-object cache.
+// Bound both entry count and key length so untrusted records cannot grow memory.
+const publicHashCache = new Map<string,string>();
+function publicHash(raw:string):string {
+  if(raw.length>4096)return bytesToHex(sha256(utf8ToBytes(raw)));
+  const cached=publicHashCache.get(raw);if(cached!==undefined)return cached;
+  const value=bytesToHex(sha256(utf8ToBytes(raw)));
+  if(publicHashCache.size>=128)publicHashCache.delete(publicHashCache.keys().next().value!);
+  publicHashCache.set(raw,value);return value;
+}
+const hash = (v: unknown[]) => publicHash(JSON.stringify(v));
 export function accountId(root: string): string {
   if (!hex(root, 32)) throw Error('Invalid identity public key');
   return `axonic:1:${hash(['axonic-account-v1', root])}`;
@@ -48,11 +58,12 @@ export function publicDevice(signingSeed: Uint8Array, encryptionSeed: Uint8Array
   const encryption = bytesToHex(x25519.getPublicKey(encryptionSeed));
   return { id: deviceId(signing, encryption), signing, encryption };
 }
-function recordBody(r: IdentityRecord): Uint8Array {
-  return wire(['axonic-identity-record-v1', r.version, r.account, r.root, r.revision,
+function recordBodyText(r: IdentityRecord): string {
+  return JSON.stringify(['axonic-identity-record-v1', r.version, r.account, r.root, r.revision,
     r.previous, r.issuedAt, r.expiresAt, r.devices.map(d => [d.id, d.signing, d.encryption])]);
 }
-export function recordDigest(r: IdentityRecord): string { return bytesToHex(sha256(recordBody(r))); }
+function recordBody(r: IdentityRecord): Uint8Array {return utf8ToBytes(recordBodyText(r));}
+export function recordDigest(r: IdentityRecord): string { return publicHash(recordBodyText(r)); }
 function validRecordShape(r: any): r is IdentityRecord {
   return !!r && r.version === 1 && hex(r.root, 32) && r.account === accountId(r.root)
     && time(r.revision) && (r.revision === 0 ? r.previous === null : hex(r.previous, 32))

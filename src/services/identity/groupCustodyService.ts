@@ -7,7 +7,7 @@ export interface GroupCustodyRow {
  payload:GroupCustodyPayload|null;
  recipients:{id:string;recipient:string;recipientDevice:string;digest:string;grant:CustodyEnvelope|null;receipt:CustodyReceipt|null;consumed:boolean}[];
 }
-export interface GroupCustodyStore {transaction<T>(change:(rows:GroupCustodyRow[])=>T):Promise<T>}
+export interface GroupCustodyStore {revision?():number|string;transaction<T>(change:(rows:GroupCustodyRow[])=>T):Promise<T>}
 export const GROUP_CUSTODY_LIMITS={jobs:128,perSender:16,perRecipient:64,bytes:4*1024*1024};
 /** Limits are charged before accepting responsibility. An incomplete staged job
  * is never reported held; recipient grants are committed as one delivery job. */
@@ -115,4 +115,4 @@ export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStor
 }
 
 /** Read-only view for the existing signed push-wake retry worker. */
-export function groupCustodyWakeStore(store:GroupCustodyStore){return {transaction<T>(read:(rows:import('./custodyService.ts').CustodyRow[])=>T){return store.transaction(rows=>read(rows.filter(r=>r.accepted).flatMap(r=>r.recipients.filter(v=>v.grant&&!v.receipt&&!v.consumed).map(v=>({sender:r.sender,recipient:v.recipient,id:v.id,recipientDevice:v.recipientDevice,expires:r.expires,digest:custodyDigest(v.grant!),packet:v.grant})))));}};}
+export function groupCustodyWakeStore(store:GroupCustodyStore){return {revision:store.revision?()=>store.revision!():undefined,transaction<T>(read:(rows:import('./custodyService.ts').CustodyRow[])=>T){return store.transaction(rows=>read(rows.filter(r=>r.accepted).flatMap(r=>r.recipients.filter(v=>v.grant&&!v.receipt&&!v.consumed).map(v=>({sender:r.sender,recipient:v.recipient,id:v.id,recipientDevice:v.recipientDevice,expires:r.expires,digest:custodyDigest(v.grant!),packet:v.grant})))));}};}

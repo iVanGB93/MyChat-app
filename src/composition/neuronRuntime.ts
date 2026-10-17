@@ -25,7 +25,7 @@ import { unavailableDirectoryLookup, type DirectoryLookupResult } from '../servi
 import { createMobileDirectory } from '../services/identity/mobileDirectory';
 import Native from '../../modules/axonic-nearby';
 import { allowedAxons, loadAllowedAxons, subscribeAllowedAxons } from '../services/allowedAxons';
-import { localAccount } from '../services/identity/localAccount';
+import { localAccount,requestLocalNetworkReset,closeForNetworkReset } from '../services/identity/localAccount';
 import { createLanIdentityRuntime, type NativeAxonLan } from '../services/identity/lanIdentityRuntime';
 import { createMobileIdentityRecordStore } from '../services/identity/identityRecordStore';
 import { createInternetAxonConnector, BOOTSTRAP_NEURONS } from '../services/identity/internetAxonTransport';
@@ -55,6 +55,11 @@ let inspectPush:(()=>{status:string})|null=null;
 export const localAccountPushStatus=()=>inspectPush?.()??{status:'locked'};
 const callListeners=new Set<(view:NeuronCallView<string>|null)=>void>();
 export const localAccountCalls=()=>activeCalls?.coordinator??null;
+export async function resetLocalNetworkWork(confirmed:true){
+ const call=localAccountCalls()?.snapshot();if(call&&!['ended','failed'].includes(call.status))throw Error('Finish the call before resetting network work');
+ const account=localAccount.status().account;if(!account)throw Error('Unlock your account first');
+ await requestLocalNetworkReset(account,confirmed);await closeForNetworkReset();
+}
 export function subscribeLocalAccountCalls(listener:(view:NeuronCallView<string>|null)=>void){callListeners.add(listener);listener(localAccountCalls()?.snapshot()??null);return()=>{callListeners.delete(listener);};}
 let activeActivity:ReturnType<typeof createChatActivity>|null=null;
 export const peerTyping=(peer:string,group?:string)=>activeActivity?.typing(peer,group)??false;

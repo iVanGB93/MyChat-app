@@ -381,3 +381,20 @@ test('old 24-word vaults still unlock and recover; vault version cannot be subst
   for(const item of [opened,restored,identity,fresh.identity,freshOpened])vault.destroyIdentity(item);
   root.fill(0);secret.fill(0);
 });
+
+test('public hash reuse stays byte-identical across copies, mutation, eviction and expiry', () => {
+  const a=account(),r=a.record;
+  const digest=value=>crypto.createHash('sha256').update(JSON.stringify(['axonic-identity-record-v1',value.version,value.account,value.root,value.revision,value.previous,value.issuedAt,value.expiresAt,value.devices.map(d=>[d.id,d.signing,d.encryption])])).digest('hex');
+  assert.equal(p.recordDigest(r),digest(r));
+  assert.equal(p.recordDigest(structuredClone(r)),digest(r));
+  const changed=structuredClone(r);changed.devices[0].encryption='ff'.repeat(32);
+  assert.equal(p.recordDigest(changed),digest(changed));
+  assert.notEqual(p.recordDigest(changed),p.recordDigest(r));
+  assert.equal(p.verifyRecord(changed,now),false);
+  for(let i=0;i<300;i++)p.accountId(i.toString(16).padStart(64,'0'));
+  assert.equal(p.recordDigest(r),digest(r),'eviction cannot change the hash');
+  assert.equal(p.verifyRecord(r,r.expiresAt),false,'a warm hash is not admission');
+  assert.equal(p.verifyRecord(r,r.expiresAt,true),true);
+  const bad=structuredClone(r);bad.signature='00'.repeat(64);
+  assert.equal(p.verifyRecord(bad,now),false);
+});

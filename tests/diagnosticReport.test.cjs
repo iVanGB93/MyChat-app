@@ -19,8 +19,18 @@ test('message projection uses canonical stored/expired/media states without cont
  const base={peer:'secret-peer',id:'secret-id',text:'secret-text',direction:'outgoing',at:0,status:'pending'};
  const s=report.summarizeReportMessages({messages:[{...base,networkStoredUntil:2000},{...base,attachment:{},descriptorDelivered:true,attachmentStoredUntil:500},{...base,status:'delivered',read:true,group:{id:'secret-group'}}]},1000);
  assert.equal(s.private.outgoing.stored,1);assert.equal(s.private.outgoing.pending,1);assert.equal(s.group.outgoing.read,1);assert.equal(s.incompleteMedia,1);assert(!JSON.stringify(s).includes('secret'));
+ assert.equal(s.pendingEvidence.expiredStorageEvidence,1);assert.equal(s.pendingEvidence.mediaDescriptorKnownIncomplete,1);
+ const old=report.summarizeReportMessages({messages:[base,{...base,deleted:true},{...base,direction:'incoming'}]},86400000);
+ assert.equal(old.pendingEvidence.olderThanOneDay,1);assert.equal(old.pendingEvidence.olderThanOneHour,1);
+ const media=report.summarizeReportMessages({messages:[{...base,attachment:{manifest:{expires:10}}},{...base,direction:'incoming',attachment:{manifest:{expires:30}}}]},20);
+ assert.deepEqual(media.incompleteMediaEvidence,{expiredTransferAuthorization:1,liveTransferAuthorization:1,incoming:1,outgoing:1});
 });
 test('wake projection allowlists keys and rejects oversized report output',()=>{
- const w=report.summarizeWakeForReport({private:{work:{remoteGatewayCalls:3,token:42},outcomes:{retry:2,'private-identity':4},pendingSample:[{peer:'secret'}]}});
+ const w=report.summarizeWakeForReport({private:{work:{remoteGatewayCalls:3,token:42},outcomes:{retry:2,local_wake_verification_failed:1,'private-identity':4},pendingSample:[{peer:'secret'}]}});
+ assert.equal(w.private.outcomes.local_wake_verification_failed,1);
  assert.equal(w.private.work.remoteGatewayCalls,3);assert(!JSON.stringify(w).includes('secret'));assert(!JSON.stringify(w).includes('token'));assert.throws(()=>report.serializeDiagnosticReport({text:'x'.repeat(65536)}));
+});
+test('network-reset cancellations are separate from active pending or incomplete media',()=>{
+ const s=report.summarizeReportMessages({networkResetAt:100,messages:[{direction:'outgoing',status:'pending',at:1,networkCancelledAt:100,attachment:{manifest:{expires:200}}}]},150);
+ assert.equal(s.networkResetAt,100);assert.equal(s.private.outgoing.cancelled,1);assert.equal(s.private.outgoing.pending,0);assert.equal(s.incompleteMedia,0);assert.equal(s.oldestOwnPendingSeconds,null);assert.equal(s.incompleteMediaEvidence.outgoing,0);
 });

@@ -1,4 +1,7 @@
 import {deliverCallSignal} from '../services/callSignalRetry';
+import {createCallScreenShare} from '../services/callScreenShare';
+import {CALL_VIDEO_STATE,callVideoState,readCallVideoState} from '../services/callVideoPresentation';
+import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
 import {callCameraPreview} from '../services/callCameraPreview';
 /* ------------------------------------------------------------------ */
 /*  useWebRTC — peer-to-peer audio/video using react-native-webrtc    */
@@ -115,6 +118,21 @@ export default function useWebRTCCore({
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
+  const [isScreenSharing,setIsScreenSharing]=useState(false),[screenShareBusy,setScreenShareBusy]=useState(false),[screenShareError,setScreenShareError]=useState<string|null>(null);
+  const [remoteScreenSharing,setRemoteScreenSharing]=useState(false);
+  const videoStateChannel=useRef<RTCDataChannel|null>(null),sharingRef=useRef(false);
+  const publishVideoState=()=>{const channel=videoStateChannel.current;if(channel?.readyState==='open'&&channel.bufferedAmount<1024){try{channel.send(callVideoState(sharingRef.current));}catch{/* A presentation hint must not end the call. */}}};
+  const screenShareRef=useRef<ReturnType<typeof createCallScreenShare>|null>(null);
+  if(!screenShareRef.current)screenShareRef.current=createCallScreenShare({
+    acquire:()=>mediaDevices.getDisplayMedia(),
+    camera:()=>localStreamRef.current?.getVideoTracks()[0],
+    sender:()=>pcRef.current?.getSenders().find(sender=>sender.track?.kind==='video'),
+    preview:stream=>{if(!cleanedUp.current)setLocalStream(stream??localStreamRef.current);},
+    changed:(sharing,busy)=>{if(!cleanedUp.current){if(sharingRef.current!==sharing){sharingRef.current=sharing;publishVideoState();}setIsScreenSharing(sharing);setScreenShareBusy(busy);}},
+    error:()=>{if(!cleanedUp.current)setScreenShareError('Sharing stopped, but the camera could not resume. Try a new video call.');},
+  });
+  const startScreenSharing=useCallback(async()=>{setScreenShareError(null);try{await screenShareRef.current?.start();}catch{if(!cleanedUp.current)setScreenShareError('Screen sharing did not start. Allow screen capture to try again.');}},[]);
+  const stopScreenSharing=useCallback(async()=>{setScreenShareError(null);try{await screenShareRef.current?.stop();}catch{if(!cleanedUp.current)setScreenShareError('Sharing stopped, but the camera could not resume. Try a new video call.');}},[]);
   /** Whether the active path is direct P2P or relayed through TURN. */
   const [connectionType, setConnectionType] = useState<ConnectionType>('connecting');
   const [callQuality, setCallQuality] = useState<CallQuality>({
@@ -376,6 +394,18 @@ export default function useWebRTCCore({
         bundlePolicy:'max-bundle' as const,
       } as any);
       pcRef.current = pc;
+      if(callType==='video'){
+        const attach=(channel:RTCDataChannel)=>{
+          if(channel.label!==CALL_VIDEO_STATE||videoStateChannel.current){channel.close();return;}
+          videoStateChannel.current=channel;
+          (channel as any).onopen=publishVideoState;
+          (channel as any).onmessage=(event:{data:unknown})=>{if(cleanedUp.current||pcRef.current!==pc)return;const sharing=readCallVideoState(event.data);if(sharing!==null)setRemoteScreenSharing(sharing);};
+          (channel as any).onclose=()=>{if(videoStateChannel.current===channel){videoStateChannel.current=null;if(!cleanedUp.current)setRemoteScreenSharing(false);}};
+          publishVideoState();
+        };
+        (pc as any).ondatachannel=(event:{channel:RTCDataChannel})=>attach(event.channel);
+        if(isOutgoing)attach(pc.createDataChannel(CALL_VIDEO_STATE,{ordered:true}));
+      }
       hasRemoteDesc.current = false;
       fullDescriptionSent.current = false;
       startQualityMonitoring(pc);
@@ -598,6 +628,7 @@ export default function useWebRTCCore({
 
   /* ---- Toggle camera ---- */
   const toggleCamera = useCallback(() => {
+    if(screenShareRef.current?.active())return;
     const stream = localStreamRef.current;
     if (!stream) return;
     const videoTrack = stream.getVideoTracks()[0];
@@ -609,6 +640,7 @@ export default function useWebRTCCore({
 
   /* ---- Switch camera (front/back) ---- */
   const switchCamera = useCallback(() => {
+    if(screenShareRef.current?.active())return;
     const stream = localStreamRef.current;
     if (!stream) return;
     const videoTrack = stream.getVideoTracks()[0] as any;
@@ -621,6 +653,8 @@ export default function useWebRTCCore({
   const cleanup = useCallback(() => {
     debugLog('[WebRTC] cleanup');
     cleanedUp.current = true;
+    screenShareRef.current?.close();
+    videoStateChannel.current?.close();videoStateChannel.current=null;
     recoveryRef.current?.stop();
     recoveryRef.current = null;
     for(const [timer,resolve] of signalWaits.current){clearTimeout(timer);resolve();}
@@ -654,6 +688,7 @@ export default function useWebRTCCore({
   }, [cleanup]);
 
   return {
+    isScreenSharing,remoteScreenSharing,screenShareBusy,screenShareError,startScreenSharing,stopScreenSharing,
     recovering,
     localStream,
     remoteStream,

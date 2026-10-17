@@ -210,7 +210,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
    // and local encryption must not hold the download/receipt worker hostage.
    if(!preparing){preparing=true;void prepareSelection(account,snapshot,current)
     .catch(()=>{/* Durable selections remain retryable. */}).finally(()=>{preparing=false;});}
-   for(const message of snapshot.messages){if(!current())return;if(message.attachment&&message.status==='pending'&&accepted.has(message.peer)&&(!message.group||rootGroupAllowed(snapshot,account,message.peer,message.group))){
+   for(const message of snapshot.messages){if(!current())return;if(message.attachment&&message.networkCancelledAt===undefined&&message.status==='pending'&&accepted.has(message.peer)&&(!message.group||rootGroupAllowed(snapshot,account,message.peer,message.group))){
     const m=message.attachment.manifest;if(m.expires>Date.now())await worker.enqueue(message.attachment,message.direction);
    }}
    if(current())return await worker.tick({maxSteps:32,maxMilliseconds:50});

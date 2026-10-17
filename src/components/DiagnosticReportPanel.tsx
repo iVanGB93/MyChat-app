@@ -33,17 +33,18 @@ export default function DiagnosticReportPanel(){
   {!!error&&!draft&&<Text accessibilityRole="alert" style={{color:colors.error}}>{error}</Text>}
   </ScrollView></View></Modal>
   {!!sent&&<><Text style={secondary}>Queued for {sent.name}, not confirmed delivered. Existing private-chat delivery and retry rules apply. Add details or check delivery in that conversation. No automatic follow-up reports.</Text><Button title="OPEN REPORT CHAT" variant="outline" onPress={()=>navigation.navigate('ChatRoom',{peer:sent.peer})}/></>}
-  <Modal visible={!!draft} animationType="slide" onRequestClose={()=>{if(!busy)setDraft(null);}}><View style={{flex:1,backgroundColor:colors.background}}><ScreenHeader title="Review diagnostic report" onBack={()=>{if(!busy)setDraft(null);}}/><ScrollView contentContainerStyle={{padding:18,gap:12,paddingBottom:insets.bottom+24}}>
+  <Modal visible={!!draft} animationType="slide" onRequestClose={()=>{if(!busy)setDraft(null);}}><View style={{flex:1,backgroundColor:colors.background}}><ScreenHeader title="Review diagnostic report" onBack={()=>{if(!busy)setDraft(null);}}/><ScrollView testID="diagnostic-report-text" style={{flex:1,minHeight:0}} contentContainerStyle={{padding:18,gap:12}}>
    <Text style={{color:colors.text,fontWeight:'700'}}>To: {draft?.recipient.name}</Text><Text selectable style={secondary}>{draft?.recipient.account}</Text><Text style={secondary}>{draft?.recipient.selectionBasis}. This recipient stays fixed across retries.</Text>
    <Text style={secondary}>The receiver can identify your account and keep this report in its chat history. This is a one-time snapshot, not access to your other chats. A configured AoN may need to accept your conversation before downloading the file.</Text>
    <Text style={{color:colors.text,fontWeight:'700'}}>Diagnostic file: {(bytes/1024).toFixed(1)} KiB ({bytes.toLocaleString()} bytes)</Text>
    <Text style={secondary}>The JSON below is the exact attachment. File size excludes the chat summary, encryption and transport overhead. Preview expires after 24 hours; queued files use normal attachment expiry and delivery rules.</Text>
+   <Text style={secondary}>Sharing with another app exports this JSON as text through the phone's share menu, outside Axonic's encrypted private chat.</Text>
    <Text selectable style={{color:colors.text,fontSize:12}}>{draft?.summary}</Text><Text selectable style={{color:colors.text,fontSize:11}}>{draft?.json}</Text>
+  </ScrollView><View testID="diagnostic-report-actions" style={{flexShrink:0,paddingHorizontal:18,paddingTop:12,paddingBottom:Math.max(insets.bottom,12),gap:8,borderTopWidth:1,borderTopColor:colors.border,backgroundColor:colors.background}}>
    {!!error&&<Text accessibilityRole="alert" style={{color:colors.error}}>{error}</Text>}
    <Button title="CONFIRM & SEND TO THIS AON" loading={busy} disabled={busy} onPress={()=>{setReviewing(false);void send();}}/>
-   <Text style={secondary}>Sharing with another app exports this JSON as text through the phone's share menu, outside Axonic's encrypted private chat.</Text>
    <Button title="SHARE WITH ANOTHER APP" variant="outline" disabled={busy} onPress={()=>void Share.share({message:draft?.json??'',title:'Axonic diagnostic report'}).catch(()=>setError('Sharing was unavailable.'))}/>
    <Button title="CANCEL — DON'T SEND" variant="outline" disabled={busy} onPress={()=>{setReviewing(false);setDraft(null);setError('');}}/>
-  </ScrollView></View></Modal>
+  </View></View></Modal>
  </View>;
 }

@@ -1,0 +1,23 @@
+Long navigation/memory follow-up — October 16, 2026
+Scope: Axonic Dev on both connected phones; no official app installation, production build, data wipe, messages, calls or AoN deployment.
+
+Retained changes:
+- Native tab screens enabled. The previous disabled-screen fallback uses display:none, which adds layout work when a tab returns.
+- freezeOnBlur disabled. Existing screen hooks gate history/activity polling by focus. A 45-second sample with native screens plus freezing showed 415 completeRoot samples out of 4369 and only1912 idle/root samples; without freezing the matching sample showed0 completeRoot samples out of4363 and3678 idle/root samples. The initial baseline had4/4346 completeRoot and3592 idle/root. Samples include test/instrumentation overhead and are not isolated causal latency measurements.
+- Bounded reuse of public account/device/record-body hashes in identityProtocol.ts: maximum128 string entries, maximum4096 characters per cacheable input. Larger inputs use the original hash path without retention. Values contain only public deterministic hashes. No mutable objects, private keys, acceptance results or negative verification results are cached.
+
+Cryptographic contract:
+The encoded JSON arrays, UTF-8 bytes and SHA-256 outputs remain unchanged. verifyRecord still checks shape, device/account bindings, signature, issued time and expiry on every call; this change only reuses hash computations for exact serialized inputs. Signature verification policy, challenge replay protection and directory revocation/revision rules are unchanged. Regression tests compare independent Node SHA-256 output, copies/mutation, eviction, invalid signature and expired records. This is functional equivalence evidence, not a new security proof.
+Desktop warmed microbenchmark of10000 iterations of accountId+deviceId+recordDigest: old76.7–81.6ms, new6.6–7.2ms. This measures those repeated hashes only; it is not an overall phone speedup.
+
+Validation:
+Full check:1208 passed,3 skipped,0 failed; TypeScript, dependency cycles, module boundaries and consolidation passed. Fixed an existing flaky custody test whose replacement ciphertext byte could equal the original; it now always changes the byte.
+Three-minute baseline:35 tab changes per phone, including Chats, Calls and Profile; native view counts stabilized after first visits (624/425), one activity each. Baseline frame p50 25/25ms and p95 57/44ms. Native trace included main-thread frame slices up to29.66ms. Normal frame budget misses remain possible in development builds.
+Final five-minute results are stored in builds/navigation-final-long.json. Freeze experiment interrupted intentionally when profiling exposed extra React work; not counted as a completed endurance test. No source reloads during completed baseline/final runs.
+
+Completed final run: 57 tab changes per phone, approximately303seconds. No missing tab/foreground errors.
+R3GYC0H7PMY: PSS initial 596843KiB, final 574685KiB; warmed min/max 567460/603229KiB. Warm views 627, activities 1.
+R3GL10CNS1K: PSS initial 594177KiB, final 579233KiB; warmed min/max 578822/596190KiB. Warm views 428, activities 1.
+Final frame p50 30/26ms (baseline25/25); p95 38/32ms (baseline57/44); p99 48/48ms. Tail improved, median did not. 64/61 total rendered frames,62/59 deadline misses: deliberately sparse tab-switch frames, not a scrolling FPS test. Remaining native UI-thread cost is NOT resolved.
+Near-end Hermes allocated bytes27092088/29618032; heaps46137344/37748736. Native heapPSS approximately249/251MiB and graphics83/83MiB. No per-switch unbounded growth demonstrated over this interval; memory remains substantial and this does not prove leak absence.
+Both phones remain on the final Dev bundle. All test/profiling processes ended; Android tracing stopped. Raw native trace compressed in ignored builds.

@@ -4,12 +4,12 @@ const ts = require('typescript'), { DatabaseSync } = require('node:sqlite');
 test('mobile journal SQL preserves CAS, ownership and state across database reopen', async () => {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'axonic-call-sql-'));
   const filename = path.join(folder, 'calls.db');
-  let database, inventory, history, tail=Promise.resolve(), transactionOpen=false;
+  let database, inventory, history, tail=Promise.resolve(), transactionOpen=false, historyBytes=0;
   const read=(s,...args)=>database.prepare(s).get(...args)??null;
   const sql = {
     execAsync: async s => { database.exec(s); },
     getFirstAsync: async (s,...args) => { if(transactionOpen)throw Error('database is locked');return read(s,...args); },
-    getAllAsync:async(s,...args)=>database.prepare(s).all(...args),
+    getAllAsync:async(s,...args)=>{const rows=database.prepare(s).all(...args);if(s.includes('AS summary'))historyBytes+=Buffer.byteLength(JSON.stringify(rows));return rows;},
     runAsync: async (s,...args) => database.prepare(s).run(...args),
     withExclusiveTransactionAsync(change) {
       const result=tail.then(async()=>{
@@ -57,6 +57,26 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
     assert.equal(await store.compareAndSet(owner,id,null,'reset'),false);
     await assert.rejects(store.compareAndSet(owner,id,ending,'x'.repeat(800001)),/Oversized/);
     assert.equal(await store.read(owner,id),ending);
+    const large=JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify(first)},{raw:'x'.repeat(600000)}]});
+    assert.equal(await store.compareAndSet(owner,id,ending,large),true);
+    historyBytes=0;
+    assert.deepEqual(await history(owner),[{id,peer:other,outgoing:true,media:'voice',at:1}]);
+    assert.ok(historyBytes<2000,'history must not move the full signaling journal into JavaScript');
+    for(const invalid of ['{',JSON.stringify({owner:other,callId:id,entries:[{raw:JSON.stringify(first)}]}),
+      JSON.stringify({owner,callId:id,entries:[]}),JSON.stringify({owner,callId:id,entries:{0:{raw:JSON.stringify(first)}}}),
+      JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify({...first,callee:owner})}]}),
+      JSON.stringify({owner,callId:id,entries:[{raw:'invalid'}]}),
+      JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify(first)}],padding:'x'.repeat(800001)})]){
+      database.prepare('UPDATE call_journal SET data=? WHERE owner=? AND call_id=?').run(invalid,owner,id);
+      await assert.rejects(history(owner));
+    }
+    database.prepare('UPDATE call_journal SET data=? WHERE owner=? AND call_id=?').run(ending,owner,id);
+    assert.equal((await history(owner)).length,1,'external updates must be visible without stale caches');
+    database.prepare('INSERT INTO call_history(owner,call_id,data,archived_at) VALUES(?,?,?,?)').run(owner,id,large,1);
+    historyBytes=0;
+    assert.equal((await history(owner)).length,1,'active and archived copies must remain deduplicated');
+    assert.ok(historyBytes<4000,'archived journals must use the same small display projection');
+    database.prepare('DELETE FROM call_history WHERE owner=? AND call_id=?').run(owner,id);
     for(let n=0;n<63;n++)assert.equal(await store.compareAndSet(owner,n.toString(16).padStart(64,'0'),null,'retired-test-journal'),true);
     assert.equal(await store.compareAndSet(owner,'99'.repeat(32),null,'new-live'),true);
     assert.equal(read('SELECT COUNT(*) AS total FROM call_history').total,63);

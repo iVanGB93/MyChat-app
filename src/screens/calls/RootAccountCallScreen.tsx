@@ -1,3 +1,4 @@
+import {callScreenCaptureAvailable} from '../../services/call-screen-capture';
 import {readSharedAvatar,subscribeSharedAvatars} from '../../modules/storage';
 import {readRootNotificationPreferences} from '../../modules/messaging/notifications';
 import {localAccount} from '../../modules/identity';
@@ -104,6 +105,10 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  const onConnected=useCallback(()=>{connectedAt.current??=Date.now();setConnected(true);markRootCallConnected(call.id);},[call.id]);
  const endRef=useRef(end);endRef.current=end;const onDisconnected=useCallback(()=>endRef.current(),[]);
  const rtc=useWebRTCCore({callId:call.id,callType:call.media,peerUserId:call.peerUser,isOutgoing:call.outgoing,mediaTransport:call.transport,onConnected,onDisconnected});
+ const minimizeRef=useRef(minimize);minimizeRef.current=minimize;
+ // Once capture succeeds, expose the app instead of recursively sharing the call view.
+ useEffect(()=>{if(rtc.isScreenSharing){setOptions(false);minimizeRef.current();}},[rtc.isScreenSharing]);
+ useEffect(()=>{if(rtc.remoteScreenSharing)setControls(false);},[rtc.remoteScreenSharing]);
  useEffect(()=>{if(call.outgoing&&!started.current){started.current=true;void rtc.startAsOfferer();}},[call.outgoing,rtc.startAsOfferer]);
  useEffect(()=>{if(connected)return;const timer=setTimeout(end,45000);return()=>clearTimeout(timer);},[connected,call.id]);
  useEffect(()=>{void startRootCallLease(call.id,call.media);return()=>{stopRootCallLease(call.id);restoreCallAudio();};},[call.id,call.media]);
@@ -116,14 +121,15 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
   return()=>{mounted=false;listener.remove();active.remove();};
  },[call.id,call.media]);
  const routeAudio=async(id:string)=>{if(audioBusy.current)return;audioBusy.current=true;setError('');try{setAudioRoutes(await selectCallAudioRoute(id));}catch(error){setError(error instanceof Error?error.message:'Unable to change audio output.');}finally{audioBusy.current=false;}};
- const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video',localVisible=rtc.isCameraOff?undefined:local;
+ const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video',localVisible=rtc.isCameraOff&&!rtc.isScreenSharing?undefined:local;
  const showControls=!video||controls;
  const quality=rtc.callQuality;
  const background=video&&<>
-  {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit="cover" mirror={!remote} style={styles.fullVideo} zOrder={0}/>}
+  {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit={(remote?rtc.remoteScreenSharing:rtc.isScreenSharing)?"contain":"cover"} mirror={!remote&&!rtc.isScreenSharing} style={styles.fullVideo} zOrder={0}/>}
   <Pressable accessibilityRole="button" accessibilityLabel={controls?'Hide call controls':'Show call controls'} onPress={()=>setControls(v=>!v)} style={StyleSheet.absoluteFill}/>
-  {remote&&foreground&&<View testID="axonic-call-self-view" pointerEvents="none" style={[styles.selfView,{top:insets.top+16,right:insets.right+16}]}>
-   <View style={styles.pipWrap}><View style={styles.pip}>{rtc.isCameraOff||!local?<View style={{flex:1,alignItems:'center',justifyContent:'center',gap:8}}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>{rtc.isCameraOff?'Camera off':'No preview'}</Text></View>:<RTCView streamURL={local} objectFit="cover" mirror style={{flex:1}} zOrder={1}/>}</View></View>
+  {remote&&foreground&&(!rtc.remoteScreenSharing||showControls)&&<View testID="axonic-call-self-view" pointerEvents="none" style={[styles.selfView,{top:insets.top+16,right:insets.right+16}]}>
+   <View style={styles.pipWrap}><View style={styles.pip}>{rtc.isCameraOff&&!rtc.isScreenSharing||!local?<View style={{flex:1,alignItems:'center',justifyContent:'center',gap:8}}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>{rtc.isCameraOff?'Camera off':'No preview'}</Text></View>:<RTCView streamURL={local} objectFit={rtc.isScreenSharing?"contain":"cover"} mirror={!rtc.isScreenSharing} style={{flex:1}} zOrder={1}/>}</View></View>
+   {showControls&&rtc.isScreenSharing&&<Text style={[styles.quality,{color:colors.primary,fontSize:11,textAlign:'center'}]}>Sharing screen</Text>}
    {showControls&&quality.level!=='unknown'&&<View testID="axonic-call-connection-quality" style={styles.quality}><Text style={{textAlign:'center',fontSize:11,fontWeight:'700',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}}>{quality.level.toUpperCase()}</Text>{(quality.roundTripTimeMs!=null||quality.packetLossPercent!=null)&&<Text style={{color:'#fff',fontSize:10,textAlign:'center'}}>{quality.roundTripTimeMs!=null?`${quality.roundTripTimeMs} ms`:''}{quality.roundTripTimeMs!=null&&quality.packetLossPercent!=null?' · ':''}{quality.packetLossPercent!=null?`${quality.packetLossPercent}% loss`:''}</Text>}</View>}
   </View>}
  </>;
@@ -132,49 +138,55 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  const homeWindow=Platform.OS==='android'&&!foreground;
  return <>
  {homeWindow&&<View testID="axonic-system-call-window" pointerEvents="none" style={[StyleSheet.absoluteFill,{backgroundColor:'#020413',zIndex:100,elevation:20,alignItems:'center',justifyContent:'center',gap:8}]}>
-  {video&&(remote||localVisible)?<RTCView streamURL={(remote||localVisible)!} objectFit="contain" mirror={!remote} style={StyleSheet.absoluteFill} zOrder={0}/>:<><Ionicons name={video?'videocam':'call'} size={36} color={colors.primary}/><Text numberOfLines={2} style={{color:'#fff',fontSize:16,textAlign:'center',paddingHorizontal:8}}>{name}</Text><Text style={{color:'#fff',fontSize:14}}>{status}</Text></>}
+  {video&&(remote||localVisible)?<RTCView streamURL={(remote||localVisible)!} objectFit="contain" mirror={!remote&&!rtc.isScreenSharing} style={StyleSheet.absoluteFill} zOrder={0}/>:<><Ionicons name={video?'videocam':'call'} size={36} color={colors.primary}/><Text numberOfLines={2} style={{color:'#fff',fontSize:16,textAlign:'center',paddingHorizontal:8}}>{name}</Text><Text style={{color:'#fff',fontSize:14}}>{status}</Text></>}
  </View>}
  {!homeWindow&&minimized&&<MinimizedCall name={name} status={status} video={video} stream={remote||localVisible} restore={restore} end={end}/>}
  <Modal visible={!homeWindow&&!minimized} animationType="slide" onRequestClose={minimizeMedia}>
  <CallLayout avatarUri={avatarUri} name={name} video={video} status={status} background={background} show={showControls} avatar={!video||(!remote&&!localVisible)}>
   {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
+  {!!rtc.screenShareError&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{rtc.screenShareError}</Text>}
 
   <View style={[styles.actions,video&&{paddingHorizontal:8}]}>
    <ActionButton size={video?52:64} icon={rtc.isMuted?'mic-off':'mic'} label={rtc.isMuted?'Unmute':'Mute'} active={rtc.isMuted} onPress={rtc.toggleMute} Colors={colors}/>
-   {video&&<ActionButton size={52} icon={rtc.isCameraOff?'videocam-off':'videocam'} label={rtc.isCameraOff?'Cam On':'Cam Off'} active={rtc.isCameraOff} onPress={rtc.toggleCamera} Colors={colors}/>}
+   {video&&<ActionButton size={52} icon={rtc.isScreenSharing?'stop-circle-outline':rtc.isCameraOff?'videocam-off':'videocam'} label={rtc.isScreenSharing?'Stop share':rtc.isCameraOff?'Cam On':'Cam Off'} active={rtc.isScreenSharing||rtc.isCameraOff} onPress={rtc.isScreenSharing?()=>void rtc.stopScreenSharing():rtc.toggleCamera} Colors={colors}/>}
    <EndButton video={video} onPress={end}/>
-   {video&&<ActionButton size={52} icon="camera-reverse-outline" label="Flip" onPress={rtc.switchCamera} Colors={colors}/>}
+   {video&&!rtc.isScreenSharing&&<ActionButton size={52} icon="camera-reverse-outline" label="Flip" onPress={rtc.switchCamera} Colors={colors}/>}
    {video?<ActionButton size={52} icon="options-outline" label="Options" onPress={()=>setOptions(true)} Colors={colors}/>:<ActionButton icon={audioRoutes?.devices.find(d=>d.id===audioRoutes.selectedId)?.kind==='bluetooth'?'bluetooth':'volume-high-outline'} label="Audio" onPress={()=>setOptions(true)} Colors={colors}/>}
   </View>
  </CallLayout>
  {showControls&&<Pressable accessibilityRole="button" accessibilityLabel="Minimize call" testID="axonic-minimize-call" onPress={minimizeMedia} style={{position:'absolute',top:insets.top+12,left:insets.left+12,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="chevron-forward" size={28} color="#fff"/></Pressable>}
  </Modal>
- <Modal visible={!homeWindow&&!minimized&&options} transparent animationType="slide" onRequestClose={()=>setOptions(false)}>
-  <View style={{flex:1,justifyContent:'flex-end',backgroundColor:'rgba(0,0,0,0.55)'}}><Pressable accessibilityLabel="Close call options" onPress={()=>setOptions(false)} style={StyleSheet.absoluteFill}/>
-   <ScrollView style={{flexGrow:0,backgroundColor:colors.background,borderTopLeftRadius:24,borderTopRightRadius:24,maxHeight:'85%'}} contentContainerStyle={{padding:24,paddingLeft:insets.left+24,paddingRight:insets.right+24,paddingBottom:Math.max(insets.bottom,16)+12}}>
-    {video&&<><Text accessibilityRole="header" style={{color:colors.text,fontSize:22}}>Video quality</Text><Text style={{color:colors.textSecondary,marginVertical:12}}>Controls video sent by this phone. Automatic adapts to your connection.</Text>
-    {([
-      ['automatic','Automatic','Adjusts to your connection · Default'],
-      ['low','Low','Uses less data · Lower detail and frame rate'],
-      ['medium','Medium','Balances detail and data use'],
-      ['high','High','Best detail · Uses more data'],
-    ] as [VideoQualityMode,string,string][]).map(([mode,label,detail])=><TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} accessibilityRole="radio" accessibilityState={{checked:rtc.videoQualityMode===mode}} onPress={()=>rtc.selectVideoQuality(mode)} style={{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:14}}><Ionicons name={rtc.videoQualityMode===mode?'radio-button-on':'radio-button-off'} size={24} color={colors.primary}/><View style={{flex:1}}><Text style={{color:colors.text,fontSize:17}}>{label}</Text><Text style={{color:colors.textSecondary,marginTop:4}}>{detail}</Text></View></TouchableOpacity>)}
-    {!!rtc.videoQualityError&&<Text accessibilityRole="alert" style={{color:colors.error}}>{rtc.videoQualityError}</Text>}
-    </>}
-    <Text accessibilityRole="header" style={{color:colors.text,fontSize:22,marginTop:video?20:0}}>Audio output</Text>
-    <Text style={{color:colors.textSecondary,marginVertical:12}}>Automatic uses your current headset and follows device changes.</Text>
-    {!!error&&<Text accessibilityRole="alert" style={{color:colors.error}}>{error}</Text>}
-    {audioRoutes&&[{id:'automatic',label:'Automatic',name:'',kind:'other' as const},...audioRoutes.devices].map(device=>{
-     const selected=device.id==='automatic'?audioRoutes.automatic:!audioRoutes.automatic&&device.id===audioRoutes.selectedId;
-     const inUse=device.id===audioRoutes.selectedId;
-     return <TouchableOpacity key={device.id} accessibilityRole="radio" accessibilityLabel={device.name?`${device.label}: ${device.name}`:device.label} accessibilityState={{checked:selected}} onPress={()=>void routeAudio(device.id)} style={{flexDirection:'row',alignItems:'center',gap:12,paddingVertical:14}}>
-      <Ionicons name={selected?'radio-button-on':'radio-button-off'} size={24} color={colors.primary}/>
-      <View style={{flex:1}}><Text style={{color:colors.text,fontSize:17}}>{device.label}</Text>{!!device.name&&<Text style={{color:colors.textSecondary,marginTop:4}}>{device.name}</Text>}</View>
-      {inUse&&<Text style={{color:colors.primary,fontSize:12}}>In use</Text>}
-     </TouchableOpacity>;
-    })}
-    <TouchableOpacity accessibilityRole="button" onPress={()=>setOptions(false)} style={{alignItems:'center',padding:14,backgroundColor:colors.primary,borderRadius:16,marginTop:12}}><Text style={{color:colors.textInverse}}>Done</Text></TouchableOpacity>
-   </ScrollView>
+ <Modal visible={!homeWindow&&!minimized&&options} transparent animationType="fade" onRequestClose={()=>setOptions(false)}>
+  <View style={[styles.optionsBackdrop,{paddingTop:insets.top+12,paddingBottom:Math.max(insets.bottom,12),paddingLeft:insets.left+12,paddingRight:insets.right+12}]}>
+   <Pressable accessibilityLabel="Close call options" onPress={()=>setOptions(false)} style={StyleSheet.absoluteFill}/>
+   <View testID="axonic-call-options" style={styles.optionsPanel}>
+    <View style={styles.optionsHeader}><Ionicons name={video?'options-outline':'volume-high-outline'} size={18} color={colors.primary}/><Text accessibilityRole="header" style={styles.optionsTitle}>{video?'Call options':'Audio output'}</Text><Pressable accessibilityRole="button" accessibilityLabel="Close options" onPress={()=>setOptions(false)} style={styles.optionsClose}><Ionicons name="close" size={22} color="#fff"/></Pressable></View>
+    <ScrollView style={{flexShrink:1}} contentContainerStyle={styles.optionsContent}>
+     {video&&<>
+      <TouchableOpacity accessibilityRole="button" accessibilityLabel={rtc.isScreenSharing?'Stop sharing screen':'Share screen'} disabled={rtc.screenShareBusy||!callScreenCaptureAvailable} onPress={()=>{setOptions(false);if(rtc.isScreenSharing)void rtc.stopScreenSharing();else void rtc.startScreenSharing();}} style={[styles.audioChoice,styles.audioChoiceSelected,{marginBottom:12,opacity:rtc.screenShareBusy||!callScreenCaptureAvailable?0.5:1}]}>
+       <Ionicons name={rtc.isScreenSharing?'stop-circle-outline':'desktop-outline'} size={20} color={colors.primary}/><View style={{flex:1}}><Text style={styles.optionText}>{rtc.screenShareBusy?'Switching video…':rtc.isScreenSharing?'Stop sharing':'Share screen'}</Text><Text style={styles.optionDetail}>{!callScreenCaptureAvailable?'Update the Android app to share':rtc.isScreenSharing?'Return to your camera':'Show your screen instead of your camera'}</Text></View>
+      </TouchableOpacity>
+      <Text accessibilityRole="header" style={styles.optionsSection}>VIDEO QUALITY</Text>
+      <View style={styles.qualityChoices}>{([
+       ['automatic','Auto'],['low','Low'],['medium','Medium'],['high','High'],
+      ] as [VideoQualityMode,string][]).map(([mode,label])=><TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} accessibilityRole="radio" accessibilityLabel={`${mode==='automatic'?'Automatic':label} video quality`} accessibilityState={{checked:rtc.videoQualityMode===mode}} onPress={()=>rtc.selectVideoQuality(mode)} style={[styles.qualityChoice,rtc.videoQualityMode===mode&&styles.qualityChoiceSelected]}><Text style={[styles.optionText,rtc.videoQualityMode===mode&&{color:colors.primary,fontWeight:'700'}]}>{label}</Text></TouchableOpacity>)}</View>
+      {!!rtc.videoQualityError&&<Text accessibilityRole="alert" style={styles.optionError}>{rtc.videoQualityError}</Text>}
+     </>}
+     {video&&<Text accessibilityRole="header" style={[styles.optionsSection,{marginTop:16}]}>AUDIO OUTPUT</Text>}
+     {!!error&&<Text accessibilityRole="alert" style={styles.optionError}>{error}</Text>}
+     {audioRoutes&&[{id:'automatic',label:'Automatic',name:'',kind:'other' as const},...audioRoutes.devices].map(device=>{
+      const selected=device.id==='automatic'?audioRoutes.automatic:!audioRoutes.automatic&&device.id===audioRoutes.selectedId;
+      const inUse=device.id===audioRoutes.selectedId;
+      const icon=device.kind==='bluetooth'?'bluetooth':device.kind==='speaker'?'volume-high-outline':device.kind==='phone'?'phone-portrait-outline':device.kind==='wired'||device.kind==='usb'?'headset-outline':'sync-outline';
+      return <TouchableOpacity key={device.id} accessibilityRole="radio" accessibilityLabel={device.name?`${device.label}: ${device.name}`:device.label} accessibilityState={{checked:selected}} onPress={()=>void routeAudio(device.id)} style={[styles.audioChoice,selected&&styles.audioChoiceSelected]}>
+       <Ionicons name={icon} size={20} color={selected?colors.primary:'rgba(255,255,255,0.7)'}/>
+       <View style={{flex:1}}><Text style={styles.optionText}>{device.label}</Text>{!!device.name&&<Text numberOfLines={1} style={styles.optionDetail}>{device.name}</Text>}</View>
+       {inUse&&<Text style={styles.routeInUse}>In use</Text>}
+       {selected&&<Ionicons name="checkmark" size={18} color={colors.primary}/>}
+      </TouchableOpacity>;
+     })}
+    </ScrollView>
+   </View>
   </View>
  </Modal>
  </>;

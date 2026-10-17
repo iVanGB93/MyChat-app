@@ -8,7 +8,7 @@ function fixture(status='ready'){
  // Setters capture their component's hook storage, as React does.
  react.useState=initial=>{const own=current,i=index++;if(!(i in own))own[i]=initial;return [own[i],value=>own[i]=typeof value==='function'?value(own[i]):value];};
  const rtc={remoteStream:{toURL:()=> 'remote'},localStream:{toURL:()=> 'local'},callQuality:{level:'unknown'}};
- const imports={'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
+ const imports={'../../services/call-screen-capture':{callScreenCaptureAvailable:true},'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
   '../../modules/identity':{shortIdentity:()=> 'Peer'},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},
   '../../modules/messaging':{localAccountCalls:()=>({end:()=>{ended++;return Promise.resolve();}})},
   './CallStage':{CallLayout:'CallLayout',EndButton:'EndButton'},'./CallAppearance':{makeStyles:()=>({}),ActionButton:'ActionButton'},
@@ -23,6 +23,14 @@ function fixture(status='ready'){
  return {call,rtc,render,screen,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
 }
 function find(tree,predicate){if(!tree||typeof tree!=='object')return; if(predicate(tree))return tree;for(const child of tree.props?.children??[]){const result=Array.isArray(child)?child.map(x=>find(x,predicate)).find(Boolean):find(child,predicate);if(result)return result;}}
+test('camera fills the call stage while shared screens remain uncropped',()=>{
+ const f=fixture(),owner=f.screen();
+ const video=()=>find(find(f.render(owner.type,owner.props),n=>n.type==='CallLayout').props.background,n=>n.type==='RTCView');
+ assert.equal(video().props.objectFit,'cover');
+ f.rtc.remoteScreenSharing=true;assert.equal(video().props.objectFit,'contain');
+ f.rtc.remoteScreenSharing=false;assert.equal(video().props.objectFit,'cover');
+ f.rtc.remoteStream=null;f.rtc.isScreenSharing=true;assert.equal(video().props.objectFit,'contain');
+});
 
 test('outgoing Finding and its failure stay out of the global ringing modal',()=>{
  const f=fixture('finding');assert.equal(f.screen(),null);f.call.status='ended';assert.equal(f.screen(),null);
@@ -103,4 +111,15 @@ test('native video rectangle stays within the rounded self-view frame even witho
  const styles=out.makeStyles({}),frame=styles.pipWrap,inset=frame.padding+frame.borderWidth,radius=frame.borderRadius;
  assert(2*(radius-inset)**2<=radius**2,'each rectangular video corner is inside the rounded border');
  assert.equal(styles.pip.overflow,'hidden');assert.equal(frame.overflow,'hidden');assert.equal(frame.position,undefined,'only the whole self-view group is positioned');
+});
+
+test('screen sharing uses an unmirrored preview, offers Stop share, and hides camera flip',()=>{
+ const f=fixture();let started=0,stopped=0;f.rtc.startScreenSharing=()=>started++;f.rtc.stopScreenSharing=()=>stopped++;
+ const owner=f.screen();let tree=f.render(owner.type,owner.props);
+ find(tree,n=>n.props.accessibilityLabel==='Share screen').props.onPress();assert.equal(started,1);
+ f.rtc.isScreenSharing=true;f.rtc.isCameraOff=true;tree=f.render(owner.type,owner.props);
+ assert(!find(tree,n=>n.props.label==='Flip'));find(tree,n=>n.props.label==='Stop share').props.onPress();assert.equal(stopped,1);
+ const layout=find(tree,n=>n.type==='CallLayout'),self=find(layout.props.background,n=>n.props.testID==='axonic-call-self-view');
+ const preview=find(self,n=>n.type==='RTCView');assert.equal(preview.props.mirror,false);assert.equal(preview.props.objectFit,'contain');
+ find(tree,n=>n.props.accessibilityLabel==='Stop sharing screen').props.onPress();assert.equal(stopped,2);
 });

@@ -1,15 +1,19 @@
 import React,{useEffect,useState} from 'react';
-import {Text,TouchableOpacity,View} from 'react-native';
+import {Alert,Text,TouchableOpacity,View} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
 import {useTheme} from '../contexts/ThemeContext';
 import {useForegroundPoll} from '../hooks/useForegroundPoll';
-import {localAccountRelayInventory,subscribeRelayInventoryAccess,localAccountWakeDiagnostics} from '../modules/network';
+import {localAccountRelayInventory,subscribeRelayInventoryAccess,localAccountWakeDiagnostics,resetLocalNetworkWork} from '../modules/network';
 import {relayPacketDetails,relayCategories,relayPacketCategory,type RelayCategory,type RelayInventory} from '../services/identity/relayInventory';
 
 export default function RelayInventoryPanel(){
  const {colors}=useTheme(),focused=useIsFocused();
  const [data,setData]=useState<RelayInventory|null>(null),[error,setError]=useState(''),[page,setPage]=useState(0),[expanded,setExpanded]=useState<string|null>(null);
  const [category,setCategory]=useState<RelayCategory>('content');
+ const [resetting,setResetting]=useState(false);
+ const confirmReset=()=>Alert.alert('Reset all local network work?',
+  'This cancels pending sends, downloads, receipts and call signaling, and removes encrypted packets held for other users. Some messages or media may never arrive.\n\nChats, contacts, identity, saved media and call history stay on this phone. Nothing is deleted from other devices or AoNs; peers may send packets again.\n\nAxonic will close. Reopen it to apply the reset before networking starts. This cannot be undone.',
+  [{text:'Keep network work',style:'cancel'},{text:'Reset and close',style:'destructive',onPress:()=>{setResetting(true);void resetLocalNetworkWork(true).catch(e=>Alert.alert('Network reset',e instanceof Error?e.message:'Reset could not be requested.')).finally(()=>setResetting(false));}}]);
  const [wake,setWake]=useState<ReturnType<typeof localAccountWakeDiagnostics>>(null),[showWake,setShowWake]=useState(false);
  useForegroundPoll(()=>setWake(localAccountWakeDiagnostics()),10000,focused);
  useEffect(()=>subscribeRelayInventoryAccess(()=>{setData(null);setWake(null);setExpanded(null);setPage(0);}),[]);
@@ -18,6 +22,8 @@ export default function RelayInventoryPanel(){
  const text={color:colors.textSecondary},button={padding:12,borderWidth:1,borderColor:colors.border,borderRadius:10};
  return <View style={{marginTop:24,gap:12}}>
   <Text accessibilityRole="header" style={{color:colors.text,fontSize:20,fontWeight:'700'}}>Relay storage for others</Text>
+  <TouchableOpacity accessibilityRole="button" accessibilityState={{disabled:resetting||!data,busy:resetting}} disabled={resetting||!data} style={button} onPress={confirmReset}><Text style={{color:colors.error}}>{resetting?'Preparing restart…':'Reset all local network work…'}</Text></TouchableOpacity>
+  <Text style={text}>Reset includes your own pending delivery work, not just the relay records below. Requires confirmation and an app restart. Your chat history and downloaded files are preserved.</Text>
   <TouchableOpacity accessibilityRole="button" accessibilityState={{expanded:showWake}} onPress={()=>setShowWake(!showWake)}><Text style={{color:colors.primary}}>Wake work breakdown · {showWake?'Hide':'Show'}</Text></TouchableOpacity>
   {showWake&&<><Text style={text}>Private and group message wakes only. Local scheduler checks are not network requests. Gateway acceptance is not phone delivery. Counters cover this runtime; tracked items are current gauges.</Text><Text selectable style={text}>{wake?JSON.stringify(wake,null,2):'No active wake scheduler.'}</Text></>}
   <Text style={text}>Local relay storage only—not your own messages or a network-wide view. Metadata only; no content, keys or tokens. Refreshes every 10 seconds while visible.</Text>

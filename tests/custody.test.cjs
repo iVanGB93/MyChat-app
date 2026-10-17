@@ -12,6 +12,36 @@ function fixture(t){const databases=new Map(),cache=new Map(),opens=[];const ran
  const request=async(s,i,operation,packet)=>JSON.parse(await s.receive(ids[i].record.account,JSON.stringify({operation,...(operation==='consume'?packet:{packet})})));
  t.after(()=>databases.forEach(d=>d.close()));return {ids,records,store,service,seal,request,protocol,load,random,now:()=>now,advance:ms=>now+=ms,expire:()=>now+=protocol.CUSTODY_TTL,stop:()=>active=false,databases,opens};
 }
+test('versioned wake queue avoids idle reads but observes cross-factory deposits, receipts and expiry',async t=>{
+ const f=fixture(t),e=await f.seal(),s=f.service();
+ await f.request(s,0,'deposit',e);
+ let calls=0;
+ const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],request:async()=>{calls++;return JSON.stringify({status:'forwarded'});}});
+ await worker.tick();
+ for(let i=0;i<29;i++){f.advance(1000);await worker.tick();}
+ assert.equal(worker.diagnostics().work.storeReads,1);
+ assert.equal(calls,1);
+ const other=f.load('mobileCustodyStore').createMobileCustodyStore(f.ids[1].record.account);
+ const e2=await f.seal('second');
+ const relay=f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,store:other,records:f.records,now:f.now,current:()=>true});
+ await f.request(relay,0,'deposit',e2);f.advance(1000);await worker.tick();assert.equal(calls,2);
+ const receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ await f.request(relay,2,'receipt',receipt);f.advance(1000);await worker.tick();
+ assert.equal(worker.diagnostics().trackedEnvelopes,1);
+ const revision=other.revision();await assert.rejects(other.transaction(()=>{throw Error('rollback');}));assert.equal(other.revision(),revision);
+ f.expire();await worker.tick();assert.equal(worker.diagnostics().trackedEnvelopes,0);
+ worker.stop();
+});
+
+test('invalid wake signatures stay in custody without redundant gateway requests or fabricated acceptance',async t=>{
+ const f=fixture(t),e=await f.seal();e.wakeSignature='00'.repeat(64);
+ assert.equal((await f.request(f.service(),0,'deposit',e)).status,'held');
+ let calls=0;const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],request:async()=>{calls++;return '{"status":"forwarded"}';}});
+ await worker.tick();assert.equal(calls,0);assert.equal(worker.diagnostics().outcomes.local_wake_verification_failed,1);assert.equal(worker.diagnostics().acceptedEnvelopes,0);
+ assert.equal((await f.store.inspect())[0].packet.ciphertext,e.ciphertext);
+ f.advance(1000);await worker.tick();assert.equal(worker.diagnostics().outcomes.local_wake_verification_failed,1);
+});
+
 test('background completion requires receipt acceptance and a drained relay, and resets on resume',async t=>{
  const f=fixture(t),e=await f.seal(),receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
  let accept=false,empty=false;
@@ -49,7 +79,7 @@ test('offline ciphertext survives custody reopen; recipient receipt deletes payl
 });
 test('forged sender/receipt, wrong recipient and relay-to-relay deposit cannot mutate custody',async t=>{
  const f=fixture(t),s=f.service(),e=await f.seal();assert.equal((await f.request(s,3,'deposit',e)).status,'rejected');
- assert.equal((await f.request(s,0,'deposit',{...e,ciphertext:'00'+e.ciphertext.slice(2)})).status,'rejected');
+ assert.equal((await f.request(s,0,'deposit',{...e,ciphertext:(e.ciphertext.startsWith('00')?'01':'00')+e.ciphertext.slice(2)})).status,'rejected');
  assert.equal((await f.request(s,0,'deposit',e)).status,'held');assert.equal((await f.request(s,3,'poll')).packet,null);
  const receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
  assert.equal((await f.request(s,3,'receipt',receipt)).status,'rejected');
@@ -583,6 +613,18 @@ test('inline forwarder falls back for an old gateway without marking the message
  await forward.tick();assert.equal(sent.length,2);assert(sent[0].data.envelope);assert.equal(sent[1].data.envelope,undefined);
  assert.equal((await f.store.transaction(r=>r[0].packet)).kind,'envelope');
 });
+test('all supported maintenance packets are signed silent without suppressing text or media',async t=>{
+ const f=fixture(t),p=f.protocol;
+ for(const tag of ['axonic-root-action-v1','axonic-root-group-action-v1','axonic-avatar-part-v1','axonic-avatar-request-v1','axonic-avatar-fetch-v1','axonic-avatar-offer-v1','axonic-group-members-v1','axonic-group-leave-v1','axonic-group-recover-v1','axonic-group-backup-v1','axonic-group-recovery-offer-v1']){
+  const text=JSON.stringify([tag,'peer','id',{}]),e=await f.seal(text);
+  assert.equal(e.wakeMode,'silent',tag);assert(await p.verifyCustody(e,f.records,f.now()));
+  assert.equal(p.openCustody(e,f.ids[2].record.account,f.ids[2].signingSeed,f.ids[2].encryptionSeed),text);
+  const data=p.createCustodyWake(e,f.ids[0].record);
+  assert.equal(p.verifyCustodyWake(data,f.ids[0].record,e.recipient,e.recipientDevice,f.now()).wakeMode,'silent');
+ }
+ for(const tag of ['axonic-root-text-v1','axonic-root-reply-v1','axonic-root-attachment-v1','axonic-root-attachment-reply-v1','axonic-root-group-text-v1','axonic-root-group-attachment-v1'])assert.equal(p.silentCustodyText(JSON.stringify([tag,'peer','id',{}])),false,tag);
+});
+
 test('silent custody wake intent is signed and does not alter encrypted delivery',async t=>{
  const f=fixture(t),p=f.protocol,text=JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]),e=await f.seal(text);
  assert.equal(e.wakeMode,'silent');assert(await p.verifyCustody(e,f.records,f.now()));
@@ -592,4 +634,6 @@ test('silent custody wake intent is signed and does not alter encrypted delivery
  assert.equal(verify(data).wakeMode,'silent');const event=JSON.parse(data.event);delete event.wakeMode;assert.equal(verify({...data,event:JSON.stringify(event)}),null);
  const regular=await f.seal(),normal=p.createCustodyWake(regular,f.ids[0].record);assert(verify(normal));
  assert.equal(verify({...normal,event:JSON.stringify({...JSON.parse(normal.event),wakeMode:'silent'})}),null);
+ const receipt=p.signCustodyReceipt(regular,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ assert.equal(p.createCustodyWake(receipt,f.ids[2].record),null,'delivery confirmations have no message notification wake');
 });

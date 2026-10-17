@@ -4,7 +4,7 @@ import type { IdentityRecordStore } from './identityAdmission.ts';
 export interface CustodyRow { sender: string; recipient: string; id: string; recipientDevice: string;
   expires: number; digest: string; packet: CustodyEnvelope | CustodyReceipt | null }
 /** Store must serialize transactions across ALL instances sharing the same owner. Commit or throw. */
-export interface CustodyStore { read?<T>(inspect:(rows:readonly CustodyRow[])=>T):Promise<T>; limits?: CustodyLimits; transaction<T>(change: (rows: CustodyRow[]) => T): Promise<T> }
+export interface CustodyStore { revision?():number|string; read?<T>(inspect:(rows:readonly CustodyRow[])=>T):Promise<T>; limits?: CustodyLimits; transaction<T>(change: (rows: CustodyRow[]) => T): Promise<T> }
 /** Optional immutable read path; mutation and acknowledgement still use transactions. */
 export function readCustodyStore<T>(store:CustodyStore,inspect:(rows:readonly CustodyRow[])=>T):Promise<T>{return store.read?store.read(inspect):store.transaction(inspect);}
 export const CUSTODY_LIMIT = 128;

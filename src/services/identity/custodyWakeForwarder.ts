@@ -1,4 +1,4 @@
-import {createCustodyWake, verifyCustody, type CustodyEnvelope} from './custodyProtocol.ts';
+import {createCustodyWake, verifyCustody, verifyCustodyWake, type CustodyEnvelope} from './custodyProtocol.ts';
 import {readCustodyStore,type CustodyStore} from './custodyService.ts';
 import type {IdentityRecordStore} from './identityAdmission.ts';
 
@@ -9,6 +9,7 @@ export function createCustodyWakeForwarder(d: {
   isLocalPeer?(peer:string):boolean;
 }) {
   let busy = false, stopped = false, next = 0;
+  let cached:CustodyEnvelope[]|undefined, cachedRevision:number|string|undefined, refreshAt=0;
   const attempts = new Map<string, {next:number;failures:number;forwarded:boolean;seen:Set<string>;defer:Map<string,number>;requests:number;last:string;at:number}>();
   const work={schedulerChecks:0,storeReads:0,selectedItems:0,localGatewayCalls:0,remoteGatewayCalls:0,requestPayloadBytes:0,responsePayloadBytes:0,elapsedMs:0};
   const outcomes:Record<string,number>={};
@@ -26,8 +27,15 @@ export function createCustodyWakeForwarder(d: {
       busy = true; next = d.now() + 1000;
       try {
         const peers = gateways(); if (!peers.length) return;
-        work.storeReads++;
-        const rows = await readCustodyStore(d.store,rows => rows.filter(r => r.packet?.kind === 'envelope' && r.packet.wakeSignature && r.expires > d.now()).map(r => r.packet as CustodyEnvelope));
+        const revision=d.store.revision?.();
+        // Unversioned adapters retain their existing behavior. Periodic refresh
+        // also bounds staleness if another process writes the underlying store.
+        if(!cached||revision===undefined||revision!==cachedRevision||d.now()>=refreshAt){
+          work.storeReads++;
+          cached=await readCustodyStore(d.store,rows => rows.filter(r => r.packet?.kind === 'envelope' && r.packet.wakeSignature && r.expires > d.now()).map(r => r.packet as CustodyEnvelope));
+          cachedRevision=revision;refreshAt=d.now()+30000;
+        }
+        const rows=cached.filter(r=>r.expires>d.now());
         const key = (r: CustodyEnvelope) => r.sender + r.id;
         const ids = new Set(rows.map(key));
         for (const id of attempts.keys()) if (!ids.has(id)) attempts.delete(id);
@@ -53,6 +61,14 @@ export function createCustodyWakeForwarder(d: {
         if (!await verifyCustody(packet, d.records, d.now()) || !current()) return;
         const record = await d.records.read(packet.sender); if (!record || !current()) return;
         const data = createCustodyWake(packet, record, d.inlineEnvelope); if (!data) return;
+        // The envelope signature and wake signature bind different statements.
+        // Never send a known-invalid wake repeatedly to each gateway. Keep its
+        // ciphertext for normal delivery; this is not a receipt or deletion.
+        if(!verifyCustodyWake(data,record,packet.recipient,packet.recipientDevice,d.now())){
+          state.last='local_wake_verification_failed';state.at=d.now();
+          outcomes.local_wake_verification_failed=(outcomes.local_wake_verification_failed??0)+1;
+          return;
+        }
         const raw = JSON.stringify({version: 1, operation: 'wake-message', data});
         async function request(peer:string,body:string){
           const start=d.now();state.requests++;if(d.isLocalPeer?.(peer))work.localGatewayCalls++;else work.remoteGatewayCalls++;
@@ -84,6 +100,6 @@ export function createCustodyWakeForwarder(d: {
       finally { busy = false; }
     },
     diagnostics(){const peers=gateways(),rows=[...attempts.values()],nextAt=(s:typeof rows[number])=>peers.length?Math.min(...peers.map(p=>Math.max(s.seen.size<64&&!s.seen.has(p)?d.now():s.next,s.defer.get(p)??0))):null;return {purpose:'Wake a recipient for retained message custody; not call wakes or message delivery',work:{...work},outcomes:{...outcomes},workScope:'Runtime counters. Gateway calls are adapter invocations, not confirmed transmissions; bytes are JSON payload bytes, not wire bytes; elapsedMs sums local and remote request time.',trackedEnvelopes:attempts.size,backingOff:rows.filter(s=>!s.forwarded&&(nextAt(s)??Infinity)>d.now()).length,acceptedEnvelopes:rows.filter(s=>s.forwarded).length,pendingSample:rows.filter(s=>!s.forwarded).slice(0,8).map(s=>({requests:s.requests,lastOutcome:s.last,lastObservedAt:s.at,nextRetryAt:nextAt(s)})),sampleScope:'Up to eight currently tracked items; no message/account IDs; not lifetime unique counts',retryPolicy:'30s exponential backoff capped at 15 minutes; honor per-gateway retry delays up to 15 minutes; new gateways get one prompt attempt; reconnects do not reset backoff; gateway acceptance is not delivery'};},
-    stop() { stopped = true; attempts.clear(); unsupportedUntil.clear(); },
+    stop() { stopped = true; cached=undefined; attempts.clear(); unsupportedUntil.clear(); },
   };
 }

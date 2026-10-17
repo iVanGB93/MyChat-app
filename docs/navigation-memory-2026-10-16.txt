@@ -1,0 +1,30 @@
+Memory/navigation investigation — October 16, 2026
+Scope: both connected Axonic Dev apps only. No production build/install, data wipe or deployment.
+
+Changes retained:
+- Attachment rows mount the fullscreen viewer only while the user opens a photo, removing hidden modal, gesture and animated-value state from every idle attachment row.
+- Reuse manifest digest per immutable manifest reference; read file existence once per render. Do not cache shared file paths or availability, since transfers and storage cleanup can change them.
+- Voice message interruption polling runs only during playback, rather than four times per second for every mounted paused voice message. Start-playback permission checks remain in place.
+
+Investigation:
+- Hermes CPU profile completed after removing unsupported Profiler.enable. 1583 root/idle samples dominated; scattered crypto/native storage samples. No hot-loop root cause established from this sample.
+- Hermes function.toString returns [bytecode]; source-string presence checks are not valid loaded-code checks. Both Dev clients explicitly reloaded via DevSettings and Metro reported bundle completion, account resume and unlocked status.
+- First navigation capture overlapped reload: excluded from comparisons.
+- Settled six-switch run on each phone: 9/7 rendered frames, p95 32/48ms. PSS 584592->575569 KiB and 544091->528534 KiB. Very small frame samples; not scroll FPS or proof of leak absence.
+- Tried detaching inactive native tab views: p95 31/38ms, still six deadline misses on each phone; PSS mixed (689890->642314 and 556035->582195 KiB). Reverted that experimental change: insufficient evidence to retain it as a smoothness fix.
+- Development reloads, debug runtime, garbage collection and differing chat histories prevent a reliable release-memory comparison. Navigation stuttering is NOT fully resolved; the retained fixes reduce specific unnecessary work, not a measured whole-app percentage speedup.
+
+Validation:
+TypeScript passes. Full unit suite 1207 passed, 3 skipped, zero failures. Module-boundary and consolidation checks pass. Both Dev apps navigated Chats/Profile successfully in six switches per device, remained unlocked. Fullscreen zoom math and recorder lifecycle tests pass; live image opening and playback-interruption testing still need completion.
+
+Evidence in builds/: navigation-memory-before-detach.json, navigation-memory-20261016.json, dev-idle-performance-profile.json, navigation-fix-unit-tests.log.
+
+Follow-up — same evening, both Dev phones
+- Memoized the contact ordering and rendered chat list. Focus-only changes no longer reconstruct an unchanged FlatList and its separator component definitions. Data/status/avatar/activity/selection changes remain dependencies.
+- Converted Profile's settings cards to a virtualized FlatList (four initial cards, three-card batches, three-viewport window). Preserved order, styles and controlled settings; QR/security modals remain outside recycled rows.
+- Verified all twelve alternating Chats/Profile switches on each phone. Compared fresh-process pre-virtualization samples (median31/34ms; p95 48/65ms) with post-change sample (median26/26ms; p95 46/44ms). Only14-15 rendered frames per device: not a scroll benchmark or robust percentage claim. Twelve/thirteen deadline misses remain; tab switching is not yet entirely within the frame budget.
+- Post-change PSS during the run: iVan551042->524973KiB; Leidiana590384->548152KiB. Not steadily increasing in that run; does not establish leak absence or sustained memory savings. Fresh-process measurements at launcher/lock screen were explicitly excluded.
+- Scrolled Profile from identity to the version/footer on both devices and returned. Enlarged QR opened and dismissed on both. No settings changed.
+- Full unit suite again1207passed,3skipped; TypeScript, module boundaries and consolidation passed. No production build/install or AoN deployment.
+- Current evidence: builds/navigation-memory-fresh.json (post-change), builds/navigation-memory-fresh-ivan.json and builds/navigation-memory-fresh-leidiana.json (fresh-process pre-virtualization), builds/navigation-virtualized-tests.log; top/bottom/return Profile UI captures.
+Remaining: native frame traces for individual tab switch commits and longer retained-heap measurements. Retained changes remove demonstrated redundant rendering/mounting; they do not prove all stuttering or memory concerns resolved.

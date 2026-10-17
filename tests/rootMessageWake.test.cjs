@@ -32,6 +32,17 @@ async function fixture(t,options={}){
  return {database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
  onDisplay:fn=>onDisplay=fn,delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
 }
+test('avatar fetching and group recovery never create generic alerts, including while locked',async t=>{
+ for(const tag of ['axonic-avatar-fetch-v1','axonic-avatar-offer-v1','axonic-group-members-v1','axonic-group-leave-v1','axonic-group-recover-v1','axonic-group-backup-v1','axonic-group-recovery-offer-v1']){
+  const f=await fixture(t);f.lock();
+  const envelope=await c.sealCustody({record:f.sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient:f.recipient,recipientDevice:f.recipient.devices[0].id,id:'ce'.repeat(32),text:JSON.stringify([tag,'peer','id',{}]),now:Date.now(),random:async n=>new Uint8Array(n).fill(12)});
+  const data=c.createCustodyWake(envelope,f.sender);let recovered=0;
+  await f.mod.receiveRootMessageWake(data,async()=>{recovered++;});
+  assert.equal(recovered,1,'silence must not skip recovery');assert.equal(f.shown.length,0,tag);
+  assert.equal(f.database.prepare('SELECT displayed FROM notices WHERE id=?').get(envelope.id).displayed,2);
+ }
+});
+
 test('locked recipient sees one generic signed notice; durable delivery clears it and prevents replay',async t=>{
  const f=await fixture(t);await Promise.all([f.mod.receiveRootMessageWake(f.data),f.mod.receiveRootMessageWake(f.data)]);
  assert.equal(f.shown.length,1);assert(!JSON.stringify(f.shown).includes('private text'));

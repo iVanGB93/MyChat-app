@@ -1,0 +1,31 @@
+Axonic 1.1.21 / Android versionCode 92
+
+User approved the local production AAB and GitHub push on October 16, 2026.
+Release commit message: 1.1.21. Target: existing origin/master in MyChat-app.
+
+Includes the accumulated notification/recovery, network diagnostics, call,
+voice-recording, navigation and media-rendering fixes, plus video screen sharing.
+Camera video fills the stage; shared screens remain uncropped. Successful screen
+capture minimizes the sender's call, and the receiver initially hides controls.
+
+Validation: npm run check passed: 1211 tests passed, 3 skipped, zero failures;
+typecheck, service cycles, module boundaries and consolidation passed.
+See video-screen-share-2026-10-16.txt and navigation-call-history-2026-10-16.txt
+for measured phone results and limitations. Remaining Dev navigation stuttering
+and high native/process memory are not claimed resolved by this release.
+
+Build: local Android/Gradle bundleRelease, application ID com.axonic, existing
+upload signing key, all four supported ABIs. Expo cloud compilation is not used.
+No Play Store upload or official-app installation is included in this request.
+
+Artifact completed: builds/Axonic-1.1.21-92.aab, 107526746 bytes.
+SHA256: 36327ef5124eadb37e20b72b294a3396a5d6cac7e0ba33c7ac064949c17f6ccb
+bundletool validation and JAR signature verification passed. Signing certificate
+matches release 1.1.20 (91). Bundled manifest confirms com.axonic / 1.1.21 / 92
+and the MediaProjection permission/service. Bundled source hash matches source.
+
+Release workflow preference (standing user instruction, October 16): when the
+user approves a production build, push the corresponding app source to GitHub
+with its actual version number as the commit message, e.g. 1.1.21. Continue to
+obtain approval before each new production build. Do not commit credentials,
+local build artifacts or generated screenshots. Store publication is separate.
