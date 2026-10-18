@@ -15,12 +15,23 @@ export function createMessageDelivery(d: {
   now?():number;
   directTimeoutMs?:number;
   connectedPeers():string[];
+  /** Opt in only for immutable, revision-cached runtime snapshots. */
+  stableSnapshots?:boolean;
 }) {
   const resolving=new Set<string>();
   const retries=new Map<string,{peer:string;failures:number;after:number}>();
   const now=d.now??Date.now;
   let connected=new Set<string>();
   let attempts=0,directTimeouts=0,lastTraffic='none',lastOutcome='none';
+  type State=Awaited<ReturnType<ReturnType<typeof createRootChatLedger>['snapshot']>>;
+  let pendingDerivations=0,cached:{state:State;owner:string;rows:ReturnType<typeof pendingRootChat>;keys:Set<string>}|undefined;
+  let blockedState:State|undefined;
+  function updateBlocked(state:State){if(!d.stableSnapshots||blockedState!==state){d.blocked(state.contacts.filter(c=>c.blocked).map(c=>c.account));blockedState=state;}}
+  function pendingView(state:State,owner:string){
+    if(d.stableSnapshots&&cached?.state===state&&cached.owner===owner)return cached;
+    pendingDerivations++;const rows=pendingRootChat(state,owner),view={state,owner,rows,keys:new Set(rows.map(m=>m.peer+':'+m.id))};
+    if(d.stableSnapshots)cached=view;return view;
+  }
   // Keep unresolved transports bounded even after their caller falls back.
   // A late completion cannot acknowledge a timed-out delivery attempt.
   const directFlights=new Map<string,Promise<boolean>>();
@@ -47,7 +58,7 @@ export function createMessageDelivery(d: {
     try {
       const state = await d.ledger().snapshot();
       if (stopped || generation !== epoch || d.owner() !== owner) return;
-      d.blocked(state.contacts.filter(c => c.blocked).map(c => c.account));
+      updateBlocked(state);
       await d.collect();
     } catch { /* A later tick retries inbox recovery independently of the outbox. */ }
     finally { collecting = false; }
@@ -60,11 +71,11 @@ export function createMessageDelivery(d: {
       const current = () => !stopped && generation === epoch && d.owner() === owner;
       try {
         const ledger = d.ledger(), state = await ledger.snapshot(); if (!current()) return;
-        d.blocked(state.contacts.filter(c => c.blocked).map(c => c.account));
+        updateBlocked(state);
         const available=new Set(d.connectedPeers());
         for(const [key,retry] of retries)if(available.has(retry.peer)&&!connected.has(retry.peer))retries.delete(key);
         connected=available;
-        const all=pendingRootChat(state,owner),keys=new Set(all.map(m=>m.peer+':'+m.id));
+        const {rows:all,keys}=pendingView(state,owner);
         for(const key of retries.keys())if(!keys.has(key))retries.delete(key);
         for(let i=urgent.length-1;i>=0;i--)if(!keys.has(urgent[i].peer+':'+urgent[i].id))urgent.splice(i,1);
         const pending = all.filter(m=>!active.has(m.peer)&&(retries.get(m.peer+':'+m.id)?.after??0)<=now());
@@ -85,8 +96,8 @@ export function createMessageDelivery(d: {
         if(direct){if(current()){await ledger.delivered(message.peer,message.id,deliveryEvidence('receipt',now()));delivered=true;}}
         else if(current()){
           // Recheck revocation after a failed direct attempt and before custody.
-          const latest=await ledger.snapshot();if(!current()||!pendingRootChat(latest,owner).some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
-          attempt.phase='deposit';const group=await d.depositGroup?.(pendingRootChat(latest,owner),message);if(!current())return;const held=group===undefined?await d.deposit(message.peer,message.raw,message.id):group;handedOff=held===true;lastOutcome=handedOff?'custody-held':'custody-attempted';
+          const latest=await ledger.snapshot();if(!current())return;const latestPending=pendingView(latest,owner).rows;if(!latestPending.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
+          attempt.phase='deposit';const group=await d.depositGroup?.(latestPending,message);if(!current())return;const held=group===undefined?await d.deposit(message.peer,message.raw,message.id):group;handedOff=held===true;lastOutcome=handedOff?'custody-held':'custody-attempted';
           if(handedOff)for(let i=urgent.length-1;i>=0;i--)if(urgent[i].peer===message.peer&&urgent[i].id===message.id)urgent.splice(i,1);
           // Missing keys may need discovery for a later retry. It must never
           // delay this handoff or occupy one of the outgoing delivery slots.
@@ -105,12 +116,12 @@ export function createMessageDelivery(d: {
       }
   }
   return {
-    snapshot:()=>({phase:selecting?'storage':active.values().next().value?.phase??'idle',busy:selecting||active.size>0,collecting,queuedHints:urgent.length,attempts,lastTraffic,lastOutcome,directTimeouts,directInFlight:directFlights.size,oldestAttemptMs:Math.max(0,...[...active.values()].map(a=>now()-a.started))}),
+    snapshot:()=>({phase:selecting?'storage':active.values().next().value?.phase??'idle',busy:selecting||active.size>0,collecting,queuedHints:urgent.length,attempts,pendingDerivations,lastTraffic,lastOutcome,directTimeouts,directInFlight:directFlights.size,oldestAttemptMs:Math.max(0,...[...active.values()].map(a=>now()-a.started))}),
     wake(peer:string,id:string){if(stopped||!d.owner())return;if(!urgent.some(m=>m.peer===peer&&m.id===id)){if(urgent.length>=64)urgent.shift();urgent.push({peer,id});}schedule();},
     // An offline outgoing peer must not monopolize the bounded background wake
     // window. Inbox polling and receipt collection have their own single flight.
     async tick() { await Promise.all([collect(), dispatch()]); },
-    invalidate() { generation++;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
-    stop() { stopped = true; generation++;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
+    invalidate() { generation++;cached=undefined;blockedState=undefined;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
+    stop() { stopped = true; generation++;cached=undefined;blockedState=undefined;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
   };
 }

@@ -1,6 +1,7 @@
 import {publishRootMessageFeedback} from './rootMessageFeedback';
 import {createRootAttachmentStreams,type AttachmentStreams} from './rootAttachmentStreams';
-import {ownChatRevision} from '../../modules/storage/chatStore';
+import {ownChatRevision,subscribeOwnChatWrites} from '../../modules/storage/chatStore';
+import {createWorkPump} from '../workPump';
 import {groupReplyAvailable,validGroupReply} from './rootGroupActions';
 import {startRootMediaExport} from './rootMediaExport';
 import {indexAttachmentPolicy,createAttachmentSnapshot} from './attachmentPolicy';
@@ -17,7 +18,7 @@ import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {validAccountId,verifyRecord} from './identityProtocol';
 import {createAttachmentTransfer,type AttachmentJob} from './attachmentTransfer';
 import {createMobileAttachmentJobs} from './mobileAttachmentJobs';
-import {stageRootAttachmentSource,prepareRootAttachment,readRootAttachmentChunk,readRootAttachmentChunks,writeRootAttachmentChunk,commitRootAttachmentFile,rootAttachmentFile,removeRootAttachmentSource} from './rootAttachmentFiles';
+import {stageRootAttachmentSource,prepareRootAttachment,readRootAttachmentChunk,readRootAttachmentChunks,writeRootAttachmentChunk,writeRootAttachmentChunks,commitRootAttachmentFile,rootAttachmentFile,removeRootAttachmentSource} from './rootAttachmentFiles';
 type SharedSelection={id:string;count:number;slot:number};
 type Selection={createdAt?:number;shared?:SharedSelection;id:string;peer:string;name:string;mime:string;caption?:string;failed:boolean;reply?:RootChatReply;group?:RootGroupContext};
 // Preparation is independent of current connectivity; transport checks capability on reconnect.
@@ -31,10 +32,11 @@ export async function controlRootAttachment(digest:string,action:'pause'|'retry'
  await (action==='pause'?activeControls.cancel(digest):activeControls.retry(digest));
 }
 let selectionsTail:Promise<unknown>=Promise.resolve();
+const selectionListeners=new Set<(owner:string)=>void>();
 const key=(owner:string)=>'@axonic_attachment_selections_v1:'+owner;
 async function selections(owner:string):Promise<Selection[]>{const raw=await AsyncStorage.getItem(key(owner)),rows=raw?JSON.parse(raw):[];
  if(!Array.isArray(rows)||rows.length>64||rows.some(r=>r.createdAt!==undefined&&(!Number.isSafeInteger(r.createdAt)||r.createdAt<0||r.createdAt>8640000000000000)||r.shared!==undefined&&(!/^[a-f0-9]{64}$/.test(r.shared.id)||!Number.isSafeInteger(r.shared.count)||r.shared.count<2||r.shared.count>9||!Number.isSafeInteger(r.shared.slot)||r.shared.slot<0||r.shared.slot>=r.shared.count)||!/^[a-f0-9]{64}$/.test(r.id)||!validAccountId(r.peer)||typeof r.name!=='string'||r.name.length>120||typeof r.mime!=='string'||r.mime.length>100||typeof r.failed!=='boolean'||r.caption!==undefined&&(typeof r.caption!=='string'||new TextEncoder().encode(r.caption).length>1600)||r.reply!==undefined&&!(r.group?validGroupReply(r.reply):validRootReply(r.reply,owner,r.peer))||r.group!==undefined&&!validGroupContext(r.group)))throw Error('Invalid attachment selections');return rows;}
-function changeSelections(owner:string,change:(rows:Selection[])=>void|Promise<void>){const work=selectionsTail.then(async()=>{const rows=await selections(owner);await change(rows);await AsyncStorage.setItem(key(owner),JSON.stringify(rows));});selectionsTail=work.catch(()=>{});return work;}
+function changeSelections(owner:string,change:(rows:Selection[])=>void|Promise<void>){const work=selectionsTail.then(async()=>{const rows=await selections(owner);await change(rows);await AsyncStorage.setItem(key(owner),JSON.stringify(rows));for(const listener of selectionListeners)listener(owner);});selectionsTail=work.catch(()=>{});return work;}
 export async function queueRootAttachmentSource(peer:string,uri:string,name:string,mime='application/octet-stream',expectedOwner?:string,reply?:RootChatReply,caption?:string,diagnosticId?:string){
  const owner=localAccount.status().account;if(!owner||expectedOwner&&owner!==expectedOwner||!validAccountId(peer)||peer===owner)throw Error('Choose a valid peer identity');
  if(reply!==undefined&&!validRootReply(reply,owner,peer))throw Error('Invalid reply');
@@ -113,7 +115,7 @@ export async function removeRootAttachmentSelection(id:string){const owner=local
  for(const shared of new Set(batch.map(r=>r.shared?.id)))if(shared&&!rows.some(r=>r.shared?.id===shared))removeRootAttachmentSource(owner,shared);
 });}
 /** Own transfer jobs are separate from the temporary ciphertext this device holds for other people. */
-export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;sharedPeers?():string[];peers():string[];request(peer:string,raw:string):Promise<string|null>;bulkPeers?():string[];batchChunks?(peer:string):number;batchWindow?(peer:string):number;bulkRequest?(peer:string,raw:string):Promise<string|null>;lookup?(peer:string):Promise<unknown>}){
+export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;sharedPeers?():string[];peers():string[];request(peer:string,raw:string):Promise<string|null>;bulkPeers?():string[];uploadBatchPeers?():string[];batchChunks?(peer:string):number;batchWindow?(peer:string):number;bulkRequest?(peer:string,raw:string):Promise<string|null>;lookup?(peer:string):Promise<unknown>}){
  const timingEnabled=(typeof __DEV__!=='undefined'&&__DEV__)||process.env.EXPO_PUBLIC_ATTACHMENT_TIMING==='1',timing=createAttachmentTiming(timingEnabled);
  const timingStarted=Date.now(),snapshotTimings=()=>({startedAt:timingStarted,observedAt:Date.now(),stages:timing.snapshot()});
  if(timingEnabled)activeTimings=snapshotTimings;
@@ -140,12 +142,13 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
   directStream:streams?(job,live)=>streams.pull(job,streamLease(job,live)):undefined,
   serveStream:streams?(job,live)=>streams.serve(job,streamLease(job,live)):undefined,
   hashLeaf:Native?.attachmentSha256?value=>Native!.attachmentSha256!(value):undefined,
-  bulkPeers:network.bulkPeers,batchChunks:network.batchChunks,batchWindow:network.batchWindow,bulkRequest:network.bulkRequest?(...args)=>timing.measure('network',()=>network.bulkRequest!(...args)):undefined,
+  bulkPeers:network.bulkPeers,uploadBatchPeers:network.uploadBatchPeers,batchChunks:network.batchChunks,batchWindow:network.batchWindow,bulkRequest:network.bulkRequest?(...args)=>timing.measure('network',()=>network.bulkRequest!(...args)):undefined,
   record:async account=>account===owner()?localAccount.publicRecord():records.read(account),peers:network.peers,request:(...args)=>timing.measure('network',()=>network.request(...args)),allowed:peer=>accepted.has(peer),
   allowedJob:job=>allowedJob(job),
   readChunk:(...args)=>timing.measure('readFile',()=>readRootAttachmentChunk(...args)),
   readChunks:(...args)=>timing.measure('readFile',()=>readRootAttachmentChunks(...args)),
   writeChunk:(...args)=>timing.measure('writeFile',()=>writeRootAttachmentChunk(...args)),
+  writeChunks:(...args)=>timing.measure('writeFile',()=>writeRootAttachmentChunks(...args)),
   commitFile:(...args)=>timing.measure('verifyFile',()=>commitRootAttachmentFile(...args)),
   signReceipt:async manifest=>timing.measure('receipt',async()=>localAccount.signAttachmentReceipt(manifest)),
   stored:async(job,current)=>{if(current())await localRootChat().networkStored(job.descriptor.manifest.recipient,job.descriptor.manifest.id,job.descriptor.manifest.expires,true);},
@@ -157,8 +160,10 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
    if(timingEnabled)console.info('[Axonic attachment timing]',JSON.stringify({direction:job.direction,bytes:job.descriptor.manifest.bytes,stages:timing.snapshot()}));},
  });
  const mediaExport=startRootMediaExport();
- activeControls=worker;
- const unsubscribe=localAccount.subscribe(()=>{epoch++;snapshots.clear();worker.invalidate();accepted.clear();allowedJob=()=>false;policyRevision=-1;});
+ const controls={async cancel(digest:string){await worker.cancel(digest);pump.wake();},async retry(digest:string){await worker.retry(digest);pump.wake();}};
+ activeControls=controls;
+ let scannedRevision=-1,scanAfter=0;
+ const unsubscribe=localAccount.subscribe(()=>{epoch++;snapshots.clear();worker.invalidate();accepted.clear();allowedJob=()=>false;policyRevision=-1;scannedRevision=-1;pump.wake();});
  let preparing=false;
  const lookupAfter=new Map<string,number>();
  async function prepareSelection(account:string,snapshot:Awaited<ReturnType<ReturnType<typeof localRootChat>['snapshot']>>,current:()=>boolean){
@@ -209,19 +214,25 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
    // Preparation/identity lookup has its own single flight. Slow remote lookups
    // and local encryption must not hold the download/receipt worker hostage.
    if(!preparing){preparing=true;void prepareSelection(account,snapshot,current)
+    .then(progressed=>{if(progressed&&current())pump.wake();})
     .catch(()=>{/* Durable selections remain retryable. */}).finally(()=>{preparing=false;});}
-   for(const message of snapshot.messages){if(!current())return;if(message.attachment&&message.networkCancelledAt===undefined&&message.status==='pending'&&accepted.has(message.peer)&&(!message.group||rootGroupAllowed(snapshot,account,message.peer,message.group))){
+   // A changed ledger wakes us immediately. Periodic reconciliation can restore
+   // a missing checkpoint, without revalidating every descriptor on every burst.
+   if(scannedRevision!==cached.revision||Date.now()>=scanAfter){
+    for(const message of snapshot.messages){if(!current())return;if(message.attachment&&message.networkCancelledAt===undefined&&message.status==='pending'&&accepted.has(message.peer)&&(!message.group||rootGroupAllowed(snapshot,account,message.peer,message.group))){
     const m=message.attachment.manifest;if(m.expires>Date.now())await worker.enqueue(message.attachment,message.direction);
-   }}
+    }}
+    if(current()){scannedRevision=cached.revision;scanAfter=Date.now()+30000;}
+   }
    if(current())return await worker.tick({maxSteps:32,maxMilliseconds:50});
   }catch{/* Retain selections and job checkpoints on unavailable storage or a locked account. */}finally{busy=false;}
  }
- // Yield to React/native events between bursts, but do not throttle every 4-KiB chunk
- // behind a 200-ms polling interval. Idle/error paths retain the low-frequency poll.
- let timer:ReturnType<typeof setTimeout>;
- async function pump(){let progressed=false;try{progressed=!!await tick();}finally{if(!stopped)timer=setTimeout(()=>void pump(),progressed?0:200);}}
- timer=setTimeout(()=>void pump(),0);
- return {receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',async()=>{
+ // Progress yields between bursts without adding transfer latency. Quiet or
+ // disconnected work backs off to a five-second safety poll, not five polls/s.
+ const pump=createWorkPump({run:tick,idleMilliseconds:200,maximumIdleMilliseconds:5000});
+ const wakeOwner=(account:string)=>{if(account===owner())pump.wake();};
+ const offWrites=subscribeOwnChatWrites(wakeOwner);selectionListeners.add(wakeOwner);
+ return {wake:pump.wake,receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',async()=>{
   const account=owner(),generation=epoch;if(!account)return null;
   // New descriptors and blocking decisions can arrive between pump turns.
   // Refresh only on a changed revision, before admitting a serving request.
@@ -230,7 +241,7 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
    applyPolicy(cached.state,account,cached.revision);
   }
   if(owner()!==account||epoch!==generation)return null;
-  return worker.receive(...args);
- }),stop(){if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===worker)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;clearTimeout(timer);unsubscribe();worker.stop();},cancel:(digest:string)=>worker.cancel(digest)};
+  const result=await worker.receive(...args);pump.wake();return result;
+ }),stop(){if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===controls)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;pump.stop();offWrites();selectionListeners.delete(wakeOwner);unsubscribe();worker.stop();},cancel:controls.cancel};
 }
 

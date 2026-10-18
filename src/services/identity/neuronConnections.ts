@@ -16,7 +16,11 @@ const routeRank = { lan: 0, private: 1, internet: 2 };
  */
 export function createNeuronConnections(d: {
   localAccount: string; now(): number; open: OpenNeuron; limit?: number; jitter?: () => number;
+  /** Local policy based on an authenticated session, never discovery priority. */
+  preferRtc?(account:string):boolean;
 }) {
+  const preferredRtc=(c:NeuronCandidate)=>c.route==='internet'&&c.endpoint.startsWith('rtc:')&&d.preferRtc?.(c.account)===true;
+  const rank=(c:NeuronCandidate)=>preferredRtc(c)?-1:routeRank[c.route];
   let limit = d.limit ?? 5;
   if (!accountPattern.test(d.localAccount) || !Number.isInteger(limit) || limit < 1 || limit > 20) throw Error('Invalid neuron configuration');
   type Candidate = { value: NeuronCandidate; failures: number; retryAt: number };
@@ -66,7 +70,7 @@ export function createNeuronConnections(d: {
   function start(candidate: NeuronCandidate, open: OpenNeuron) {
     if (stopped || !valid(candidate) || upgrades.has(candidate.account)) return false;
     const previous = slots.get(candidate.account);
-    if (previous && (previous.state !== 'connected' || routeRank[candidate.route] >= routeRank[previous.candidate.route])) return false;
+    if (previous && (previous.state !== 'connected' || rank(candidate) >= rank(previous.candidate))) return false;
     const known = candidates.get(candidate.account);
     if (known && known.retryAt > d.now()) return false;
     if (previous && !known && ((inboundPromotionRetry.get(candidate.account) ?? 0) > d.now()
@@ -77,10 +81,10 @@ export function createNeuronConnections(d: {
       // another established wider-network route after a successful LAN upgrade.
       const established = [...slots.values()].filter(s => s.state === 'connected');
       const victim = established.filter(s => s !== previous
-        && routeRank[s.candidate.route] > routeRank[candidate.route]
-        && (candidate.route !== 'lan' || established.some(other =>
+        && rank(s.candidate) > rank(candidate)
+        && (candidate.route !== 'lan' && !preferredRtc(candidate) || established.some(other =>
           other !== previous && other !== s && other.candidate.route !== 'lan')))
-        .sort((a,b) => routeRank[b.candidate.route] - routeRank[a.candidate.route])[0];
+        .sort((a,b) => rank(b.candidate) - rank(a.candidate))[0];
       if (victim) retire(victim, false);
     }
     if (occupied() >= limit) return false;
@@ -124,7 +128,7 @@ export function createNeuronConnections(d: {
       else if (slot.state === 'connected' && slot.link!.peer.expiresAt <= now) retire(slot, true);
     }
     const available = [...candidates.values()].filter(c => c.retryAt <= now && c.value.expiresAt > now && !slots.has(c.value.account))
-      .sort((a, b) => routeRank[a.value.route] - routeRank[b.value.route] || a.value.account.localeCompare(b.value.account));
+      .sort((a, b) => rank(a.value) - rank(b.value) || a.value.account.localeCompare(b.value.account));
     const outside = () => [...slots.values()].some(s => s.state !== 'closing' && s.candidate.route !== 'lan');
     // Reserve one route beyond LAN, including when that candidate arrives after a LAN-only pool filled.
     if (limit > 1 && occupied() === limit && !outside() && available.some(c => c.value.route !== 'lan')) {
@@ -138,7 +142,7 @@ export function createNeuronConnections(d: {
     }
     for (const c of candidates.values()) {
       const old = slots.get(c.value.account);
-      if (old?.state === 'connected' && routeRank[c.value.route] < routeRank[old.candidate.route]) start(c.value, d.open);
+      if (old?.state === 'connected' && rank(c.value) < rank(old.candidate)) start(c.value, d.open);
     }
   }
   return {
@@ -151,7 +155,7 @@ export function createNeuronConnections(d: {
       // Keep closer established links; cancel surplus upgrades/handshakes first.
       const ranked = allSlots().filter(s => s.state !== 'closing').sort((a, b) =>
         Number(upgrades.has(a.candidate.account) && upgrades.get(a.candidate.account) === a) - Number(upgrades.has(b.candidate.account) && upgrades.get(b.candidate.account) === b)
-        || Number(a.state !== 'connected') - Number(b.state !== 'connected') || routeRank[a.candidate.route] - routeRank[b.candidate.route]);
+        || Number(a.state !== 'connected') - Number(b.state !== 'connected') || rank(a.candidate) - rank(b.candidate));
       for (const slot of ranked.slice(limit)) retire(slot, false);
       tick();
     },

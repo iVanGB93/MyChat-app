@@ -21,12 +21,17 @@ function fixture(t,options={}){
  }
  for(let i=0;i<2;i++){
   const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentStreams.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>{
-   if(name.includes('axonic-nearby'))return {default:{identityRandomBytes:async()=>String(++serial).padStart(64,'0'),attachmentFileSha256:async(user,id)=>checksum(data.get(user+'/'+id+'/content'))}};
+   if(name.includes('axonic-nearby'))return {default:{identityRandomBytes:async()=>String(++serial).padStart(64,'0'),attachmentFileSha256:async(user,id)=>checksum(data.get(user+'/'+id+'/content')),
+    ...(options.legacyNative?{}:{attachmentStageStream(user,temporary,id,bytes){
+     if(options.stageFails)throw Error('Atomic rename failed');
+     const source=user+'/'+temporary+'/content',target=user+'/'+id+'/partial';assert.equal(data.get(source).length,bytes);
+     data.set(target,data.get(source));data.delete(source);return true;
+    }})}};
    if(name==='./localAccount')return {localAccount:{status:()=>({state:'unlocked',account:i?recipient:owner})}};
    if(name==='./rootAttachmentFiles')return {rootAttachmentFile:file,rootAttachmentPartial:(user,id)=>file(user,id,'partial'),sweepRootStreamTemporaries(){},createRootStreamTemporary(user,id){const f=file(user,id);f.parentDirectory.create();f.create();return f;}};
    if(name==='./directAttachmentStream')return load('directAttachmentStream');throw Error(name);
   },out);
-  const network={available:()=>options.available!==false,listen(h){handlers[i]=h;return ()=>handlers[i]=null;},open(){const pair=lanes();queueMicrotask(()=>{if(!handlers[1]?.(owner,options.wrongDevice?'wrong':'s',pair[1]))pair[1].close();});return pair[0];}};
+  const network={available:()=>options.available!==false,...(options.requestUpgrade?{request:(...args)=>options.requestUpgrade(i,...args)}:{}),listen(h){handlers[i]=h;return ()=>handlers[i]=null;},open(){const pair=lanes();queueMicrotask(()=>{if(!handlers[1]?.(owner,options.wrongDevice?'wrong':'s',pair[1]))pair[1].close();});return pair[0];}};
   managers[i]=out.createRootAttachmentStreams(network,async()=>{requests++;if(options.requestThrows)throw Error('Route changed before stream startup');return JSON.stringify({status:await managers[0].serve(jobs[0],live)?'streaming':'unavailable'});});
  }
  t.after(()=>managers.forEach(m=>m.stop()));
@@ -71,6 +76,44 @@ test('an unavailable media lane is not a failed stream and can become ready',asy
  const options={available:false},f=fixture(t,options);
  assert.equal(await f.run(),'unavailable');assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
  options.available=true;assert.equal(await f.run(),true);
+});
+
+test('eligible unavailable stream requests promotion on both endpoints then upgrades a partial file',async t=>{
+ const requested=[],options={available:false,requestUpgrade:(...args)=>{requested.push(args);return true;}},f=fixture(t,options);
+ const partial=Buffer.from('previously verified prefix');f.data.set('receiver/'+digest+'/partial',partial);
+ assert.equal(await f.run(),'unavailable');assert.deepEqual(requested,[[1,'sender','s'],[0,'receiver','r']]);
+ assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),partial);
+ options.available=true;assert.equal(await f.run(),true);assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+});
+test('revoked transfer cannot request a connection upgrade',async t=>{
+ let requests=0;const f=fixture(t,{available:false,requestUpgrade:()=>{requests++;return true;}});f.revoke();
+ assert.equal(await f.run(),'unavailable');assert.equal(requests,0);
+});
+test('failed upgrade preserves the previously verified chunk prefix',async t=>{
+ const f=fixture(t,{disconnect:true}),partial=Buffer.from('previously verified prefix');f.data.set('receiver/'+digest+'/partial',partial);
+ assert.equal(await f.run(),false);assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),partial);
+ assert.deepEqual(f.data.get('sender/'+digest+'/content'),f.source);
+});
+
+test('failed final stream handoff preserves the durable prefix and permits retry',async t=>{
+ const options={stageFails:true},f=fixture(t,options),prefix=Buffer.from('verified prefix');
+ f.data.set('receiver/'+digest+'/partial',prefix);
+ assert.equal(await f.run(),false);assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),prefix);
+ assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,1,'attempt file cleaned, prefix retained');
+ options.stageFails=false;assert.equal(await f.run(),true);assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+});
+
+test('older native binary falls back to chunks without unsafe stream staging',async t=>{
+ const f=fixture(t,{legacyNative:true}),prefix=Buffer.from('verified prefix');
+ f.data.set('receiver/'+digest+'/partial',prefix);
+ assert.equal(await f.run(),'unavailable');assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),prefix);
+});
+
+test('API 24/25 do not expose the API 26 atomic handoff capability',()=>{
+ const native=fs.readFileSync('modules/axonic-nearby/android/src/main/java/expo/modules/axonicnearby/AxonicNearbyModule.kt','utf8');
+ assert.match(native,/if \(android\.os\.Build\.VERSION\.SDK_INT >= 26\) \{\s*Function\("attachmentStageStream"\)/);
+ const composition=fs.readFileSync('src/composition/neuronRuntime.ts','utf8');
+ assert.match(composition,/streams:Platform\.OS==='android'&&!!Native\?\.attachmentStageStream/);
 });
 
 test('a request failure before a lane opens is retryable readiness and releases the incoming slot',async t=>{

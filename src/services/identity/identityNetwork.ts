@@ -37,6 +37,7 @@ export function createIdentityNetwork(d: {
   let admit: ((candidate: NeuronCandidate, wire: AxonWire) => boolean) | null = null;
   let account: string | null = null, enabled = true, disposed = false, generation = 0;
   const sessions = new Set<Session>();
+  const streamPeer=(peer:string)=>[...sessions].map(s=>s.attachmentStreamPeer?.()).find(p=>p?.account===peer)??null;
   const routing=createSessionRouting({now:d.now,sessions:()=>sessions,connections:()=>pool?.snapshot().connections??[]});
   const {rankedConnections,rankedSessions}=routing;
   const connectedListeners=new Set<(peer:string)=>void>();
@@ -95,7 +96,7 @@ export function createIdentityNetwork(d: {
         } catch { close(); return null; }
         finally { if (!session || session.snapshot().state === 'closed') context.signal.removeEventListener('abort', close); }
       };
-    const ownedPool = createNeuronConnections({ localAccount: desired, limit, now: d.now, open });
+    const ownedPool = createNeuronConnections({ localAccount: desired, limit, now: d.now, open,preferRtc:peer=>!!streamPeer(peer) });
     pool = ownedPool;
     admit = (candidate, wire) => ownedPool.accept(candidate, (c, context) => open(c, context, wire));
   }
@@ -103,6 +104,7 @@ export function createIdentityNetwork(d: {
   reconcile();
   return {
     subscribeConnected(listener:(peer:string)=>void){connectedListeners.add(listener);return()=>{connectedListeners.delete(listener);};},
+    attachmentStreamPeer:streamPeer,
     profileOfferPeers:()=>[...sessions].filter(s=>s.supportsProfileOffers()).map(s=>s.snapshot().account!).filter(Boolean),
     sendSignal,
     mediaContexts: () => [...sessions].flatMap(s => { const c=s.mediaContext(); return c ? [c] : []; }),
@@ -158,6 +160,7 @@ export function createIdentityNetwork(d: {
     attachmentPeers(){return rankedConnections('media').filter(c=>[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).map(c=>c.account);},
     attachmentRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.snapshot().state==='connected')?.attachmentRequest(raw)??Promise.resolve(null);},
     attachmentBulkPeers(){return [...sessions].filter(s=>s.supportsAttachmentBulk()).map(s=>s.snapshot().account!);},
+    attachmentUploadBatchPeers(){return [...sessions].filter(s=>s.supportsAttachmentUploadBatch()).map(s=>s.snapshot().account!);},
     attachmentBatchChunks(target:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBatchChunks()??1;},
     attachmentBatchWindow(target:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBatchWindow()??1;},
     attachmentBulkRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBulkRequest(raw)??Promise.resolve(null);},

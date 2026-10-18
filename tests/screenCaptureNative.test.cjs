@@ -3,10 +3,27 @@ const {patch,patchController}=require('../scripts/patch-webrtc-screen-capture.cj
 const {patchExclusion}=require('../scripts/patch-webrtc-screen-exclusion.cjs');
 const {patchStartup}=require('../scripts/patch-webrtc-screen-startup.cjs');
 test('capture awaits foreground acknowledgement and rejects failed tracks instead of returning live',()=>{
- const service=patchStartup('    public static void launch(Context context) {\n        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {\n        return START_NOT_STICKY;','service','124.0.7');
- assert.match(service,/ready.await\(5/);assert.match(service,/foregroundReady = true/);assert.match(service,/ready.countDown/);assert.match(service,/must not block the UI thread/);
+ const fixture=`    public static void launch(Context context) {
+            Log.w(TAG, "Media projection service not started", e);
+            return;
+            Log.w(TAG, "Media projection service not started");
+    }
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        Notification notification = MediaProjectionNotification.buildMediaProjectionNotification(this);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        }
+        return START_NOT_STICKY;
+    }`;
+ const service=patchStartup(fixture,'service','124.0.7');
+ assert.doesNotMatch(service,/CountDownLatch|\.await\(/);
+ assert.match(service,/onCreate\(\)[\s\S]*try \{ promote\(\)/);
+ assert.match(service,/ThreadUtils.runOnExecutor\(\(\) -> completion.accept\(error\)\)/);
+ assert.match(service,/main.removeCallbacks\(timeout\)/);
+ assert.match(service,/finish\(null\)/);assert.match(service,/throw e;/);
+ assert.equal(patchStartup(service,'service','124.0.7'),service);
  const capture=patchStartup('                        MediaProjectionService.launch(activity);\n                        createScreenStream();\n        videoCaptureController.startCapture();','capture','124.0.7');
- assert.ok(capture.indexOf('launchAndAwait')<capture.indexOf('createScreenStream'));
+ assert.ok(capture.indexOf('launchAsync')<capture.indexOf('createScreenStream'));
+ assert.ok(capture.indexOf('if (startupError != null) throw startupError')<capture.indexOf('createScreenStream'));
  assert.match(capture,/reject\("NotReadableError"/);assert.match(capture,/disposeTrack\(id\)/);
  assert.equal(patchStartup(capture,'capture','124.0.7'),capture);
  assert.throws(()=>patchStartup('changed','service','124.0.7'),/Unexpected/);

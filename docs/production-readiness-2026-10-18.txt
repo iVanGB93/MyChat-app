@@ -1,0 +1,145 @@
+Axonic Dev cleanup and production-readiness check — 2026-10-18
+
+Scope and safety
+Two physical Samsung SM-S948U1 phones, Android API 37, separate com.axonic.dev.
+Local Gradle debug builds only, same version 1.1.22 / 93. No official app install,
+production build, publication, commit/push, AoN deployment, queue reset, history
+deletion, account change, or contact-permission change. Existing data and full
+private backups retained locally under ignored builds/. No new synthetic files
+were generated on either phone during this readiness pass.
+
+Production changes
+1. Atomic stream staging replaces the delete-prefix-then-move sequence. Only a
+   hash-verified attempt can reach staging; the transfer worker still verifies
+   the resulting file before publishing/signing its receipt. An unsuccessful
+   atomic rename does not delete the verified download prefix. No copy/delete
+   fallback, message-format change, new cryptographic primitive, or bypass of
+   peer/device/lease checks. This is process-failure-safe handoff, not a claim
+   of power-loss/fsync durability.
+   Android Files.move contract:
+   https://developer.android.com/reference/java/nio/file/Files
+2. Android API 24/25 do not expose the API 26 atomic-stage primitive. Capability
+   negotiation and the receiver fall back to the existing verified chunk path.
+   Guard and missing-native behavior covered by regression tests; no API 24/25
+   physical device was tested in this run.
+3. Native full-file checksum verification follows bounded, validated app-owned
+   shared.json references for group media grants. It stays within the same
+   account's shared payload directory. Malformed links, traversal and mismatched
+   lengths fail closed. Previously the stream sender looked in the per-grant
+   directory, causing unnecessary fallback for shared payloads. Group-path
+   validation is covered by native tests; no new live group was created.
+4. Shipping canonical leaf hash input restored to 8300 bytes. The temporary
+   256 KiB chunk experiment allowance is gone; the shipping 4 KiB wire format
+   and larger negotiated transport/write batches are unchanged.
+5. Dev updater binds each ADB serial to its exact debugger target. Identical
+   model names can no longer select the wrong phone for preservation checks.
+
+Cleanup
+Retired active one-off scripts/probes: compare-two-phone-transfers.cjs,
+two-phone-stream-probe.patch, prepare-second-phone-debug.cjs, and this run's
+inspect-existing-dev-photo.cjs. Recoverable copies are in
+builds/retired-transfer-experiments-2026-10-18/. Historical measurements and
+regression tests retained. No stream/RTC monkeypatch or probe global remains in
+production sources or final Dev sessions. Experimental codecs remain isolated
+under scripts/tests and are not imported into the application.
+Historical Dev test messages/media and backups were deliberately NOT deleted.
+
+Automated validation
+npm run check: 1353 total, 1350 passed, 3 optional benchmarks skipped, 0 failed.
+TypeScript, cycles (206 modules), boundaries (21 UI files), consolidation
+(301 reachable source modules / 8 support roots) all passed.
+Native module unit tests: 41 passed, including 6 atomic staging tests and group
+shared-file hash validation. Native identity/stream admission checks passed.
+Local :app:assembleDebug passed. git diff --check and readiness-script syntax
+checks passed. Gradle deprecation warnings remain; no Gradle/toolchain upgrade
+was attempted during release preparation.
+Logs: builds/readiness-final-check.log, readiness-final-rtc.log,
+readiness-dev-build-final.log.
+
+Real-device evidence
+An initial MIME/name-based photo selection picked an old noise-image fixture.
+No new fixture was generated, but those two re-sends are excluded from real-photo
+evidence. The harness now requires a visually verified existing photo filename.
+The selected actual photo is an existing waterfall photo (183155 bytes); the
+existing video is 1864947 bytes and voice recording 70211 bytes.
+
+Real-media run: builds/existing-dev-media-1792305603144.json
+Sender queue invocation through observed receiver delivery, including preparation,
+transfer, final verification and CDP/poll overhead. These are single observations,
+not repeatable throughput claims or a release-vs-debug benchmark.
+                         A -> B        B -> A
+Photo, 183155 bytes       2958 ms       2336 ms
+Video, 1864947 bytes      2929 ms       2179 ms
+Audio, 70211 bytes        1787 ms       2087 ms
+All six exact-size/native SHA256 checks and sender delivery confirmations passed.
+The first small photo finished through the ordinary path during cold connection
+negotiation; the other five logged verified streams. Finishing a small file
+without waiting for RTC is intentional. A preceding run exercised atomic
+replacement after 256 already-verified chunks, with matching final checksum.
+
+Background check: builds/existing-dev-background-1792305962699.json
+Phone B left on Home for 35 seconds; existing real photo sent A -> B. One preview
+observed after 4127 ms, zero generic notifications, Dev returned to foreground.
+This checks attached-debugger/Home behavior, NOT overnight Doze, force-stop,
+notification-tap navigation, or release-mode push reliability.
+
+UI checks
+Existing Dev chats open and render media. Opening the peer chat acknowledged
+real media normally. Voice Message Info showed Read plus separate pending,
+information-receipt, full-delivery and read timestamps; information/payload
+route labels remain separate and do not claim unobserved TURN hops.
+Diagnostic report preview showed exact size (38279 bytes for that snapshot).
+The body scrolled while all three footer button bounds stayed unchanged.
+Preview was canceled, not sent/shared. No clearing/reset button was pressed.
+Evidence: builds/readiness-message-info.png, readiness-report-built.png,
+readiness-report-scrolled.png (local/private, not repository assets).
+
+Restart/integrity
+Both Dev processes restarted without resetting data; both recovered three active
+connections and one RTC peer during the restart audit. After Home/background,
+RTC may close normally while other authenticated connections remain; selection
+is demand-driven rather than requiring permanent idle RTC sockets.
+builds/final-dev-readiness-1792305875745.json: all 255 then-stored attachments
+hashed successfully; all original message keys preserved through restart.
+builds/final-dev-readiness-1792306042545.json: after the background photo, all
+257 attachment hashes passed, A=402 messages, B=157. Baselines were 389 and 144;
+13 sends were added per account (12 foreground re-sends plus one background
+photo), none removed. Official package metadata unchanged; test globals absent.
+Dev-only error-log sample: no fatal exception/signal, chat-load error, unhandled
+JS exception, or ReactNativeJS error lines in the checked current-process window.
+
+Final compatibility-guarded binary
+APK SHA256 fec5b66dbe265828dab228e346b2e6b99246c5d7daa058791fd467dafdbf3300.
+Installed in place on both phones after validated full private backups:
+builds/phone-dev-before-wss-1792306178116.tar (A, 1719731712 bytes),
+builds/phone-dev-before-wss-1792306189595.tar (B, 317046272 bytes).
+Both identities and every pre-update message retained; official app unchanged.
+Exact final-binary run: builds/existing-dev-media-1792306269401.json
+                         A -> B        B -> A
+Photo, 183155 bytes       3046 ms       1867 ms
+Video, 1864947 bytes      3533 ms       3476 ms
+Audio, 70211 bytes        1484 ms       2346 ms
+All six exact-size/native checksum and sender-delivery checks passed. First
+small photo completed without waiting for RTC; five verified streams followed.
+These measurements include debugger/polling overhead, and are not controlled
+speed comparisons against the earlier run. Message counts after final sends:
+A=408, B=163 (19 additions each relative to the original baseline; none removed).
+Final read-only audit: builds/final-dev-readiness-1792306322195.json.
+All 269 stored attachment checksums passed (180 A, 89 B); both had three active
+connections and one RTC peer. Original identities/messages retained, no test
+globals, official package metadata unchanged. Final source hashes are recorded
+in builds/readiness-source-manifest.json. Only the two temporary UI-dump XML
+files created under /sdcard for this check were removed; app stores untouched.
+
+Release gates / limits
+Final-binary checks passed: ready for the next explicitly approved production
+build step; NOT a claim that every network/device condition is proven.
+Do not reuse production versionCode 93: select/increment release version/code
+when the user authorizes the next build. Preserve signing and feature flags.
+Need explicit approval before that local AAB build, and separate publication or
+official-app installation approval. No release-only shrinker/bundled-JS startup
+or official-app upgrade test can be claimed from these debug runs. Calls and
+screen sharing were not live-retested tonight; fresh capture consent and a
+release-like external-network check remain appropriate before broad release.
+No remote-WAN, prolonged Doze, older-Android physical, or new live group test
+was performed. AoNs remain unchanged and require approval for future updates.

@@ -3,6 +3,7 @@ import type { OwnCustodyStore } from './normalChatContracts.ts';
 import type { IdentityRecordStore } from './identityAdmission.ts';
 import type { IdentityRecord } from './identityProtocol.ts';
 import type { TestRow } from './custodyCourierTypes.ts';
+import {createRelayPollSchedule} from './relayPollSchedule.ts';
 interface TestMessageStore { list(owner: string): Promise<TestRow[]>; update(row: TestRow, delivered: boolean, next: number, current: () => boolean): Promise<void>; }
 // Longer than the outbox's maximum retry interval (60s), so a failed
 // first-choice peer cannot become eligible again before fallback runs.
@@ -18,10 +19,10 @@ export function createCustodyCourier(d: {
   seal(record: IdentityRecord, device: string, id: string, text: string): Promise<CustodyEnvelope>;
   receive(envelope: CustodyEnvelope, relay:string): Promise<CustodyReceipt | null>;
 }) {
-  let epoch = 0, stopped = false, resumeUntil = 0;
+  let epoch = 0, stopped = false;
   const depositing = new Set<string>();
   const unavailable = new Map<string, number>();
-  const polls = new Map<string, { busy: boolean; next: number }>();
+  const polls = createRelayPollSchedule(d.now);
   const skips = new Map<string, { until: number; ids: string[] }>();
   const deferred = new Map<string, Map<string,{until:number;attempts:number}>>();
   const acknowledged = new Set<string>(), drained = new Set<string>();
@@ -32,9 +33,10 @@ export function createCustodyCourier(d: {
     try { return JSON.parse(raw); } catch { return null; }
   }
   return {
+    diagnostics:polls.diagnostics,
     recoveryComplete(sender:string,id:string) {
       const relays=[...new Set(d.relays())].slice(0,10);
-      return !stopped&&acknowledged.has(sender+':'+id)&&depositing.size===0&&relays.length>0&&relays.every(relay=>drained.has(relay)&&!polls.get(relay)?.busy);
+      return !stopped&&acknowledged.has(sender+':'+id)&&depositing.size===0&&relays.length>0&&relays.every(relay=>drained.has(relay)&&!polls.busy(relay));
     },
     async deposit(peer: string, text: string, id: string) {
       const l = lease(); if (!l.current() || !d.allowed(peer) || depositing.has(peer) || depositing.size>=2) return;
@@ -78,12 +80,10 @@ export function createCustodyCourier(d: {
     async tick() {
       const l = lease(); if (!l.current()) return;
       const relays = [...new Set(d.relays())].slice(0, 10);
-      for (const [peer, state] of polls) if (!state.busy && !relays.includes(peer)) polls.delete(peer);
+      polls.prune(relays);
       await Promise.all(relays.map(async relay => {
-        let state = polls.get(relay);
-        if (!state) { if (polls.size >= 10) return; state = { busy: false, next: 0 }; polls.set(relay, state); }
-        if (state.busy || d.now() < state.next) return;
-        state.busy = true; state.next = d.now() + (d.now()<resumeUntil?1000:5000);
+        const passSchedule=polls.begin(relay);if(!passSchedule)return;
+        const outcome={empty:false,item:false,retryAfterMs:undefined as number|undefined};
         drained.delete(relay);
         try {
           let skip = skips.get(relay);
@@ -104,10 +104,11 @@ export function createCustodyCourier(d: {
           for (let count = 0; count < 4 && l.current() && pass.length < 128; count++) {
             const reply = await request(relay, { operation: 'poll', exclude: pass });
             if (!l.current() || reply?.status !== 'ok') {
-              if(reply?.status==='retry'&&Number.isFinite(reply.retryAfterMs))state.next=Math.max(state.next,d.now()+Math.min(60000,Math.max(1000,reply.retryAfterMs)));
+              if(reply?.status==='retry')outcome.retryAfterMs=reply.retryAfterMs;
               break;
             }
-            if (!reply.packet) { if(!incomplete&&!rejected.size)drained.add(relay);break; }
+            if (!reply.packet) { outcome.empty=true;if(!incomplete&&!rejected.size)drained.add(relay);break; }
+            outcome.item=true;
             const packet = parseCustody(JSON.stringify(reply.packet), d.now());
             if (!packet || pass.includes(packet.id)) break;
             pass.push(packet.id);
@@ -151,11 +152,11 @@ export function createCustodyCourier(d: {
             else incomplete=true;
           }
         } catch { /* This relay retries without blocking the other custodians. */ }
-        finally { state.busy = false; state.next=Math.max(state.next,d.now()+(d.now()<resumeUntil?1000:5000)); }
+        finally { passSchedule.finish(outcome); }
       }));
     },
-    resume() { drained.clear();acknowledged.clear();resumeUntil=d.now()+10000;for(const state of polls.values())state.next=0; },
-    invalidate() { epoch++; acknowledged.clear();drained.clear();unavailable.clear(); skips.clear(); deferred.clear(); for (const state of polls.values()) state.next = 0; },
+    resume(peer?:string) { drained.clear();acknowledged.clear();polls.resume(peer); },
+    invalidate() { epoch++; acknowledged.clear();drained.clear();unavailable.clear(); skips.clear(); deferred.clear();polls.resume(); },
     stop() { stopped = true; epoch++; acknowledged.clear();drained.clear();skips.clear(); deferred.clear(); },
   };
 }

@@ -1,0 +1,85 @@
+Relay upload batching: implementation contract and approved rollout evidence
+
+Governing executable specifications: attachmentProtocol.ts (v1/v2 manifests,
+4 KiB encrypted chunks, Merkle proofs and recipient receipts), attachmentBatch.ts
+(canonical base64 ciphertext/proof packing), and attachmentCustody.ts (authenticated
+sender/device admission and atomic AttachmentStore transactions).
+
+New wire operation: {version:1,operation:"put-batch",digest,index,count,data}.
+Only these fields are accepted. Count is 1..128, within the signed file bounds.
+The existing 850,000-byte full-bulk frame limit is unchanged. Small RTC batches
+do not negotiate this extension. WSS prefers 32 chunks (128 KiB plaintext);
+other full-bulk adapters can use up to 128 chunks (512 KiB plaintext).
+
+New hello capability: attachmentUploadBatch:1, advertised only when the local
+onAttachment handler explicitly sets uploadBatch=true and the wire supports
+full bulk media. Sender selection uses this capability, not bulk download support.
+Older receivers continue to get the unchanged single-chunk put operation.
+Only valid put-batch request envelopes receive the larger inbound request allowance;
+control, handshake and other operation limits remain unchanged.
+
+No changes to encryption, keys, nonces, signed manifests, Merkle proofs or receipts.
+Each original encrypted chunk is checked individually at packing and at custody.
+The receiver validates the entire batch before writing, then stores missing chunks
+and metadata in one serialized transaction. Session/expiry changes or write/commit
+failures abort the transaction. A held reply echoes the exact accepted range only
+after durable commit. Duplicate ranges are idempotent. V2 shared ciphertext is still
+stored once and its contiguous prefix is shared across recipient grants.
+
+The sender advances its durable cursor only after the matching range acknowledgement.
+Loss of the reply permits replay; it does not authorize delivery or deletion.
+Stored and delivered remain distinct: complete requires the existing verified
+recipient receipt. One bounded batch per job step yields to other jobs. Full-bulk
+transport rate, queue, authentication and control-traffic priority remain bounded.
+
+Target metric: fewer adapter requests and storage transactions, not cryptographic
+compression. A batch adds bounded buffering and larger validation/transaction work.
+Synthetic measurements exclude source preparation, real WAN latency and disk speed;
+they are not an end-to-end production speed claim or formal security proof.
+
+Rollout dependency: shared protocol files, hosted handler capability opt-in, hosted
+network routing and hosted outgoing-transfer adapter must be updated together.
+Do not deploy, reset or clear any AoN until the user explicitly approves this update.
+
+Validation on 2026-10-18:
+- npm run check passed: 1,312 tests passed, 3 skipped, 0 failed; type, cycle,
+  module-boundary and consolidation checks passed.
+- Actual Axonic Dev native LAN transport to a temporary PC relay running this
+  shared receiver: 1,048,595 synthetic bytes / 257 encrypted chunks. Legacy used
+  257 put requests in 3,767 ms; negotiated 32-chunk upload used 9 put-batch
+  requests in 897 ms. Both also used one offer. Both reconstructed exact bytes,
+  kept control requests responsive and remained confirming without a recipient
+  receipt. These are single-run isolated measurements, not WAN/AoN benchmarks.
+- Timing includes debugger stepping and excludes preparation and durable disk
+  I/O. Test identities and stores were memory-only; temporary sessions stopped
+  after testing. Dev retained the same owner, 355 messages and 307 actions.
+- Transaction rollback, commit failure, expiry/lock, corrupted proofs, duplicate
+  batches, lost replies, cancellation, legacy peers and shared group ciphertext
+  were covered locally. Normal apps and all deployed AoNs were untouched.
+
+Subsequent user-approved AoN rollout and live validation:
+- AoN GitHub main commit 000e09681f8ebd6d3a25c1b4c75af0aff5d0f170 is pushed.
+  All three authenticated statuses match runtime SHA256
+  721b560a4c3195aa1977706dee051bc335f66c3763d052abfcdbcfc2b3cf2d36,
+  134 modules, sourceDirty=false and sourceMetadataStatus=runtime_bound.
+- Hosted suite: 230 passed. Two isolated WSS/SQLite tests also pass against
+  ThirdNeuron's exact Linux runtime. Selected shared files match mobile before
+  canonical Git line-ending normalization; unrelated mobile work was not synced.
+- Windows compiled hash initially differed. Normalizing only CRLF to LF in
+  every local compiled module reproduced the Linux hash exactly. Activation
+  stayed blocked until this was explained. Fleet builds use canonical Git source.
+- FirstNeuron/ThirdNeuron retain code backups dist-before-000e096. SecondNeuron
+  Railway deployment 6fdd0949-510d-4504-ba45-11f4080bbfb6 is SUCCESS and its live
+  authenticated release matches, not merely its build/deployment status.
+- Baseline own-message keys and owners preserved: First 131, Second 38, Third 66.
+  No data reset, queue clear, credential change, or normal-app update performed.
+- Actual Dev native WSS -> FirstNeuron durable custody, one run per mode:
+  1,048,595 bytes / 257 chunks: legacy 257 puts in 9,141 ms; batch 9 puts in
+  2,723 ms. Each also made one offer. Read-only SQLite inspection verified every
+  synthetic ciphertext/proof matches the source, 257 stored chunks, no fabricated
+  recipient receipt. Socket stayed connected. Dev preserved 355 messages and
+  307 actions. Temporary client sessions stopped after testing.
+- This is upload-to-relay timing including debugger stepping, excluding source
+  preparation and recipient download. Not full end-to-end throughput or a
+  statistically repeated benchmark. Two synthetic relay assets were left with
+  their normal signed one-hour expiry; no explicit receipt cleanup was sent.

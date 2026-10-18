@@ -1,4 +1,5 @@
 import {ChatComposer,type ChatComposerHandle} from '../components/chat/ChatComposer';
+import {createMessageTimeFormatter} from '../utils/message-time';
 import {submitComposer} from '../components/chat/submitComposer';
 import {MessageStatusTimes} from '../components/chat/MessageStatusTimes';
 import {useForegroundPoll} from '../hooks/useForegroundPoll';
@@ -16,7 +17,7 @@ import {useChatActivity} from '../modules/ui/useChatActivity';
 
 
 
-import {useChatSnapshot as useOwnChat} from '../modules/ui/useChatSnapshot';
+import {useChatSnapshot as useOwnChat,useChatLayoutTiming} from '../modules/ui/useChatSnapshot';
 import ChatConnectionBar from '../components/chat/ChatConnectionBar';
 
 import {useAttachmentPreview} from '../components/chat/AttachmentPreview';
@@ -144,12 +145,14 @@ import {localAccountCalls,subscribeLocalAccountCalls} from '../modules/messaging
 import {ensureRootCallPermissions} from '../screens/calls/RootAccountCallScreen';
 
 import {attachmentDigest} from '../modules/messaging';
+import {createAttachmentProgressLookup} from '../utils/attachment-progress';
+import {messageListRendering} from '../components/chat/message-list-rendering';
 
 import {queueRootAttachmentSource,rootAttachmentProgress,retryRootAttachmentSelection,removeRootAttachmentSelection} from '../modules/messaging';
 
 import {listOwnCallHistory,type OwnCallSummary} from '../modules/storage';
 
-import {rootGroupMessages} from '../modules/messaging';
+import {rootGroupMessageIndex} from '../modules/messaging';
 
 import {RootGroupCreate,RootGroupRoom,RootGroupInfo} from '../screens/chat/RootGroupScreens';
 
@@ -184,7 +187,7 @@ function ChatList({navigation}:Screen<'Tabs'>){
  const markOneRead=useCallback((peer:string)=>void markRead([peer]).catch(report),[markRead]);
 
  const unreadCounts=useMemo(()=>{const counts=new Map<string,number>();for(const m of state.messages){if(m.direction!=='incoming'||m.read||m.deleted)continue;const key=m.group?'group:'+m.group.id:m.peer;counts.set(key,(counts.get(key)??0)+1);}return counts;},[state.messages]);
- const latest=useMemo(()=>{const result=new Map<string,RootChatMessage>();for(const m of state.messages){if(m.group)continue;const old=result.get(m.peer);if(!old||m.at>=old.at)result.set(m.peer,m);}for(const g of state.groups??[]){const m=rootGroupMessages(state,g.id).at(-1);if(m)result.set('group:'+g.id,m);}return result;},[state.messages,state.groups]);
+ const latest=useMemo(()=>{const result=new Map<string,RootChatMessage>();for(const m of state.messages){if(m.group)continue;const old=result.get(m.peer);if(!old||m.at>=old.at)result.set(m.peer,m);}if(state.groups?.length){const groups=rootGroupMessageIndex(state);for(const g of state.groups){const m=groups.get(g.id)?.at(-1);if(m)result.set('group:'+g.id,m);}}return result;},[state.messages,state.groups]);
 
 
  const contacts=useMemo(()=>[...state.contacts,...(state.groups??[]).map(g=>({account:'group:'+g.id,alias:g.name,blocked:g.blocked,accepted:g.accepted}))].filter(c=>!state.hiddenChats?.includes(c.account)).sort((a,b)=>(latest.get(b.account)?.at??0)-(latest.get(a.account)?.at??0)),[state.contacts,state.groups,state.hiddenChats,latest]);
@@ -224,8 +227,10 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
  const activity=useChatActivity();
 
  const peer=route.params.peer,{colors}=useTheme(),{state,error}=useOwnChat(),header=useHeaderHeight();
+ const onChatLayout=useChatLayoutTiming('private_chat_layout');
 
  const focused=useIsFocused(),[foreground,setForeground]=useState(AppState.currentState==='active');
+ const messageTime=useMemo(()=>createMessageTimeFormatter(),[focused,foreground]);
 
  useEffect(()=>{const listener=AppState.addEventListener('change',state=>setForeground(state==='active'));return()=>listener.remove();},[]);
 
@@ -279,7 +284,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  },[focused,foreground,peer,unreadKey,contact?.accepted,contact?.blocked]);
 
- useEffect(()=>{if(!focused||!foreground)return;let active=true,running=false,last='';const refresh=async()=>{if(running)return;running=true;try{const v=await rootAttachmentProgress(),raw=JSON.stringify(v);if(active&&raw!==last){last=raw;setTransfers(v);}}catch{}finally{running=false;}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{active=false;clearInterval(timer);};},[focused,foreground]);
+ useEffect(()=>{if(!focused||!foreground)return;let active=true,running=false,last='';const refresh=async()=>{if(running)return;running=true;try{const v=await rootAttachmentProgress(),raw=JSON.stringify(v);if(active&&raw!==last){last=raw;setTransfers(previous=>JSON.stringify(previous)===raw?previous:v);}}catch{}finally{running=false;}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{active=false;clearInterval(timer);};},[focused,foreground]);
 
  useLayoutEffect(()=>{navigation.setOptions({headerTitleAlign:'left',headerBackVisible:false,headerTitle:'',headerLeft:()=> <ChatHeaderIdentity onBack={()=>navigation.goBack()} title={name} syncing={false} color={colors.headerText} avatarUri={state.avatarUris[peer]} isGroup={false} isOnline={activity.online.includes(peer)} onPress={()=>navigation.navigate('Contact',{peer})}/>,headerRight:()=> <View style={{flexDirection:'row',gap:8,marginRight:8}}>
 
@@ -306,21 +311,22 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  async function attach(source:'camera'|'library'|'files'){setAttachOpen(false);if(busy||contact?.blocked)return;setBusy(true);try{const selection=source==='files'?await pickRootAttachment(peer,replyReference,attachmentPreview.confirm):await pickRootMedia(peer,source,replyReference,undefined,attachmentPreview.confirm);if(selection)setReplyTo(undefined);}catch(e){report(e);}finally{setBusy(false);}}
 
- const messageList=useMemo(()=>(<FlatList ref={list} inverted data={messages} keyExtractor={m=>m.direction+':'+m.id} style={roomStyles.messageList} contentContainerStyle={roomStyles.messagesList} keyboardShouldPersistTaps="handled"
+ const attachmentProgress=useMemo(()=>createAttachmentProgressLookup(transfers.jobs,attachmentDigest),[transfers.jobs]);
+ const messageList=useMemo(()=>(<FlatList {...messageListRendering} ref={list} inverted data={messages} keyExtractor={m=>m.direction+':'+m.id} style={roomStyles.messageList} contentContainerStyle={roomStyles.messagesList} keyboardShouldPersistTaps="handled"
 
    renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
 
     {!m.deleted&&m.reply&&<View style={{borderLeftWidth:3,borderLeftColor:colors.primary,padding:8,marginBottom:6}}><Text style={{color:colors.primary,fontWeight:'600'}}>{m.reply.author===owner?'You':name}</Text><Text numberOfLines={2} style={{color:colors.textSecondary}}>{quoted?(quoted.attachment?(quoted.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':quoted.attachment.name):parseSticker(quoted.text)?'Sticker':quoted.text):'Original message unavailable on this device'}</Text></View>}
 
-    {m.deleted?<Text style={{color:colors.textSecondary,fontStyle:'italic'}}>Message deleted</Text>:m.attachment?<RootAttachmentBubble onLongPress={event=>{setMenuY(event.nativeEvent.pageY);setMenu(m);}} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbleStyles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>:undefined} message={m} progress={transfers.jobs.find(j=>j.digest===attachmentDigest(m.attachment!.manifest))} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:<SmartMessageText style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary}>{m.text}</SmartMessageText>}
+    {m.deleted?<Text style={{color:colors.textSecondary,fontStyle:'italic'}}>Message deleted</Text>:m.attachment?<RootAttachmentBubble onLongPress={event=>{setMenuY(event.nativeEvent.pageY);setMenu(m);}} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbleStyles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>:undefined} message={m} progress={attachmentProgress(m.attachment!.manifest)} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:<SmartMessageText style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary}>{m.text}</SmartMessageText>}
 
 
 
-    {(!m.attachment?.mime.startsWith('audio/')||m.deleted)&&<View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{new Date(m.at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>}
+    {(!m.attachment?.mime.startsWith('audio/')||m.deleted)&&<View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>Edited </Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text>{mine&&<Ionicons accessibilityLabel={deliveryStatusLabel(rootMessageStatus(m))} name={deliveryStatusIcon(rootMessageStatus(m))} size={13} color={rootMessageStatus(m)==='read'?colors.checkBlue:colors.textTertiary}/>}</View>}
 
-   </Pressable></RootMessageReactions></View></ReplySwipe>;}}/>),[messages,state.messages,peer,owner,name,colors,contact?.blocked,transfers.jobs]);
+   </Pressable></RootMessageReactions></View></ReplySwipe>;}}/>),[messages,state.messages,peer,owner,name,colors,contact?.blocked,attachmentProgress,messageTime]);
 
- return <KeyboardAvoidingScreen style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={header}>
+ return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={header}>
   <ChatConnectionBar peer={peer}/>
 
   {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,padding:12}}>{error}</Text>}

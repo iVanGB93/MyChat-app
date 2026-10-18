@@ -1,0 +1,56 @@
+const test=require('node:test'),assert=require('node:assert/strict');
+const {load}=require('./helpers/attachment.cjs');
+const empty={empty:true,item:false};
+test('empty polls back off to 15s; items restore 5s, errors are not empty inboxes',()=>{
+ let now=0;const p=load('relayPollSchedule').createRelayPollSchedule(()=>now);
+ p.begin('a').finish(empty);now=4999;assert.equal(p.begin('a'),null);now=5000;p.begin('a').finish(empty);
+ now=10000;assert.equal(p.begin('a'),null);now=15000;p.begin('a').finish(empty);
+ now=29999;assert.equal(p.begin('a'),null);now=30000;p.begin('a').finish({empty:false,item:true});
+ now=35000;p.begin('a').finish({empty:false,item:false});now=40000;assert(p.begin('a'));
+ assert.equal(p.diagnostics().emptyPasses,3);assert.equal(p.diagnostics().itemPasses,1);assert.equal(p.diagnostics().unsuccessfulPasses,1);
+});
+test('wake during a flight stays immediate after completion without a duplicate flight',()=>{
+ let now=0;const p=load('relayPollSchedule').createRelayPollSchedule(()=>now),flight=p.begin('a');
+ p.resume();assert.equal(p.begin('a'),null);flight.finish(empty);const next=p.begin('a');assert(next);next.finish(empty);
+ now=1000;assert(p.begin('a'));assert.equal(p.diagnostics().activePasses,1);
+});
+test('server retry is per relay, bounded, and reconnect removes the cooldown',()=>{
+ let now=0;const p=load('relayPollSchedule').createRelayPollSchedule(()=>now);
+ p.begin('a').finish({empty:false,item:false,retryAfterMs:999999});p.begin('b').finish(empty);
+ now=5000;assert(p.begin('b'));assert.equal(p.begin('a'),null);p.resume('a');assert(p.begin('a'));
+});
+test('poll concurrency and inventory stay bounded and disconnected peers are released',()=>{
+ let now=0;const p=load('relayPollSchedule').createRelayPollSchedule(()=>now,3);
+ const flights=['a','b','c'].map(k=>p.begin(k));assert.equal(p.begin('d'),null);
+ p.prune([]);assert.equal(p.diagnostics().activePasses,3);flights.forEach(f=>f.finish(empty));p.prune([]);
+ assert.equal(p.diagnostics().trackedRelays,0);assert(p.begin('a'));
+});
+for(const kind of ['custodyCourier','groupCustodyCourier']){
+ const create=kind==='custodyCourier'?'createCustodyCourier':'createGroupCustodyCourier';
+ test(kind+' polls idle inbox less, wakes immediately, and never touches persistent stores',async()=>{
+  let now=0,calls=0;const q=load(kind)[create]({owner:()=> 'synthetic',now:()=>now,relays:()=>['a','b'],request:async()=>{calls++;return '{"status":"ok","packet":null}';}});
+  for(now=0;now<60000;now+=1000)await q.tick();assert.equal(calls,10);
+  q.resume();await q.tick();assert.equal(calls,12);q.stop();await q.tick();assert.equal(calls,12);
+ });
+ test(kind+' healthy relay keeps progressing while another flight is stalled',async()=>{
+  let now=0,release;const counts={a:0,b:0};const q=load(kind)[create]({owner:()=> 'synthetic',now:()=>now,relays:()=>['a','b'],request:async peer=>{counts[peer]++;if(peer==='a')await new Promise(r=>release=r);return '{"status":"ok","packet":null}';}});
+  const flight=q.tick();for(let n=0;n<10;n++)await Promise.resolve();assert.deepEqual(counts,{a:1,b:1});
+  now=5000;await q.tick();assert.deepEqual(counts,{a:1,b:2});release();await flight;q.stop();
+ });
+ test(kind+' server cooldown and thrown request do not delay another relay',async()=>{
+  let now=0;const counts={a:0,b:0,c:0};const q=load(kind)[create]({owner:()=> 'synthetic',now:()=>now,relays:()=>['a','b','c'],request:async peer=>{counts[peer]++;if(peer==='a')return '{"status":"retry","retryAfterMs":60000}';if(peer==='c')throw Error('offline');return '{"status":"ok","packet":null}';}});
+  await q.tick();now=5000;await q.tick();assert.deepEqual(counts,{a:1,b:2,c:2});q.stop();
+ });
+}
+test('call fallback cadence stays 3s while inventory is shared and empty inventory skips record reads',async()=>{
+ let now=0,reads=0,requests=0;const peers=['a','b'].map(account=>({account,device:'d',instance:'i',expiresAt:999999}));
+ const q=load('callRelayPump').createCallRelayPump({account:'owner',device:'d',now:()=>now,current:()=>true,peers:()=>peers,list:async()=>{reads++;return [];},records:{read:()=>{throw Error('empty call inventory must not read identity');}},request:async()=>{requests++;return '{"kind":"event","raw":null}';}});
+ for(now=0;now<60000;now+=1000)await q.tick();assert.equal(requests,40);assert.equal(reads,20);assert.equal(q.diagnostics().emptyPolls,40);q.stop();
+});
+test('call unknown/rejected replies are not mislabeled as empty inboxes',async()=>{
+ let now=0;const peer={account:'a',device:'d',instance:'i',expiresAt:999999};
+ for(const raw of ['{}','{"accepted":false}','null']){
+  const q=load('callRelayPump').createCallRelayPump({account:'owner',device:'d',now:()=>now,current:()=>true,peers:()=>[peer],list:async()=>[],request:async()=>raw});
+  await q.tick();assert.equal(q.diagnostics().emptyPolls,0);q.stop();
+ }
+});

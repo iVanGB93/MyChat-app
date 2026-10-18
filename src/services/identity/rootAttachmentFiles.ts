@@ -8,16 +8,28 @@ import {attachmentDigest,ATTACHMENT_CHUNK_BYTES,ATTACHMENT_MAX_BYTES,ATTACHMENT_
 import {AttachmentFileReset,validAttachmentDescriptor,type AttachmentDescriptor,type AttachmentJob} from './attachmentTransfer';
 import {validAttachmentRange} from './attachmentBatch';
 const pause=()=>new Promise<void>(resolve=>setTimeout(resolve,0));
-function folder(owner:string,id:string,staging=false){
+function checkPath(owner:string,id:string){
  if(!validAccountId(owner)||!/^[a-f0-9]{64}$/.test(id))throw Error('Invalid attachment path');
+}
+function folder(owner:string,id:string,staging=false){
+ checkPath(owner,id);
  return new Directory(Paths.document,'axonic-own-attachments-v1',owner.slice(9),staging?'staging':'files',id);
 }
 // Transfer verification and forwarding require seekable app-owned files. MediaStore
 // URIs are not supported by Expo's synchronous File handles.
 function sharedFolder(owner:string,id:string){return new Directory(folder(owner,id).parentDirectory.parentDirectory,'shared',id);}
-function sharedReference(directory:Directory){const link=new File(directory,'shared.json');if(!link.exists)return null;const value=JSON.parse(link.textSync());if(Object.keys(value).join(',')!=='id'||typeof value.id!=='string'||!/^[a-f0-9]{64}$/.test(value.id))throw Error('Invalid shared attachment reference');return value.id as string;}
+function readSharedReference(link:File){if(!link.exists)return null;const value=JSON.parse(link.textSync());if(Object.keys(value).join(',')!=='id'||typeof value.id!=='string'||!/^[a-f0-9]{64}$/.test(value.id))throw Error('Invalid shared attachment reference');return value.id as string;}
+function sharedReference(directory:Directory){return readSharedReference(new File(directory,'shared.json'));}
 function payloadFolder(owner:string,digest:string){const directory=folder(owner,digest),shared=sharedReference(directory);return shared?sharedFolder(owner,shared):directory;}
-export const rootAttachmentFile=(owner:string,digest:string)=>new File(payloadFolder(owner,digest),'content');
+export function rootAttachmentFile(owner:string,digest:string){
+ checkPath(owner,digest);
+ // Resolve from the known account root instead of constructing directories and
+ // walking native parentDirectory getters for every rendered media bubble.
+ // Read the link afresh: shared ownership/path and file availability can change.
+ const root=Paths.document,account=owner.slice(9);
+ const shared=readSharedReference(new File(root,'axonic-own-attachments-v1',account,'files',digest,'shared.json'));
+ return new File(root,'axonic-own-attachments-v1',account,shared?'shared':'files',shared??digest,'content');
+}
 function releaseSharedPayload(owner:string,id:string){
  const payload=sharedFolder(owner,id);if(!payload.exists)return;
  // A queued recipient still needs the prepared bytes even before it has a grant.
@@ -170,10 +182,21 @@ export async function readRootAttachmentChunks(job:AttachmentJob,index:number,co
  }finally{handle.close();}
 }
 export async function writeRootAttachmentChunk(job:AttachmentJob,index:number,plain:Uint8Array,current:()=>boolean){
- check(current);const directory=folder(job.owner,job.digest);directory.create({intermediates:true,idempotent:true});const file=new File(directory,'partial');
- if(index===0){if(file.exists)file.delete();file.create();}
- if(!file.exists||file.size<index*ATTACHMENT_CHUNK_BYTES)throw new AttachmentFileReset('Download needs to restart');
- const handle=file.open();try{check(current);handle.offset=index*ATTACHMENT_CHUNK_BYTES;handle.writeBytes(plain);}finally{handle.close();}
+ return writeRootAttachmentChunks(job,index,[plain],current);
+}
+/** One bounded file open/stat/write/close per verified range, not per 4 KiB chunk.
+ * No persistent handle/cache: replay, lock and restart use the same file checks. */
+export async function writeRootAttachmentChunks(job:AttachmentJob,index:number,plain:Uint8Array[],current:()=>boolean){
+ check(current);const manifest=job.descriptor.manifest;
+ if(!Array.isArray(plain)||plain.length>32||!validAttachmentRange(manifest,index,plain.length)
+  ||plain.some((bytes,n)=>!(bytes instanceof Uint8Array)||bytes.length!==Math.min(ATTACHMENT_CHUNK_BYTES,manifest.bytes-(index+n)*ATTACHMENT_CHUNK_BYTES)))throw Error('Invalid attachment write range');
+ const buffer=new Uint8Array(plain.reduce((n,bytes)=>n+bytes.length,0));
+ try{let at=0;for(const bytes of plain){buffer.set(bytes,at);at+=bytes.length;}
+  const directory=folder(job.owner,job.digest);directory.create({intermediates:true,idempotent:true});const file=new File(directory,'partial');
+  check(current);if(index===0){if(file.exists)file.delete();file.create();}
+  if(!file.exists||file.size<index*ATTACHMENT_CHUNK_BYTES)throw new AttachmentFileReset('Download needs to restart');
+  const handle=file.open();try{check(current);handle.offset=index*ATTACHMENT_CHUNK_BYTES;handle.writeBytes(buffer);}finally{handle.close();}
+ }finally{buffer.fill(0);}
 }
 export async function commitRootAttachmentFile(job:AttachmentJob,current:()=>boolean){
  check(current);

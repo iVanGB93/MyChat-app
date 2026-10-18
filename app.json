@@ -2,7 +2,7 @@
   "expo": {
     "name": "Axonic",
     "slug": "MyChat-app",
-    "version": "1.1.22",
+    "version": "1.1.23",
     "scheme": "axonic",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -43,7 +43,7 @@
         "android.permission.USE_FULL_SCREEN_INTENT"
       ],
       "package": "com.axonic",
-      "versionCode": 93
+      "versionCode": 94
     },
     "web": {
       "favicon": "./assets/favicon.png"

@@ -29,6 +29,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
     if (failedLan.size < 128 || failedLan.has(account)) failedLan.set(account, d.now() + 120_000);
   };
   const lanDeferred = (account: string) => (failedLan.get(account) ?? 0) > d.now();
+  const streamRequests=new Map<string,{device:string;until:number}>();
   let rtc: ReturnType<typeof createRtcAxonTransport> | null = null;
   const network = createIdentityNetwork({ ...d, limit: d.limit ?? 5,
     onSignal: (signal, via) => rtc?.receive(signal, via),
@@ -76,7 +77,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
   }
   function reconcile() {
     const state = network.snapshot();
-    if (rtcAccount !== state.account || state.state !== 'active') { rtc?.stop(); rtcAccount = state.account; }
+    if (rtcAccount !== state.account || state.state !== 'active') { rtc?.stop();streamRequests.clear(); rtcAccount = state.account; }
     const desired = !disposed && state.state === 'active' ? state.account : null;
     if (active && active.account !== desired) stopLan();
     if (!desired || active || starting || d.now() < retryAt) return;
@@ -109,6 +110,15 @@ export function createLanIdentityRuntime(d: Dependencies) {
           && !internetPeers.some(seed=>seed.account===peer.account)
           && (!nearby.has(peer.account) || lanDeferred(peer.account)))
           network.offer({ account: peer.account, endpoint: 'rtc:' + peer.via, route: 'internet', expiresAt: peer.expiresAt });
+        // Signed signaling travels over the existing authenticated control link.
+        // Only a real transfer requests this promotion. The pool retains LAN
+        // until RTC authentication succeeds, with its usual limits and backoff.
+        for(const [peer,wanted] of streamRequests){
+          if(wanted.until<=d.now()){streamRequests.delete(peer);continue;}
+          if(state.account&&state.account<peer&&!internetPeers.some(seed=>seed.account===peer)
+            &&network.attachmentStreamPeer(peer)?.device===wanted.device)
+            network.offer({account:peer,endpoint:'rtc:'+peer,route:'internet',expiresAt:d.now()+30000});
+        }
       }
       network.tick(); reconcile();
       if (!active || starting) return;
@@ -132,10 +142,20 @@ export function createLanIdentityRuntime(d: Dependencies) {
     subscribeConnected:network.subscribeConnected,profileOfferPeers:network.profileOfferPeers,
     custodyRequest: network.custodyRequest,groupCustodians:network.groupCustodians,
     attachmentStreams:{available:(account:string,device:string)=>rtc?.canStream(account,device)??false,
+      request(account:string,device:string){
+        const state=network.snapshot();
+        if(disposed||!rtc||!d.rtc?.streamCredit||state.state!=='active'||!state.account
+          ||d.internet?.peers.some(seed=>seed.account===account)
+          ||network.attachmentStreamPeer(account)?.device!==device)return false;
+        for(const [peer,wanted] of streamRequests)if(wanted.until<=d.now())streamRequests.delete(peer);
+        if(!streamRequests.has(account)&&streamRequests.size>=5)return false;
+        streamRequests.set(account,{device,until:d.now()+30000});return true;
+      },
       open:(account:string,device:string)=>{if(!rtc)throw Error('RTC unavailable');return rtc.openStream(account,device);},
       listen:(handler:Parameters<NonNullable<typeof rtc>['listenStreams']>[0])=>rtc?.listenStreams(handler)??(()=>{})},
     profilePeers:network.profilePeers,timestampPeers:network.timestampPeers,sharedAttachmentPeers:network.sharedAttachmentPeers,attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
     attachmentBulkPeers:network.attachmentBulkPeers,attachmentBulkRequest:network.attachmentBulkRequest,
+    attachmentUploadBatchPeers:network.attachmentUploadBatchPeers,
     attachmentBatchChunks:network.attachmentBatchChunks,
     attachmentBatchWindow:network.attachmentBatchWindow,
     pushRequest: network.pushRequest,
@@ -153,6 +173,6 @@ export function createLanIdentityRuntime(d: Dependencies) {
     directoryRequest: network.directoryRequest,
     custodians: network.custodians,
     snapshot: () => ({ ...network.snapshot(), rtc: rtc?.snapshot() ?? [], discovering: !!active && !starting, error }),
-    stop() { if (disposed) return; disposed = true; unsubscribe(); rtc?.stop(); network.stop(); stopLan(); failedLan.clear(); },
+    stop() { if (disposed) return; disposed = true; unsubscribe(); rtc?.stop(); network.stop(); stopLan(); failedLan.clear();streamRequests.clear(); },
   };
 }

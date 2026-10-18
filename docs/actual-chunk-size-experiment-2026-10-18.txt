@@ -1,0 +1,190 @@
+Actual encrypted chunk-size experiment — 2026-10-18
+
+Purpose and scope
+Compare 4, 16, 64 and 256 KiB actual independently encrypted/proved chunks,
+not merely different batch counts. Shipping protocol/chunk sizes are unchanged.
+The native SHA-256 helper's bounded local input limit was extended separately
+to make the second experiment use the same acceleration at every size.
+Other existing dirty changes predate this experiment.
+Only a separately loaded experimental codec and synthetic cache files run in
+the main unlocked Axonic Dev debugger. No AoN updates, normal-app access,
+official-app installations, history changes, queue resets, commits or pushes.
+
+Source correspondence and compatibility
+scripts/experiments/attachment-chunk-sizes.cjs derives the codec from the
+current attachmentProtocol.ts by changing the chunk constant in an isolated
+module and domain-separating EVERY attachment authentication/hash domain by
+the experimental size. The normal module remains loaded and unchanged.
+Actual XChaCha20-Poly1305, Merkle proof checks, manifest signatures and signed
+receipts execute, including final file size/SHA-256 before receipt creation.
+Independent PC receipt validation follows. This is NOT a deployable new
+protocol version: size is fixed out of band by the isolated experiment.
+Legacy signature verification rejects these experimental manifests.
+Production rollout would need explicit version/capability negotiation, native
+preparation/verification support, journal/file offsets and transport framing
+compatibility. A successful test does not establish cryptographic security.
+
+Execution and measurement contract
+Runner: node scripts/benchmark-dev-chunk-sizes.cjs [--smoke]
+Phone: com.axonic.dev on SM-S948U1, foreground Hermes/Metro development build.
+PC endpoint: temporary loopback-only WebSocket, random per-run path, reached
+through an ADB reverse mapping installed and removed by this runner.
+Only synthetic encrypted files cross it. This is actual transfer to Dev, but
+NOT an AoN/Internet test and NOT the production authenticated scheduler,
+custody, retry, chat-publication or notification workflow.
+
+Transport payload budget stays 256 KiB across sizes. One response is consumed
+at a time; no artificial latency. Receiver writes in <=128 KiB pieces so
+larger cryptographic chunks do not also win by reducing disk writes.
+Receiver yields after processing >=64 KiB (one 256 KiB chunk cannot yield
+inside its synchronous cryptographic call). The original native helper was
+bounded to 4 KiB chunks, so first compare all four candidates using the same JS
+leaf hash, plus a separate 4 KiB native-leaf reference. Do not attribute the
+accelerator difference to chunk size.
+
+Native follow-up
+AttachmentHash.sha256 accepts at most 524,448 ASCII characters after the
+change, enough for a canonical <=256 KiB ciphertext leaf. It still computes
+the identical SHA-256; empty, oversized and non-ASCII inputs are rejected.
+This local primitive does not widen network admission or change encryption,
+manifest validation, file offsets or production chunk negotiation.
+Native module: 34 tests passed, including original independent hash vectors,
+new independent large-input vectors, known-answer legacy preparation,
+boundary hash equivalence and malformed-input rejection. JS checks: 1,333
+passed, 3 optional benchmarks skipped; types/cycles/module checks passed.
+Local build: :axonic-nearby:testDebugUnitTest :app:assembleDebug
+-PaxonicSideBySide=true -PreactNativeArchitectures=arm64-v8a --max-workers=2.
+APK verified com.axonic.dev, version 1.1.22 / 93, SHA-256:
+69bfe56f2a84f77c59da2b219bbf52d67ab71bb1c81601490c8009111b987455
+The Android Studio JBR path was incomplete; its attempted invocation failed
+before Gradle. Retried with the already configured Adoptium 17 JDK; success.
+Native-all follow-up command: add --native-all (optionally --smoke). This
+verifies the installed helper's large-input result before starting transfers.
+Native app preparation remains 4 KiB; the preparation benchmark is still JS
+encryption with native leaf hashing, NOT a proposed native bulk preparer.
+
+The Dev backup helper was changed to stream/validate the full private tar
+archive before install -r, avoiding its previous 1 GiB in-memory limit. No
+data is excluded to shrink the backup; installation refuses non-Dev APKs.
+Validated backup: builds/phone-dev-before-wss-1792301484953.tar, 1,303,680,512
+bytes. install -r succeeded; original account and all 373 message keys were
+retained. Official package version/update metadata was unchanged.
+Post-update ordinary 4 KiB-path check: 1,048,595 bytes, 257 chunks, 9 writes,
+955.149 ms verification/decryption, 15.926 ms writes, 4.947 ms native final
+checksum, 1,096.546 ms whole isolated profile; checksum passed.
+
+PC fixture creation is outside the receiver timer. PC preparation is recorded
+separately; ciphertext/proof packing happens on demand inside the download.
+Download timer includes manifest checking, file creation, connection, fetch,
+decode, proof/AEAD checks, writes, complete-file checksum and receipt signing.
+Final checksum uses JS streaming SHA-256 over an isolated cache file, unlike
+the optimized native final checksum in the normal app. Thus these totals must
+NOT be compared directly with preceding ordinary app transfer timings.
+The separate phone preparation timer uses JS encryption/leaf hashes and file
+writes; it is NOT the native production preparation path. Prepared first/last
+chunks are audited after that timer in the large-file runs.
+wireBytes counts ASCII JSON response payload bytes only, not request traffic,
+WebSocket/TCP/USB headers, setup, debugger traffic or a full network-byte total.
+
+Memory observations
+sampledHeapBytes is the largest sampled Hermes js_heapSize for the whole Dev
+runtime during the test, not isolated allocation or process peak RSS. It can
+include earlier app/debugger/GC state. Ciphertext hex/base64 and proof objects
+add allocations beyond plaintext buffers. No total-memory bound is claimed.
+Keys belong only to fresh synthetic identities/files. Owned byte arrays are
+wiped where practical; immutable strings/engine internals are not claimed
+to be securely erased. The normal account's keys are never read.
+
+Correctness checks
+Tests cover both private/shared variants, non-power-of-two chunk counts,
+partial tails, fresh verifier/prefix replay, wrong keys, tampered ciphertext,
+malformed proofs, bounds, signature/domain mismatch, metadata mutations,
+expiry, fixed-budget batch framing and receipts. These codec replay checks
+are not a claim that a new-size durable production journal has been tested.
+All previous chat message keys and the account are checked before/after each
+live series. Synthetic cache files are retained; no cleanup is performed.
+
+Evidence
+Smoke: builds/actual-chunk-sizes-1792300639894.json
+Large: builds/actual-chunk-sizes-1792300703259.json
+Native smoke: builds/actual-chunk-sizes-native-1792301562340.json
+Native large: builds/actual-chunk-sizes-native-1792301584393.json
+Native continuation: builds/actual-chunk-sizes-native-1792301885460.json
+Raw files record codec source/variant hashes, mobile Git base, runner/phone
+harness hashes, all observations, failures and preservation checks. The
+worktree is dirty; the Git base alone does not identify tested source.
+The first attempted runner failed before opening a server because this
+repository's ws package exposes Server, not WebSocketServer; corrected before
+the smoke run. No transfer or app mutation occurred in that failed attempt.
+
+Thermal/host-load qualification
+Android was awake with Dev resumed; early thermal status was 0. Later in the
+native large series status was 2. The current synthetic operation was
+explicitly cancelled, retaining its partial cache file and recording the
+cancellation as a failure rather than silently excluding it. Six native
+large-file observations had already completed. No functional integrity
+failure occurred in those completed transfers.
+The remaining two repetitions were restarted in a separate continuation with
+a pre-run thermal guard (status must be 0, bounded cooldown wait), and both
+before/after thermal values recorded. Never pool these as an unqualified
+controlled speedup estimate. Initial all-JS exploratory repeats also overlap
+some PC build/test work; that round is not the headline performance comparison.
+
+Final native-hash observations (10 MiB + 19-byte tail, seconds)
+Chunk    Download + verify runs     Proof/decrypt runs    Separate JS prepare
+4 KiB     27.884 / 27.252             10.359 / 9.711        11.582 / 13.564
+16 KiB    28.742 / 31.744             10.171 / 11.081       11.253 / 11.670
+64 KiB    31.243 / 25.018             10.924 / 7.917        11.334 / 10.730
+256 KiB   29.279 / 29.099             10.839 / 10.709       10.121 / 9.414
+The continuation's 4 KiB case had thermal status 0 -> 1; its 64 KiB case
+had 0 -> 0. Other per-case thermal values were not sampled. The aggregate
+cooldown observation must not be retroactively assigned to individual runs.
+
+Chunk    Response bytes    Reduction vs 4 KiB    Max single proof/decrypt call
+4 KiB    15,348,375           0.00%                10.537 ms
+16 KiB   14,269,701           7.03%                25.309 ms
+64 KiB   14,040,753           8.52%                80.268 ms
+256 KiB  13,993,766           8.83%               294.304 ms
+Every case used 41 responses and 81 file writes; actual chunk counts were
+2,561 / 641 / 161 / 41. All were exact byte-count/SHA-256 matches and had
+verified synthetic receipts. These are not receipt states in a real chat.
+The maximum above is one synchronous proof/decrypt operation, NOT the whole
+UI stall: multiple operations can execute before yielding. Decode and final
+JS checksum also block and are measured separately in the raw observations.
+Sampled whole-runtime Hermes heap was 32–44 MiB in these runs; this is neither
+a peak process-memory measure nor proof that one candidate uses less memory.
+
+Completed coverage and preservation
+26 successful transfer runs: 4 initial small-file + 10 initial large-file +
+4 native small-file + 6 native large-file + 2 cooled continuation runs.
+One intentional thermal cancellation is retained in the evidence, followed
+by the successful continuation. An additional ordinary 4 KiB local-file
+regression profile passed. Every series retained the same account and all
+373 baseline chat-message keys; no test messages were added to the ledger.
+Temporary benchmark servers/sockets and their exact ADB reverse mappings
+were closed/removed by the runners. Existing Metro reverse was preserved.
+Synthetic files and the complete backup remain; no data cleanup performed.
+
+Decision
+Do not change the shipping 4 KiB format based on this experiment. Larger
+chunks cut metadata but did not establish a repeatable encompassing speed
+gain here. 64 KiB had the fastest single cooled observation, not a consistent
+win. 16 KiB is a conservative candidate for a future compatible prototype
+because it captures most response-size savings with shorter atomic work;
+it is NOT an experimentally proven faster production default. 256 KiB adds
+long uninterruptible processing for little extra response-size reduction.
+The next useful target is per-byte conversion and verification/decryption on
+the JS thread, with native/background execution preserving proof/AEAD checks,
+durable writes, cancellation and final receipt semantics. Moving that work
+may change the best chunk size; this remains a hypothesis requiring tests.
+Any production format must additionally negotiate size/version and respect
+RTC fragmentation/frame limits, old jobs, native preparation, relays and
+both app/AoN compatibility. No new format was enabled and no AoN changed.
+
+Production-readiness cleanup (same date)
+The temporary 524448-byte native hash-input allowance used above was removed.
+Shipping AttachmentHash accepts the existing bounded 8300-byte canonical input.
+The experimental codec remains isolated in scripts/tests, not in app imports.
+Historical native-all measurements describe the explicitly widened experimental
+binary, NOT the final readiness APK. Its runner's capability check rejects the
+shipping binary before running larger native-leaf experiments.

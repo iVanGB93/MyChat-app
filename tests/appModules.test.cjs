@@ -13,6 +13,22 @@ function delivery(f,overrides={}){const events=[];const worker=createMessageDeli
  connectedPeers:()=>[b,c],blocked:peers=>events.push(['blocked',peers]),collect:async()=>events.push(['collect']),send:async(...args)=>{events.push(['send',...args]);return false;},
  resolve:async peer=>events.push(['resolve',peer]),deposit:async(...args)=>events.push(['deposit',...args]),...overrides});return {worker,events};}
 
+test('revision-cached outbox derives once while idle and invalidates on block, enqueue and delivery',async()=>{
+ let raw=null,revision=0,now=10000,send=async()=>true;
+ const ledger=createRootChatLedger({owner:a,current:()=>true,now:()=>now,read:async()=>raw,write:async v=>{raw=v;revision++;}});
+ const reads=load('runtimeChatReads').createRuntimeChatReads({owner:()=>a,revision:()=>revision,read:ledger.snapshot});
+ const d=delivery({owner:()=>a,ledger},{stableSnapshots:true,ledger:()=>({...ledger,snapshot:reads.read}),now:()=>now,send:(...args)=>send(...args)});
+ for(let i=0;i<60;i++)await d.worker.tick();assert.equal(d.worker.snapshot().pendingDerivations,1);
+ assert.equal(d.events.filter(e=>e[0]==='blocked').length,1);
+ await ledger.enqueue(b,'1'.repeat(64),'synthetic');await d.worker.tick();
+ assert.equal((await ledger.snapshot()).messages[0].status,'delivered');
+ await d.worker.tick();const before=d.worker.snapshot().pendingDerivations;for(let i=0;i<60;i++)await d.worker.tick();assert.equal(d.worker.snapshot().pendingDerivations,before);
+ await ledger.enqueue(b,'2'.repeat(64),'blocked during send');send=async()=>{await ledger.configure(b,{blocked:true});return false;};
+ await d.worker.tick();assert.equal(d.events.filter(e=>e[0]==='deposit').length,0);
+ assert.equal((await ledger.snapshot()).messages[1].status,'pending');
+ d.worker.invalidate();await d.worker.tick();assert(d.worker.snapshot().pendingDerivations>before);d.worker.stop();
+});
+
 test('failed messages back off while new messages and peer reconnection remain immediate',async()=>{
  const f=setup();let now=10000,peers=[],success=false;const sent=[];
  const first=await f.commands.sendText(b,'offline');const d=delivery(f,{now:()=>now,connectedPeers:()=>peers,send:async(peer,raw,id)=>{sent.push(id);return success;}});

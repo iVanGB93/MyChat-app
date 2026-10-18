@@ -68,6 +68,7 @@ export function createAttachmentTransfer(d:{
  sharedPeers?():string[];
  request(peer:string,raw:string):Promise<string|null>;
   bulkPeers?():string[];
+  uploadBatchPeers?():string[];
   batchChunks?(peer:string):number;
   batchWindow?(peer:string):number;
  bulkRequest?(peer:string,raw:string):Promise<string|null>;
@@ -82,6 +83,9 @@ export function createAttachmentTransfer(d:{
  readChunks?(job:AttachmentJob,index:number,count:number):Promise<AttachmentChunk[]>;
  /** Persist exact bytes at index; repeating a chunk must be idempotent. Never use the remote name as a path. */
  writeChunk(job:AttachmentJob,index:number,plain:Uint8Array,current:()=>boolean):Promise<void>;
+ /** Optional bounded contiguous write. On failure the uncheckpointed range may be
+  * replayed; resolve only after all supplied bytes are written at their offsets. */
+ writeChunks?(job:AttachmentJob,index:number,plain:Uint8Array[],current:()=>boolean):Promise<void>;
  /** Read back the complete durable file, verify its size and descriptor.checksum, then publish it atomically. */
  commitFile(job:AttachmentJob,current:()=>boolean):Promise<void>;
  signReceipt(manifest:AttachmentManifest):Promise<AttachmentReceipt>;
@@ -195,6 +199,28 @@ export function createAttachmentTransfer(d:{
        await save({cursor:held.received,phase:held.received===total(job)?'confirming':'uploading',next:0,failures:0});return;
       }
      }
+     if(d.bulkRequest&&d.uploadBatchPeers?.().includes(relay)){
+      const start=job.cursor,negotiated=d.batchChunks?.(relay)??ATTACHMENT_BATCH_CHUNKS;
+      if(!Number.isSafeInteger(negotiated)||negotiated<1||negotiated>ATTACHMENT_BATCH_CHUNKS)throw Error('Invalid upload batch size');
+      const count=Math.min(negotiated,total(job)-start),chunks:AttachmentChunk[]=d.readChunks?await d.readChunks(job,start,count):[];
+      for(let n=0;!d.readChunks&&n<count;n++){
+       if(!await live()||manifest.expires<=d.now())return;
+       chunks.push(await d.readChunk(job,start+n));
+       if((n+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
+      }
+      if(chunks.length!==count)throw Error('Incomplete upload batch');
+      const data=packAttachmentBatch(manifest,start,chunks,d.hashLeaf);
+      if(!await live()||manifest.expires<=d.now())return;
+      const raw=await d.bulkRequest(relay,JSON.stringify({version:1,operation:'put-batch',digest:job.digest,index:start,count,data}));
+      if(!await live())return;
+      if(!raw)throw new AttachmentSourceUnavailable('Attachment upload batch unavailable');
+      if(raw.length>14000)throw Error('Invalid upload batch response');const result=JSON.parse(raw);
+      if(result.status==='completed'){await save({phase:'confirming',next:0,failures:0});return;}
+      if(result.status!=='held'||result.index!==start||result.count!==count||!Number.isSafeInteger(result.received)||result.received<count||result.received>total(job))throw Error('Attachment upload batch refused');
+      const next=start+count;
+      if(next===total(job)){await d.stored?.(job,current);if(!await live())return;}
+      await save({cursor:next,phase:next===total(job)?'confirming':'uploading',failures:0,next:0});return;
+     }
      const start=job.cursor,count=Math.min(uploadWindow,total(job)-start);
      const results=await Promise.allSettled(Array.from({length:count},async(_,offset)=>{
       const index=start+offset,chunk=await d.readChunk(job,index);
@@ -277,6 +303,11 @@ export function createAttachmentTransfer(d:{
       return request(relay,relay===manifest.sender?'direct-get':'get',job,{index:start+offset});
     });
     let verifiedCursor=start,custodians=job.custodians;
+    const pendingPlain:Uint8Array[]=[];
+    // A local write batch is independent of the wire protocol. Bound retained
+    // plaintext to 128 KiB and never checkpoint partially written batches.
+    const writeCount=d.writeChunks?Math.min(32,negotiated):1;
+    const clearPlain=()=>{for(const plain of pendingPlain)plain.fill(0);pendingPlain.length=0;};
     try{for(let offset=0;offset<count;offset++){
      if(!await live())return;
      if(manifest.expires<=d.now())throw Error('Attachment expired');
@@ -288,14 +319,23 @@ export function createAttachmentTransfer(d:{
      if(r.status==='unavailable')throw new AttachmentSourceUnavailable('Attachment source not ready');
      if(r.status!=='ok'||!r.chunk||r.chunk.index!==index)throw Error('Attachment chunk unavailable');
      const key=hexToBytes(job.descriptor.key);let plain:Uint8Array|undefined;
-     try{plain=decryptAttachmentChunk(manifest,r.chunk,key,d.hashLeaf);if(!await live())return;await d.writeChunk(job,index,plain,current);}
+     try{plain=decryptAttachmentChunk(manifest,r.chunk,key,d.hashLeaf);if(!await live())return;
+      if(d.writeChunks){pendingPlain.push(plain);plain=undefined;
+       if(pendingPlain.length===writeCount||offset===count-1){
+        await d.writeChunks(job,verifiedCursor,pendingPlain,current);
+        if(!await live())return;
+        verifiedCursor=index+1;clearPlain();
+       }
+      }else await d.writeChunk(job,index,plain,current);
+     }
      finally{key.fill(0);plain?.fill(0);}
      if(!await live())return;
      const prior=relay===manifest.sender&&Array.isArray(r.custodians)?r.custodians.filter((p:unknown)=>validAccountId(p)&&p!==job.owner).slice(0,9):[];
      custodians=[...new Set<string>([...custodians,relay,...prior])];if(custodians.length>10)throw Error('Too many attachment sources');
-     verifiedCursor=index+1;
+     if(!d.writeChunks)verifiedCursor=index+1;
      if((offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
     }}finally{
+     clearPlain();
      // Files are written at fixed offsets. A crash before this checkpoint safely
      // replays at most one bounded burst; a failed chunk preserves its verified prefix.
      await reads?.stop();

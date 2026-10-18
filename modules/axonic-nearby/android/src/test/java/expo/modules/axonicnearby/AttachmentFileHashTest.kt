@@ -9,6 +9,25 @@ import org.junit.Test
 class AttachmentFileHashTest {
   private val owner = "axonic:1:" + "a".repeat(64)
   private val digest = "b".repeat(64)
+  @Test fun completedGroupGrantResolvesOnlyItsOwnSharedPayload() {
+    val root = Files.createTempDirectory("attachment-shared-hash").toFile()
+    try {
+      val accountRoot = File(root,"axonic-own-attachments-v1/${owner.substring(9)}")
+      val grant = File(accountRoot,"files/$digest").apply { mkdirs() }
+      val shared = "c".repeat(64)
+      val bytes = byteArrayOf(1, 2, 3)
+      File(accountRoot,"shared/$shared/content").apply { parentFile.mkdirs();writeBytes(bytes) }
+      val link=File(grant,"shared.json");link.writeText("{\"id\":\"$shared\"}")
+      val expected=MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+      assertEquals(expected,AttachmentFileHash.sha256(root,owner,digest,true,3))
+      assertThrows(IllegalArgumentException::class.java) { AttachmentFileHash.sha256(root,owner,digest,false,3) }
+      for(value in listOf("{\"id\":\"../other\"}","{\"id\":\"$shared\",\"extra\":1}","{}","x".repeat(257))) {
+        link.writeText(value)
+        assertThrows(IllegalArgumentException::class.java) { AttachmentFileHash.sha256(root,owner,digest,true,3) }
+      }
+      assertArrayEquals(bytes,File(accountRoot,"shared/$shared/content").readBytes())
+    } finally { root.deleteRecursively() }
+  }
   @Test fun stagedHashReadsOnlyThePrivateContentCopy() {
     val root = Files.createTempDirectory("attachment-staged-hash").toFile()
     try {

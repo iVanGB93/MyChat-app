@@ -10,7 +10,18 @@ internal object AttachmentFileHash {
     require(expectedBytes in 1..250L * 1024 * 1024)
     val root = filesDir.canonicalFile
     require(!staged || completed)
-    val file = File(root, "axonic-own-attachments-v1/${owner.substring(9)}/${if (staged) "staging" else "files"}/$digest/${if (completed) "content" else "partial"}")
+    val accountRoot = File(root, "axonic-own-attachments-v1/${owner.substring(9)}")
+    var directory = File(accountRoot, "${if (staged) "staging" else "files"}/$digest")
+    // Group sends share one private immutable payload across recipient grants.
+    // Match the app-owned shared.json writer, never accept a path from the link.
+    val link = File(directory, "shared.json")
+    if (!staged && completed && link.exists()) {
+      require(link.canonicalFile == link.absoluteFile && link.isFile && link.length() in 1..256)
+      val shared = Regex("""\s*\{\s*"id"\s*:\s*"([0-9a-f]{64})"\s*}\s*""").matchEntire(link.readText())?.groupValues?.get(1)
+      requireNotNull(shared) { "Invalid shared attachment reference" }
+      directory = File(accountRoot, "shared/$shared")
+    }
+    val file = File(directory, if (completed) "content" else "partial")
     require(file.canonicalFile == file.absoluteFile && file.isFile && file.length() == expectedBytes) { "Attachment file unavailable" }
     val hash = MessageDigest.getInstance("SHA-256")
     val buffer = ByteArray(65536)

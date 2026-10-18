@@ -1,12 +1,14 @@
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
-import {rootAttachmentFile,rootAttachmentPartial,createRootStreamTemporary,sweepRootStreamTemporaries} from './rootAttachmentFiles';
+import {rootAttachmentFile,createRootStreamTemporary,sweepRootStreamTemporaries} from './rootAttachmentFiles';
 import {createDirectAttachmentStream} from './directAttachmentStream';
 import type {AttachmentJob} from './attachmentTransfer';
 import type {RtcAttachmentLane} from './rtcAxonTransport';
 
 export interface AttachmentStreams {
  available(account:string,device:string):boolean;
+ /** Request a bounded authenticated route upgrade; false for unsupported peers. */
+ request?(account:string,device:string):boolean;
  open(account:string,device:string):RtcAttachmentLane;
  listen(handler:(account:string,device:string,lane:RtcAttachmentLane)=>boolean):()=>void;
 }
@@ -45,10 +47,11 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
   lane.listen(data=>{void stream.receive(data).catch(()=>{}).finally(signal);},()=>{stream.abort('RTC stream closed');signal();});
   try{await lane.ready();if(role==='send')await validate();await stream.start();await validate();
    if(role==='receive'){
-    const partial=rootAttachmentPartial(a.job.owner,a.job.digest);partial.parentDirectory.create({intermediates:true,idempotent:true});
-    if(partial.exists)partial.delete();file.move(partial);
+    // A failed rename leaves the durable chunk prefix intact. Older clients
+    // without this primitive continue with chunks instead of unsafe replacement.
+    if(!Native!.attachmentStageStream!(a.job.owner,a.temporary,a.job.digest,a.job.descriptor.manifest.bytes))throw Error('Stream staging unavailable');
    }
-   console.info('[Axonic direct attachment]',JSON.stringify({direction:role,bytes:a.job.descriptor.manifest.bytes,result:'verified'}));
+   console.info('[Axonic direct attachment]',JSON.stringify({direction:role,bytes:a.job.descriptor.manifest.bytes,result:'verified',...(role==='receive'?{previousVerifiedChunks:a.job.cursor}:{})}));
   }catch(error){stream.abort(error);
    const reason=error instanceof Error?error.message.toLowerCase():'';
    console.info('[Axonic direct attachment]',JSON.stringify({direction:role,bytes:a.job.descriptor.manifest.bytes,result:'fallback',
@@ -69,9 +72,12 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
  return {
   async pull(job:AttachmentJob,live:()=>Promise<boolean>){
    const m=job.descriptor.manifest;
-   if(stopped||incoming||!Native?.attachmentFileSha256||!network.available(m.sender,m.senderDevice)||!await live()){
-    console.info('[Axonic direct attachment]',JSON.stringify({direction:'receive',result:'skipped',reason:stopped?'stopped':incoming?'busy':!Native?.attachmentFileSha256?'native-unavailable':!network.available(m.sender,m.senderDevice)?'rtc-unavailable':'revoked'}));return 'unavailable' as const;
+   if(stopped||incoming||!Native?.attachmentFileSha256||!Native?.attachmentStageStream||!await live()){
+    console.info('[Axonic direct attachment]',JSON.stringify({direction:'receive',result:'skipped',reason:stopped?'stopped':incoming?'busy':!Native?.attachmentFileSha256||!Native?.attachmentStageStream?'native-unavailable':'revoked'}));return 'unavailable' as const;
    }
+   // The normal request also wakes the sender's route preference, whichever
+   // account owns the dialing role. Chunks keep moving while RTC negotiates.
+   if(!network.available(m.sender,m.senderDevice)&&!network.request?.(m.sender,m.senderDevice))return 'unavailable' as const;
    const a=await attempt(job,live);if(stopped||incoming||!await live())return 'unavailable' as const;incoming=a;let timer:ReturnType<typeof setTimeout>|undefined;
    const completed=new Promise<boolean>(resolve=>{a.finish=resolve;timer=setTimeout(()=>{a.cancel();resolve(false);},10*60*1000);});
    try{
@@ -87,7 +93,8 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
   },
   async serve(job:AttachmentJob,live:()=>Promise<boolean>){
    const m=job.descriptor.manifest;
-   if(stopped||outgoing||!Native?.attachmentFileSha256||!network.available(m.recipient,m.recipientDevice)||!await live())return false;
+   if(stopped||outgoing||!Native?.attachmentFileSha256||!await live())return false;
+   if(!network.available(m.recipient,m.recipientDevice)){network.request?.(m.recipient,m.recipientDevice);return false;}
    const a=await attempt(job,live);if(stopped||outgoing||!await live())return false;outgoing=a;
    try{const lane=network.open(m.recipient,m.recipientDevice);
     a.task=run(a,lane,'send');void a.task.catch(()=>{}).finally(()=>{if(outgoing===a)outgoing=undefined;});return true;

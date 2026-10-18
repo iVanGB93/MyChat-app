@@ -3,6 +3,18 @@ function load(path,deps={}){const out={};new Function('exports','require',ts.tra
 const status=load('src/services/identity/rootMessageStatus.ts');
 const report=load('src/services/diagnosticReport.ts',{'./identity/rootMessageStatus':status});
 const journal=load('src/services/diagnosticJournal.ts');
+
+test('poll report whitelists numeric counters and distinguishes local passes from delivery',()=>{
+ const result=report.summarizePollingForReport({private:{startedPasses:4,emptyPasses:3,itemPasses:1,peer:'secret',busySkips:NaN},group:{cooldownSkips:9,token:'secret'},pendingDerivations:1,owner:'secret'});
+ assert.equal(result.private.emptyPasses,3);assert.equal(result.localWork.pendingDerivations,1);assert.equal(result.group.cooldownSkips,9);
+ assert(!JSON.stringify(result).includes('secret'));assert(!('busySkips' in result.private));assert.match(result.scope,/not wire packets/);assert.match(result.scope,/not necessarily valid or delivered/);
+ assert.equal(report.summarizePollingForReport(null).private,null);
+});
+
+test('chat timing separates read, derivation and layout without retaining private identifiers',()=>{
+ const d=journal.createDiagnosticJournal(()=>1);for(const event of ['chat_history_read','chat_view_derived','private_chat_layout','group_chat_layout'])d.record(event,{milliseconds:23.4,peer:'secret',text:'private'});
+ assert.equal(d.snapshot().events.length,4);assert(d.snapshot().events.every(e=>e.milliseconds===23));assert(!JSON.stringify(d.snapshot()).includes('secret'));assert(!JSON.stringify(d.snapshot().events).includes('private"'));assert.match(d.snapshot().scope,/not message paint/);
+});
 test('diagnostic journal is bounded, expires and rejects unknown text/identifiers',()=>{
  let now=1000;const d=journal.createDiagnosticJournal(()=>now);d.record('private text',{token:'secret'});assert.equal(d.snapshot().events.length,0);
  for(let i=0;i<200;i++)d.record('network_changed',{connected:2,account:'secret',milliseconds:NaN});

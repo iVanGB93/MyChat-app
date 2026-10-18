@@ -3,6 +3,7 @@ import {attachmentDigest,attachmentContentDigest,validAttachmentManifest,verifyA
 import {verifyRecord} from './identityProtocol.ts';
 import type {IdentityRecordStore} from './identityAdmission.ts';
 import type {IdentityPeer} from './identityClient.ts';
+import {ATTACHMENT_BULK_FRAME_BYTES,isAttachmentUploadBatchRequest,unpackAttachmentBatch} from './attachmentBatch.ts';
 export interface AttachmentCustodyRow {digest:string;manifest:AttachmentManifest;received:number;receipt:AttachmentReceipt|null}
 export interface AttachmentTransaction {
  rows():Promise<AttachmentCustodyRow[]>;
@@ -15,7 +16,7 @@ export interface AttachmentTransaction {
 /** Metadata and ciphertext writes/deletes must commit atomically or throw, serialized per database. */
 export interface AttachmentStore {transaction<T>(work:(tx:AttachmentTransaction)=>Promise<T>):Promise<T>}
 export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;records:IdentityRecordStore;now():number;current():boolean;maxBytes?:number}){
- let queued=0;const maxBytes=d.maxBytes??64*1024*1024;
+ let queued=0,bulkQueued=0;const maxBytes=d.maxBytes??64*1024*1024;
  if(!Number.isSafeInteger(maxBytes)||maxBytes<1)throw Error('Invalid attachment capacity');
  const reply=(value:unknown)=>JSON.stringify(value);
  async function prune(tx:AttachmentTransaction){const rows=await tx.rows(),seen=new Set<string>();
@@ -31,6 +32,7 @@ export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;re
   });
   if(!current())return reply({status:'rejected'});
   const request=JSON.parse(raw);if(request.version!==1)return reply({status:'rejected'});
+  if(request.operation==='put-batch'&&!isAttachmentUploadBatchRequest(raw))return reply({status:'rejected'});
   const record=await d.records.read(peer.account);if(!record||record.account!==peer.account||!verifyRecord(record,d.now())||!record.devices.some(v=>v.id===peer.device)||!current())return reply({status:'rejected'});
   if(request.operation==='offer'){
    const m=request.manifest as AttachmentManifest;
@@ -60,6 +62,29 @@ export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;re
    const content=attachmentContentDigest(m);
    if(!from&&!to)return reply({status:'rejected'});
    if(request.operation==='status')return reply({status:row.receipt?'completed':'held',received:m.version===2?await prefix(tx,m):row.received,total:Math.ceil(m.bytes/ATTACHMENT_CHUNK_BYTES),receipt:row.receipt});
+   if(request.operation==='put-batch'&&from){
+    if(row.receipt)return reply({status:'completed'});
+    const chunks=unpackAttachmentBatch(m,request.index,request.count,request.data);
+    // Validate the entire range before mutating storage. Keep the exact original
+    // per-chunk Merkle checks; batching is not an aggregate proof or new cipher.
+    for(let n=0;n<chunks.length;n++){
+     if(!current()||m.expires<=d.now()||!verifyAttachmentChunk(m,chunks[n]))throw Error('Invalid attachment batch');
+     if((n+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
+    }
+    let added=0;
+    for(const chunk of chunks){
+     if(!current()||m.expires<=d.now())throw Error('Attachment session ended');
+     if(!await tx.chunk(content,chunk.index)){await tx.saveChunk(content,chunk);added++;}
+    }
+    if(added){
+     if(m.version===2){const received=await prefix(tx,m);for(const sibling of rows.filter(r=>attachmentContentDigest(r.manifest)===content)){sibling.received=received;await tx.save(sibling);}}
+     else{row.received+=added;await tx.save(row);}
+    }
+    if(m.expires<=d.now())throw Error('Attachment expired');
+    // The transaction wrapper checks the session again and withholds this reply
+    // until commit succeeds. Retransmission of the same range is idempotent.
+    return reply({status:'held',index:request.index,count:request.count,received:row.received});
+   }
    if(request.operation==='put'&&from){
     if(row.receipt)return reply({status:'completed'});
     const chunk=request.chunk as AttachmentChunk;if(!verifyAttachmentChunk(m,chunk))return reply({status:'rejected'});
@@ -86,8 +111,11 @@ export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;re
  }
  return {
   async receive(raw:string,peer:IdentityPeer){
-   if(typeof raw!=='string'||raw.length>13000||queued>=8)return reply({status:'rejected'});queued++;
-   try{return await handle(raw,peer);}catch{return reply({status:'rejected'});}finally{queued--;}
+   if(typeof raw!=='string'||raw.length>ATTACHMENT_BULK_FRAME_BYTES-1024||queued>=8)return reply({status:'rejected'});
+   const bulk=isAttachmentUploadBatchRequest(raw);
+   if(raw.length>13000&&!bulk||bulk&&(bulkQueued>=2||new TextEncoder().encode(raw).length>ATTACHMENT_BULK_FRAME_BYTES-1024))return reply({status:'rejected'});
+   queued++;if(bulk)bulkQueued++;
+   try{return await handle(raw,peer);}catch{return reply({status:'rejected'});}finally{queued--;if(bulk)bulkQueued--;}
   },
   sweep:()=>d.store.transaction(async tx=>{await prune(tx);}),
  };

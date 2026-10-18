@@ -30,6 +30,13 @@ export function summarizeWakeForReport(value:unknown){
  const project=(v:any)=>!v?null:{work:numericProjection(v.work,['schedulerChecks','storeReads','selectedItems','localGatewayCalls','remoteGatewayCalls','requestPayloadBytes','responsePayloadBytes','elapsedMs']),outcomes:numericProjection(v.outcomes,['forwarded','retry','unsupported','rejected','unavailable','exception','local_wake_verification_failed']),gauges:numericProjection(v,['trackedEnvelopes','backingOff','acceptedEnvelopes'])};
  return {private:project(source?.private),group:project(source?.group),scope:'Current network runtime only. Calls are adapter invocations, not proven transmissions; bytes are JSON bytes, not wire bytes; elapsedMs is request latency, not CPU. Gateway acceptance is not device delivery.'};
 }
+export function summarizePollingForReport(value:unknown){
+ const source=value as Record<string,unknown>|null;
+ const keys=['startedPasses','emptyPasses','itemPasses','unsuccessfulPasses','cooldownSkips','busySkips','activePasses','trackedRelays','idleMaximumMs'];
+ return {private:source?numericProjection(source.private,keys):null,group:source?numericProjection(source.group,keys):null,
+  localWork:source?numericProjection(source,['pendingDerivations']):null,
+  scope:'Current network runtime. Passes are local scheduled inbox batches, not wire packets. Item passes saw a packet, not necessarily valid or delivered. Empty passes are not failures. Skips are local checks with no poll started. Unsuccessful passes returned neither a packet nor confirmed empty inbox. Empty-inbox backoff is capped at 15s; explicit relay retry hints can defer up to 60s. Wake/resume restores fast polling. Call polling is unchanged.'};
+}
 export function chooseReportRecipient(connections:readonly {account:string;state:string;rank?:number;responseMs?:number|null}[],known:readonly {account:string;name:string}[],blocked:readonly string[]){
  const eligible=known.filter(p=>!blocked.includes(p.account));
  const connected=connections.filter(c=>c.state==='connected'&&eligible.some(p=>p.account===c.account)).slice().sort((a,b)=>(a.rank??999)-(b.rank??999));

@@ -154,6 +154,16 @@ class AxonicNearbyModule : Module() {
     AsyncFunction("axonWrite") { id: String, raw: String, promise: Promise -> axonWork(promise) { axons.write(id, raw); true } }
     Function("axonClose") { id: String -> axons.close(id) }
     Function("attachmentSha256") { value: String -> AttachmentHash.sha256(value) }
+    // Synchronous rename only: no hash/copy loop and no yield between the JS
+    // lease check and replacing the verified prefix.
+    // java.nio atomic moves require API 26. On supported API 24/25 devices the
+    // method stays absent, so JS negotiates ordinary verified chunks instead.
+    if (android.os.Build.VERSION.SDK_INT >= 26) {
+      Function("attachmentStageStream") { owner: String, temporary: String, digest: String, bytes: Double ->
+        require(bytes.isFinite() && bytes == bytes.toLong().toDouble())
+        AttachmentStreamStage.stage(requireNotNull(appContext.reactContext).filesDir, owner, temporary, digest, bytes.toLong())
+      }
+    }
     AsyncFunction("attachmentPrepareBatch") { owner:String,id:String,key:String,bytes:Double,start:Int,aads:List<String>,promise:Promise ->
       try {
         require(bytes.isFinite() && bytes==bytes.toLong().toDouble())

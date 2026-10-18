@@ -39,7 +39,7 @@ test('one uploaded blob survives an early receipt and serves a later grant, then
  clock=f.first.expires;await relay.sweep();assert.equal(rows.size,0);
 });
 
-test('group transfer workers upload each ciphertext chunk once and independently confirm both recipients',async()=>{
+for(const batched of [false,true])test('group transfer workers upload each ciphertext chunk once and independently confirm both recipients, batch='+batched,async()=>{
  const f=shared(),rows=new Map(),chunks=new Map(),jobs=new Map(),received=new Map();let puts=0,clock=now,tail=Promise.resolve();
  const tx={rows:async()=>[...rows.values()],save:async r=>rows.set(r.digest,r),chunk:async(d,i)=>chunks.get(d+':'+i)??null,saveChunk:async(d,c)=>{puts++;chunks.set(d+':'+c.index,c);},eraseChunks:async d=>{for(const k of chunks.keys())if(k.startsWith(d+':'))chunks.delete(k);},erase:async d=>rows.delete(d)};
  const store={transaction:work=>{const next=tail.then(()=>work(tx));tail=next.catch(()=>{});return next;}};
@@ -48,7 +48,10 @@ test('group transfer workers upload each ciphertext chunk once and independently
  const workers=[0,1,3].map(i=>load('attachmentTransfer').createAttachmentTransfer({owner:()=>f.ids[i].record.account,device:()=>f.ids[i].device.id,now:()=>clock,store:jobStore,
   record:async account=>f.ids.find(i=>i.record.account===account)?.record,allowed:()=>true,peers:()=>[f.ids[2].record.account],sharedPeers:()=>[f.ids[2].record.account],
   request:async(_,raw)=>{assert(!raw.includes(Buffer.from(f.key).toString('hex')));return relay.receive(raw,{account:f.ids[i].record.account,device:f.ids[i].device.id,expiresAt:clock+60000});},
+  uploadBatchPeers:()=>batched?[f.ids[2].record.account]:[],bulkRequest:async(_,raw)=>{assert(!raw.includes(Buffer.from(f.key).toString('hex')));return relay.receive(raw,{account:f.ids[i].record.account,device:f.ids[i].device.id,expiresAt:clock+60000});},
+  downloadWindow:4,
   readChunk:async(_,index)=>f.chunks[index],writeChunk:async(j,index,bytes)=>{const key=j.owner+j.digest;const parts=received.get(key)??[];parts[index]=Buffer.from(bytes);received.set(key,parts);},
+  writeChunks:batched?async(j,index,bytes)=>{const key=j.owner+j.digest,parts=received.get(key)??[];for(let n=0;n<bytes.length;n++)parts[index+n]=Buffer.from(bytes[n]);received.set(key,parts);}:undefined,
   commitFile:async j=>assert.deepEqual(Buffer.concat(received.get(j.owner+j.digest)),Buffer.from(f.plain)),signReceipt:async m=>a.signAttachmentReceipt(m,f.ids[i].signingSeed,f.ids[i].record,clock),completed:async()=>{}
  }));
  const descriptor=m=>({manifest:m,key:Buffer.from(f.key).toString('hex'),checksum:require('crypto').createHash('sha256').update(f.plain).digest('hex'),name:'group.bin',mime:'application/octet-stream'});

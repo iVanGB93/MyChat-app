@@ -81,7 +81,9 @@ export default function SmartMessageText({
   style?: TextStyle | TextStyle[];
   linkColor: string;
 }) {
-  const parts = splitSmartText(children);
+  // Delivery/progress/theme updates do not change the message text. Retain only
+  // this mounted bubble's parsed parts; edits naturally invalidate the result.
+  const parts = React.useMemo(() => splitSmartText(children), [children]);
 
   return (
     <Text style={style} selectable>

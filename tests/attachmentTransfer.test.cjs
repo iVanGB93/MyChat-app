@@ -113,6 +113,19 @@ test('a newly connected sender can stream a partially downloaded attachment',asy
  await f.receiver.tick();await f.receiver.tick();assert.equal(receivedCursor,1);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
  assert.equal((await f.job(1)).delivery.partial,false);assert.equal((await f.job(1)).delivery.method,'peer');
 });
+
+test('relay download upgrades when the sender connects later and keeps real source evidence',async t=>{
+ const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ for(let i=0;i<5;i++)await sender.tick();
+ let online=false,upgradedAt=-1;const base=f.deps(1),source=f.ids[0].record.account,relay=f.ids[2].record.account;
+ const receiver=createAttachmentTransfer({...base,peers:()=>online?[relay,source]:[relay],
+  request:(peer,raw)=>peer===source?sender.receive(raw,{account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000}):base.request(peer,raw),
+  directStream:async job=>{assert(online);upgradedAt=job.cursor;f.written.splice(0,f.written.length,f.plain.slice());return true;}});
+ await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();assert.equal((await f.job(1)).cursor,1);assert.equal(upgradedAt,-1);
+ online=true;for(let i=0;i<8;i++)await receiver.tick();
+ assert.equal(upgradedAt,1);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.equal((await f.job(1)).delivery.method,'peer');assert.deepEqual((await f.job(1)).delivery.relays,[]);
+});
 test('legacy partial media does not invent the source of previously downloaded bytes',async t=>{
  const f=directContext(t,()=>({}));await f.begin();const j=await f.job(1);
  f.written.push(f.plain.slice(0,4096));await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
@@ -268,6 +281,32 @@ for(const fail of [false,true])test(`large batch prefetch is capped at two and p
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(fail?f.plain.slice(0,512*1024):f.plain));
 });
 
+for(const failure of ['none','write','tamper','lock','cancel'])test('bounded local write batches preserve byte checks, checkpoints and replay: '+failure,async t=>{
+ const f=context(t,65*4096+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000},base=f.deps(1),retained=[],counts=[];
+ let failed=false,receiver;
+ const deps={...base,peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>32,batchWindow:()=>2,
+  request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{const value=await sender.receive(raw,peer),r=JSON.parse(raw);if(failure==='tamper'&&!failed&&r.index===32){failed=true;const response=JSON.parse(value),bytes=Buffer.from(response.data,'base64');bytes[bytes.length-1]^=1;response.data=bytes.toString('base64');return JSON.stringify(response);}return value;},
+  writeChunk:()=>{throw Error('Unexpected single write');},writeChunks:async(job,index,parts,current)=>{
+   assert(parts.length<=32);counts.push(parts.length);retained.push(...parts);
+   if(index===32&&!failed&&['write','lock','cancel'].includes(failure)){failed=true;
+    if(failure==='write'){await base.writeChunk(job,index,parts[0],current);throw Error('Partial write');}
+    if(failure==='lock')f.lock();else await receiver.cancel(job.digest);return;
+   }
+   for(let n=0;n<parts.length;n++)await base.writeChunk(job,index+n,parts[n],current);
+  }};
+ receiver=createAttachmentTransfer(deps);await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
+ assert(retained.every(p=>p.every(b=>b===0)),'temporary plaintext is cleared');
+ if(failure!=='none'){
+  if(failure==='lock')f.unlock();const job=await f.job(1);assert.equal(job.receipt,null);assert.equal(job.cursor,failure==='lock'||failure==='cancel'?0:32);
+  receiver.stop();receiver=createAttachmentTransfer(deps);if(failure==='cancel')await receiver.retry(job.digest);f.advance(11000);
+ }
+ for(let n=0;n<12&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
+ assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);assert(retained.every(p=>p.every(b=>b===0)));
+ assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
+ if(failure==='none')assert.deepEqual(counts,[32,32,2]);
+});
+
 test('direct 512 KiB batches deliver a larger file with two batch reads and a verified receipt',async t=>{
  const f=context(t,787252),baseSender=f.deps(0);let reads=0;
  const sender=createAttachmentTransfer({...baseSender,readChunk:()=>{throw Error('Single read used');},readChunks:async(job,index,count)=>{reads++;return Promise.all(Array.from({length:count},(_,n)=>baseSender.readChunk(job,index+n)));}});await sender.enqueue(f.descriptor,'outgoing');
@@ -364,11 +403,39 @@ test('per-job membership policy rejects direct media and stops in-flight upload 
  assert.equal(JSON.parse(await sender.receive(raw,peer)).status,'unavailable');assert.equal(reads,0);
  allowed=true;await sender.tick();await sender.tick();assert.equal(f.chunks.size,0);assert.equal((await f.job(0)).cursor,0);sender.stop();
 });
+for(const batched of [false,true])test('relay upload negotiates batching or legacy fallback: '+batched,async t=>{
+ const f=context(t,1024*1024+19),base=f.deps(0),calls={put:0,batch:0};
+ const sender=createAttachmentTransfer({...base,uploadWindow:4,uploadBatchPeers:()=>batched?[f.ids[2].record.account]:[],batchChunks:()=>32,
+  request:async(p,raw)=>{if(JSON.parse(raw).operation==='put')calls.put++;return base.request(p,raw);},
+  readChunks:async(j,index,count)=>Promise.all(Array.from({length:count},(_,n)=>base.readChunk(j,index+n))),bulkRequest:async(p,raw)=>{calls.batch++;return base.request(p,raw);}});
+ await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<300&&(await f.job(0)).phase!=='confirming';n++)await sender.tick();
+ assert.equal((await f.job(0)).cursor,257);assert.equal((await f.job(0)).phase,'confirming');assert.equal((await f.job(0)).receipt,null);assert.equal(f.complete.length,0);
+ assert.deepEqual(calls,batched?{put:0,batch:9}:{put:257,batch:0});
+ const receiver=createAttachmentTransfer({...f.deps(1),downloadWindow:4});await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<90&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
+ assert.equal((await f.job(1)).phase,'complete');f.advance(3000);await sender.tick();assert.equal((await f.job(0)).phase,'complete');sender.stop();receiver.stop();
+});
+test('lost batch response replays safely and never advances an unacknowledged cursor',async t=>{
+ const f=context(t,33*4096),base=f.deps(0);let lost=true,calls=0;
+ const sender=createAttachmentTransfer({...base,uploadBatchPeers:()=>[f.ids[2].record.account],batchChunks:()=>32,bulkRequest:async(p,raw)=>{calls++;const result=await base.request(p,raw);if(lost){lost=false;return null;}return result;}});
+ await sender.enqueue(f.descriptor,'outgoing');await sender.tick();await sender.tick();assert.equal(f.chunks.size,32);assert.equal((await f.job(0)).cursor,0);
+ f.advance(10001);for(let n=0;n<5;n++)await sender.tick();assert.equal(f.chunks.size,33);assert.equal((await f.job(0)).phase,'confirming');assert.equal(calls,3);assert.equal(f.complete.length,0);sender.stop();
+});
+for(const mode of ['cancel','lock','wrong-ack','completed-without-receipt'])test('batch sender preserves lifecycle/receipt guard: '+mode,async t=>{
+ const f=context(t),base=f.deps(0);let sender;
+ sender=createAttachmentTransfer({...base,uploadBatchPeers:()=>[f.ids[2].record.account],bulkRequest:async(p,raw)=>{
+  const body=JSON.parse(raw);if(mode==='cancel')await sender.cancel(body.digest);if(mode==='lock')f.lock();
+  return JSON.stringify(mode==='completed-without-receipt'?{status:'completed'}:{status:'held',index:mode==='wrong-ack'?99:body.index,count:body.count,received:body.count});}});
+ await sender.enqueue(f.descriptor,'outgoing');await sender.tick();await sender.tick();f.unlock();assert.equal((await f.job(0)).cursor,0);assert.equal(f.complete.length,0);assert.equal((await f.job(0)).receipt,null);sender.stop();
+});
+
 function jobs(t,capture){const database=new DatabaseSync(':memory:');if(capture)capture.database=database;t.after(()=>database.close());const tx={runAsync:async(s,...p)=>database.prepare(s).run(...p),getAllAsync:async(s,...p)=>database.prepare(s).all(...p),getFirstAsync:async(s,...p)=>database.prepare(s).get(...p)??null};
  const db={...tx,getFirstSync:(s,...p)=>database.prepare(s).get(...p)??null,execAsync:async s=>database.exec(s),withTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(tx);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/mobileAttachmentJobs.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?{openDatabaseAsync:async()=>db}:load(n.slice(2)),out);return out.createMobileAttachmentJobs(capture?.now);}
 function context(t,size){const f=fixture(size),store=jobs(t),rows=[],chunks=new Map(),complete=[],written=[],descriptor={manifest:f.manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'photo.png',mime:'image/png'};let clock=now,active=true;
- const custodyStore={transaction:async work=>{const saved=structuredClone(rows),savedChunks=new Map([...chunks].map(([k,v])=>[k,structuredClone(v)]));const result=await work({rows:async()=>saved,save:async row=>{const i=saved.findIndex(r=>r.digest===row.digest);if(i<0)saved.push(structuredClone(row));else saved[i]=structuredClone(row);},chunk:async(d,i)=>savedChunks.get(d+':'+i)??null,saveChunk:async(d,c)=>savedChunks.set(d+':'+c.index,structuredClone(c)),eraseChunks:async d=>{for(const k of savedChunks.keys())if(k.startsWith(d+':'))savedChunks.delete(k);},erase:async d=>{const i=saved.findIndex(r=>r.digest===d);if(i>=0)saved.splice(i,1);for(const k of savedChunks.keys())if(k.startsWith(d+':'))savedChunks.delete(k);}});rows.splice(0,rows.length,...saved);chunks.clear();for(const [k,v] of savedChunks)chunks.set(k,v);return result;}};
+ // The real AttachmentStore contract serializes transactions. Model that here
+ // too, including concurrent legacy puts, instead of racing cloned snapshots.
+ let transactionTail=Promise.resolve();
+ const custodyStore={transaction:work=>{const task=transactionTail.then(async()=>{const saved=structuredClone(rows),savedChunks=new Map([...chunks].map(([k,v])=>[k,structuredClone(v)]));const result=await work({rows:async()=>saved,save:async row=>{const i=saved.findIndex(r=>r.digest===row.digest);if(i<0)saved.push(structuredClone(row));else saved[i]=structuredClone(row);},chunk:async(d,i)=>savedChunks.get(d+':'+i)??null,saveChunk:async(d,c)=>savedChunks.set(d+':'+c.index,structuredClone(c)),eraseChunks:async d=>{for(const k of savedChunks.keys())if(k.startsWith(d+':'))savedChunks.delete(k);},erase:async d=>{const i=saved.findIndex(r=>r.digest===d);if(i>=0)saved.splice(i,1);for(const k of savedChunks.keys())if(k.startsWith(d+':'))savedChunks.delete(k);}});rows.splice(0,rows.length,...saved);chunks.clear();for(const [k,v] of savedChunks)chunks.set(k,v);return result;});transactionTail=task.catch(()=>{});return task;}};
  const records={read:async account=>f.ids.find(i=>i.record.account===account)?.record??null};const relay=load('attachmentCustody').createAttachmentCustody({owner:f.ids[2].record.account,store:custodyStore,records,now:()=>clock,current:()=>true});
  const deps=i=>({owner:()=>active?f.ids[i].record.account:null,device:()=>f.ids[i].device.id,now:()=>clock,store,record:records.read,peers:()=>[f.ids[2].record.account],allowed:()=>true,
  request:async(_peer,raw)=>relay.receive(raw,{account:f.ids[i].record.account,device:f.ids[i].device.id,expiresAt:clock+60000}),

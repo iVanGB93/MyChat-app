@@ -1,0 +1,65 @@
+Large-file end-to-end check — 2026-10-18
+
+Scope: separate Axonic Dev (com.axonic.dev, native version 1.1.22 / 93,
+SM-S948U1, Metro development bundle with current uncommitted improvements)
+and FirstNeuron. No official-app access, installations, deployments, forced
+routes, clears, resets or explicit deletions. Synthetic files remain in test
+history. Tests sequential, two repetitions per case, reverse direction order
+in the second repetition. No warmup exclusion, failures or excluded runs.
+
+AoN source: 000e09681f8ebd6d3a25c1b4c75af0aff5d0f170
+AoN runtime: 721b560a4c3195aa1977706dee051bc335f66c3763d052abfcdbcfc2b3cf2d36
+Mobile source hashes and Git base are recorded in the raw evidence below.
+
+Historical-compatible timing: host monotonic send invocation to observed
+complete receiver. Includes synthetic source creation, preparation/encryption,
+transport, download, assembly and protocol verification, plus CDP/API overhead
+and 500 ms polling. Independent checksum audit is outside this timer. All
+required cryptographic checks remain inside the actual app transfer.
+
+File size     Direction             Run 1 s   Run 2 s   Two-run mean s
+5 MiB         Dev -> FirstNeuron     19.221    18.478       18.850
+5 MiB         FirstNeuron -> Dev     12.836    13.755       13.296
+10 MiB        Dev -> FirstNeuron     36.459    35.634       36.047
+10 MiB        FirstNeuron -> Dev     25.767    32.013       28.890
+
+Timer refinement: the historic phone harness creates and hashes synthetic
+bytes in JavaScript inside its timer (~8 seconds for 10 MiB). This is not
+ordinary app preparation of an already existing file. Two extra 10 MiB
+Dev -> FirstNeuron runs create the file before timing, then measure the
+whole real send path, including asynchronous app encryption/preparation:
+26.789 s and 26.241 s (two-run mean 26.515 s).
+These refined timings are not directly comparable to old full-harness totals.
+The phone's actual measured preparation stage was 1.240 s and 1.139 s; its
+queue API returns earlier, so queue-return time is not preparation completion.
+
+All 10 received files passed exact byte-count/SHA-256 checks and sender receipt
+confirmation. No errors in the available phone stage counters. Recipient
+payload evidence: method=peer, scope=payload, partial=false, no observed relay
+IDs in every run. Sender evidence is receipt-scoped, not payload proof.
+
+Interpretation: these ordinary connected-peer transfers bypassed custody
+uploading. They do not isolate the new put-batch optimization. Latest prior
+historical evidence had 10 MiB Dev -> FirstNeuron at 35.792 s and the opposite
+direction at 25.295 / 32.321 s; current ranges do not demonstrate a meaningful
+direct-transfer speedup. Two repetitions and changing live network conditions
+do not support a precise improvement percentage or latency percentiles.
+
+Next diagnostic focus: direct transfer/download processing, not custody upload.
+For each 10 MiB phone download, instrumentation recorded 81 network calls and
+2,560 chunk writes. Write durations summed to 2.912 / 3.697 s; network-call
+durations summed to 20.139 / 25.425 s. These overlap and must not be added or
+treated as disjoint wall-time shares. Counts identify candidate work, not a
+proven causal bottleneck. No protocol changes were made during these tests.
+
+Preservation: account and all pre-existing message keys checked before/after
+each series. Dev 355 -> 363 -> 365; FirstNeuron 131 -> 139 -> 141. Each gain
+corresponds to the synthetic test transfers. No manual history or queue cleanup.
+
+Raw evidence (relative to mobile repository):
+builds/large-e2e-1792299141457.json
+builds/large-e2e-prepared-1792299369956.json
+Harness: builds/test-large-e2e-20261018.cjs (normal and --prepared-phone modes).
+Historical references: builds/transfer-scaling-1792277704137.json and
+builds/transfer-scaling-1792277795142.json. Earlier slower builds were not used
+to attribute a gain to this newest change.

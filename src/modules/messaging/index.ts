@@ -23,7 +23,7 @@ export {subscribeLocalAccountCalls} from '../../composition/neuronRuntime';
 export type {NeuronCallView} from '../../services/identity/neuronCallCoordinator';
 export type {RootChatState,RootChatMessage,RootChatReply,RootChatContact} from '../../services/identity/rootChatTypes';
 export {rootChatView,ROOT_REACTIONS,type RootActionKind} from '../../services/identity/rootChatActions';
-export {rootGroupMessages,rootGroupPhoto} from '../../services/identity/rootGroups';
+export {rootGroupMessages,rootGroupMessageIndex,rootGroupPhoto} from '../../services/identity/rootGroups';
 export {rootStickerDraft} from '../../services/identity/rootStickerDraft';
 export {forwardRootMessage} from '../../services/identity/rootMessageForward';
 export {queueRootAttachmentBatch,queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,

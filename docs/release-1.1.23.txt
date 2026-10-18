@@ -1,0 +1,51 @@
+Axonic 1.1.23 / Android versionCode 94 — October 18, 2026
+
+User-authorized local production AAB build and source commit/push only.
+No publication, installation, AoN deployment, queue reset or data deletion.
+Version code follows retained production artifact 1.1.22 / 93; availability
+in Play Console has not been independently verified.
+
+Completed production artifact
+- builds/Axonic-1.1.23-94.aab; 107567573 bytes.
+- SHA256: e166a96b1827d25e5fb69de2d277dac91941ec4b73d1806b2b4052e5d28516a1
+- Bundletool validation and JAR signature verification passed; upload
+  certificate exactly matches the retained 1.1.22 AAB. Standard self-signed
+  certificate/no-timestamp warnings remain.
+- Manifest: com.axonic, 1.1.23 / 94, non-debuggable; overlay and media-projection
+  foreground-service permissions present. All four Android ABIs included.
+- Bundled Expo diagnostics source fingerprint matches the working source:
+  eb7d2d55fc71453da19555f1ff0a202bad1e88749d8960cd2b12a5d0594fa8bd
+- Local Gradle build succeeded in 3m 39s. Gradle deprecation warnings remain.
+  Evidence: builds/local-production-aab-94.log and local-aab-94-validation.json.
+- Previous release artifacts and all phone data preserved. No app was installed.
+
+Included work since 1.1.22
+- Chat rendering, snapshot/cache invalidation, shared time/progress formatting.
+- Coalesced network/media work and bounded idle polling/backoff.
+- Negotiated relay-upload and download/write batching; the shipping encrypted
+  4 KiB chunk format remains compatible. Larger actual-chunk experiments stay
+  isolated in development scripts/tests, not application imports.
+- Demand-driven authenticated direct-stream selection and safe mid-transfer
+  upgrades, with verified chunk fallback for unavailable/older peers.
+- Atomic verified stream-file handoff, preserving existing download prefixes
+  on failure. API 24/25 keep chunk fallback. Group shared-file hash validation.
+- Native screen-sharing startup fix and transfer diagnostic improvements.
+- Dev preservation tooling and regression tests; no production test fixtures.
+
+Validation
+- npm run check: 1350 passed, 3 optional benchmarks skipped, 0 failed;
+  TypeScript, service cycles, module boundaries and consolidation passed.
+- npm run test:rtc-native: identity guards and stream admission passed.
+- Native patch sequence reapplied successfully before production prebuild.
+- Prior Dev readiness: 41 native unit tests, real photo/video/audio both ways,
+  269 stored attachment hashes, both identities and baseline messages intact.
+  Details and measurement limitations: production-readiness-2026-10-18.txt.
+- Local production build uses existing verified upload signing, isolated
+  production environment, no dotenv/dev public overrides, all four Android
+  ABIs. Sentry automatic build uploads disabled. No EAS cloud compilation.
+
+Remaining publication gates
+Building and offline bundle checks do not establish release-mode on-device
+startup, official-app upgrade, remote-WAN screen sharing, prolonged Doze, or
+older-Android behavior. These remain distinct from the completed Dev checks.
+Any installation or publication requires separate user approval.

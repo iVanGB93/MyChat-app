@@ -11,7 +11,7 @@ import type { NeuronLink } from './neuronConnections.ts';
 import { verifyCallControl } from './callControlProtocol.ts';
 import { verifyCallControlReceipt } from './callControlDelivery.ts';
 import { verifyCallMediaSignal, CALL_MEDIA_MAX_BYTES } from './callMediaProtocol.ts';
-import {ATTACHMENT_BULK_FRAME_BYTES} from './attachmentBatch.ts';
+import {ATTACHMENT_BULK_FRAME_BYTES,isAttachmentUploadBatchRequest} from './attachmentBatch.ts';
 
 export const AXON_FRAME_BYTES = 20_000;
 // Bidirectional call polling (40/min), custody polling (24/min), renewal
@@ -38,7 +38,7 @@ export interface AxonWire {
  */
 export function createPersistentAxon(d: {
   record: IdentityRecord; history?: IdentityRecord[]; signingSeed: Uint8Array; instance: Uint8Array; store: IdentityRecordStore;
-  onAttachment?(raw:string,peer:IdentityPeer):Promise<string>;
+  onAttachment?:((raw:string,peer:IdentityPeer)=>Promise<string>) & {uploadBatch?:boolean;streams?:boolean};
   onPush?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {gateway?:boolean};
   onCallMediaRelay?(raw: string, peer: IdentityPeer): Promise<boolean>;
   onRelayedCallMedia?(raw: string, peer: IdentityPeer): Promise<boolean>;
@@ -56,10 +56,10 @@ export function createPersistentAxon(d: {
   let stopped = false, closeReason: string | null = null, remote: string | null = null, peer: IdentityPeer | null = null;
   let deferredFrames: string[] = [], deferredBytes = 0;
   let peerMessageTimestamps=false,peerProfileUpdates=false,peerProfileOffers=false;
-  let peerSharedAttachments=false,peerAttachments=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
+  let peerSharedAttachments=false,peerAttachments=false,peerAttachmentStreams=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
   let mediaInbound=0,mediaWaiting=0,mediaWindow=1,mediaSuccesses=0;
   let lastMediaAt=-Infinity;
-  let peerBulk=false,bulkInbound=0,bulkFrames=0,bulkBytes=0;
+  let peerBulk=false,peerUploadBatch=false,bulkInbound=0,bulkFrames=0,bulkBytes=0;
   let smallBatches=false,smallWindow=2;
   const bulkFrameLimit=()=>smallBatches?AXON_FRAME_BYTES:ATTACHMENT_BULK_FRAME_BYTES;
   const smallRequest=(raw:string)=>{try{const r=JSON.parse(raw);return r.operation==='direct-get-batch'&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=3;}catch{return false;}};
@@ -178,7 +178,8 @@ export function createPersistentAxon(d: {
   function send(frame: unknown) {
     if (stopped || !d.current()) throw Error('Axon unavailable');
     const raw = JSON.stringify(frame);
-    const bulk=(frame as {kind?:string}).kind==='bulk-response';
+    const kind=(frame as {kind?:string}).kind;
+    const bulk=kind==='bulk-response'||kind==='bulk-request'&&peerUploadBatch&&!smallBatches;
     if (new TextEncoder().encode(raw).length > (bulk&&peerBulk&&peer?bulkFrameLimit():AXON_FRAME_BYTES)) throw Error('Axon frame too large');
     d.wire.send(raw);
   }
@@ -263,7 +264,8 @@ export function createPersistentAxon(d: {
         deferredFrames.push(raw);deferredBytes+=rawBytes;return;
       }
       const bulk=f.kind==='bulk-request'||f.kind==='bulk-response';
-      if(rawBytes>AXON_FRAME_BYTES&&f.kind!=='bulk-response'){stop('oversized-control');return;}
+      const upload=f.kind==='bulk-request'&&peerBulk&&!smallBatches&&d.onAttachment?.uploadBatch===true&&typeof f.body==='string'&&isAttachmentUploadBatchRequest(f.body);
+      if(rawBytes>AXON_FRAME_BYTES&&f.kind!=='bulk-response'&&!upload){stop('oversized-control');return;}
       if(bulk&&(!peerBulk||!peer||peer.expiresAt<=d.now()||++bulkFrames>(smallBatches?28000:2048)||!smallBatches&&(bulkBytes+=rawBytes)>256*ATTACHMENT_BULK_FRAME_BYTES)){stop('invalid-bulk-frame');return;}
       // Fixed labels only: never retain payloads, identifiers, or untrusted keys.
       const operations = ['describe','authenticate','introductions','custody','directory','push','attachment','call-control','call-media','call-relay','call-media-relay','call-media-forward'];
@@ -284,12 +286,14 @@ export function createPersistentAxon(d: {
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop('invalid-hello'); return; }
         peerAttachments=f.attachments===1&&d.wire.attachments!==false;
+        peerAttachmentStreams=peerAttachments&&f.attachmentStreams===1;
         peerMessageTimestamps=f.messageTimestamps===1;peerProfileUpdates=f.profileUpdates===1;peerProfileOffers=f.profileOffers===1;
         peerSharedAttachments=peerAttachments&&f.sharedAttachments===2;
         peerMediaLane=peerAttachments&&f.mediaLane===1&&d.wire.mediaLane===true;
         peerBulk=peerMediaLane&&f.bulkAttachments===1&&d.wire.bulkAttachments===true;
         smallBatches=!peerBulk&&peerMediaLane&&f.smallAttachmentBatches===1&&d.wire.smallAttachmentBatches===true;
         peerBulk ||= smallBatches;
+        peerUploadBatch=peerBulk&&!smallBatches&&f.attachmentUploadBatch===1;
         smallWindow=smallBatches&&d.wire.smallAttachmentWindow===4&&f.smallAttachmentWindow===4?4:2;smallBatchCredits=smallWindow;
         peerRelay = f.callRelay === 1;peerMediaRelay=f.callMediaRelay===1;peerMediaForward=f.callMediaForward===1;
         peerPush = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('push-registration-v1');
@@ -329,7 +333,7 @@ export function createPersistentAxon(d: {
         finally{chatQueued--;}
         return;
       }
-      if (!remote || !Number.isSafeInteger(f.id) || f.id < 1 || typeof f.body !== 'string' || f.body.length > (f.kind==='bulk-response'?bulkFrameLimit()-(smallBatches?128:1024):16000)) { stop('invalid-envelope'); return; }
+      if (!remote || !Number.isSafeInteger(f.id) || f.id < 1 || typeof f.body !== 'string' || f.body.length > (f.kind==='bulk-response'||upload?bulkFrameLimit()-(smallBatches?128:1024):16000)) { stop('invalid-envelope'); return; }
       if(f.kind==='media-response'||f.kind==='bulk-response'){
         const task=mediaPending.get(f.id);
         const expired=timedOutMedia.get(f.id);
@@ -345,7 +349,7 @@ export function createPersistentAxon(d: {
       }
       if(f.kind==='media-request'||f.kind==='bulk-request'){
         if(bulk&&smallBatches&&!smallRequest(f.body)){stop('invalid-small-batch');return;}
-        if(!media||mediaInbound>=4||bulk&&bulkInbound>=(smallBatches?smallWindow:2)||f.body.length>13000){stop('invalid-media-request');return;}
+        if(!media||mediaInbound>=4||bulk&&bulkInbound>=(smallBatches?smallWindow:2)||f.body.length>(upload?ATTACHMENT_BULK_FRAME_BYTES-1024:13000)){stop('invalid-media-request');return;}
         mediaInbound++;
         if(bulk)bulkInbound++;
         try{
@@ -401,7 +405,7 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onAttachment?.streams===true&&d.onSignal&&d.wire.attachments!==false?{attachmentStreams:1}:{}), ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1,...(d.onAttachment.uploadBatch?{attachmentUploadBatch:1}:{})}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
     mediaRelayPeer:()=>peerMediaRelay && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
@@ -504,13 +508,17 @@ export function createPersistentAxon(d: {
     supportsProfileUpdates:()=>peerProfileUpdates&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsMessageTimestamps:()=>peerMessageTimestamps&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsSharedAttachments:()=>peerSharedAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
+    attachmentStreamPeer:()=>d.onAttachment?.streams===true&&!!d.onSignal&&peerSignals&&peerAttachmentStreams&&peer&&!stopped&&d.current()&&peer.expiresAt>d.now()?{...peer}:null,
     supportsAttachments:()=>peerAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachmentBulk:()=>peerBulk&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
+    supportsAttachmentUploadBatch:()=>peerUploadBatch&&!smallBatches&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     attachmentBatchChunks:()=>smallBatches?3:d.wire.preferredAttachmentBatchChunks??128,
     attachmentBatchWindow:()=>smallBatches?smallWindow:2,
     async attachmentBulkRequest(raw:string):Promise<string|null>{
       const permitted=()=>peerBulk&&!!peer&&peer.expiresAt>d.now()&&!stopped&&d.current();
-      if(!permitted()||raw.length>13000||bulkWaiting>=(smallBatches?smallWindow:2)||smallBatches&&!smallRequest(raw))return null;
+      if(raw.length>ATTACHMENT_BULK_FRAME_BYTES-1024)return null;
+      const upload=isAttachmentUploadBatchRequest(raw);
+      if(!permitted()||upload&&(!peerUploadBatch||smallBatches)||raw.length>(upload?ATTACHMENT_BULK_FRAME_BYTES-1024:13000)||bulkWaiting>=(smallBatches?smallWindow:2)||smallBatches&&!smallRequest(raw))return null;
       bulkWaiting++;
       try{
         for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5);
@@ -518,7 +526,7 @@ export function createPersistentAxon(d: {
         if(smallBatches)smallBatchCredits--;else {
           // Pace by requested bytes, retaining the existing 2 MiB/s ceiling.
           // Unknown requests keep the conservative full-batch interval.
-          let count=128;try{const r=JSON.parse(raw);if(r.operation==='direct-get-batch'&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=128)count=r.count;}catch{}
+          let count=128;try{const r=JSON.parse(raw);if((r.operation==='direct-get-batch'||upload)&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=128)count=r.count;}catch{}
           bulkNext=d.now()+Math.max(5,250*count/128);
         }
         return await new Promise<string>((resolve,reject)=>{

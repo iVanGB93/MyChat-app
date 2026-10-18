@@ -4,6 +4,16 @@ import {ATTACHMENT_CHUNK_BYTES,ATTACHMENT_MAX_BYTES,verifyAttachmentChunk,type A
 
 export const ATTACHMENT_BATCH_CHUNKS=128; // 512 KiB of plaintext, existing encryption unchanged.
 export const ATTACHMENT_BULK_FRAME_BYTES=850_000;
+/** Transport admission only; the custody endpoint checks manifest bounds,
+ * canonical encoding and every proof before its atomic commit. */
+export function isAttachmentUploadBatchRequest(raw:string){
+ try{const r=JSON.parse(raw);return r?.version===1&&r.operation==='put-batch'
+  &&Object.keys(r).sort().join(',')==='count,data,digest,index,operation,version'
+  &&typeof r.digest==='string'&&/^[a-f0-9]{64}$/.test(r.digest)
+  &&Number.isSafeInteger(r.index)&&r.index>=0&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=ATTACHMENT_BATCH_CHUNKS
+  &&typeof r.data==='string'&&r.data.length<=ATTACHMENT_BULK_FRAME_BYTES-1024;
+ }catch{return false;}
+}
 export function validAttachmentRange(m:AttachmentManifest,start:number,count:number){
  return Number.isSafeInteger(m.bytes)&&m.bytes>0&&m.bytes<=ATTACHMENT_MAX_BYTES&&Number.isSafeInteger(start)&&start>=0
   &&Number.isSafeInteger(count)&&count>=1&&count<=ATTACHMENT_BATCH_CHUNKS&&start+count<=Math.ceil(m.bytes/ATTACHMENT_CHUNK_BYTES);

@@ -53,6 +53,21 @@ async function settle(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 5)); }
   assert.fail('condition did not settle');
 }
+
+test('stream promotion capability is mutually negotiated and only exposed after authentication',async t=>{
+ const handler=Object.assign(async()=>'{"status":"unavailable"}',{streams:true});
+ const f=pair(t,{0:{onAttachment:handler,onSignal:async()=>true},1:{onAttachment:handler,onSignal:async()=>true}});
+ assert.equal(f.sessions[0].attachmentStreamPeer(),null);
+ await Promise.all(f.sessions.map(s=>s.ready));
+ for(let i=0;i<2;i++){assert.equal(f.sessions[i].attachmentStreamPeer().account,f.identities[1-i].record.account);assert.equal(JSON.parse(f.transport.history[i][0]).attachmentStreams,1);}
+ f.lock();assert.equal(f.sessions[0].attachmentStreamPeer(),null);
+});
+for(const legacy of ['no-stream','no-signaling'])test(`stream promotion stays unavailable for ${legacy} peers`,async t=>{
+ const handler=Object.assign(async()=>'{"status":"unavailable"}',{streams:true});
+ const f=pair(t,{0:{onAttachment:handler,onSignal:async()=>true},1:{onAttachment:legacy==='no-stream'?async()=>'{"status":"unavailable"}':handler,...(legacy==='no-signaling'?{}:{onSignal:async()=>true})}});
+ await Promise.all(f.sessions.map(s=>s.ready));assert.equal(f.sessions[0].attachmentStreamPeer(),null);assert.equal(f.sessions[1].attachmentStreamPeer(),null);
+ assert.equal(JSON.parse(f.transport.history[1][0]).attachmentStreams,undefined);
+});
 test('a push client can register with a gateway without advertising itself as a gateway',async t=>{
  const f=pair(t,{0:{onPush:Object.assign(async()=>'{"status":"unsupported"}',{gateway:false})},1:{onPush:async()=>'{"status":"registered"}'}});
  await Promise.all(f.sessions.map(s=>s.ready));
@@ -1236,6 +1251,25 @@ test('small batches reject oversized requests before serving and retain the 20KB
  const g=pair(t,{0:hooks,1:hooks},['small','small']);await Promise.all(g.sessions.map(s=>s.ready));
  g.transport.inject(0,{version:1,kind:'bulk-response',id:1,body:'x'.repeat(20001)});
  await settle(()=>g.sessions[0].snapshot().state==='closed');
+});
+
+test('relay upload capability admits bounded large requests only at an opted-in endpoint',async t=>{
+ const body=JSON.stringify({version:1,operation:'put-batch',digest:'ab'.repeat(32),index:0,count:32,data:'A'.repeat(180000)});
+ let handled=0;const receiver={onAttachment:Object.assign(async raw=>{handled++;assert.equal(raw,body);return '{"status":"held"}';},{uploadBatch:true}),onCustody:async()=> 'control'};
+ const sender={onAttachment:async()=> '{}',onCustody:async()=> 'control'};
+ const f=pair(t,{0:sender,1:receiver},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
+ assert(f.sessions[0].supportsAttachmentUploadBatch());assert(!f.sessions[1].supportsAttachmentUploadBatch());
+ assert.equal(await f.sessions[0].attachmentBulkRequest(body),'{"status":"held"}');assert.equal(handled,1);
+ assert.equal(await f.sessions[0].custodyRequest('{}'),'control');assert.equal(f.sessions[0].snapshot().state,'connected');
+ const old=pair(t,{0:sender,1:sender},['bulk','bulk']);await Promise.all(old.sessions.map(s=>s.ready));
+ assert(!old.sessions[0].supportsAttachmentUploadBatch());assert.equal(await old.sessions[0].attachmentBulkRequest(body),null);assert.equal(old.sessions[0].snapshot().state,'connected');
+ const small=pair(t,{0:receiver,1:receiver},['small','small']);await Promise.all(small.sessions.map(s=>s.ready));assert(!small.sessions[0].supportsAttachmentUploadBatch());assert.equal(await small.sessions[0].attachmentBulkRequest(body),null);
+});
+for(const mode of ['not-opted-in','wrong-operation','unknown-field','over-limit'])test('bulk upload cannot enlarge unrelated/invalid request admission: '+mode,async t=>{
+ let handled=0;const hooks={onAttachment:Object.assign(async()=>{handled++;return '{}';},{uploadBatch:mode!=='not-opted-in'})};
+ const f=pair(t,{0:hooks,1:hooks},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
+ const body={version:1,operation:mode==='wrong-operation'?'offer':'put-batch',digest:'ab'.repeat(32),index:0,count:32,data:'A'.repeat(mode==='over-limit'?850000:180000),...(mode==='unknown-field'?{ignored:'no'}:{})};
+ f.transport.inject(0,{version:1,kind:'bulk-request',id:987,body:JSON.stringify(body)});await settle(()=>f.sessions[0].snapshot().state==='closed');assert.equal(handled,0);
 });
 
 test('authenticated bulk response delivers a bounded batch while control remains usable',async t=>{

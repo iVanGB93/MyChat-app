@@ -15,6 +15,8 @@ function fixture(){
   if(name==='./mobileAttachmentJobs')return {createMobileAttachmentJobs:()=>({})};
   if(name==='./attachmentTransfer')return {createAttachmentTransfer:()=>({stop(){}})};
   if(name==='./rootMediaExport')return {startRootMediaExport:()=>({stop(){}})};
+  if(name==='../workPump')return {createWorkPump:()=>({wake(){},stop(){}})};
+  if(name==='../../modules/storage/chatStore')return {subscribeOwnChatWrites:()=>()=>{}};
   if(name==='./identityProtocol')return {validAccountId:p=>['owner','peer','other'].includes(p)};
   if(name==='./rootAttachmentFiles')return {stageRootAttachmentSource:(owner,id,uri,shared)=>{if(fail&&uri==='file://two')throw Error('Disk full');staged.set(shared??id,uri);},removeRootAttachmentSource:(owner,id)=>{removed.push(id);staged.delete(id);}};
   return {};

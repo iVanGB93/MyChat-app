@@ -1,0 +1,134 @@
+Two-phone normal-chat streaming versus encrypted chunk transfer — 2026-10-18
+
+Scope
+Authorized synthetic files between the two existing Axonic Dev identities.
+Both Samsung SM-S948U1 phones, Android API 37; com.axonic.dev 1.1.22/93.
+Normal com.axonic apps untouched. No AoN deployment, reset, queue clearing,
+message deletion, production build, commit, or push.
+
+Setup
+The second phone had the release-style Dev APK used for screen-sharing tests,
+not a debugger-enabled build. Retained that APK at:
+  builds/second-dev-before-stream-comparison.apk
+Verified identical signing certificates and installed the current debug APK
+using install -r, without uninstalling or clearing data. Before launching the
+updated JavaScript, archived its complete private data with run-as:
+  builds/second-dev-before-stream-tests-1792303038852.tar
+  154,783,232 bytes; tar inventory validated.
+The previous release-style Dev package did not permit run-as before replacement.
+Official package version/update metadata remained unchanged.
+Both phones use the same locally built debug APK:
+  SHA256 69bfe56f2a84f77c59da2b219bbf52d67ab71bb1c81601490c8009111b987455
+Main phone's earlier full private-data backup remains available locally.
+
+Measurement contract
+Normal queueRootAttachmentSource -> ordinary preparation, message descriptor,
+attachment journal, authenticated peer connection, received-file publication,
+final checksum, and signed delivery receipt. Not the old isolated stream lab.
+Fixture: deterministic xorshift bytes, 1 MiB +19 or 10 MiB +19, matching across
+modes. Fixture creation and its independent expected SHA256 occur BEFORE timing.
+Timer: host performance.now before queue invocation until polling observes the
+receiver's ordinary delivered state. Includes preparation, transfer, verification,
+chat bookkeeping, CDP overhead, and up to approximately one polling interval.
+Polling interval 250ms plus CDP evaluation latency. No cross-phone clock subtraction.
+Receiver file size and native SHA256 are independently checked after this timer;
+ordinary protocol verification is already inside it. Sender delivery confirmation
+is then checked. The senderReceiptObservedMs diagnostic additionally includes this
+external file audit and polling; it is NOT precise signed-receipt arrival latency.
+Preparation is recorded from the actual sender timing stage, not enqueue return.
+Stage milliseconds may overlap; do not sum them to reconstruct elapsed time.
+
+Path control
+The optimized stream requires authenticated RTC; raw LAN is not eligible.
+Temporarily suppress only Dev LAN discovery using a reversible native-method
+wrapper; the real application discovers and authenticates RTC through its usual
+signaling. Both modes use that same RTC peer connection, not a desktop data relay.
+The snapshot's route='internet' is a logical route label, not proof the file
+traversed the public Internet. These are two phones at home, not a WAN benchmark.
+For the chunk mode, a temporary __DEV__-guarded receiver hook returns 'unavailable'
+only for the exact synthetic sender/checksum and a short expiry. All regular
+chunk encryption, Merkle verification, authentication, final hash, publication,
+and receipts remain enabled. Streaming uses the normal 16KiB binary frame /
+256KiB window and native admission checks. No protocol parameter was changed.
+Receiver stream-verified events confirm streaming; bypass counts and ordinary
+read/write/network counters confirm chunk mode. No fallback was mislabeled stream.
+Temporary hook and in-memory instrumentation are removed after the comparison.
+
+Repetition and limitations
+1MiB: both directions, one sample per mode per direction (functional comparison).
+10MiB: Phone A -> B, two samples per mode, order stream/chunks then chunks/stream.
+Thermal status must be 0 before each run; record both phones before and after.
+These are short device observations, not production percentiles or a guarantee.
+No packet capture, exact on-wire byte totals, CPU-energy measurement, or precise
+UI jank measurement. Existing network background work remains active.
+Focused local regression tests overlapped part of the small-file smoke series;
+no compilation/test workload was run during the larger repeated series.
+
+Evidence
+  scripts/experiments/compare-two-phone-transfers.cjs
+  builds/two-phone-stream-comparison-1792303174768.json
+Raw reports contain source SHA256 values, base commit, dirty-state flag, per-run
+stages, route evidence, thermal observations, failures, and record preservation.
+Focused directAttachmentStream/rootAttachmentStreams tests: 26 passed.
+  builds/two-phone-stream-comparison-1792303217436.json
+  builds/two-phone-stream-restored.json
+
+Results (continuous observed milliseconds, preparation included)
+  Size             Direction  Mode      Repeat   Elapsed   Prepare stage
+  1,048,595 bytes   A -> B     stream       1       2617         263
+  1,048,595 bytes   A -> B     chunks       1       3717         190
+  1,048,595 bytes   B -> A     chunks       1       3857         236
+  1,048,595 bytes   B -> A     stream       1       2309         336
+  10,485,779 bytes  A -> B     stream       1       7359        2020
+  10,485,779 bytes  A -> B     chunks       1      26259        1133
+  10,485,779 bytes  A -> B     chunks       2      27789        1282
+  10,485,779 bytes  A -> B     stream       2       6455        1558
+
+10MiB ratio of arithmetic means = 27024 / 6907 = 3.91255.
+Observed elapsed-time reduction = 1 - 6907/27024 = 74.44%.
+Two repetitions only; no confidence interval or production throughput guarantee.
+All eight files had exact byte length, matching independent native SHA256,
+receiver delivered state, and sender delivered state after signed receipt.
+Every stream sample has receiver stream verified evidence; every chunk sample
+has zero stream verified events and positive scoped stream-bypass counts.
+
+Work difference
+10MiB chunk runs: 855 receiver attachment network calls, 854 file write calls,
+111 checkpoints, 8,889-8,890 lease checks.
+10MiB stream runs: 1 receiver attachment request, 5 worker checkpoints,
+686-709 lease checks. Stream binary frames/ACKs and writer calls are NOT counted
+by the ordinary request/writeFile timers; this is not a claim of only one
+network packet, one write, or zero CPU work. Both modes prepared the regular
+encrypted fallback attachment first. Preparation remains a future opportunity.
+First 10MiB chunk run ended at thermal [1,0]; automatic cooldown reached [0,0]
+before the next run. All other runs began and ended at [0,0]. This is a device
+thermal observation, not proof of a specific power or CPU-energy reduction.
+
+Final state
+All pre-test message keys and both account identities preserved:
+  Phone A: 373 -> 381 messages (8 new synthetic test files)
+  Phone B: 128 -> 136 messages (8 new synthetic test files)
+Synthetic messages, fixture files, old APK, and private backups retained.
+Removed temporary runtime source hook. Both in-memory probes absent, LAN
+discovery active on both devices, LAN connections restored, accounts unlocked.
+No shipping code behavior changes from this comparison. Existing dirty work
+from prior tasks and concurrent user work was preserved.
+
+Reproduction safeguards
+The harness now fails before device actions when the temporary probe is absent.
+For a future authorized test, inspect/apply the scoped patch artifact:
+  scripts/experiments/two-phone-stream-probe.patch
+Wait for both Dev bundles, then run the harness (default small, --large large).
+Remove that exact probe afterward; never leave a benchmark override in a build.
+The post-test harness preflight guard does not change the measured implementation.
+Patch dry-run check passed against the restored source. Harness syntax checks
+and git diff --check passed. The benchmark source hashes in raw reports identify
+the actual measured harness and instrumented runtime, not this final guarded copy.
+
+Conclusion
+Normal-chat authenticated RTC streaming was substantially faster for these
+larger files. Keep encryption, native admission, whole-file verification,
+permission/cancellation checks, and signed receipts. Preserve compatible encrypted
+chunk fallback. A direct raw-LAN route still does not automatically get this RTC
+stream; do not extend plaintext streaming onto that route without an authenticated
+encrypted transport design and verification. No such change was made here.

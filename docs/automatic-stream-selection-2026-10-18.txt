@@ -1,0 +1,146 @@
+Automatic authenticated stream selection — October 18, 2026
+
+Scope and preserved contract
+Mobile connection-selection and stream-admission scheduling only. No encryption
+primitive, chunk size, file manifest, key derivation, signed signaling format,
+native admission limits, final SHA256, or delivery-receipt format changed.
+No AoN update, normal-app installation, production build, commit, push, message
+deletion, queue flush, or data reset. Existing dirty work was preserved.
+
+Prior behavior
+Ordinary direct LAN could win permanently over RTC because the connection pool
+ranked LAN above Internet routes. The optimized encrypted stream requires
+authenticated RTC/DTLS; it is never allowed on the raw LAN socket.
+The transfer worker already supports streaming after a verified chunk prefix
+and selecting a newly connected sender instead of a custodian. Selection was
+the missing link for a working LAN connection.
+
+Implementation map
+- persistentAxon.ts: optional attachmentStreams=1 hello capability, outside the
+  bounded legacy features array. Only advertise with local guarded stream support
+  and signaling. Expose the exact remote device only on a current authenticated
+  session with mutually supported stream/signaling capabilities.
+- composition/neuronRuntime.ts: advertise only with both Android native identity
+  and stream guards present. Configured AoNs are not advertised as RTC-capable
+  by inference from addresses or introductions.
+- identityNetwork.ts: derive stream preference from the current peer session.
+- neuronConnections.ts: negotiated RTC may promote LAN. Reuse existing bounded
+  make-before-break authentication, retries, pool capacity, and cancellation.
+  Do not let subsequent LAN advertisements downgrade a working eligible RTC
+  connection. Preserve a separate wider-network route when making room at capacity.
+- lanIdentityRuntime.ts: transfer demand may request RTC through signed signaling
+  over the existing authenticated peer connection; deterministic lower-account
+  dialing remains unchanged. At most five requested peers, 30-second leases,
+  exact device checks, no configured-bootstrap promotion, clear on owner/lock/stop.
+  Demand refresh does not reset connection backoff. Idle LAN discovery itself
+  does not create stream-upgrade demand.
+- rootAttachmentStreams.ts: request negotiation locally and through the existing
+  direct-stream operation on the sender, so either dialing role can initiate.
+  Return unavailable promptly while RTC negotiates; encrypted chunks keep moving.
+  Recheck job/contact/account liveness before requesting. Report the verified
+  chunk count present when a successful receive stream started, without IDs/content.
+
+Late connection / safety qualification
+If a sender connects after custody/chunk downloading began, the worker can
+select it and attempt the authenticated stream on a later worker pass. This
+does not bypass backoff, permissions, cancellation, expiry, or receiver-device
+binding. Stream is not a resumable byte-offset protocol: it reads the full file
+into an attempt-owned temporary file. Keep the existing verified prefix until
+that complete stream passes its hash; failed/interrupted streams leave it usable.
+This can resend some bytes after an upgrade. Nearly-complete transfers may finish
+before negotiation; no claim that every late upgrade is optimal in every network.
+No user-visible delivery is emitted before normal verification/publication and
+signed receipt. Relay-stored encrypted chunks remain compatible.
+
+Validation contract
+Use the two existing com.axonic.dev accounts on SM-S948U1 phones, API 37.
+Native Dev binary 1.1.22/93 unchanged in this task; Metro loads updated sources.
+Synthetic deterministic 10 MiB +19-byte files, fixture creation/hash excluded.
+Host monotonic queue invocation through observed receiver delivered status includes
+preparation, network transfer, actual final verification, bookkeeping, and CDP/
+250ms polling overhead. Independent native file SHA256 and sender signed-receipt
+completion checked afterward. LAN discovery remains enabled; no stream bypass
+or routing override is used for the automatic-upgrade runs.
+These are functional device observations, not production throughput guarantees.
+
+Initial device result
+Evidence: builds/two-phone-stream-comparison-1792304099855.json
+Phone A -> B: 10,485,779 bytes, 8,094ms, 1,094ms sender preparation stage.
+Started with connected LAN and no RTC. Verified 256 chunks (1MiB) before the
+successful stream. Ended with authenticated RTC. Final bytes/hash and receipt pass.
+Phone B -> A: same size, 5,293ms, 1,076ms preparation; reused ready RTC, no prefix.
+Both devices thermal status 0 before/after. All pre-test records preserved:
+381 -> 383 on A; 136 -> 138 on B.
+
+Fault-injection qualification
+The first attempted failure test reused an already-open RTC connection, so it
+did not exercise createOffer failure. Its file still passed integrity/receipt
+checks in 5,488ms. The harness marked the test incomplete and rejected it as
+fallback evidence; retained raw result and synthetic message:
+  builds/two-phone-stream-comparison-1792304201555.json
+384 messages on A and 139 on B afterward, all prior keys retained.
+The corrected fault test restarts only Dev processes, rechecks identities and
+all message keys, and refuses to send if RTC is already connected. It temporarily
+rejects offers only on Dev peer connections with the identity channel label;
+call channel offers are not targeted. Restore methods in finally and by timeout.
+
+Tests / final results
+Initial full npm run check: 1,347 passed, 3 skipped (1,350 total), TypeScript,
+service cycles, module boundaries and consolidation all passed.
+Coverage includes mutual capability/legacy peers, deferred promotion, no LAN
+oscillation, wrong identity/device, full capacity and retained wider connectivity,
+failed promotion backoff, bounded demand, expiry/lock, revoked jobs, preserved
+partial file after failure, and actual custody -> later connected sender state.
+Final device results
+Evidence: builds/two-phone-stream-comparison-1792304279178.json
+Dev-only process restart retained both identities and every baseline message key.
+RTC-failure case A -> B: 10,485,779 bytes in 21,843ms, no stream; LAN remained
+connected. Five synthetic offer failures on the lower-account phone; bounded
+backoff prevented continuous retry. Chunk writes, final checksum, and signed
+delivery confirmation all passed. Both thermal statuses remained 0.
+After removing the fault, B -> A: 10,485,779 bytes in 11,318ms. The actual
+connection upgraded from LAN to RTC after 512 chunks (2MiB) were verified.
+This includes cold negotiation and previously accumulated connection backoff;
+it is not directly comparable to a warm stream. Checksums and receipts passed.
+Phone A ended at thermal status 1, Phone B at 0 (both started at 0).
+Normal text sends and read receipts passed in both directions afterward, and
+an 18,944-byte synthetic attachment passed exact-size/SHA256 verification.
+
+Final audit: builds/stream-upgrade-final-audit.json
+Re-audited all five newly created large synthetic files, including the retained
+misconfigured fault-test sample. Receiver native hashes match in all five cases;
+all corresponding chat rows are delivered. Two files received on A, three on B.
+Message counts 381 -> 389 on A and 136 -> 144 on B: five large files, one small
+file, and two text messages added to each account; all pre-test keys/identities
+were retained through benchmark runs and the Dev restart. No histories erased.
+Temporary probe globals absent, injected createOffer failure removed, LAN
+discovery still active, one open RTC peer per phone. Wider-network connections
+and ordinary background bootstrap attempts remain active; no claim that every
+unrelated connection/old job was part of this test.
+
+Final full npm run check: 1,347 passed, 3 skipped (1,350 total), zero failures;
+TypeScript, dependency cycles, module boundaries and consolidation all passed.
+  builds/stream-upgrade-final-check.log
+git diff --check and the updated harness syntax check passed.
+Final source hashes are included in stream-upgrade-final-audit.json. The corrected
+fault report also hashes all six implementation modules, transfer/runtime modules,
+and the actually executed harness. Earlier automatic report hashes only its
+then-configured source subset; final audit supplies the full selection-source set.
+The only subsequent source difference after the first automatic runs was correcting
+a revoked-job diagnostic reason (and a comment); no path-selection change.
+
+Conclusion / remaining limits
+On-demand authenticated make-before-break promotion works on both physical Dev
+phones with LAN enabled. Safe no-RTC fallback and subsequent mid-file recovery
+also passed. The source byte-offset limitation remains; this work intentionally
+does not introduce a new stream wire format, remove cryptographic checks, or add
+RTC to AoNs. Official apps need a later approved release to receive these changes.
+
+Readiness follow-up (same date)
+The old compare-two-phone-transfers runner, source-probe patch and one-off second
+phone installer were retired from active scripts after testing. Recoverable local
+copies and original evidence remain under builds/retired-transfer-experiments-2026-10-18.
+The source-probe hook is NOT present in production code. Use the explicit existing-
+media readiness runner for real phone checks; see production-readiness-2026-10-18.txt.
+The stream handoff now requires native atomic staging. Older native binaries safely
+fall back to chunks. New Dev binaries were rebuilt and updated without data wipes.

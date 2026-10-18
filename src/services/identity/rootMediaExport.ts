@@ -8,35 +8,46 @@ import {localRootChat} from './localRootChat';
 import {rootChatView} from './rootChatActions';
 import {rootAttachmentFile,removeRootAttachmentContent,rootAttachmentExportLink,linkRootAttachmentExport} from './rootAttachmentFiles';
 import {createReceivedMediaExporter,type MediaExportRecord} from './receivedMediaExport';
+import {subscribeOwnChatWrites} from '../../modules/storage/chatStore';
+import {createWorkPump} from '../workPump';
 
 const native=Platform.OS==='android'?requireOptionalNativeModule<{supported:boolean;copyShared?(uri:string):Promise<string>;save(uri:string,name:string,mime:string,kind:string):Promise<string>;available(uri:string):Promise<boolean>;deleteOwned(uri:string,id:string):Promise<'deleted'|'missing'|'needs-confirmation'>;requestDelete(uri:string,id:string):Promise<boolean>}>('AxonicMediaStore'):null;
 const preference='@axonic/auto-save-received-media';
 export const getAutoSaveReceivedMedia=async()=>(await AsyncStorage.getItem(preference))!=='false';
-export const setAutoSaveReceivedMedia=(enabled:boolean)=>AsyncStorage.setItem(preference,String(enabled));
+const preferenceListeners=new Set<()=>void>();
+export const setAutoSaveReceivedMedia=async(enabled:boolean)=>{await AsyncStorage.setItem(preference,String(enabled));for(const listener of preferenceListeners)listener();};
 
 /** Separate from delivery acknowledgements and the transfer queue. */
 export function startRootMediaExport(){
- let stopped=false,worker:ReturnType<typeof createReceivedMediaExporter>|undefined,bound:string|null=null;
+ let stopped=false,epoch=0,worker:ReturnType<typeof createReceivedMediaExporter>|undefined,bound:string|null=null;
  async function pump(){
   const owner=localAccount.status().account;
   if(stopped||!native?.supported||!owner||localAccount.status().state!=='unlocked'||AppState.currentState!=='active')return;
-  if(bound!==owner){bound=owner;const key='@axonic_received_exports_v1:'+owner;
+  if(bound!==owner){bound=owner;const generation=epoch,key='@axonic_received_exports_v1:'+owner;
+   const verifiedLinks=new Map<string,{uri:string;until:number}>();
    worker=createReceivedMediaExporter({
-    current:()=>!stopped&&localAccount.status().account===owner&&localAccount.status().state==='unlocked'&&AppState.currentState==='active',
+    current:()=>!stopped&&generation===epoch&&localAccount.status().account===owner&&localAccount.status().state==='unlocked'&&AppState.currentState==='active',
     snapshot:async()=>rootChatView(owner,await localRootChat().snapshot()),enabled:getAutoSaveReceivedMedia,
     read:async()=>JSON.parse(await AsyncStorage.getItem(key)||'{}') as Record<string,MediaExportRecord>,
     write:rows=>AsyncStorage.setItem(key,JSON.stringify(rows)),
     source:digest=>{const f=rootAttachmentFile(owner,digest);return f.exists?f.uri:null;},
     save:(...args)=>native!.save(...args),
-    link:async(digest,uri)=>{const file=rootAttachmentFile(owner,digest);if(await native!.available(uri)){if(!file.exists)await copyAsync({from:uri,to:file.uri});linkRootAttachmentExport(owner,digest,uri);}},
+    link:async(digest,uri)=>{const file=rootAttachmentFile(owner,digest),verified=verifiedLinks.get(digest);
+     if(verified?.uri===uri&&verified.until>Date.now()&&file.exists&&rootAttachmentExportLink(owner,digest)===uri)return;
+     if(await native!.available(uri)){if(!file.exists)await copyAsync({from:uri,to:file.uri});linkRootAttachmentExport(owner,digest,uri);
+      if(verifiedLinks.size>=5000)verifiedLinks.delete(verifiedLinks.keys().next().value!);
+      verifiedLinks.set(digest,{uri,until:Date.now()+300000});}},
     remove:async(digest,uri)=>{const result=await native!.deleteOwned(uri,digest);if(result==='needs-confirmation')return false;removeRootAttachmentContent(owner,digest);return true;},
    });
   }
-  await worker!.run();
+  return await worker!.run();
  }
- const wake=()=>void pump().catch(()=>{}),timer=setInterval(wake,15000);
- const subscription=AppState.addEventListener('change',state=>{if(state==='active')wake();});wake();
- return {wake,stop(){stopped=true;clearInterval(timer);subscription.remove();}};
+ const scheduler=createWorkPump({run:pump,idleMilliseconds:15000,maximumIdleMilliseconds:300000}),wake=scheduler.wake;
+ const offWrites=subscribeOwnChatWrites(owner=>{if(owner===localAccount.status().account)wake();});
+ const offAccount=localAccount.subscribe(()=>{epoch++;worker=undefined;bound=null;wake();});
+ preferenceListeners.add(wake);
+ const subscription=AppState.addEventListener('change',state=>{if(state==='active')wake();});
+ return {wake,stop(){stopped=true;scheduler.stop();offWrites();offAccount();preferenceListeners.delete(wake);subscription.remove();}};
 }
 
 /** Explicit storage action may ask Android to remove an older owned export. */

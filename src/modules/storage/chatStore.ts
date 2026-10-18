@@ -3,6 +3,9 @@ import {supportsChatStorageRecovery,readNativeChatStorage,checkNativeChatWrite} 
 import {createStorageReadGate} from './storageReadSafety';
 const revisions=new Map<string,number>();
 const gates=new Map<string,ReturnType<typeof createStorageReadGate>>();
+const listeners=new Set<(owner:string)=>void>();
+/** Notification only after durable success; listeners cannot fail a committed write. */
+export function subscribeOwnChatWrites(listener:(owner:string)=>void){listeners.add(listener);return()=>{listeners.delete(listener);};}
 /** Process-local change token: long transfers can refresh permission snapshots
  * after a chat write without rereading the complete ledger for every buffer. */
 export const ownChatRevision=(owner:string)=>revisions.get(owner)??0;
@@ -14,5 +17,6 @@ export function ownChatStore(owner: string) {
   return {read: () => gate.read(()=>supportsChatStorageRecovery()?readNativeChatStorage(owner):AsyncStorage.getItem(key)), write: async (raw: string) => {
     await checkNativeChatWrite(owner,new TextEncoder().encode(raw).length);
     await AsyncStorage.setItem(key,raw);gate.invalidate();revisions.set(owner,ownChatRevision(owner)+1);
+    for(const listener of listeners){try{listener(owner);}catch{/* A consumer must not roll back a committed write. */}}
   }};
 }

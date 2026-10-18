@@ -16,7 +16,7 @@ export function createCallRelayPump(d: {
   receive(raw: string, courier: IdentityPeer): Promise<string | null>;
 }) {
   let stopped = false, busy = false, next = 0, rowCursor = 0, deviceCursor = 0;
-  const stats={requests:0,deposits:0,received:0,receipts:0,last:'idle',reply:'none'};
+  const stats={requests:0,deposits:0,received:0,receipts:0,inventoryReads:0,emptyPolls:0,last:'idle',reply:'none'};
   const urgent=new Set<string>();
   const live = () => !stopped && d.current();
   const state = (event: CallControl) => event.caller === d.account
@@ -66,18 +66,24 @@ export function createCallRelayPump(d: {
       try {
         const peers = d.peers().filter(p => p.expiresAt > d.now()).slice(0, 10);
         if (!peers.length) return;
+        // Share this pass's read, not mutable call state or verified receipts.
+        // Keep polling at 3s: it remains the fallback for incoming calls.
+        let inventory:Promise<CallControl[]>|undefined;
+        const rowsForPass=()=>inventory??=(stats.inventoryReads++,d.list().then(rows=>rows.slice(0,64)));
         await Promise.all(peers.map(async peer=>{
         const reply = await request(peer, 'poll');
+        if(reply?.kind==='event'&&reply.raw===null)stats.emptyPolls++;
         if (reply?.kind === 'event' && typeof reply.raw === 'string') {
           if (typeof reply?.raw !== 'string' || !active(peer)) return;
           stats.received++;const receipt = await d.receive(reply.raw, peer);
+          if(receipt)inventory=undefined; // A newly admitted event changes the inventory.
           if (receipt && active(peer)) await request(peer, 'acknowledge', { raw: receipt });
         }
         if (reply?.kind === 'receipt' && typeof reply.raw === 'string') {
           if (typeof reply?.raw !== 'string' || !active(peer)) return;
           stats.receipts++;const receipt: CallControlReceipt = JSON.parse(reply.raw);
           if (receipt.target !== d.account || receipt.targetDevice !== d.device) return;
-          const rows = (await d.list()).slice(0, 64);
+          const rows = await rowsForPass();
           const invite = rows.find(row => row.callId === receipt.callId);
           if (!invite || !active(peer)) return;
           const remote = invite.caller === d.account ? invite.callee : invite.caller;
@@ -87,7 +93,8 @@ export function createCallRelayPump(d: {
           if (await state(invite).recordReceipt(reply.raw, latest, d.now()) && active(peer))
             await request(peer, 'forget', { event: receipt.event, targetDevice: receipt.device });
         }
-        const rows = (await d.list()).slice(0, 64);
+        const rows = await rowsForPass();
+        if(!rows.length)return;
         const local = await d.records.read(d.account);
         if (!local || !verifyRecord(local, d.now()) || !active(peer)) return;
         // Scan bounded inventory fairly, but send at most one event per tick.

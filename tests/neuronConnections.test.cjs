@@ -14,11 +14,11 @@ test('local wake bypasses failed-dial backoff once without duplicating active sl
 });
 const account = n => 'axonic:1:' + n.toString(16).padStart(64, '0');
 const drain = () => new Promise(r => setImmediate(r));
-function fixture(limit) {
+function fixture(limit, options={}) {
   let now = 1000;
   const opens = [], closed = [];
   const open = (c, context) => new Promise(resolve => opens.push({ c, context, resolve }));
-  const pool = createNeuronConnections({ localAccount: account(0), now: () => now, open, limit, jitter: () => 0 });
+  const pool = createNeuronConnections({ localAccount: account(0), now: () => now, open, limit, jitter: () => 0,...options });
   const candidate = (n, route = 'lan') => ({ account: account(n), route, endpoint: `test:${n}`, expiresAt: now + 120000 });
   const finish = (i, n = Number.parseInt(opens[i].c.account.slice(-4), 16)) => opens[i].resolve({
     peer: { account: account(n), device: 'ab'.repeat(32), instance: 'cd'.repeat(32), expiresAt: now + 60000 },
@@ -26,6 +26,39 @@ function fixture(limit) {
   });
   return { pool, opens, closed, candidate, finish, open, advance: ms => { now += ms; } };
 }
+
+test('negotiated RTC promotes only after authentication and does not oscillate back to LAN',async()=>{
+ const f=fixture(3,{preferRtc:peer=>peer===account(1)});f.pool.offer(f.candidate(1));f.pool.tick();f.finish(0);await drain();
+ const rtc={...f.candidate(1,'internet'),endpoint:'rtc:'+account(1)};f.pool.offer(rtc);f.pool.tick();
+ assert.equal(f.opens.length,2);assert.deepEqual(f.closed,[]);assert.equal(f.pool.snapshot().connections.length,2);
+ f.finish(1);await drain();assert.deepEqual(f.closed,[0]);
+ for(let i=0;i<5;i++){f.pool.offer(f.candidate(1));f.pool.tick();}
+ assert.equal(f.opens.length,2);assert.equal(f.pool.snapshot().connections[0].route,'internet');f.pool.stop();
+});
+test('unnegotiated RTC and ordinary Internet endpoints cannot displace working LAN',async()=>{
+ for(const endpoint of ['rtc:'+account(1),'wss://peer.test']){
+  const f=fixture(3,{preferRtc:()=>endpoint.startsWith('wss:')});f.pool.offer(f.candidate(1));f.pool.tick();f.finish(0);await drain();
+  f.pool.offer({...f.candidate(1,'internet'),endpoint});f.pool.tick();assert.equal(f.opens.length,1);assert.deepEqual(f.closed,[]);f.pool.stop();
+ }
+});
+test('failed RTC promotion preserves LAN and backoff despite repeated transfer demand',async()=>{
+ const f=fixture(3,{preferRtc:()=>true});f.pool.offer(f.candidate(1));f.pool.tick();f.finish(0);await drain();
+ const rtc={...f.candidate(1,'internet'),endpoint:'rtc:'+account(1)};f.pool.offer(rtc);f.pool.tick();f.finish(1,99);await drain();
+ assert.equal(f.pool.snapshot().connections[0].route,'lan');assert.deepEqual(f.closed,[1]);
+ for(let i=0;i<8;i++){f.pool.offer(rtc);f.pool.tick();}assert.equal(f.opens.length,2);
+ f.advance(1000);f.pool.offer(rtc);f.pool.tick();assert.equal(f.opens.length,3);f.pool.stop();f.opens[2].resolve(null);await drain();
+});
+test('RTC promotion respects capacity and retains a separate wider-network route',async()=>{
+ for(const limit of [2,3]){
+  const f=fixture(limit,{preferRtc:peer=>peer===account(1)});
+  for(let i=1;i<=limit;i++)f.pool.offer(f.candidate(i,i===1?'lan':'internet'));
+  f.pool.tick();for(let i=0;i<limit;i++)f.finish(i);await drain();
+  f.pool.offer({...f.candidate(1,'internet'),endpoint:'rtc:'+account(1)});f.pool.tick();
+  if(limit===2){assert.equal(f.opens.length,2);assert.deepEqual(f.closed,[]);}
+  else{assert.equal(f.opens.length,4);assert.equal(f.closed.length,1);assert(!f.closed.includes(0));assert.equal(f.pool.snapshot().connections.length,3);f.finish(3);await drain();assert.equal(f.pool.snapshot().connections.length,2);}
+  f.pool.stop();
+ }
+});
 test('five slots bound concurrent outgoing and incoming authentication, with no self or duplicate peers', async () => {
   const f = fixture();
   assert.equal(f.pool.offer(f.candidate(0)), false);

@@ -1,0 +1,101 @@
+Direct download: bounded verified file writes — 2026-10-18
+
+Scope
+Phone-side TypeScript change, exercised in Axonic Dev (com.axonic.dev),
+SM-S948U1, native version 1.1.22 / 93, current Metro development bundle.
+Official app untouched. No install, production build, commit, push, AoN
+update, reset, queue flush or history deletion performed for this change.
+AoN source remained 000e09681f8ebd6d3a25c1b4c75af0aff5d0f170.
+Existing unrelated worktree changes were preserved.
+
+Finding and implementation
+The download worker verified/decrypted each 4 KiB chunk and the phone adapter
+repeated directory/path/file checks, open, seek, write and close per chunk.
+An optional writeChunks adapter now writes at most 32 contiguous verified
+chunks at once. The worker retains at most 128 KiB of plaintext; the file
+adapter temporarily copies at most another 128 KiB for one contiguous write.
+These buffers are wiped on completion or failure. No persistent file handle,
+wire-format change, new capability or data migration is required. Adapters
+without writeChunks retain the single-chunk path (including current AoNs).
+
+Preserved contract
+- Every requested index, Merkle proof and AEAD check still runs per chunk.
+- Account/job liveness checks remain; no checkpoint covers a partial write.
+- Fixed-offset replay is idempotent after an interrupted or partial batch.
+- Pending plaintext is discarded on corruption, lock, cancellation or error.
+- Complete file byte-count/checksum verification precedes signed receipt.
+- Group recipients retain independent file verification and receipts.
+- Existing partial downloads and descriptors retain their format.
+This is implementation validation, not a new cryptographic security proof.
+
+Synthetic coverage
+Added bounded-file-write tests for exact tails, replay, malformed ranges,
+locked writes, absent prefixes and mixed legacy/batched resume. Worker tests
+cover normal completion, partial write failure, corruption in a later batch,
+lock, cancellation, recreation/retry, byte equivalence and buffer wiping.
+Shared group-transfer test also exercises the optional write adapter.
+Full check: typecheck, unit tests, cycles, module boundaries, consolidation.
+Unit suite: 1,320 passed, 3 skipped (optional benchmarks).
+
+Isolated phone profile (1,048,595 bytes, 257 chunks)
+Warm interleaved legacy/batched runs, same loaded source and synthetic bytes:
+                   Legacy 1   Batched 1   Legacy 2   Batched 2
+File write calls       257           9        257           9
+File write ms       250.063      12.594    258.974      13.247
+Verify/decrypt ms   804.499     807.286    872.888     907.073
+Whole profile ms   1306.140    1062.969   1341.265    1114.006
+These are isolated processing timings, not transfer times. Initial cold
+post-reload batch run was also recorded in the session (1550.955 ms total,
+129.093 ms final verification) and is not silently treated as a warm result.
+Harness: builds/profile-direct-chunks.cjs (legacy and --batch).
+
+Live end-to-end comparison
+Sequential synthetic files, two repetitions per size and direction; no
+forced route or excluded failed run. All eight new transfers succeeded.
+Times include source fixture creation, app preparation/encryption, transport,
+download, assembly/protocol verification, CDP/API overhead and 500 ms polling.
+Independent received-file checksum audit follows the arrival timer.
+
+Size / direction          Previous seconds       New seconds       Means
+5 MiB AoN -> Dev           12.836 / 13.755         10.834 / 12.322    13.296 -> 11.578
+10 MiB AoN -> Dev          25.767 / 32.013         21.557 / 23.612    28.890 -> 22.585
+5 MiB Dev -> AoN           19.221 / 18.478         18.561 / 18.277    18.850 -> 18.419
+10 MiB Dev -> AoN          36.459 / 35.634         33.402 / 37.654    36.047 -> 35.528
+
+Phone receiver file-write calls: 5 MiB 1,280 -> 40; 10 MiB 2,560 -> 80.
+10 MiB measured file-write time: 2,912 / 3,697 ms -> 112 / 122 ms.
+10 MiB new AoN preparation: 3,663 / 3,767 ms (included in arrival times).
+10 MiB new phone download network calls: 81 in each run; their accumulated
+durations were 17,031 / 18,676 ms. These overlap processing and must not be
+added to other stage durations or called pure network transit time.
+
+The live samples support less receiver file work and improved observed
+AoN-to-phone arrival, not a guaranteed percentage gain under all conditions.
+Phone-to-AoN is essentially unchanged; its receiver still uses the old
+adapter. Historic-compatible phone sends also include ~8–11 seconds of
+synthetic fixture generation, which is not normal preparation of an existing
+file. Do not compare these totals against previous prepared-file tests.
+
+Verification and preservation
+All eight received files matched exact byte counts and SHA-256; all sender
+delivery receipts confirmed. All receiver route evidence was complete,
+payload-scoped peer delivery with no observed relay IDs. Available phone
+stage counters showed no errors. Account and every pre-existing message key
+were checked before/after: Dev 365 -> 373, FirstNeuron 141 -> 149. All added
+messages are synthetic test transfers and remain in history.
+
+Remaining focus
+Integrity verification/decryption still costs roughly 0.8–0.9 seconds/MiB
+in the isolated Dev profile. Request/response pacing and AoN-side serving
+and receiving remain candidates, but these overlapping timings do not isolate
+their wall-time cost. Any AoN deployment needs a fresh user approval. Native
+or crypto changes require separate compatibility/integrity validation; do not
+trade verification or durable receipt semantics for a faster benchmark.
+
+Raw evidence (local, repository-relative)
+Before: builds/large-e2e-1792299141457.json
+After: builds/large-e2e-1792299868454.json
+Harness: builds/test-large-e2e-20261018.cjs
+The JSON records mobile source SHA-256 values, Git base, AoN release, device,
+per-run stages, routes, failures and preservation checks. Mobile worktree
+is dirty and results must not be attributed to the Git base alone.
