@@ -1,4 +1,4 @@
-import {createPeerRanking} from './peerRanking';
+import {createSessionRouting} from './sessionRouting';
 import { createAxonSignaling, type AxonSignal } from './axonSignaling';
 import {routeCallMedia} from './callMediaRouting';
 import { createIntroductionDirectory } from './identityIntroductions';
@@ -37,15 +37,8 @@ export function createIdentityNetwork(d: {
   let admit: ((candidate: NeuronCandidate, wire: AxonWire) => boolean) | null = null;
   let account: string | null = null, enabled = true, disposed = false, generation = 0;
   const sessions = new Set<Session>();
-  const ranking=createPeerRanking(d.now);
-  function rankedConnections(mode:'text'|'media'='text'){
-    for(const session of sessions){const snap=session.snapshot();if(snap.account)ranking.observe(snap.account,snap.quality);}
-    return ranking.rank((pool?.snapshot().connections??[]).filter(c=>c.state==='connected'),mode);
-  }
-  function rankedSessions(mode:'text'|'media'='text'){
-    const peers=rankedConnections(mode).map(c=>c.account);
-    return [...sessions].filter(s=>peers.includes(s.snapshot().account!)).sort((a,b)=>peers.indexOf(a.snapshot().account!)-peers.indexOf(b.snapshot().account!));
-  }
+  const routing=createSessionRouting({now:d.now,sessions:()=>sessions,connections:()=>pool?.snapshot().connections??[]});
+  const {rankedConnections,rankedSessions}=routing;
   const connectedListeners=new Set<(peer:string)=>void>();
   let signaling: ReturnType<typeof createAxonSignaling> | null = null;
   const sendSignal = (via: string, raw: string) => [...sessions].some(s => s.snapshot().account === via && s.sendSignal(raw));
@@ -53,7 +46,7 @@ export function createIdentityNetwork(d: {
   function pause() {
     generation++; signaling?.clear(); signaling = null; directory.clear(); admit = null; pool?.stop();
     for (const session of [...sessions]) session.stop();
-    account = null; ranking.clear();
+    account = null; routing.clear();
   }
   function reconcile() {
     const status = d.identity.status();
@@ -84,7 +77,7 @@ export function createIdentityNetwork(d: {
           wire = incoming ?? await d.connect(candidate, context);
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
           session = await d.identity.createAxon(wire, d.store, candidate.account, () => {
-            if(session){const snap=session.snapshot();if(snap.account){ranking.observe(snap.account,snap.quality);if(snap.closeReason!=='session-stopped'&&snap.closeReason!=='inactive-session')ranking.failed(snap.account);}}
+            if(session)routing.closed(session.snapshot());
             console.info('[Axonic connection]', candidate.route, session?.snapshot().closeReason ?? 'handshake-closed', JSON.stringify(session?.snapshot().traffic ?? {}));
             close(); context.onClosed();
           }, {
@@ -169,15 +162,15 @@ export function createIdentityNetwork(d: {
     attachmentBatchWindow(target:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBatchWindow()??1;},
     attachmentBulkRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBulkRequest(raw)??Promise.resolve(null);},
     custodyRequest(target: string, raw: string) {
-      const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
+      const session = routing.connectedSession(target);
       return session?.custodyRequest(raw) ?? Promise.resolve(null);
     },
     sendTestMessage(target: string, text: string, id?: string) {
-      const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
+      const session = routing.connectedSession(target);
       return session?.sendTestMessage(text, id) ?? Promise.resolve(false);
     },
     sendChatMessage(target: string, text: string, id: string) {
-      const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
+      const session = routing.connectedSession(target);
       return session?.sendChatMessage(text, id) ?? Promise.resolve(false);
     },
     offer(candidate: NeuronCandidate) { reconcile(); return !!account && !!pool?.offer(candidate); },

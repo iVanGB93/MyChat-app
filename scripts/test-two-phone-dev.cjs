@@ -46,4 +46,5 @@ async function main(){
  if(!content.checksumMatches||content.bytes!==media.bytes)throw Error('Received test media mismatch');results.push({test:'Small file A to B',delivered:true,bytes:content.bytes,checksumMatches:true,deliveryObservedMs:transferred.elapsedMs});console.log(JSON.stringify(results.at(-1)));
  console.log(JSON.stringify({passed:true,tests:results.length,scope:'Two authorized Dev accounts; no production app, reset or history deletion'}));
 }
-main().catch(e=>{console.error(e.message);process.exitCode=1;});
+module.exports={run,until,evaluate};
+if(require.main===module)main().catch(e=>{console.error(e.message);process.exitCode=1;});

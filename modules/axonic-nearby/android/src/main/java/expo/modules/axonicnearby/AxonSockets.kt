@@ -79,6 +79,11 @@ internal class AxonSockets {
     check(!entry.websocket && entry.attachments && entry.mediaLane) { "Bulk requires an admitted LAN session" }
     entry.bulk = true
   }
+  fun enableWssBulkAttachments(id:String) {
+    val entry = sockets[id] ?: error("Axon closed")
+    check(entry.websocket && entry.attachments && entry.mediaLane) { "Bulk requires an admitted WSS session" }
+    entry.bulk = true
+  }
   fun enableAttachments(id:String) { (sockets[id] ?: error("Axon closed")).attachments = true }
   fun connect(id: String, address: InetSocketAddress) {
     val entry = sockets[id] ?: error("Axon closed")
@@ -114,7 +119,7 @@ internal class AxonSockets {
         val now = System.nanoTime()
         if (now - entry.windowAt >= TimeUnit.MINUTES.toNanos(1)) { entry.windowAt = now; entry.frames = 0 }
         check(++entry.frames <= if(entry.mediaLane) 28256 else if(entry.attachments) 3856 else 64) { "Axon frame rate exceeded" }
-        return if (entry.websocket) AxonWebSocket.read(first, input) { opcode, bytes -> AxonWebSocket.write(entry.output, bytes, opcode) }
+        return if (entry.websocket) AxonWebSocket.read(first, input, { if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES }) { opcode, bytes -> AxonWebSocket.write(entry.output, bytes, opcode) }
           else AxonFrames.read(first, input) { if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES }
       } finally { deadline.cancel(false) }
     } catch (error: Exception) { close(id); throw error }
@@ -127,7 +132,7 @@ internal class AxonSockets {
     val deadline = deadlines.schedule({ close(id) }, 4000, TimeUnit.MILLISECONDS)
     try {
       val output = entry.output
-      if (entry.websocket) AxonWebSocket.write(output, bytes)
+      if (entry.websocket) AxonWebSocket.write(output, bytes, maximum = if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES)
       else { output.writeInt(bytes.size); output.write(bytes); output.flush() }
     } catch (error: Exception) { close(id); throw error }
     finally { deadline.cancel(false); entry.writing.set(false) }

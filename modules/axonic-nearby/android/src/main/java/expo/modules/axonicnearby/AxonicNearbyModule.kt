@@ -92,6 +92,7 @@ class AxonicNearbyModule : Module() {
     Function("axonClaim") { id: String -> axons.claim(id) }
     Function("axonEnableMediaLane") { id: String -> axons.enableMediaLane(id) }
     Function("axonEnableBulkAttachments") { id: String -> axons.enableBulkAttachments(id) }
+    Function("axonEnableWssBulkAttachments") { id: String -> axons.enableWssBulkAttachments(id) }
     Function("axonEnableAttachments") { id: String -> axons.enableAttachments(id) }
     // Experimental identity frames only. Restrict dialing to the current Wi-Fi subnet.
     AsyncFunction("axonConnect") { host: String, port: Int, promise: Promise ->

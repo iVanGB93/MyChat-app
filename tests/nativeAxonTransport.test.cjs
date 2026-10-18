@@ -13,6 +13,13 @@ function fixture(overrides = {}) {
   return { calls, controller, connect: c => api.createNativeAxonConnector(native)(c ?? candidate, { signal: controller.signal, onClosed() {} }) };
 }
 const flush = () => new Promise(r => setImmediate(r));
+test('WSS advertises small batches only with native media support and keeps 20 KB frames',async()=>{
+ const f=fixture({axonEnableMediaLane(){}});
+ const wire=await api.openNativeWire({axonRead:()=>new Promise(()=>{}),axonWrite:async()=>true,axonClose(){},axonEnableMediaLane(){}},{signal:f.controller.signal,onClosed(){}},async()=>'wss');
+ assert.equal(wire.smallAttachmentBatches,true);assert.equal(wire.smallAttachmentWindow,4);assert.equal(wire.bulkAttachments,false);
+ wire.enableMediaLane();wire.send('x'.repeat(19000));assert.throws(()=>wire.send('x'.repeat(20001)),/capacity/);
+ const old=await fixture().connect();assert.equal(old.smallAttachmentBatches,false);old.close();
+});
 
 test('bulk LAN adapter gates larger frames on explicit admission and retains a bounded queue',async()=>{
  const f=fixture({axonEnableMediaLane(){},axonEnableBulkAttachments(){}}),wire=await f.connect();assert.equal(wire.bulkAttachments,true);
@@ -20,6 +27,13 @@ test('bulk LAN adapter gates larger frames on explicit admission and retains a b
  let finish;const g=fixture({axonEnableMediaLane(){},axonEnableBulkAttachments(){},axonWrite:()=>new Promise(r=>finish=r)}),ready=await g.connect();
  ready.enableMediaLane();ready.enableBulkAttachments();ready.send('x'.repeat(850000));ready.send('x'.repeat(850000));
  assert.throws(()=>ready.send('x'.repeat(120001)),/capacity/);finish(true);await flush();assert.equal(g.calls.closed.length,1);
+});
+
+test('WSS bulk requires the new native capability and explicit authenticated enable',async()=>{
+ const controller=new AbortController();let enabled=0;const native={axonRead:()=>new Promise(()=>{}),axonWrite:async()=>true,axonClose(){},axonEnableBulkAttachments(){assert.fail('LAN method on WSS');},axonEnableWssBulkAttachments(){enabled++;}};
+ const old=await api.openNativeWire({...native,axonEnableWssBulkAttachments:undefined},{signal:controller.signal},async()=>'old');assert.equal(old.bulkAttachments,false);old.close();
+ const early=await api.openNativeWire(native,{signal:controller.signal},async()=>'early');assert.throws(()=>early.send('x'.repeat(20001)),/capacity/);assert.equal(enabled,0);
+ const ready=await api.openNativeWire(native,{signal:controller.signal},async()=>'new');assert.equal(ready.bulkAttachments,true);ready.enableBulkAttachments();assert.equal(enabled,1);ready.send('x'.repeat(700000));await flush();ready.close();
 });
 test('native reads wait for listener attachment and abort closes exactly once', async () => {
   const f = fixture(), wire = await f.connect(); let closed = 0;

@@ -5,6 +5,7 @@ function protocol(name){if(cache.has(name))return cache.get(name);const out={};n
 const p=protocol('identityProtocol'),c=protocol('custodyProtocol'),seed=n=>new Uint8Array(32).fill(n);
 async function fixture(t,options={}){
  const now=Date.now(),device=p.publicDevice(seed(2),seed(3)),recipientDevice=p.publicDevice(seed(5),seed(6));
+ let senderAvailable=!options.unknownSender;
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
  const storage=new Map(),displayed=new Map(),shown=[],cancelled=[],toasts=[],channels=[],database=new DatabaseSync(':memory:');t.after(()=>database.close());
  let channel=null;let owner={account:recipient.account,device:recipientDevice.id},blocked=false,fail=false,locked=false,visible=false;
@@ -22,16 +23,31 @@ async function fixture(t,options={}){
  '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null}},
  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:app},
  '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);options.onChannel?.();},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);onDisplay();},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},
- './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>id===sender.account?sender:null})},
+ './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>senderAvailable&&id===sender.account?sender:null})},
  './rootCallWake':{rootWakeContext:async()=>owner,rootWakeBlocked:async()=>blocked}};
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
  const preferences={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationPreferences.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(preferences,n=>imports[n]??protocol(n.slice(2)));imports['./rootNotificationPreferences']=preferences;
  const mod={};new Function('exports','require','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)),options.setTimeout??setTimeout,clearTimeout);
  const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:options.silent?JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]):'private text',now,random:async n=>new Uint8Array(n).fill(12)});
  const data=c.createCustodyWake(envelope,sender);
- return {database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
+ return {database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,learnSender:()=>senderAvailable=true,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
  onDisplay:fn=>onDisplay=fn,delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
 }
+test('unknown sender lookup is followed by normal signature validation and recovery',async t=>{
+ const f=await fixture(t,{unknownSender:true});let looked=0,recovered=0;
+ await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;},async()=>{looked++;f.learnSender();return 'recovered';});
+ assert.equal(looked,1);assert.equal(recovered,1);assert.equal(f.shown.length,1);
+});
+test('failed lookup or an owner change during lookup cannot recover or notify',async t=>{
+ for(const change of [false,true]){const f=await fixture(t,{unknownSender:true});let recovered=0;
+ await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;},async()=>{if(change){f.learnSender();f.changeOwner();return 'recovered';}return 'unavailable';});
+ assert.equal(recovered,0);assert.equal(f.shown.length,0);}
+});
+test('a claimed recovered sender is still checked against the exact wake signature',async t=>{
+ const f=await fixture(t,{unknownSender:true});f.data.event=f.data.event.replace('cdcd','abab');let recovered=0;
+ await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;},async()=>{f.learnSender();return 'recovered';});
+ assert.equal(recovered,0);assert.equal(f.shown.length,0);
+});
 test('avatar fetching and group recovery never create generic alerts, including while locked',async t=>{
  for(const tag of ['axonic-avatar-fetch-v1','axonic-avatar-offer-v1','axonic-group-members-v1','axonic-group-leave-v1','axonic-group-recover-v1','axonic-group-backup-v1','axonic-group-recovery-offer-v1']){
   const f=await fixture(t);f.lock();

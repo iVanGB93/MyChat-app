@@ -193,17 +193,17 @@ for(const window of [2,4])test(`negotiated three-chunk window ${window} preserve
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
 
-for(const window of [2,4])test(`small batch window ${window} drains requests and checkpoints only the verified prefix on failure`,async t=>{
- const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+for(const chunks of [3,32])for(const window of [2,4])test(`batch ${chunks} window ${window} drains requests and checkpoints only the verified prefix on failure`,async t=>{
+ const f=context(t,4096*chunks*5+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
  const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let active=0,peak=0;
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>window,
+ const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>chunks,batchWindow:()=>window,
  request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
   active++;peak=Math.max(peak,active);const index=JSON.parse(raw).index;
-  try{await new Promise(r=>setTimeout(r,index===0?10:1));if(index===3)throw Error('lost batch');return await sender.receive(raw,peer);}finally{active--;}
+  try{await new Promise(r=>setTimeout(r,index===0?10:1));if(index===chunks)throw Error('lost batch');return await sender.receive(raw,peer);}finally{active--;}
  }});
  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
- assert.equal(peak,window);assert.equal(active,0);assert.equal((await f.job(1)).cursor,3);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain.slice(0,3*4096)));
+ assert.equal(peak,chunks===32?Math.min(window,2):window);assert.equal(active,0);assert.equal((await f.job(1)).cursor,chunks);
+ assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain.slice(0,chunks*4096)));
 });
 
 test('temporary batch unavailability preserves the verified prefix and resumes after one second',async t=>{
@@ -218,6 +218,23 @@ test('temporary batch unavailability preserves the verified prefix and resumes a
  f.advance(1000);for(let n=0;n<4;n++)await receiver.tick();
  assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
  assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
+});
+
+for(const fail of [false,true])test(`single-chunk pipeline stays bounded and preserves verified prefix: failure=${fail}`,async t=>{
+ const f=context(t,4096*20+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
+ let release,active=0,peak=0;const gate=new Promise(r=>release=r),started=[];
+ const receiver=createAttachmentTransfer({...f.deps(1),downloadWindow:4,peers:()=>[source],request:async(_p,raw)=>{
+  const request=JSON.parse(raw);if(request.operation!=='direct-get')return sender.receive(raw,peer);
+  started.push(request.index);active++;peak=Math.max(peak,active);
+  try{if(request.index===1){await gate;if(fail)throw Error('lost chunk');}return await sender.receive(raw,peer);}finally{active--;}
+ }});
+ await receiver.enqueue(f.descriptor,'incoming');const work=receiver.tick();
+ try{for(let n=0;n<100&&!started.includes(4);n++)await new Promise(setImmediate);
+  assert(started.includes(4),'replenishes before adjacent slow read finishes');assert(peak<=4);assert(started.every(i=>i<16));
+ }finally{release();await work;}
+ assert.equal(active,0);assert.equal((await f.job(1)).cursor,fail?1:16);
+ assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain.slice(0,(fail?1:16)*4096)));
 });
 
 test('RTC pipeline replenishes a verified batch before a slower adjacent batch completes',async t=>{

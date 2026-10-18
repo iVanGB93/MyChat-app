@@ -1,6 +1,7 @@
 import {getMessaging,setBackgroundMessageHandler,onMessage} from '@react-native-firebase/messaging';
 import notifee,{EventType} from '@notifee/react-native';
 import {recoverRootMessage} from './rootMessageRecovery';
+import {recoverWakeSender} from './mobileWakeSenderRecovery';
 import {queueRootNotificationOpen} from './rootNotificationRoute';
 import {receiveRootCallWake} from './rootCallWake';
 import {receiveRootMessageWake,rootMessageWakeFailed} from './rootMessageWake';
@@ -9,7 +10,7 @@ import {handleRootNotificationAction} from './rootNotificationActions';
 export function registerRootBackgroundHandlers(){
  const receive=async(message:{data?:unknown})=>{try{
   console.info('[Axonic background wake] received');
-  if((message.data as {type?:string})?.type==='neuron_message')await receiveRootMessageWake(message.data,recoverRootMessage);
+  if((message.data as {type?:string})?.type==='neuron_message')await receiveRootMessageWake(message.data,recoverRootMessage,recoverWakeSender);
   else await receiveRootCallWake(message.data);
  }catch{rootMessageWakeFailed();/* Invalid or unavailable local state must not produce a notification. */}};
  setBackgroundMessageHandler(getMessaging(),receive);

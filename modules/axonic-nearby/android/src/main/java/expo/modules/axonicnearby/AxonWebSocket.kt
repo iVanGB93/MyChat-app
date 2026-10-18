@@ -41,19 +41,26 @@ internal object AxonWebSocket {
       && !headers.containsKey("sec-websocket-extensions") && !headers.containsKey("sec-websocket-protocol"))
   }
 
-  fun write(output: DataOutputStream, bytes: ByteArray, opcode: Int = 1) {
-    require(bytes.size <= AxonFrames.MAX_BYTES)
+  fun write(output: DataOutputStream, bytes: ByteArray, opcode: Int = 1, maximum: Int = AxonFrames.MAX_BYTES) {
+    require(maximum in AxonFrames.MAX_BYTES..AxonFrames.BULK_BYTES && bytes.size <= maximum)
+    require(opcode == 1 || opcode in 8..10 && bytes.size <= 125)
     synchronized(output) {
-      output.writeByte(0x80 or opcode)
-      if (bytes.size < 126) output.writeByte(0x80 or bytes.size)
-      else { output.writeByte(0x80 or 126); output.writeShort(bytes.size) }
-      val mask = ByteArray(4).also { random.nextBytes(it) }; output.write(mask)
-      val masked = ByteArray(bytes.size) { i -> (bytes[i].toInt() xor mask[i % 4].toInt()).toByte() }
-      output.write(masked); output.flush()
+      // SSLSocket writes are not buffered: separate header writes become tiny TLS
+      // records. Assemble one bounded RFC6455 frame before touching the socket.
+      val header = if (bytes.size < 126) 2 else if (bytes.size <= 65535) 4 else 10
+      val frame = ByteArray(header + 4 + bytes.size)
+      frame[0] = (0x80 or opcode).toByte()
+      frame[1] = (0x80 or if (header == 2) bytes.size else if (header == 4) 126 else 127).toByte()
+      if (header == 4) { frame[2] = (bytes.size ushr 8).toByte(); frame[3] = bytes.size.toByte() }
+      if (header == 10) ByteBuffer.wrap(frame, 2, 8).putLong(bytes.size.toLong())
+      val mask = ByteArray(4).also { random.nextBytes(it) }
+      mask.copyInto(frame, header)
+      for (i in bytes.indices) frame[header + 4 + i] = (bytes[i].toInt() xor mask[i % 4].toInt()).toByte()
+      try { output.write(frame); output.flush() } finally { frame.fill(0); mask.fill(0) }
     }
   }
 
-  fun read(first: Int, input: DataInputStream, control: (Int, ByteArray) -> Unit): String {
+  fun read(first: Int, input: DataInputStream, maximum: () -> Int = { AxonFrames.MAX_BYTES }, control: (Int, ByteArray) -> Unit): String {
     val message = ByteArrayOutputStream()
     var header = first; var started = false
     // Includes controls and empty fragments, so they cannot extend the deadline/work without bound.
@@ -62,8 +69,12 @@ internal object AxonWebSocket {
       val final = header and 0x80 != 0; val opcode = header and 15
       val second = input.readUnsignedByte(); require(second and 0x80 == 0) { "Masked server frame" }
       val marker = second and 127
-      require(marker != 127) { "Axon frame too large" }
-      val length = if (marker == 126) input.readUnsignedShort().also { require(it >= 126) } else marker
+      val limit = maximum(); require(limit in AxonFrames.MAX_BYTES..AxonFrames.BULK_BYTES)
+      val length = when (marker) {
+        127 -> { require(limit > 65535) { "Axon frame too large" }; val n = input.readLong(); require(n in 65536L..limit.toLong()) { "Invalid large frame size" }; n.toInt() }
+        126 -> input.readUnsignedShort().also { require(it >= 126) }
+        else -> marker
+      }
       if (opcode >= 8) {
         require(opcode in 8..10 && final && length <= 125) { "Invalid control frame" }
         val payload = ByteArray(length); input.readFully(payload)
@@ -71,7 +82,7 @@ internal object AxonWebSocket {
         if (opcode == 9) control(10, payload)
       } else {
         require((!started && opcode == 1) || (started && opcode == 0)) { "Only text axons supported" }
-        require(message.size() + length <= AxonFrames.MAX_BYTES) { "Axon message too large" }
+        require(message.size() + length <= limit) { "Axon message too large" }
         val payload = ByteArray(length); input.readFully(payload); message.write(payload); started = true
         if (final) {
           require(message.size() > 0)

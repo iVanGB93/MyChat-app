@@ -210,7 +210,9 @@ export function createRtcAxonTransport(d: {
       let sdp = pc.localDescription?.sdp;
       // This binding is inside the existing signed SDP, so old relays need no changes.
       if(sdp && recovery)sdp += `${sdp.endsWith('\n')?'':'\r\n'}a=x-axonic-restart:${originalSession}\r\n`;
-      if (!sdp || !validAxonSdp(sdp) || !d.send(via, d.sign(account, session, kind, sdp))) stop();
+      if (!sdp || !validAxonSdp(sdp)) { stop('invalid-local-sdp'); return; }
+      if (!d.send(via, d.sign(account, session, kind, sdp))) { stop('signal-send-failed'); return; }
+      trace('signal-sent',{kind,candidates:sdp.split(/\r?\n/).filter(line=>line.startsWith('a=candidate:')).length});
     }
     function beginRestart() {
       restartUsed=true;restarting=true;
@@ -238,7 +240,7 @@ export function createRtcAxonTransport(d: {
         if (dead || !initiator || answered || !validAxonSdp(signal.sdp)) return;
         if(restarting && (restartParent(signal.sdp)!==originalSession || !sameRemote(signal)))return;
         if(!restarting && restartParent(signal.sdp))return;
-        answered = true;
+        answered = true;trace('answer-received');
         remoteDevice=signal.device;remoteFingerprint=fingerprints(signal.sdp);
         try { await pc.setRemoteDescription({ type: 'answer', sdp: signal.sdp });if(!dead)finishRestart(); } catch { stop(); }
       },

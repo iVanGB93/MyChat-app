@@ -17,15 +17,17 @@ function fixture(status='ready'){
   '@expo/vector-icons':{Ionicons:'Icon'},'react-native-webrtc':{RTCView:'RTCView'}};
  imports['../../services/call-audio-route']={startCallAudio:async()=>routes,getCallAudioRoutes:async()=>routes,
   observeCallAudioRoutes:fn=>{routeListener=fn;return {remove(){}};},selectCallAudioRoute:async id=>{chosen.push(id);return {...routes,automatic:id==='automatic',selectedId:id==='automatic'?'bt':id};}};
+ let permission=async()=>true;
+ imports['../../hooks/useScreenShareOverlay']={hasScreenShareOverlay:()=>false,allowScreenShareOverlay:()=>permission(),useScreenShareOverlay:()=>{}};
  const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>imports[n]??{});
  function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;if(type===out.default&&!current.length)current[0]=call;return type(props);}
  const screen=()=>render(out.default);
- return {call,rtc,render,screen,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
+ return {call,rtc,render,screen,setPermission:fn=>permission=fn,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
 }
 function find(tree,predicate){if(!tree||typeof tree!=='object')return; if(predicate(tree))return tree;for(const child of tree.props?.children??[]){const result=Array.isArray(child)?child.map(x=>find(x,predicate)).find(Boolean):find(child,predicate);if(result)return result;}}
 test('camera fills the call stage while shared screens remain uncropped',()=>{
  const f=fixture(),owner=f.screen();
- const video=()=>find(find(f.render(owner.type,owner.props),n=>n.type==='CallLayout').props.background,n=>n.type==='RTCView');
+ const video=()=>{const tree=f.render(owner.type,owner.props);return find(find(tree,n=>n.type==='CallLayout')?.props.background??find(tree,n=>n.props.testID==='axonic-screen-share-stage'),n=>n.type==='RTCView');};
  assert.equal(video().props.objectFit,'cover');
  f.rtc.remoteScreenSharing=true;assert.equal(video().props.objectFit,'contain');
  f.rtc.remoteScreenSharing=false;assert.equal(video().props.objectFit,'cover');
@@ -113,13 +115,36 @@ test('native video rectangle stays within the rounded self-view frame even witho
  assert.equal(styles.pip.overflow,'hidden');assert.equal(frame.overflow,'hidden');assert.equal(frame.position,undefined,'only the whole self-view group is positioned');
 });
 
-test('screen sharing uses an unmirrored preview, offers Stop share, and hides camera flip',()=>{
+test('screen sharing uses an unmirrored preview, offers Stop share, and hides camera flip',async()=>{
  const f=fixture();let started=0,stopped=0;f.rtc.startScreenSharing=()=>started++;f.rtc.stopScreenSharing=()=>stopped++;
  const owner=f.screen();let tree=f.render(owner.type,owner.props);
- find(tree,n=>n.props.accessibilityLabel==='Share screen').props.onPress();assert.equal(started,1);
+ find(tree,n=>n.props.accessibilityLabel==='Share screen').props.onPress();await Promise.resolve();assert.equal(started,1);
  f.rtc.isScreenSharing=true;f.rtc.isCameraOff=true;tree=f.render(owner.type,owner.props);
- assert(!find(tree,n=>n.props.label==='Flip'));find(tree,n=>n.props.label==='Stop share').props.onPress();assert.equal(stopped,1);
- const layout=find(tree,n=>n.type==='CallLayout'),self=find(layout.props.background,n=>n.props.testID==='axonic-call-self-view');
- const preview=find(self,n=>n.type==='RTCView');assert.equal(preview.props.mirror,false);assert.equal(preview.props.objectFit,'contain');
+ assert(!find(tree,n=>n.props.label==='Flip'));find(tree,n=>n.props.label==='Stop sharing').props.onPress();assert.equal(stopped,1);
+ const stage=find(tree,n=>n.props.testID==='axonic-screen-share-stage');assert(stage);
+ const preview=find(stage,n=>n.type==='RTCView');assert.equal(preview.props.mirror,false);assert.equal(preview.props.objectFit,'contain');
+ assert(find(stage,n=>n.props.testID==='axonic-screen-share-controls'));assert(!find(stage,n=>n.props.testID==='axonic-call-self-view'));
  find(tree,n=>n.props.accessibilityLabel==='Stop sharing screen').props.onPress();assert.equal(stopped,2);
+});
+
+test('remote screen retains normal call controls and camera preview without sender controls',()=>{
+ const f=fixture();f.rtc.remoteScreenSharing=true;const owner=f.screen(),tree=f.render(owner.type,owner.props);
+ const layout=find(tree,n=>n.type==='CallLayout');assert(layout);
+ assert(!find(tree,n=>n.props.testID==='axonic-screen-share-stage'));
+ assert(!find(tree,n=>n.props.testID==='axonic-screen-share-controls'));
+ const screen=find(layout.props.background,n=>n.type==='RTCView');assert.equal(screen.props.streamURL,'remote');assert.equal(screen.props.objectFit,'contain');
+ assert(find(layout.props.background,n=>n.props.testID==='axonic-call-self-view'));
+ assert(find(tree,n=>n.props.label==='Mute'));assert(find(tree,n=>n.props.label==='Options'));
+});
+test('sharing waits for permission settings and resumes once after approval',async()=>{
+ const f=fixture();let resolve,started=0,requests=0;
+ f.setPermission(()=>{requests++;return new Promise(r=>resolve=r);});f.rtc.startScreenSharing=async()=>{started++;};
+ const owner=f.screen(),tree=f.render(owner.type,owner.props),share=find(tree,n=>n.props.accessibilityLabel==='Share screen');
+ share.props.onPress();share.props.onPress();assert.equal(requests,1);assert.equal(started,0);
+ resolve(true);await Promise.resolve();await Promise.resolve();assert.equal(started,1);
+});
+test('denied overlay permission does not start capture',async()=>{
+ const f=fixture();let started=0;f.setPermission(async()=>false);f.rtc.startScreenSharing=async()=>{started++;};
+ const owner=f.screen(),tree=f.render(owner.type,owner.props);find(tree,n=>n.props.accessibilityLabel==='Share screen').props.onPress();
+ await Promise.resolve();await Promise.resolve();assert.equal(started,0);
 });

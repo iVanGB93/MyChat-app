@@ -10,6 +10,7 @@ export interface NativeAxonTransport {
   axonEnableAttachments?(id:string):void;
   axonEnableMediaLane?(id:string):void;
   axonEnableBulkAttachments?(id:string):void;
+  axonEnableWssBulkAttachments?(id:string):void;
 }
 /** Foreground development LAN transport. Native code independently checks the Wi-Fi
  * subnet and bounds frame allocation; callers cannot label an internet route as LAN.
@@ -80,8 +81,12 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
     return {
       close,
       mediaLane:typeof native.axonEnableMediaLane==='function',
-      bulkAttachments:lan&&typeof native.axonEnableBulkAttachments==='function',
-      enableBulkAttachments(){if(!closed&&id&&lan&&native.axonEnableBulkAttachments){native.axonEnableBulkAttachments(id);bulkEnabled=true;}},
+      // Reuse the negotiated RTC-sized batch on WSS without raising native frame limits.
+      smallAttachmentBatches:typeof native.axonEnableMediaLane==='function',
+      smallAttachmentWindow:4,
+      bulkAttachments:typeof (lan?native.axonEnableBulkAttachments:native.axonEnableWssBulkAttachments)==='function',
+      ...(!lan?{preferredAttachmentBatchChunks:32 as const}:{}),
+      enableBulkAttachments(){const enable=lan?native.axonEnableBulkAttachments:native.axonEnableWssBulkAttachments;if(!closed&&id&&enable){enable.call(native,id);bulkEnabled=true;}},
       enableMediaLane(){if(!closed&&id){native.axonEnableMediaLane?.(id);mediaEnabled=true;}},
       attachments:typeof native.axonEnableAttachments==='function',
       enableAttachments(){if(!closed&&id)native.axonEnableAttachments?.(id);},

@@ -1,0 +1,2 @@
+const {run}=require('./test-two-phone-dev.cjs');
+(async()=>{const targets=await(await fetch('http://127.0.0.1:8081/json/list')).json(),t=targets.find(t=>t.appId==='com.axonic.dev'&&t.deviceName.startsWith('SM-S948U1'));if(!t)throw Error('Phone Dev not connected');console.log(JSON.stringify(await run(t,"return {progress:await get('src/services/identity/rootAttachmentRuntime.ts').rootAttachmentProgress(),timings:get('src/services/identity/rootAttachmentRuntime.ts').rootAttachmentTimings()};")));})().catch(e=>{console.error(e.message);process.exitCode=1;});

@@ -5,9 +5,55 @@ import org.junit.Test
 import java.io.*
 
 class AxonWebSocketTest {
+  @Test fun largeFramesAreCanonicalMaskedAndRequireAdmission() {
+    for(size in listOf(20001,65535,65536,700000,850000)) {
+      val bytes=ByteArray(size) { 65 }; val out=ByteArrayOutputStream()
+      assertThrows(IllegalArgumentException::class.java) { AxonWebSocket.write(DataOutputStream(out),bytes) }
+      AxonWebSocket.write(DataOutputStream(out),bytes,maximum=AxonFrames.BULK_BYTES)
+      val input=DataInputStream(ByteArrayInputStream(out.toByteArray()));assertEquals(0x81,input.readUnsignedByte())
+      val marker=input.readUnsignedByte() and 127
+      assertEquals(size.toLong(),if(marker==127)input.readLong() else input.readUnsignedShort().toLong())
+      val mask=ByteArray(4);input.readFully(mask)
+      assertArrayEquals(bytes,ByteArray(size){i->(input.readUnsignedByte() xor mask[i%4].toInt()).toByte()})
+      val server=ByteArrayOutputStream();val writer=DataOutputStream(server);writer.writeByte(0x81);writer.writeByte(if(size>65535)127 else 126);if(size>65535)writer.writeLong(size.toLong()) else writer.writeShort(size);writer.write(bytes)
+      assertThrows(IllegalArgumentException::class.java){read(server.toByteArray())}
+      val reader=DataInputStream(ByteArrayInputStream(server.toByteArray()));assertEquals("A".repeat(size),AxonWebSocket.read(reader.read(),reader,{AxonFrames.BULK_BYTES}){_,_->})
+    }
+    for(size in listOf(-1L,65535L,850001L,Long.MAX_VALUE)) {
+      val out=ByteArrayOutputStream();val writer=DataOutputStream(out);writer.writeByte(0x81);writer.writeByte(127);writer.writeLong(size)
+      val input=DataInputStream(ByteArrayInputStream(out.toByteArray()))
+      assertThrows(IllegalArgumentException::class.java){AxonWebSocket.read(input.read(),input,{AxonFrames.BULK_BYTES}){_,_->}}
+    }
+  }
+  @Test fun wssBulkRequiresAttachmentAndMediaAdmission() {
+    val sockets=AxonSockets();try{val id=sockets.reserve(java.net.Socket(),true)
+      assertThrows(IllegalStateException::class.java){sockets.enableWssBulkAttachments(id)}
+      sockets.enableAttachments(id);assertThrows(IllegalStateException::class.java){sockets.enableWssBulkAttachments(id)}
+      sockets.enableMediaLane(id);sockets.enableWssBulkAttachments(id)
+      assertThrows(IllegalStateException::class.java){sockets.enableBulkAttachments(id)}
+    }finally{sockets.destroy()}
+  }
+  @Test fun eachClientFrameUsesOneUnderlyingWriteIncludingBoundaryLengths() {
+    for (size in listOf(0, 5, 125, 126, 127, 20000)) {
+      var calls = 0; val captured = ByteArrayOutputStream()
+      val socket = object : OutputStream() {
+        override fun write(value: Int) { calls++; captured.write(value) }
+        override fun write(bytes: ByteArray, offset: Int, length: Int) { calls++; captured.write(bytes, offset, length) }
+      }
+      val data = ByteArray(size) { (it % 251).toByte() }
+      AxonWebSocket.write(DataOutputStream(socket), data)
+      assertEquals(1, calls)
+      val input = DataInputStream(ByteArrayInputStream(captured.toByteArray()))
+      assertEquals(0x81, input.readUnsignedByte()); val marker = input.readUnsignedByte()
+      assertEquals(size, if (marker and 127 == 126) input.readUnsignedShort() else marker and 127)
+      val mask = ByteArray(4); input.readFully(mask)
+      assertArrayEquals(data, ByteArray(size) { i -> (input.readUnsignedByte() xor mask[i % 4].toInt()).toByte() })
+      assertEquals(-1, input.read())
+    }
+  }
   private fun read(bytes: ByteArray, control: (Int, ByteArray) -> Unit = { _, _ -> }): String {
     val input = DataInputStream(ByteArrayInputStream(bytes))
-    return AxonWebSocket.read(input.read(), input, control)
+    return AxonWebSocket.read(input.read(), input, control = control)
   }
   @Test fun fragmentsAndInterleavedPingPreserveText() {
     var pong = false

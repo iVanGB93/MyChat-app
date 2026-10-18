@@ -1,5 +1,7 @@
 import {deliverCallSignal} from '../services/callSignalRetry';
 import {createCallScreenShare} from '../services/callScreenShare';
+import {createCallEndHandshake} from '../services/callEndHandshake';
+import {excludeScreenControls} from '../services/call-screen-capture';
 import {CALL_VIDEO_STATE,callVideoState,readCallVideoState} from '../services/callVideoPresentation';
 import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
 import {callCameraPreview} from '../services/callCameraPreview';
@@ -121,6 +123,8 @@ export default function useWebRTCCore({
   const [isScreenSharing,setIsScreenSharing]=useState(false),[screenShareBusy,setScreenShareBusy]=useState(false),[screenShareError,setScreenShareError]=useState<string|null>(null);
   const [remoteScreenSharing,setRemoteScreenSharing]=useState(false);
   const videoStateChannel=useRef<RTCDataChannel|null>(null),sharingRef=useRef(false);
+  const endHandshake=useRef<ReturnType<typeof createCallEndHandshake>|null>(null);
+  const notifyCallEnded=useCallback(()=>endHandshake.current?.end()??Promise.resolve(),[]);
   const publishVideoState=()=>{const channel=videoStateChannel.current;if(channel?.readyState==='open'&&channel.bufferedAmount<1024){try{channel.send(callVideoState(sharingRef.current));}catch{/* A presentation hint must not end the call. */}}};
   const screenShareRef=useRef<ReturnType<typeof createCallScreenShare>|null>(null);
   if(!screenShareRef.current)screenShareRef.current=createCallScreenShare({
@@ -128,11 +132,16 @@ export default function useWebRTCCore({
     camera:()=>localStreamRef.current?.getVideoTracks()[0],
     sender:()=>pcRef.current?.getSenders().find(sender=>sender.track?.kind==='video'),
     preview:stream=>{if(!cleanedUp.current)setLocalStream(stream??localStreamRef.current);},
-    changed:(sharing,busy)=>{if(!cleanedUp.current){if(sharingRef.current!==sharing){sharingRef.current=sharing;publishVideoState();}setIsScreenSharing(sharing);setScreenShareBusy(busy);}},
+    changed:(sharing,busy)=>{if(!cleanedUp.current){if(sharingRef.current!==sharing){sharingRef.current=sharing;publishVideoState();if(pcRef.current)void applyVideoBitrate(pcRef.current);}setIsScreenSharing(sharing);setScreenShareBusy(busy);}},
     error:()=>{if(!cleanedUp.current)setScreenShareError('Sharing stopped, but the camera could not resume. Try a new video call.');},
   });
   const startScreenSharing=useCallback(async()=>{setScreenShareError(null);try{await screenShareRef.current?.start();}catch{if(!cleanedUp.current)setScreenShareError('Screen sharing did not start. Allow screen capture to try again.');}},[]);
   const stopScreenSharing=useCallback(async()=>{setScreenShareError(null);try{await screenShareRef.current?.stop();}catch{if(!cleanedUp.current)setScreenShareError('Sharing stopped, but the camera could not resume. Try a new video call.');}},[]);
+  const setScreenControlsExcluded=useCallback(async(fraction:number)=>{
+    if(!sharingRef.current)return;
+    const track=pcRef.current?.getSenders().find(s=>s.track?.kind==='video')?.track;
+    if(track)await excludeScreenControls(track.id,fraction);
+  },[]);
   /** Whether the active path is direct P2P or relayed through TURN. */
   const [connectionType, setConnectionType] = useState<ConnectionType>('connecting');
   const [callQuality, setCallQuality] = useState<CallQuality>({
@@ -240,11 +249,11 @@ export default function useWebRTCCore({
     // Serialize native writes, reading the latest preference inside the queue.
     const operation = qualityQueueRef.current.then(async () => {
       if (cleanedUp.current || pcRef.current !== pc) return;
-      const { degradationPreference, ...encoding } = videoQualityParameters(videoQualityModeRef.current, qualityLevelRef.current);
       const senders = (pc as any).getSenders?.() ?? [];
       for (const sender of senders) {
         if (sender.track?.kind !== 'video' || typeof sender.getParameters !== 'function') continue;
         try {
+          const { degradationPreference, ...encoding } = videoQualityParameters(videoQualityModeRef.current, qualityLevelRef.current,sharingRef.current?(sender.track.getSettings?.()??{}):undefined);
           const parameters = sender.getParameters();
           parameters.encodings = parameters.encodings?.length ? parameters.encodings : [{}];
           Object.assign(parameters.encodings[0], encoding);
@@ -398,9 +407,14 @@ export default function useWebRTCCore({
         const attach=(channel:RTCDataChannel)=>{
           if(channel.label!==CALL_VIDEO_STATE||videoStateChannel.current){channel.close();return;}
           videoStateChannel.current=channel;
+          endHandshake.current?.close();
+          const ending=createCallEndHandshake(String(callId),{
+            send:raw=>{if(cleanedUp.current||pcRef.current!==pc||channel.readyState!=='open'||channel.bufferedAmount>4096)return false;try{channel.send(raw);return true;}catch{return false;}},
+            ended:()=>{if(!cleanedUp.current&&pcRef.current===pc)disconnectedRef.current?.();},
+          });endHandshake.current=ending;
           (channel as any).onopen=publishVideoState;
-          (channel as any).onmessage=(event:{data:unknown})=>{if(cleanedUp.current||pcRef.current!==pc)return;const sharing=readCallVideoState(event.data);if(sharing!==null)setRemoteScreenSharing(sharing);};
-          (channel as any).onclose=()=>{if(videoStateChannel.current===channel){videoStateChannel.current=null;if(!cleanedUp.current)setRemoteScreenSharing(false);}};
+          (channel as any).onmessage=(event:{data:unknown})=>{if(cleanedUp.current||pcRef.current!==pc||ending.receive(event.data))return;const sharing=readCallVideoState(event.data);if(sharing!==null)setRemoteScreenSharing(sharing);};
+          (channel as any).onclose=()=>{ending.close();if(videoStateChannel.current===channel){videoStateChannel.current=null;if(!cleanedUp.current)setRemoteScreenSharing(false);}};
           publishVideoState();
         };
         (pc as any).ondatachannel=(event:{channel:RTCDataChannel})=>attach(event.channel);
@@ -654,6 +668,7 @@ export default function useWebRTCCore({
     debugLog('[WebRTC] cleanup');
     cleanedUp.current = true;
     screenShareRef.current?.close();
+    endHandshake.current?.close();endHandshake.current=null;
     videoStateChannel.current?.close();videoStateChannel.current=null;
     recoveryRef.current?.stop();
     recoveryRef.current = null;
@@ -688,7 +703,7 @@ export default function useWebRTCCore({
   }, [cleanup]);
 
   return {
-    isScreenSharing,remoteScreenSharing,screenShareBusy,screenShareError,startScreenSharing,stopScreenSharing,
+    isScreenSharing,remoteScreenSharing,screenShareBusy,screenShareError,startScreenSharing,stopScreenSharing,setScreenControlsExcluded,notifyCallEnded,
     recovering,
     localStream,
     remoteStream,

@@ -10,6 +10,15 @@ vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '../s
 }).outputText, sandbox);
 const policy = sandbox.exports.videoQualityParameters;
 
+test('screen profile limits high-resolution displays and adapts bandwidth without changing camera policy',()=>{
+ const screen={width:1440,height:3120};
+ for(const level of ['poor','fair','good','unknown']){const p=policy('automatic',level,screen);assert(p.maxFramerate<=15);assert(p.maxBitrate<=1500000);assert(3120/p.scaleResolutionDownBy<=1600);}
+ assert(policy('automatic','poor',screen).maxBitrate<policy('automatic','good',screen).maxBitrate);
+ assert.equal(policy('automatic','good').maxFramerate,30);
+ assert.equal(policy('automatic','good',{}).scaleResolutionDownBy,2);
+ assert.equal(policy('high','good',{width:640,height:360}).scaleResolutionDownBy,1);
+});
+
 test('automatic retains existing adaptive bitrate and resolution behavior', () => {
   for (const [level, bitrate] of [['poor', 500000], ['fair', 1200000], ['good', 2500000], ['unknown', 2500000]]) {
     const p = policy('automatic', level);

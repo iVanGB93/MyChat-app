@@ -1,0 +1,80 @@
+Axonic 1.1.22 / Android versionCode 93 — prepared October 17, 2026
+
+Status: production AAB built locally with explicit user approval.
+No official-app installation or publication performed. Existing messages and
+phone data are intact. Release commit message: 1.1.22.
+
+Production artifact verification
+- Output: builds/Axonic-1.1.22-93.aab; 107546208 bytes.
+- SHA256: 18c9b7f200dc4b8cb35d8ffa83f4bdba722e8df1a33bcb7001a9b2b8aad15e51
+- Bundle validation passed; package com.axonic, version 1.1.22 / 93;
+  debuggable absent (Android default false).
+- Includes armeabi-v7a, arm64-v8a, x86 and x86_64 native libraries.
+- JAR signature verified; upload certificate matches the retained 1.1.21 AAB.
+  Standard self-signed upload-certificate/no-timestamp warnings remain.
+- Overlay and media-projection foreground-service permissions present.
+- Bundled diagnostics source fingerprint matches the source tree:
+  c4aeb1bf943e7f05f094efa5e48640455ad433da7c5edaf9a493475a310a4eef
+- Production build used isolated production environment and existing signing;
+  compilation ran locally, not on EAS cloud.
+
+Scope
+- Preserves accumulated network routing, wake/recovery and transfer improvements
+  in the working tree; this document does not assert new transfer benchmarks.
+- Screen capture is bounded at the native source and waits for foreground-service
+  acknowledgement. Failed startup rejects capture instead of returning a live
+  empty screen track.
+- Sender has movable Axonic-style icon-only controls, a small drag handle,
+  accessible labels, and an approximately 180 x 80 dp protected overlay.
+  Full screen geometry is shared, without bottom cropping. Android obscures the
+  overlay with a black rectangle on the receiving side; this is a known accepted
+  limitation, not transparent capture of the content underneath it.
+- Overlay permission returns are checked before continuing capture. Denial does
+  not start sharing; duplicate requests and late results after unmount are gated.
+- Stop sharing restores the call presentation; the overlay Stop action requests
+  the existing activity. Receiver retains ordinary call controls and a draggable
+  self-preview that springs back on release.
+- Explicit video-call hangup additionally uses the call-bound authenticated data
+  channel with bounded acknowledgement; durable control delivery is retained.
+
+Preparation findings and fixes
+- Full suite found five call-hook fixture failures from loading native Expo code
+  without a capture mock. The fixture now mocks that native boundary explicitly.
+- WebRTC identity patch hashing rejected the known screen-exclusion extension.
+  It now removes only that exact extension for upstream hash validation, then
+  restores it. Unknown source drift still fails closed; security checks remain.
+- App/package/lockfile/native version prepared as 1.1.22 (93), following local
+  release artifact 1.1.21 (92). Play Console availability of 93 is not verified.
+
+Evidence
+- npm run check: 1254 total, 1251 passed, 3 skipped, 0 failures; typecheck,
+  cycle checks, module boundaries and consolidation passed.
+  Local log: builds/release-1.1.22-check.log.
+- npm run test:rtc-native: identity guard and stream admission checks passed.
+- Identity + screen native patch sequence applied twice successfully.
+- Current native UI compiled in local arm64 Dev builds; both phones' Dev updates
+  preserved identities and every baseline message. Official packages unchanged.
+- Two-Dev relay-call explicit hangup: both ended observed within about 1320 ms,
+  including debugger polling. Not a calibrated network latency measurement.
+- User confirmed relayed sharing and preferred movable controls over edge crop.
+
+Remaining validation/limitations
+- Latest compact panel size and fresh overlay-permission grant require a final
+  on-device visual check. Automated permission grant/denial checks passed.
+- Original Miami freeze cause is not proven; forced-TURN local testing is not
+  equivalent to a real remote-network or extended-duration call.
+
+Local build workflow (executed with explicit approval for this release)
+- Compile locally on this PC, not Expo EAS cloud.
+- Existing local builder: builds/build-local-production-aab.cjs,
+  with builds/local-production-aab.gradle updated
+  for 1.1.22/93. It matches the existing upload keystore before building and
+  preserves production environment isolation and all four Android ABIs.
+- Refresh Expo/native generated configuration and source hash before building.
+- Do not run a bare bundleRelease: generated app Gradle defaults to debug signing;
+  the existing local production init script supplies upload signing explicitly.
+- Expected output: builds/Axonic-1.1.22-93.aab. Keep 1.1.21-92.aab intact.
+- Verify bundle structure, version/package, non-debuggable release, certificate
+  continuity with 1.1.21, native permissions, source hash and final SHA256.
+- Follow the recorded version-number commit/push preference only when release
+  build approval is granted. Publication and normal-app installation are separate.

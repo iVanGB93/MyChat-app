@@ -1245,6 +1245,15 @@ test('authenticated bulk response delivers a bounded batch while control remains
  assert.equal(await f.sessions[0].attachmentBulkRequest('{}'),sample);
  assert.equal(await f.sessions[0].custodyRequest('{}'),'control');assert.equal(f.sessions[0].snapshot().state,'connected');
 });
+
+test('preferred smaller bulk batches use proportional pacing without changing legacy capability',async t=>{
+ let calls=0;const hooks={onAttachment:async()=>{calls++;return 'ok';}};
+ const f=pair(t,{0:hooks,1:hooks},['bulk','bulk'],0,d=>createPersistentAxon({...d,wire:{...d.wire,preferredAttachmentBatchChunks:32}}));await Promise.all(f.sessions.map(s=>s.ready));
+ assert.equal(f.sessions[0].attachmentBatchChunks(),32);
+ const raw=JSON.stringify({operation:'direct-get-batch',count:32});assert.equal(await f.sessions[0].attachmentBulkRequest(raw),'ok');
+ const next=f.sessions[0].attachmentBulkRequest(raw);await new Promise(r=>setTimeout(r,10));assert.equal(calls,1);
+ f.advance(63);assert.equal(await next,'ok');assert.equal(calls,2);
+});
 test('bulk capability requires both adapters and still rejects oversized control frames',async t=>{
  const hooks={onAttachment:async()=> 'ok'};
  const old=pair(t,{0:hooks,1:hooks},['bulk',true]);await Promise.all(old.sessions.map(s=>s.ready));

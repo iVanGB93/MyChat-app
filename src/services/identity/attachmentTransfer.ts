@@ -156,7 +156,10 @@ export function createAttachmentTransfer(d:{
     if(r.status!=='completed')throw Error('Attachment receipt not accepted');
     const acknowledged=[...job.acknowledged,relay];await save({acknowledged,phase:acknowledged.length===job.custodians.length?'complete':'confirming',next:0,failures:0});return;
    }
-   const peers=d.peers().filter(p=>(manifest.version!==2||d.sharedPeers?.().includes(p))&&validAccountId(p)&&p!==job.owner&&(job.direction==='incoming'||p!==peer)&&(unavailable.get(job.digest+':'+p)??0)<=d.now()).sort((a,b)=>Number(b===peer)-Number(a===peer)).slice(0,10);
+   // A failed source must not regain first place exactly when the job's backoff
+   // expires. Prefer untried/least-recently-failed sources before normal ranking;
+   // otherwise one fast empty relay can starve a connected complete source forever.
+   const peers=d.peers().filter(p=>(manifest.version!==2||d.sharedPeers?.().includes(p))&&validAccountId(p)&&p!==job.owner&&(job.direction==='incoming'||p!==peer)&&(unavailable.get(job.digest+':'+p)??0)<=d.now()).sort((a,b)=>(unavailable.get(job.digest+':'+a)??0)-(unavailable.get(job.digest+':'+b)??0)||Number(b===peer)-Number(a===peer)).slice(0,10);
    if(!job.relay||!peers.includes(job.relay)||job.direction==='incoming'&&peers[0]===peer&&job.relay!==peer){
     if(!peers.length)return;
     if(job.direction==='outgoing'&&manifest.version===2){
@@ -254,10 +257,11 @@ export function createAttachmentTransfer(d:{
     // of the previous batch, while bounding buffered plaintext-size equivalents
     // to 1 MiB and retaining ordered verification/checkpointing.
     const window=negotiated<=3?requestedWindow:Math.min(2,requestedWindow);
-    const pipeline=bulk&&negotiated<=3;
+    const pipeline=bulk?negotiated<=32:downloadWindow>1;
     // At most four windows per turn; keep the negotiated request count in flight.
+    // Single-chunk peers also replenish reads while verified writes/checkpoints
+    // proceed: at most 16 encrypted chunks buffered, still <=4 requests in flight.
     const count=Math.min(window*negotiated*(pipeline?4:1),total(job)-start);
-    let results:PromiseSettledResult<any>[]=[];
     const reads=bulk?createOrderedReadAhead(Math.ceil(count/negotiated),window,async batch=>{
       if(!current()||manifest.expires<=d.now())throw Error('Attachment unavailable');
       const index=start+batch*negotiated,length=Math.min(negotiated,count-batch*negotiated);
@@ -268,16 +272,17 @@ export function createAttachmentTransfer(d:{
       if(response.status==='unavailable')throw new AttachmentSourceUnavailable('Attachment source not ready');
       if(response.status!=='ok'||response.index!==index||response.count!==length)throw Error('Attachment batch unavailable');
       return unpackAttachmentBatch(manifest,index,length,response.data).map(chunk=>({status:'ok',chunk,custodians:response.custodians}));
-    }):null;
-    if(!bulk)results=await Promise.allSettled(Array.from({length:count},(_,offset)=>
-     request(relay,relay===manifest.sender?'direct-get':'get',job,{index:start+offset})));
+    }):createOrderedReadAhead(count,downloadWindow,async offset=>{
+      if(!current()||manifest.expires<=d.now())throw Error('Attachment unavailable');
+      return request(relay,relay===manifest.sender?'direct-get':'get',job,{index:start+offset});
+    });
     let verifiedCursor=start,custodians=job.custodians;
     try{for(let offset=0;offset<count;offset++){
      if(!await live())return;
      if(manifest.expires<=d.now())throw Error('Attachment expired');
      const index=start+offset;let r:any;
-     if(reads){const batch=await reads.get(Math.floor(offset/negotiated));if(batch.status==='rejected')throw batch.reason;r=batch.value[offset%negotiated];}
-     else {const result=results[offset];if(result.status==='rejected')throw result.reason;r=result.value;}
+     if(bulk){const batch=await reads.get(Math.floor(offset/negotiated));if(batch.status==='rejected')throw batch.reason;r=batch.value[offset%negotiated];}
+     else {const result=await reads.get(offset);if(result.status==='rejected')throw result.reason;r=result.value;}
      // decryptAttachmentChunk verifies the complete Merkle proof before decrypting.
      // Keep the requested-index check here; do not hash the same proof twice.
      if(r.status==='unavailable')throw new AttachmentSourceUnavailable('Attachment source not ready');
@@ -289,7 +294,7 @@ export function createAttachmentTransfer(d:{
      const prior=relay===manifest.sender&&Array.isArray(r.custodians)?r.custodians.filter((p:unknown)=>validAccountId(p)&&p!==job.owner).slice(0,9):[];
      custodians=[...new Set<string>([...custodians,relay,...prior])];if(custodians.length>10)throw Error('Too many attachment sources');
      verifiedCursor=index+1;
-     if(bulk&&(offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
+     if((offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
     }}finally{
      // Files are written at fixed offsets. A crash before this checkpoint safely
      // replays at most one bounded burst; a failed chunk preserves its verified prefix.

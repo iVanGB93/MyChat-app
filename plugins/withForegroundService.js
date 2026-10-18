@@ -47,6 +47,7 @@ function withManifest(config) {
     addPerm('android.permission.FOREGROUND_SERVICE_MICROPHONE');
     addPerm('android.permission.FOREGROUND_SERVICE_CAMERA');
     addPerm('android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION');
+    addPerm('android.permission.SYSTEM_ALERT_WINDOW');
 
     // Remove the obsolete special-use declaration. Axonic only starts this
     // service for a user-visible voice/video call, which is covered by the

@@ -4,9 +4,9 @@ import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
 import Native from '../../../modules/axonic-nearby';
 import {localAccount,startLocalAccount} from './localAccount';
 import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
+import {acquireMessageWakeLease} from './messageWakeLease';
 // Wakes share the runtime and native wake window, not a per-message FIFO.
 // A missing relay receipt must not delay admission of the next inline message.
-let leases=0;
 let pumping:Promise<void>|undefined;
 let lastPumpAt=0;
 function pump(network:ReturnType<typeof startLocalAccountNetwork>){
@@ -43,11 +43,11 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
   notify('account-ready');
   const background=AppState.currentState!=='active';if(background&&!Native?.axonMessageWake)return;
   deliveryDiagnosticEvent(account,_sender,_id,'recovery_started');
-  let network:ReturnType<typeof startLocalAccountNetwork>|undefined,leased=false;
+  let network:ReturnType<typeof startLocalAccountNetwork>|undefined,releaseLease:(()=>void)|undefined;
   try{
    // A foreground wake can become a background task during this lease.
    // Grant it now rather than relying on the app state captured before recovery.
-   console.info('[Axonic recovery] grant');Native?.axonMessageWake?.(30000);leases++;leased=true;console.info('[Axonic recovery] granted');
+   console.info('[Axonic recovery] grant');releaseLease=acquireMessageWakeLease();console.info('[Axonic recovery] granted');
    network=startLocalAccountNetwork();
    // Persist and notify through the normal verified inbox before waiting for a connection.
    // Relay polling still performs the signed receipt exchange, including after a restart.
@@ -63,7 +63,7 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
     if(network.recoveryComplete?.(_sender,_id))break;
     await pump(network);
    }
-  }finally{deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished');console.info('[Axonic recovery] status',JSON.stringify({delivery:network?.recoveryStatus?.(),connections:network?.snapshot?.().pool?.connections.map(c=>({route:c.route,state:c.state})),retrying:network?.snapshot?.().pool?.retrying}));console.info('[Axonic recovery] releasing');try{network?.stop();}finally{if(leased&&--leases===0)Native?.axonMessageWake?.(0);}console.info('[Axonic recovery] released');}
+  }finally{deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished');console.info('[Axonic recovery] status',JSON.stringify({delivery:network?.recoveryStatus?.(),connections:network?.snapshot?.().pool?.connections.map(c=>({route:c.route,state:c.state})),retrying:network?.snapshot?.().pool?.retrying}));console.info('[Axonic recovery] releasing');try{network?.stop();}finally{releaseLease?.();}console.info('[Axonic recovery] released');}
  });const entry={work:result,envelope,listeners};pending.set(key,entry);
  void result.finally(()=>{if(pending.get(key)===entry)pending.delete(key);listeners.clear();}).catch(()=>{});
  return result;

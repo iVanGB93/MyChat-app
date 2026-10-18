@@ -25,3 +25,10 @@ test('Home picture-in-picture is armed only after media and the service are read
 test('a connection during delayed service startup cannot arm PiP until startup completes',async()=>{
  const f=fixture();let release;f.delay(()=>new Promise(r=>release=r));const work=f.mod.startRootCallLease('one','video');while(!release)await Promise.resolve();f.mod.markRootCallConnected('one');assert(!f.events.some(e=>Array.isArray(e)&&e[0]==='pip'&&e[1]));release();await work;await new Promise(r=>setImmediate(r));assert.deepEqual(f.events.at(-1),['pip',true]);
 });
+test('screen sharing suppresses Home PiP without losing the call lease and restores it on stop',async()=>{
+ const f=fixture();await f.mod.startRootCallLease('one','video');f.mod.markRootCallConnected('one');
+ await f.mod.setRootCallSharing('one',true);assert.deepEqual(f.events.at(-1),['pip',false]);assert(f.mod.rootCallMayRunBackground());
+ f.mod.markRootCallConnected('one');await new Promise(r=>setImmediate(r));assert.deepEqual(f.events.at(-1),['pip',false]);
+ await f.mod.setRootCallSharing('wrong',false);assert.deepEqual(f.events.at(-1),['pip',false]);
+ await f.mod.setRootCallSharing('one',false);assert.deepEqual(f.events.at(-1),['pip',true]);
+});

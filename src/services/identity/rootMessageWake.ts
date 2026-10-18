@@ -14,6 +14,8 @@ import {validAccountId} from './identityProtocol';
 import {verifyCustodyWake,custodyWakeEnvelope,type CustodyEnvelope} from './custodyProtocol';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {rootWakeContext,rootWakeBlocked} from './rootCallWake';
+import {validWakeLookup} from './wakeSenderRecovery';
+import type {createWakeSenderRecovery} from './wakeSenderRecovery';
 
 function setStage(stage:string){console.info('[Axonic message wake]',stage);}
 export const rootMessageWakeFailed=()=>{setStage('failed');if(localAccount.status().state==='unlocked')diagnosticJournal.record('wake_failed');};
@@ -65,13 +67,23 @@ async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>numbe
  finally{finished=true;if(timer!==undefined)clearTimeout(timer);}
 }
 /** Signed hint with optional ciphertext. Plaintext remains unavailable until local unlock. */
-export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope)=>Promise<void>){
+export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope)=>Promise<void>,recoverSender?:ReturnType<typeof createWakeSenderRecovery>){
  setStage('context');
- const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048)return;
- let sender:string;try{sender=JSON.parse(d.event).sender;}catch{return;}if(!validAccountId(sender))return;
- const owner=await rootWakeContext();if(!owner||await rootWakeBlocked(owner.account,sender))return;
- const record=await createMobileIdentityRecordStore(Date.now).read(sender);
- const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event)return;setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified');
+ const reject=(reason:string)=>{setStage(reason);diagnosticJournal.record('wake_failed',{reason});};
+ const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048){reject('invalid-payload');return;}
+ let sender:string;try{sender=JSON.parse(d.event).sender;}catch{reject('invalid-event');return;}if(!validAccountId(sender)){reject('invalid-sender');return;}
+ const owner=await rootWakeContext();if(!owner){reject('owner-unavailable');return;}if(await rootWakeBlocked(owner.account,sender)){reject('sender-blocked');return;}
+ if(!validWakeLookup(data,owner,Date.now())){reject('invalid-routing-or-expiry');return;}
+ const records=createMobileIdentityRecordStore(Date.now);let record=await records.read(sender);
+ if(!record){
+  setStage('sender-record-missing');
+  if(!recoverSender){reject('sender-lookup-unavailable');return;}
+  const result=await recoverSender(data,owner);setStage('sender-lookup-'+result);
+  if(result!=='recovered'){reject('sender-lookup-'+result);return;}
+  record=await records.read(sender);
+ }
+ const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||await rootWakeBlocked(owner.account,sender)){reject('context-changed');return;}
+ const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event){reject('signature-or-record-invalid');return;}setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified');
  const deadline=createMessageNotificationDeadline();
  const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,custodyWakeEnvelope(data,event,Date.now())??undefined)).then(()=>{},()=>{setStage('recovery-failed');});
  // Three seconds without new progress, capped at ten seconds overall. A preview

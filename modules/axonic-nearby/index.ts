@@ -16,6 +16,7 @@ interface NearbyModule {
   axonEnableAttachments?(id:string):void;
   axonEnableMediaLane?(id:string):void;
   axonEnableBulkAttachments?(id:string):void;
+  axonEnableWssBulkAttachments?(id:string):void;
   axonConnect?(host: string, port: number): Promise<string>;
   axonWssConnect?(host: string, account: string): Promise<string>;
   axonRead?(id: string): Promise<string>;

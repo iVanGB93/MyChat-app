@@ -21,6 +21,7 @@ export interface AxonWire {
   attachments?: boolean;
   mediaLane?: boolean;
   bulkAttachments?: boolean;
+  preferredAttachmentBatchChunks?:32;
   smallAttachmentBatches?: boolean;
   smallAttachmentWindow?: 4;
   enableBulkAttachments?():void;
@@ -58,7 +59,7 @@ export function createPersistentAxon(d: {
   let peerSharedAttachments=false,peerAttachments=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
   let mediaInbound=0,mediaWaiting=0,mediaWindow=1,mediaSuccesses=0;
   let lastMediaAt=-Infinity;
-  let peerBulk=false,bulkInbound=0,bulkFrames=0;
+  let peerBulk=false,bulkInbound=0,bulkFrames=0,bulkBytes=0;
   let smallBatches=false,smallWindow=2;
   const bulkFrameLimit=()=>smallBatches?AXON_FRAME_BYTES:ATTACHMENT_BULK_FRAME_BYTES;
   const smallRequest=(raw:string)=>{try{const r=JSON.parse(raw);return r.operation==='direct-get-batch'&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=3;}catch{return false;}};
@@ -250,7 +251,7 @@ export function createPersistentAxon(d: {
       const maxBytes=peerBulk&&peer&&peer.expiresAt>d.now()?bulkFrameLimit():AXON_FRAME_BYTES;
       if (!d.current() || typeof raw !== 'string' || raw.length>maxBytes) { stop(); return; }
       const rawBytes=new TextEncoder().encode(raw).length;if(rawBytes>maxBytes){stop();return;}
-      if (d.now() - windowAt >= 60_000) { windowAt = d.now(); frames = 0; custodyFrames=0; attachmentFrames=0;bulkFrames=0; }
+      if (d.now() - windowAt >= 60_000) { windowAt = d.now(); frames = 0; custodyFrames=0; attachmentFrames=0;bulkFrames=0;bulkBytes=0; }
       const f = JSON.parse(raw);
       // The other side can finish its independent authentication while our
       // final durable identity read is still pending. Bound early application
@@ -263,7 +264,7 @@ export function createPersistentAxon(d: {
       }
       const bulk=f.kind==='bulk-request'||f.kind==='bulk-response';
       if(rawBytes>AXON_FRAME_BYTES&&f.kind!=='bulk-response'){stop('oversized-control');return;}
-      if(bulk&&(!peerBulk||!peer||peer.expiresAt<=d.now()||++bulkFrames>(smallBatches?28000:512))){stop('invalid-bulk-frame');return;}
+      if(bulk&&(!peerBulk||!peer||peer.expiresAt<=d.now()||++bulkFrames>(smallBatches?28000:2048)||!smallBatches&&(bulkBytes+=rawBytes)>256*ATTACHMENT_BULK_FRAME_BYTES)){stop('invalid-bulk-frame');return;}
       // Fixed labels only: never retain payloads, identifiers, or untrusted keys.
       const operations = ['describe','authenticate','introductions','custody','directory','push','attachment','call-control','call-media','call-relay','call-media-relay','call-media-forward'];
       const operation = f.kind === 'response' ? pending?.operation : f.operation;
@@ -505,7 +506,7 @@ export function createPersistentAxon(d: {
     supportsSharedAttachments:()=>peerSharedAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachments:()=>peerAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachmentBulk:()=>peerBulk&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
-    attachmentBatchChunks:()=>smallBatches?3:128,
+    attachmentBatchChunks:()=>smallBatches?3:d.wire.preferredAttachmentBatchChunks??128,
     attachmentBatchWindow:()=>smallBatches?smallWindow:2,
     async attachmentBulkRequest(raw:string):Promise<string|null>{
       const permitted=()=>peerBulk&&!!peer&&peer.expiresAt>d.now()&&!stopped&&d.current();
@@ -514,7 +515,12 @@ export function createPersistentAxon(d: {
       try{
         for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5);
         if(!permitted()||authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())return null;
-        if(smallBatches)smallBatchCredits--;else bulkNext=d.now()+250;
+        if(smallBatches)smallBatchCredits--;else {
+          // Pace by requested bytes, retaining the existing 2 MiB/s ceiling.
+          // Unknown requests keep the conservative full-batch interval.
+          let count=128;try{const r=JSON.parse(raw);if(r.operation==='direct-get-batch'&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=128)count=r.count;}catch{}
+          bulkNext=d.now()+Math.max(5,250*count/128);
+        }
         return await new Promise<string>((resolve,reject)=>{
           const id=++sequence;mediaPending.set(id,{bulk:true,until:d.now()+15000,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),15000)});
           try{send({version:1,kind:'bulk-request',id,body:raw});}catch{stop('bulk-send-failed');}
