@@ -1,0 +1,97 @@
+Wake rejection / long background work follow-up — 2026-10-18
+
+Scope
+Continues wake-binding-background-jobs-2026-10-18.txt. User separately approved
+commit/push/deployment of bounded redacted diagnostics on all three AoNs after
+tests. No history deletion, queue reset, production mobile build, publication,
+or official-app installation. Mobile source remains uncommitted.
+
+Findings and fixes
+- Four historical gateway mismatch attempts had grown to 12 on EACH of First
+  and Second at the pre-deployment inspection: six inline and six hint-only.
+  Latest was 15:12:58 UTC. These are attempts, not twelve unique messages;
+  requests on two gateways must not be summed as unique deliveries.
+- Retained Dev wakes verified (12 and 7). FirstNeuron's ten retained signed
+  custody envelopes also verified. These checks do not identify the requester
+  responsible for the rejected gateway requests. The authenticated protocol
+  does not supply a client build; no build-related cause is established.
+- Diagnostic report projection now includes local_silent_flag_binding_mismatch
+  for both private and group outgoing wake counters. Signature verification is
+  unchanged: a counterfactual flag check is diagnosis only, never acceptance.
+- Recovery's 20-second budget now starts before inline persistence, after
+  account startup. Slow persistence is allowed to finish safely, but cannot
+  receive another full polling window afterward. Account startup itself is
+  outside this budget. Native wake lease remains bounded independently.
+- Network/native lease cleanup now precedes best-effort diagnostics. A failing
+  snapshot/journal cannot strand recovery resources; even stop failure releases
+  the native lease. A late callback cannot restart expired polling work.
+- Recovery reports elapsed time, inline/setup time, maximum delayed wait,
+  overrun and completion reason. Native elapsed/uptime/process clocks distinguish
+  device sleep from elapsed work. Process CPU covers all app threads; overlapping
+  recovery samples must NOT be added. Old clients omit unavailable clock fields.
+  No extra wake locks, background service or periodic diagnostic timers added.
+
+Dev validation and preservation
+- Full npm run check: 1,359 passed, 3 skipped, 0 failed; TypeScript, cycles,
+  boundaries and consolidation passed. Native nearby unit suite: 41 passed.
+- Local Dev APK updated on both authorized phones, data-preserving install-r.
+  Full validated private archives retained locally:
+  builds/phone-dev-before-wss-1792336886002.tar (1,725,742,080 bytes)
+  builds/phone-dev-before-wss-1792336897601.tar (323,228,160 bytes).
+- Both identities and all baseline message keys preserved: A 408, B 163.
+  Official package version/update metadata unchanged during installation.
+  Final read-only WorkManager check: zero unfinished jobs on each Dev phone.
+- Both Hermes runtimes passed isolated current-source recovery tests: normal
+  receipt completion, 25-second virtual inline transaction without extra polling,
+  diagnostic failure cleanup, and 80-second delayed virtual callback without
+  renewed work. Native clock snapshots/waits also worked on both phones.
+  These are deterministic tests, NOT a real 80-second network/battery benchmark.
+- Both phones again passed 24 signed-wake validation checks; zero test network
+  sends and zero test storage mutations. No messages sent to real contacts.
+- Evidence: builds/recovery-budget-dev-1792337093589.json,
+  builds/wake-binding-dev-1792337094732.json, builds/wake-followup-check.log,
+  builds/wake-followup-dev-build.log and builds/dev-wake-followup-final-*.json.
+
+AoN release
+- Committed and pushed 367537e187d61d9dd7957aab3d578188fa8fa6a0.
+- All THREE authenticated status endpoints independently confirmed runtime
+  22153b67eb63597bfd78ff3b8558f4113afe69f29a55948f4300e2189f38fb29,
+  135 modules, sourceDirty=false, sourceMetadataStatus=runtime_bound, guidance v4.
+- Full AoN suite: 231 passed. Selected custodyProtocol/custodyWakeForwarder
+  shared-core parity passed. Full core parity remains blocked by pre-existing
+  unrelated relayInventory.ts drift, not silently overwritten in this release.
+- Rejection trace: at most 32 rows, random process-local keyed requester and
+  envelope aliases; role, fixed reason, inline/hint mode, attempt counts/times.
+  No raw identities, content, signatures or credentials. Aliases cannot be
+  joined across nodes/restarts. Claimed inline metadata is not trusted evidence.
+- First and Third kept original data directories/identities; old code retained
+  at /opt/axonic-neuron-before-wake-367537e and
+  /opt/axonic-thirdneuron-before-wake-367537e. Full data archives retained on
+  their hosts at /var/backups/axonic-neuron-before-wake-367537e.tgz and
+  /var/backups/axonic-thirdneuron-before-wake-367537e.tgz respectively.
+- First upload to Railway incorrectly used the generic root Dockerfile and
+  crashed before startup: missing /run/axonic/fcm.json. Recovered with existing
+  scripts/stage-railway.mjs, which places the correct Railway wrapper at the
+  service-selected /Dockerfile. No credential/volume configuration changed.
+  Successful replacement deployment: 6787d365-eb04-40e1-be45-63d7f1bc936b.
+- Read-only paginated chat counts unchanged: First 156, Second 45, Third 66.
+  This is count-only evidence, not an exact per-record comparison. A safety
+  review rejected exporting remote record keys or hashes; neither was exported
+  by the replacement collector. Only counts and release metadata were saved.
+- Service deployment restarts changed process/network epochs; compare counters
+  only within each new epoch. No explicit diagnostic/data/queue reset occurred.
+
+Remaining verification
+At 15:34:36 UTC, no new gateway verification rejections had appeared on First
+or Second since their deployments; trace rows were empty. This is a short fresh
+window, not proof of resolution. Await a natural recurrence to correlate the
+requester role and packet shape. Do not fabricate malformed production wakes.
+The historical 79–86-second observations and total battery work-lock time still
+cannot be attributed entirely to a specific cause. New timing fields enable
+that distinction in future Dev reports. Normal apps have NOT received these
+mobile fixes and need a separately approved future production build/update.
+
+Security-preservation review
+The protocol implementation skill guided the signed-flag boundary review: no
+signature bypass, automatic flag rewrite, relaxed inline binding or delivery
+receipt inferred from gateway/provider acceptance was introduced.

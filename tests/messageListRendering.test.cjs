@@ -12,7 +12,7 @@ test('private and group lists share the render policy without slicing history or
   assert.equal(matches.length,1,file);const props=matches[0].attributes.properties;
   assert(props.some(p=>ts.isJsxAttribute(p)&&p.name.getText(source)==='inverted'&&!p.initializer));
   const data=props.find(p=>ts.isJsxAttribute(p)&&p.name.getText(source)==='data');assert.equal(data.initializer.expression.getText(source),'messages');
-  // Progress polls must keep the same state when an unchanged snapshot returns.
-  assert.match(fs.readFileSync(file,'utf8'),/setTransfers\(previous=>JSON\.stringify\(previous\)===raw\?previous:v\)/);
+  // Progress events must keep the same state when an unchanged snapshot returns.
+  assert.match(fs.readFileSync(file,'utf8'),/setTransfers\(previous=>JSON\.stringify\(previous\)===JSON\.stringify\(v\)\?previous:v\)/);
  }
 });

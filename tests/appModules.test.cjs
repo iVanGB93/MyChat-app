@@ -221,3 +221,11 @@ test('reconnected durable backlog drains without waiting for one timer tick per 
  let sends=0;const d=delivery(f,{send:async()=>{sends++;return true;}});
  try{await d.worker.tick();for(let i=0;i<1000&&sends<64;i++)await new Promise(r=>setTimeout(r,5));assert.equal(sends,64);await until(async()=> (await f.ledger.snapshot()).messages.every(m=>m.status==='delivered'));}finally{d.worker.stop();}
 });
+test('outbox exposes failed-job deadlines and returns to sleep after durable delivery',async()=>{
+ const f=setup();let now=10000,revision=0,success=false;
+ const reads=load('runtimeChatReads').createRuntimeChatReads({owner:f.owner,revision:()=>revision,read:f.ledger.snapshot});
+ const d=delivery(f,{stableSnapshots:true,ledger:()=>({...f.ledger,snapshot:reads.read}),now:()=>now,send:async()=>success,deposit:async()=>false});
+ await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),Infinity);
+ await f.commands.sendText(b,'deadline fixture');revision++;await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),now+2000);
+ now+=2000;success=true;await d.worker.dispatch();revision++;await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),Infinity);d.worker.stop();
+});

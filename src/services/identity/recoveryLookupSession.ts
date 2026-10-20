@@ -4,6 +4,7 @@ import { createIdentityDirectoryLookup, unavailableDirectoryLookup } from './ide
 import { DIRECTORY_DOMAIN } from './identityDirectory';
 import type { IdentityRecordStore } from './identityAdmission';
 import type { IdentityRecord } from './identityProtocol';
+import {createEventDeadlineTask} from './eventDeadlineTask';
 /** One in-memory visitor per recovery screen. Never signs a change to the recovering account.
  * The peer may retain its ordinary admission pin for this visitor; no directory record is published.
  */
@@ -15,8 +16,9 @@ export function createRecoveryLookupSession(d: {
   let identity: UnlockedIdentity | undefined, wire: AxonWire | undefined;
   let session: ReturnType<typeof createPersistentAxon> | undefined;
   let connecting: Promise<void> | undefined, busy = false;
-  let tick: ReturnType<typeof setInterval> | undefined, lifetime: ReturnType<typeof setTimeout> | undefined;
-  const stop = () => { clearInterval(tick); clearTimeout(lifetime); abort.abort(); session?.stop(); wire?.close(); if (identity) destroyIdentity(identity); };
+  let unsubscribe: (()=>void) | undefined, lifetime: ReturnType<typeof setTimeout> | undefined;
+  const clock=createEventDeadlineTask({now:d.now,run:async()=>{session?.tick();return session?.nextDeadline();}});
+  const stop = () => { clock.stop(); unsubscribe?.(); clearTimeout(lifetime); abort.abort(); session?.stop(); wire?.close(); if (identity) destroyIdentity(identity); };
   async function start() {
     if (abort.signal.aborted) throw Error('Recovery lookup closed');
     const created = await createLocalIdentity(d.random, d.now());
@@ -30,9 +32,11 @@ export function createRecoveryLookupSession(d: {
       wire, store: d.store, expectedAccount: d.peer, now: d.now, random: d.random,
       current: () => !abort.signal.aborted, onClosed: stop,
       onDirectory: async () => JSON.stringify({ domain: DIRECTORY_DOMAIN, status: 'not-found' }) });
+    unsubscribe=session.subscribeSchedule(()=>clock.changed());
+    clock.changed();
     await session.ready;
     if (abort.signal.aborted) throw Error('Recovery lookup closed');
-    tick = setInterval(() => session?.tick(), 1000);
+    clock.changed();
     lifetime = setTimeout(stop, 5 * 60_000);
   }
   return {

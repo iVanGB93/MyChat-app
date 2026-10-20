@@ -1,0 +1,69 @@
+Notification and call validation — October 20, 2026
+
+Implementation
+- Signed FCM routing hints no longer display speculative message notifications.
+  Recovery still runs; notification previews require durable decrypted admission.
+- A matching legacy generic notification can be removed during wake handling;
+  newer/decrypted conversation notifications are preserved.
+- Small messages can travel as encrypted inline custody envelopes inside the
+  3,500-byte application budget. Larger packets and some fallback paths remain
+  retrieval hints. This does not mean every FCM wake carries a complete message.
+- Incoming calls now request full-screen presentation and Answer/Decline actions.
+  Android 12+ uses native Notification.CallStyle while retaining Notifee IDs,
+  pending intents and cancellation. Android settings still govern presentation.
+- Call actions are matched to the current verified account/call, expire after
+  60 seconds, and execute through the foreground call UI and permission checks.
+
+Validation
+- Local side-by-side Dev build succeeded for arm64-v8a and x86_64.
+- Both phone Dev apps updated with backups; identities and baseline messages
+  retained (163 and 445 messages). Official com.axonic packages unchanged.
+- Both emulator Dev apps updated without wiping data.
+- Unit suite: 1,415 tests; 1,412 passed, 3 skipped, zero failures.
+- TypeScript, service dependency, module boundary and consolidation checks pass.
+- Call appearance/action regressions passed again after module API adjustment.
+- Two-phone text delivery/read receipts passed both ways (~1.9 s observed).
+- Generated 18,944-byte attachment delivered with matching SHA-256 (~2.0 s).
+- After 35 seconds in background, each phone received one content notification;
+  zero generic notifications, read receipt created no sender notification.
+  Observed delivery: 9,545 ms and 6,563 ms. Logs confirmed an FCM wake in the
+  first direction. These figures include debugger/polling overhead.
+- Incoming voice call opened the actual full-screen phone UI after clean Dev
+  restarts. Tapping Accept reached ready on both coordinators (~2.3 s observed
+  after tap). Test call ended. This does not measure sustained audio quality.
+- Decline action handler tested against another real call; both sides ended.
+  Handler was dispatched through JS, not by tapping Android's shade button.
+- Initial call-notification wait timed out during development reloads. A clean
+  restart passed and the full-screen incoming interface was visually verified.
+
+Limits / follow-up
+- No production build or AoN deployment performed.
+- Production app retains old behavior until a future approved build.
+- Full-screen display is subject to OS permissions/settings; shade action layout
+  was not separately visually verified because the phone opened full screen.
+- Warm background tests are not deep Doze or killed-process FCM validation.
+- Background delays remain measurable; do not interpret removal of generic
+  alerts as proof that all wake/recovery performance issues are resolved.
+- Existing local AoN scheduling changes have not been deployed by this work.
+Caller cancellation follow-up (same day)
+- User reproduction: sender journal had invite/ringing/cancel; receiver had only
+  invite/ringing and remained ringing in background beyond the signed deadline.
+- Added an independent, bounded native call-setup transport window and native
+  deadline scheduling for call expiry/retry workers. Idle calls have no timer.
+- Foreground ringtone now stops on background transitions; delayed preference
+  reads cannot restart it there. Notification lifetime uses remaining invitation
+  time; an expired view cannot recreate an incoming-call notification.
+- Both Dev phones updated locally; identities and all baseline chats preserved.
+  Official com.axonic installation metadata unchanged.
+- Emulator -> Leidiana Dev background cancellation: ended as cancelled in 2.40s.
+- iVan Dev -> Leidiana Dev background cancellation: ended as cancelled in 2.01s.
+  Android playback inspection after cancellation showed no started player.
+- Unit suite: 1417 passed, 3 skipped, 0 failed (1420 total).
+  TypeScript, module boundaries, cycles, consolidation passed. Native debug built.
+- Unanswered background call expired as No answer at its invitation deadline;
+  no incoming-call notification remained afterward.
+- Longer test exposed clock-only journal writes triggering more call work.
+  Suppressed notifications for observedAt-only persistence, preserving durable
+  clock rollback protection and all signaling/receipt change notifications.
+- Re-tested both phones after this fix: background cancellation 2.10s.
+  Full unit suite repeated: 1417 passed, 3 skipped, 0 failed.

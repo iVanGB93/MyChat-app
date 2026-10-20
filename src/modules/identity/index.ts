@@ -9,4 +9,4 @@ export {checkRecoveryRecord,findRecoveryRecord} from '../../services/identity/re
 export {accountFromRecoveryPhrase} from '../../services/identity/identityVault';
 export type {DirectoryLookupResult} from '../../services/identity/identityDirectoryLookup';
 
-export {identityLink,parseIdentityLink,parseIdentityInput,queueIdentityLink,takeIdentityLink} from '../../services/identity/identityLinks';
+export {subscribeIdentityLinks,identityLink,parseIdentityLink,parseIdentityInput,queueIdentityLink,takeIdentityLink} from '../../services/identity/identityLinks';

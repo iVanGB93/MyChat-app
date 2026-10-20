@@ -1,3 +1,4 @@
+import {attachmentChanged} from './attachmentChanges';
 import * as SQLite from 'expo-sqlite';
 import {validAccountId} from './identityProtocol';
 import {validAttachmentJob,type AttachmentJob,type AttachmentJobStore} from './attachmentTransfer';
@@ -69,7 +70,7 @@ export function createMobileAttachmentJobs(now:()=>number=Date.now):AttachmentJo
      await tx.runAsync(`INSERT INTO ${table}(owner,digest,revision,raw) VALUES(?,?,?,?) ON CONFLICT(owner,digest) DO UPDATE SET revision=excluded.revision,raw=excluded.raw`,next.owner,next.digest,next.revision,JSON.stringify(next));
      if(finished)await tx.runAsync('DELETE FROM jobs WHERE owner=? AND digest=?',next.owner,next.digest);
      if(!current())throw Error('Attachment account locked');saved=true;
-    });return saved;
+    });if(saved)attachmentChanged();return saved;
    });tail=work.catch(()=>{});return work;
   },
  };

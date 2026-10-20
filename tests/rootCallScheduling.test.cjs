@@ -16,7 +16,7 @@ function fixture(options={}){
  const code=ts.transpileModule(fs.readFileSync('src/services/identity/rootAccountCalls.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText;
  new Function('require','exports',code)(name=>{if(!(name in modules))throw Error(name);return modules[name];},exports);
  const historical=[{callId:'old'},{callId:'new'}],pending=[historical[1]];
- const app=exports.createRootAccountCalls({identity:{status:()=>({account:'owner'}),callDevice:()=> 'device'},network:()=>({callPeers:()=>[{account:'remote',device:'remote-device',expiresAt:200},{account:'other',expiresAt:200},{account:'remote',expiresAt:99}]}),records:{},store:{},list:async()=>historical,listPending:async()=>pending,current:()=>true,now:()=>100,contacts:async()=>[],changed(){}});
+ const app=exports.createRootAccountCalls({identity:{status:()=>({account:'owner'}),callDevice:()=> 'device'},network:()=>({callPeers:()=>[{account:'remote',device:'remote-device',expiresAt:200},{account:'other',expiresAt:200},{account:'remote',expiresAt:99}]}),records:{},store:{},list:async()=>historical,listPending:async()=>pending,current:()=>true,now:()=>100,contacts:options.contacts??(async()=>[]),contactsRevision:options.contactsRevision,changed(){}});
  return {app,hooks,seen,release,historical,pending};
 }
 test('call recovery retains history while direct and relay retries use only pending journals',async()=>{
@@ -55,4 +55,12 @@ test('a stalled direct send cannot block relay polling or later call-expiry tick
   assert.equal(f.seen.retry,1);assert.equal(f.seen.relay,1);assert.equal(f.seen.ticks,2);
   f.release();await Promise.all([first,second]);
  }finally{f.release();f.app.stop();}
+});
+test('unchanged call policy is reused, and changed policy is read before handling a request',async()=>{
+ let revision=0,reads=0;const f=fixture({contactsRevision:()=>revision,contacts:async()=>{reads++;return [{account:'remote',alias:'Peer',blocked:revision>0}];}});
+ try{for(let i=0;i<30;i++)await f.app.receiveRelay('{}',{});assert.equal(reads,1);revision++;await f.app.receiveRelay('{}',{});assert.equal(reads,2);}finally{f.app.stop();f.release();}
+});
+test('contact change during a policy read cannot install the obsolete result',async()=>{
+ let revision=0,reads=0;const f=fixture({contactsRevision:()=>revision,contacts:async()=>{reads++;if(reads===1)revision++;return [];}});
+ try{await f.app.receiveRelay('{}',{});assert.equal(reads,2);await f.app.receiveRelay('{}',{});assert.equal(reads,2);}finally{f.app.stop();f.release();}
 });

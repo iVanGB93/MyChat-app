@@ -53,6 +53,20 @@ test('background completion requires receipt acceptance and a drained relay, and
  courier.resume();assert.equal(courier.recoveryComplete(e.sender,e.id),false);
  empty=true;await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'empty inbox is not target receipt evidence');courier.stop();
 });
+
+test('local wake flag mismatches are diagnosed without forwarding, repair, deletion or acceptance',async t=>{
+ for(const silent of [false,true]){
+  const f=fixture(t),e=await f.seal(silent?JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]):'normal message');
+  if(silent)delete e.wakeMode;else e.wakeMode='silent';
+  assert.equal((await f.request(f.service(),0,'deposit',e)).status,'held');
+  let calls=0;const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],request:async()=>{calls++;return '{"status":"forwarded"}';}});
+  await worker.tick();f.advance(1000);await worker.tick();
+  assert.equal(calls,0);assert.equal(worker.diagnostics().outcomes.local_silent_flag_binding_mismatch,1);
+  assert.equal(worker.diagnostics().pendingSample[0].lastOutcome,'local_silent_flag_binding_mismatch');
+  assert.equal(worker.diagnostics().acceptedEnvelopes,0);assert.deepEqual((await f.store.inspect())[0].packet,e);
+  worker.stop();
+ }
+});
 test('stored digest reuse preserves row bindings, changed-byte rejection and capacity checks',async t=>{
  const f=fixture(t),e=await f.seal(),validate=f.load('custodyService').validateCustodyRows;
  const row={sender:e.sender,recipient:e.recipient,id:e.id,recipientDevice:e.recipientDevice,expires:e.expires,digest:f.protocol.custodyDigest(e),packet:e};
@@ -232,6 +246,21 @@ test('courier cannot mark held/completed response delivered, reseal expired enve
  const q=f.load('custodyCourier').createCustodyCourier(deps);await q.deposit(b.record.account,'probe','01'.repeat(32));assert.equal(updates,0);f.expire();await q.deposit(b.record.account,'probe','01'.repeat(32));assert.equal(seals,1,'expired envelopes must not be resealed');
  const slow=f.load('custodyCourier').createCustodyCourier({...deps,seal:()=>new Promise(r=>release=r)});const pending=slow.deposit(b.record.account,'probe','02'.repeat(32));
  while(!release)await new Promise(r=>setImmediate(r));owner=null;slow.invalidate();release(await f.seal());await pending;assert.equal(await own.get(a.record.account,'02'.repeat(32)),null);
+});
+test('ranking changes do not duplicate a job already held by the selected custodian',async t=>{
+ const f=fixture(t),[a,hub,b,backup]=f.ids,own=f.load('ownCustodyStore').createOwnCustodyStore(),calls=[],packets=[];let seals=0,hint=false;
+ const q=f.load('custodyCourier').createCustodyCourier({owner:()=>a.record.account,allowed:()=>true,now:f.now,records:f.records,own,
+ relays:()=>hint?[backup.record.account,hub.record.account]:[hub.record.account,backup.record.account],
+ receive:async()=>null,confirmReceipt:async()=>{throw Error('No receipt supplied');},
+ request:async(relay,raw)=>{calls.push(relay);packets.push(JSON.parse(raw).packet);return JSON.stringify({status:'held'});},
+ seal:async(_record,_device,id,text)=>{seals++;return f.seal(text,id);}});
+ const id='09'.repeat(32);
+ await q.deposit(b.record.account,'invitation',id);
+ hint=true;await q.deposit(b.record.account,'invitation',id);
+ await q.deposit(b.record.account,'invitation',id);
+ assert.deepEqual(calls,[hub.record.account,hub.record.account,hub.record.account]);
+ assert.equal(seals,1);assert.deepEqual(packets[0],packets[1]);
+ assert.equal((await own.get(a.record.account,id)).relay,hub.record.account);
 });
 test('a full preferred relay yields to another connected custodian without resealing',async t=>{
  const f=fixture(t),[a,hub,b,backup]=f.ids,own=f.load('ownCustodyStore').createOwnCustodyStore(),calls=[];let seals=0;
@@ -462,6 +491,24 @@ test('ordinary custody forwards only signed wake metadata and retries other peer
  await f.request(service,2,'receipt',receipt);f.advance(1000);await forward.tick();assert.equal(sent.length,2);
 });
 
+test('silent and alert wakes preserve exact signed bytes through storage reopen, gateway fallback and worker restart',async t=>{
+ for(const silent of [false,true]){
+  const f=fixture(t),e=await f.seal(silent?JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]):'visible text');
+  await f.request(f.service(),0,'deposit',e);
+  const reopened=f.load('mobileCustodyStore').createMobileCustodyStore(f.ids[1].record.account),sent=[];
+  const expected=f.protocol.createCustodyWake(e,f.ids[0].record,true);
+  const make=()=>f.load('custodyWakeForwarder').createCustodyWakeForwarder({inlineEnvelope:true,store:reopened,records:f.records,current:()=>true,now:f.now,peers:()=>['old','new'],request:async(peer,raw)=>{
+   const data=JSON.parse(raw).data,event=f.protocol.verifyCustodyWake(data,f.ids[0].record,e.recipient,e.recipientDevice,f.now());
+   assert(event);assert.equal(event.wakeMode,silent?'silent':undefined);assert.equal(data.event,expected.event);sent.push({peer,inline:!!data.envelope});
+   return JSON.stringify({status:peer==='new'?'forwarded':data.envelope?'rejected':'retry'});
+  }});
+  const before=JSON.stringify(await reopened.inspect());
+  let worker=make();await worker.tick();worker.stop();worker=make();await worker.tick();worker.stop();
+  assert.deepEqual(sent,Array.from({length:2},()=>[{peer:'old',inline:true},{peer:'old',inline:false},{peer:'new',inline:true}]).flat());
+  assert.equal(JSON.stringify(await reopened.inspect()),before,'wake acceptance must not alter ciphertext or mark delivery');
+ }
+});
+
 test('unsupported legacy gateways are deferred across messages without blocking another gateway',async t=>{
  const f=fixture(t),service=f.service(),sent=[];
  await f.request(service,0,'deposit',await f.seal());
@@ -636,4 +683,86 @@ test('silent custody wake intent is signed and does not alter encrypted delivery
  assert.equal(verify({...normal,event:JSON.stringify({...JSON.parse(normal.event),wakeMode:'silent'})}),null);
  const receipt=p.signCustodyReceipt(regular,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
  assert.equal(p.createCustodyWake(receipt,f.ids[2].record),null,'delivery confirmations have no message notification wake');
+});
+
+test('inline custody must preserve the verified wake mode and signature; the signed hint remains recoverable',async t=>{
+ const f=fixture(t),p=f.protocol;
+ for(const text of ['ordinary text',JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}])]){
+  const e=await f.seal(text),data=p.createCustodyWake(e,f.ids[0].record,true);
+  const verify=d=>p.verifyCustodyWake(d,f.ids[0].record,e.recipient,e.recipientDevice,f.now());
+  const event=verify(data);assert(event);assert.deepEqual(p.custodyWakeEnvelope(data,event,f.now()),e);
+  const changed={...e};if(changed.wakeMode==='silent')delete changed.wakeMode;else changed.wakeMode='silent';
+  for(const altered of [changed,{...e,wakeSignature:'00'.repeat(64)},{...e,wakeSignature:undefined}]){
+   const incoming={...data,envelope:JSON.stringify(altered)};
+   assert.deepEqual(verify(incoming),event,'valid signed hint is not discarded');
+   assert.equal(p.custodyDigest(altered),p.custodyDigest(e),'ciphertext digest alone cannot bind wake metadata');
+   assert.equal(p.custodyWakeEnvelope(incoming,event,f.now()),null,'do not persist inconsistent inline wake metadata');
+  }
+  const hint={...data};delete hint.envelope;assert.deepEqual(verify(hint),event);assert.equal(p.custodyWakeEnvelope(hint,event,f.now()),null);
+ }
+});
+test('one-hop relay delivers only to the recipient and commits its signed receipt before skipping FCM',async t=>{
+ const f=fixture(t),e=await f.seal(),relay=f.service();await f.request(relay,0,'deposit',e);
+ let saved=false,pushes=0,direct=0;
+ const receiver=f.load('custodyService').createCustodyService({owner:e.recipient,store:{transaction:async fn=>fn([])},records:f.records,now:f.now,current:()=>true,
+ receiveOwn:async packet=>{saved=true;return f.protocol.signCustodyReceipt(packet,f.ids[2].signingSeed,f.ids[2].encryptionSeed);}});
+ const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>[],request:async()=>{pushes++;return null;},
+ deliverDirect:packet=>relay.deliverDirect(packet,async(peer,raw)=>{direct++;assert.equal(peer,e.recipient);return receiver.receive(f.ids[1].record.account,raw);})});
+ await worker.tick();assert.equal(saved,true);assert.equal(direct,1);assert.equal(pushes,0);
+ assert.equal((await f.store.inspect())[0].packet.kind,'receipt');
+ const other=f.load('custodyService').createCustodyService({owner:f.ids[3].record.account,store:{transaction:async()=>{throw Error('Must not deposit');}},records:f.records,now:f.now,current:()=>true});
+ assert.equal(JSON.parse(await other.receive(f.ids[1].record.account,JSON.stringify({operation:'deliver',packet:e}))).status,'rejected');
+ worker.stop();
+});
+test('failed direct delivery retains custody and falls back to encrypted inline FCM with custodian hint',async t=>{
+ const f=fixture(t),e=await f.seal('small encrypted message'),relay=f.service();await f.request(relay,0,'deposit',e);let payload;
+ const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({inlineEnvelope:true,custodian:f.ids[1].record.account,store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],
+ deliverDirect:packet=>relay.deliverDirect(packet,async()=>JSON.stringify({status:'delivered',packet:{kind:'receipt',id:e.id}})),
+ request:async(_peer,raw)=>{payload=JSON.parse(raw).data;return '{"status":"forwarded"}';}});
+ await worker.tick();assert.equal(payload.custodian,f.ids[1].record.account);assert.deepEqual(JSON.parse(payload.envelope),e);
+ assert.ok(Buffer.byteLength(JSON.stringify(payload))<=f.protocol.CUSTODY_WAKE_DATA_BYTES);assert.ok(!JSON.stringify(payload).includes('small encrypted message'));
+ assert.equal((await f.store.inspect())[0].packet.kind,'envelope','gateway ACK never deletes ciphertext');worker.stop();
+ const big=await f.seal('x'.repeat(2048)),hint=f.protocol.createCustodyWake(big,f.ids[0].record,true,f.ids[1].record.account);
+ assert.equal(hint.envelope,undefined);assert.equal(hint.custodian,f.ids[1].record.account);
+});
+test('event custody notices follow durable commits and distinguish message and receipt destinations',async t=>{
+ const f=fixture(t),e=await f.seal(),notices=[];
+ const service=f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,store:f.store,records:f.records,now:f.now,current:()=>true,changed:peer=>notices.push(peer)});
+ await f.request(service,0,'deposit',e);assert.deepEqual(notices,[e.recipient]);
+ await f.request(service,0,'deposit',e);assert.equal(notices.length,1,'duplicate deposit is not a new change');
+ const receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ await f.request(service,2,'receipt',receipt);assert.deepEqual(notices,[e.recipient,e.sender]);
+ await f.request(service,2,'receipt',receipt);assert.equal(notices.length,2,'duplicate receipt does not cause a notification loop');
+ const failed=f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,records:f.records,now:f.now,current:()=>true,changed:()=>assert.fail('uncommitted event'),store:{transaction:async fn=>{fn([]);throw Error('disk full');}}});
+ assert.equal((await f.request(failed,0,'deposit',e)).status,'rejected');
+});
+test('FCM acceptance cannot prevent direct retry after a recipient reconnects',async t=>{
+ const f=fixture(t),e=await f.seal();await f.request(f.service(),0,'deposit',e);let connected=false,direct=0,pushes=0;
+ const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({eventDriven:true,store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],
+ deliverDirect:async()=>{direct++;return connected;},request:async()=>{pushes++;return '{"status":"forwarded"}';}});
+ await worker.tick();assert.equal(pushes,1);f.advance(60000);await worker.tick();assert.equal(direct,1);
+ connected=true;worker.connected(e.recipient);await worker.tick();assert.equal(direct,2);assert.equal(pushes,1);worker.stop();
+});
+test('event wake worker does not reread an unchanged empty store on a timer',async t=>{
+ const f=fixture(t);let reads=0;
+ const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({eventDriven:true,store:{read:async fn=>{reads++;return fn([]);},transaction:async()=>assert.fail('read only')},records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],request:async()=>assert.fail('empty mailbox')});
+ await worker.tick();for(let i=0;i<100;i++){f.advance(30000);await worker.tick();}assert.equal(reads,1);
+ worker.changed();await worker.tick();assert.equal(reads,2);worker.stop();
+});
+test('a reconnect while FCM is in flight is not overwritten by its late acceptance',async t=>{
+ const f=fixture(t),e=await f.seal();await f.request(f.service(),0,'deposit',e);let release,connected=false,direct=0;
+ const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({eventDriven:true,store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],deliverDirect:async()=>{direct++;return connected;},request:async()=>{await new Promise(r=>release=r);return '{"status":"forwarded"}';}});
+ const first=worker.tick();while(!release)await new Promise(r=>setImmediate(r));connected=true;worker.connected(e.recipient);release();await first;await worker.tick();assert.equal(direct,2);worker.stop();
+});
+test('event inbox stops retrying a rejected packet once the relay no longer holds it',async t=>{
+ const f=fixture(t),e=await f.seal();let present=true,polls=0;
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>e.recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['relay'],eventDriven:()=>true,seal:async()=>e,receive:async()=>null,
+ request:async(_peer,raw)=>{polls++;const q=JSON.parse(raw);return JSON.stringify({status:'ok',packet:present&&!q.exclude.includes(e.id)?e:null});}});
+ await courier.tick();present=false;f.advance(16000);await courier.tick();const baseline=polls;
+ for(let i=0;i<20;i++){f.advance(30000);await courier.tick();}assert.equal(polls,baseline);courier.stop();
+});
+test('wake deadlines sleep on empty custody, then track the actual failed-job retry',async t=>{
+ const f=fixture(t);await f.store.transaction(()=>{});let calls=0;
+ const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({eventDriven:true,store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],request:async()=>{calls++;return '{"status":"retry"}';}});
+ await worker.tick();assert.equal(worker.nextDeadline(),Infinity);const e=await f.seal();await f.request(f.service(),0,'deposit',e);worker.changed();await worker.tick();assert.equal(calls,1);assert.equal(worker.nextDeadline(),f.now()+30000);worker.stop();assert.equal(worker.nextDeadline(),Infinity);
 });

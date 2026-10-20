@@ -1221,6 +1221,7 @@ test('native ticks expire unanswered exchanges when background JS timers are sus
  try{
   f.transport.blackhole();let done=false;
   const request=f.sessions[0].custodyRequest('poll').then(r=>{assert.equal(r,null);done=true;});
+  assert(f.sessions[0].nextDeadline()<=now+4000,'native coordinator must schedule the exchange timeout');
   f.advance(4001);f.sessions[0].tick();await new Promise(r=>setImmediate(r));
   assert.equal(done,true);assert.equal(f.sessions[0].snapshot().closeReason,'exchange-timeout:custody');await request;
  }finally{global.setTimeout=original;}

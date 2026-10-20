@@ -7,6 +7,7 @@ import android.media.AudioDeviceInfo
 import android.os.Build
 import android.view.WindowInsets
 import android.view.View
+import android.view.ViewTreeObserver
 import androidx.core.os.bundleOf
 import com.google.android.play.core.appupdate.AppUpdateManager
 import com.google.android.play.core.install.InstallStateUpdatedListener
@@ -21,6 +22,12 @@ import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.functions.Queues
 
 class AxonicAppUpdateModule : Module() {
+  private val keyboardObservers = mutableMapOf<Int, Pair<View, ViewTreeObserver.OnGlobalLayoutListener>>()
+  private fun stopKeyboardObserver(tag: Int) {
+    keyboardObservers.remove(tag)?.let { (view, listener) ->
+      if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+    }
+  }
   private var chatStorageRecovery: ChatStorageRecovery? = null
   private var flowPending = false
   private var observedUpdateManager: AppUpdateManager? = null
@@ -71,7 +78,26 @@ class AxonicAppUpdateModule : Module() {
       mapOf("applicationId" to context.packageName, "versionName" to info.versionName,
         "versionCode" to versionCode.toString())
     }
-    Events("onInstallState", "onCallAudioRoute")
+    Events("onInstallState", "onCallAudioRoute", "onKeyboardLayout")
+    AsyncFunction("watchKeyboardLayout") { tag: Int ->
+      stopKeyboardObserver(tag)
+      val view = appContext.findView<View>(tag)
+      if (view != null && Build.VERSION.SDK_INT >= 30) {
+        var previous = ""
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+          val insets = view.rootWindowInsets
+          val position = IntArray(2)
+          view.getLocationOnScreen(position)
+          val state = "${insets?.isVisible(WindowInsets.Type.ime())}:${insets?.getInsets(WindowInsets.Type.ime())?.bottom}:${position[1]}:${view.height}"
+          if (state != previous) { previous = state; sendEvent("onKeyboardLayout", bundleOf("viewTag" to tag)) }
+        }
+        view.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        keyboardObservers[tag] = Pair(view, listener)
+        listener.onGlobalLayout()
+        true
+      } else false
+    }.runOnQueue(Queues.MAIN)
+    AsyncFunction("unwatchKeyboardLayout") { tag: Int -> stopKeyboardObserver(tag) }.runOnQueue(Queues.MAIN)
     AsyncFunction("startCallAudio") { video: Boolean ->
       val router = callAudioRouter ?: CallAudioRouter(requireNotNull(appContext.reactContext)) { sendEvent("onCallAudioRoute", it) }.also { callAudioRouter = it }
       router.start(video)
@@ -144,6 +170,7 @@ class AxonicAppUpdateModule : Module() {
     }
     AsyncFunction("restoreCallAudio") { restoreCallAudio() }.runOnQueue(Queues.MAIN)
     OnDestroy {
+      appContext.currentActivity?.runOnUiThread { keyboardObservers.keys.toList().forEach { stopKeyboardObserver(it) } }
       observedUpdateManager?.unregisterListener(installListener)
       observedUpdateManager = null
       restoreCallAudio()

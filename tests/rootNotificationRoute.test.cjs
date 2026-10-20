@@ -28,3 +28,15 @@ test('a deleted group message resolves to the inbox rather than its sender priva
  f.save({messages:[{id:f.id,peer:f.sender,direction:'incoming',group,text:'test',at:1,status:'delivered'}],groups:[{id:f.group}],groupActions:[{id:'ee'.repeat(32),peer:f.sender,direction:'incoming',group,kind:'delete',target:{id:shared,author:f.sender},revision:1,text:'',at:2,status:'delivered'}]});
  await f.out.queueRootNotificationOpen(f.data);assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,true);
 });
+test('queue events follow persistence and consuming an older target preserves the newer tap',async()=>{
+ const f=fixture();let events=0;const off=f.out.subscribeRootNotificationOpen(()=>events++);
+ await f.out.queueRootNotificationOpen(f.data);assert.equal(events,1);const first=await f.out.pendingRootNotificationOpen(f.account);
+ await f.out.queueRootNotificationOpen({...f.data,messageId:'ee'.repeat(32)});await f.out.finishRootNotificationOpen(first);
+ const next=await f.out.pendingRootNotificationOpen(f.account);assert.equal(next.hintId,'ee'.repeat(32));await f.out.finishRootNotificationOpen(next);assert.equal(await f.out.pendingRootNotificationOpen(f.account),null);
+ off();await f.out.queueRootNotificationOpen(f.data);assert.equal(events,2);
+});
+test('a generic hint resolved to a group is consumed without leaving a stale navigation target',async()=>{
+ const f=fixture();f.save({messages:[{id:f.id,peer:f.sender,direction:'incoming',group:{id:f.group}}],groups:[{id:f.group}]});
+ await f.out.queueRootNotificationOpen(f.data);const target=await f.out.pendingRootNotificationOpen(f.account);assert.equal(target.group,f.group);
+ await f.out.finishRootNotificationOpen(target);assert.equal(await f.out.pendingRootNotificationOpen(f.account),null);
+});

@@ -1,14 +1,31 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const {load,now}=require('./helpers/attachment.cjs'),p=load('identityProtocol'),g=load('groupCustodyProtocol'),c=load('custodyProtocol'),s=load('groupCustodyService');
 const random=async n=>new Uint8Array(crypto.randomBytes(n));
-async function fixture(){const ids=[];for(let i=0;i<5;i++){const signingSeed=await random(32),encryptionSeed=await random(32),device=p.publicDevice(signingSeed,encryptionSeed);ids.push({signingSeed,encryptionSeed,device,record:p.issueRecord(await random(32),[device],now)});}const records={read:async account=>ids.find(i=>i.record.account===account)?.record??null};
-const job=await g.sealGroupCustody({...ids[0],id:'ab'.repeat(32),text:'one encrypted group message',recipients:ids.slice(1,3).map((r,i)=>({record:r.record,device:r.device.id,id:String(i+1).repeat(64),metadata:JSON.stringify({slot:i})})),now,random});
+async function fixture(text='one encrypted group message'){const ids=[];for(let i=0;i<5;i++){const signingSeed=await random(32),encryptionSeed=await random(32),device=p.publicDevice(signingSeed,encryptionSeed);ids.push({signingSeed,encryptionSeed,device,record:p.issueRecord(await random(32),[device],now)});}const records={read:async account=>ids.find(i=>i.record.account===account)?.record??null};
+const job=await g.sealGroupCustody({...ids[0],id:'ab'.repeat(32),text,recipients:ids.slice(1,3).map((r,i)=>({record:r.record,device:r.device.id,id:String(i+1).repeat(64),metadata:JSON.stringify({slot:i})})),now,random});
 let rows=[],time=now,fail=false,wakes=0;const store={async transaction(fn){const next=structuredClone(rows),out=fn(next);s.validateGroupCustodyRows(next);if(fail)throw Error('disk failed');rows=next;return out;}};
 const create=()=>s.createGroupCustodyService({owner:ids[3].record.account,store,records,now:()=>time,current:()=>true,stored:async()=>{wakes++;}});let service=create();const request=async(i,q)=>JSON.parse(await service.receive(ids[i].record.account,JSON.stringify(q)));const deposit=async()=>{assert.equal((await request(0,{operation:'group-begin',payload:job.payload})).status,'staged');for(const packet of job.grants)assert.equal((await request(0,{operation:'group-grant',id:job.payload.id,packet})).status,'staged');return request(0,{operation:'group-commit',sender:job.payload.sender,id:job.payload.id,digest:g.groupCustodyDigest(job.payload)});};
-return {ids,records,job,request,deposit,rows:()=>rows,fail:v=>fail=v,wakes:()=>wakes,expire:()=>time+=c.CUSTODY_TTL,restart:()=>service=create()};}
+return {service:()=>service,ids,records,job,request,deposit,rows:()=>rows,fail:v=>fail=v,wakes:()=>wakes,expire:()=>time+=c.CUSTODY_TTL,restart:()=>service=create()};}
 
 test('shared group ciphertext opens only with each intended device grant',async()=>{const f=await fixture();assert(await g.verifyGroupCustodyJob(f.job,f.records,now));
 for(let i=0;i<2;i++){const identity=f.ids[i+1],e=f.job.grants[i],grant=c.openCustody(e,identity.record.account,identity.signingSeed,identity.encryptionSeed);assert.deepEqual(g.openGroupCustody(f.job.payload,e,grant),{text:'one encrypted group message',metadata:JSON.stringify({slot:i})});assert.throws(()=>c.openCustody(e,f.ids[4].record.account,f.ids[4].signingSeed,f.ids[4].encryptionSeed),/Wrong/);}
+});
+
+test('group grants keep signed silent intent through commit, reload, polling and the wake view',async()=>{
+ for(const silent of [false,true]){
+  const f=await fixture(silent?JSON.stringify(['axonic-root-group-action-v1','peer','id',{kind:'read'}]):'group text');
+  assert.equal((await f.deposit()).status,'held');f.restart();
+  const rows=JSON.parse(JSON.stringify(f.rows())),before=JSON.stringify(rows),view=s.groupCustodyWakeStore({transaction:async fn=>fn(rows)});
+  const packets=await view.transaction(items=>items.map(r=>r.packet));assert.equal(packets.length,2);
+  for(let i=0;i<2;i++){
+   const polled=(await f.request(i+1,{operation:'group-poll',exclude:[]})).packet;
+   assert.deepEqual(polled,packets[i]);assert.deepEqual(polled,f.job.grants[i]);
+   const data=c.createCustodyWake(polled,f.ids[0].record);
+   assert.equal(c.verifyCustodyWake(data,f.ids[0].record,polled.recipient,polled.recipientDevice,now)?.wakeMode,silent?'silent':undefined);
+   assert(c.verifyCustodyWake(data,f.ids[0].record,polled.recipient,polled.recipientDevice,now));
+  }
+  assert.equal(JSON.stringify(rows),before);
+ }
 });
 test('tampered content, recipient list, grants and signatures are rejected',async()=>{const f=await fixture();for(const change of [j=>j.payload.ciphertext='00'+j.payload.ciphertext.slice(2),j=>j.payload.recipients[0].recipient=f.ids[4].record.account,j=>j.payload.recipients.reverse(),j=>j.grants[0].recipient=f.ids[4].record.account,j=>j.grants[1]=j.grants[0],j=>j.payload.signature='00'.repeat(64)]){const job=structuredClone(f.job);change(job);assert.equal(await g.verifyGroupCustodyJob(job,f.records,now),false);assert.equal((await f.request(0,{operation:'group-begin',payload:job.payload})).status,await g.verifyGroupCustodyPayload(job.payload,f.records,now)?'staged':'rejected');}});
 test('atomic handoff, offline recipient, restart, independent receipts and final payload cleanup',async()=>{const f=await fixture(),{job,ids}=f;assert.equal((await f.deposit()).status,'held');await new Promise(r=>setImmediate(r));assert.equal(f.wakes(),2);
@@ -92,4 +109,27 @@ test('replication cannot pin a supplied identity unless it verifies the exact gr
  const service=s.createGroupCustodyService({owner:f.ids[4].record.account,records,now:()=>now,current:()=>true,store:{async transaction(){throw Error('Must reject before storage');}}});
  const payload=structuredClone(f.job.payload);payload.signature='00'.repeat(64);
  assert.equal(JSON.parse(await service.receive(f.ids[3].record.account,JSON.stringify({operation:'group-begin',payload,record:f.ids[0].record}))).status,'rejected');assert.equal(writes,0);
+});
+
+test('one-hop group delivery acknowledges each recipient independently without another relay deposit',async()=>{
+ const f=await fixture();await f.deposit();
+ const receiver=s.createGroupCustodyService({owner:f.ids[1].record.account,records:f.records,now:()=>now,current:()=>true,store:{transaction:async()=>{throw Error('No transit storage at recipient');}},
+ receiveOwn:async(grant,payload)=>{assert.equal(g.openGroupCustody(payload,grant,c.openCustody(grant,f.ids[1].record.account,f.ids[1].signingSeed,f.ids[1].encryptionSeed)).text,'one encrypted group message');return c.signCustodyReceipt(grant,f.ids[1].signingSeed,f.ids[1].encryptionSeed);}});
+ assert.equal(await f.service().deliverDirect(f.job.grants[0],(peer,raw)=>{assert.equal(peer,f.ids[1].record.account);return receiver.receive(f.ids[3].record.account,raw);}),true);
+ assert.equal(f.rows()[0].recipients[0].receipt.kind,'receipt');assert.equal(f.rows()[0].recipients[1].receipt,null);assert.ok(f.rows()[0].payload);
+ const wrong=await receiver.receive(f.ids[3].record.account,JSON.stringify({operation:'group-deliver',packet:f.job.grants[1],payload:f.job.payload}));assert.equal(JSON.parse(wrong).status,'rejected');
+});
+test('group wake includes the complete encrypted package only within the FCM budget',async()=>{
+ const f=await fixture();await f.deposit();let sent;
+ const worker=load('custodyWakeForwarder').createCustodyWakeForwarder({custodian:f.ids[3].record.account,store:load('groupCustodyService').groupCustodyWakeStore({transaction:async fn=>fn(f.rows())}),records:f.records,now:()=>now,current:()=>true,peers:()=>['gateway'],groupPayload:packet=>f.service().payloadFor(packet),request:async(_,raw)=>{sent=JSON.parse(raw).data;return '{"status":"forwarded"}';}});
+ await worker.tick();assert.equal(sent.custodian,f.ids[3].record.account);assert.ok(Buffer.byteLength(JSON.stringify(sent))<=c.CUSTODY_WAKE_DATA_BYTES);
+ assert.equal(!!sent.payload,!!sent.envelope,'group grant and payload travel together');if(sent.payload){assert.deepEqual(JSON.parse(sent.payload),f.job.payload);assert.ok(f.job.grants.some(e=>e.id===JSON.parse(sent.envelope).id));}
+ assert.equal(f.rows()[0].recipients.every(r=>r.receipt===null),true);worker.stop();
+});
+test('group event inbox isolates rejected peers and sleeps after an expired rejection disappears',async()=>{
+ const f=await fixture(),e=f.job.grants[0];let time=now,present=true;const calls={bad:0,empty:0};
+ const courier=load('groupCustodyCourier').createGroupCustodyCourier({owner:()=>e.recipient,now:()=>time,records:f.records,allowed:()=>true,compatible:async()=>true,relays:()=>['bad','empty'],eventDriven:()=>true,own:{},store:{},seal:async()=>{throw Error('not sending');},held:async()=>{},confirm:async()=>false,receive:async()=>null,
+ request:async(peer,raw)=>{calls[peer]++;const q=JSON.parse(raw);return JSON.stringify({status:'ok',packet:peer==='bad'&&present&&!q.exclude.includes(e.id)?e:null,payload:f.job.payload,job:f.job.payload.id});}});
+ await courier.tick();time+=16000;present=false;await courier.tick();const baseline={...calls};
+ for(let i=0;i<20;i++){time+=30000;await courier.tick();}assert.deepEqual(calls,baseline);assert.equal(calls.empty,1);courier.stop();
 });

@@ -1,8 +1,9 @@
+import {subscribeLocalNetworkChanges} from '../../modules/network';
 import ConnectedAxons from './ConnectedAxons';
 import DiagnosticReportPanel from '../../components/DiagnosticReportPanel';
 import React,{useState} from 'react';
 import {useIsFocused} from '@react-navigation/native';
-import {useForegroundPoll} from '../../hooks/useForegroundPoll';
+import {useForegroundEvents} from '../../hooks/useForegroundEvents';
 import {Text,View,StyleSheet} from 'react-native';
 import {useTheme} from '../../contexts/ThemeContext';
 import AxonLimitSetting from '../../components/AxonLimitSetting';
@@ -16,6 +17,6 @@ const styles=StyleSheet.create({title:{fontSize:27,fontWeight:'700',marginBottom
 
 export function LiveNetworkPanel(){
  const focused=useIsFocused(),[snapshot,setSnapshot]=useState(localAccountNetworkSnapshot),[replicas,setReplicas]=useState(localAccountDirectorySnapshot);
- useForegroundPoll(()=>{const next=localAccountNetworkSnapshot(),copies=localAccountDirectorySnapshot();setSnapshot(old=>JSON.stringify(old)===JSON.stringify(next)?old:next);setReplicas(old=>JSON.stringify(old)===JSON.stringify(copies)?old:copies);},1000,focused);
+ useForegroundEvents(()=>{const next=localAccountNetworkSnapshot(),copies=localAccountDirectorySnapshot();setSnapshot(old=>JSON.stringify(old)===JSON.stringify(next)?old:next);setReplicas(old=>JSON.stringify(old)===JSON.stringify(copies)?old:copies);},subscribeLocalNetworkChanges,focused);
  return <RootNetworkPanel snapshot={snapshot} replicas={replicas}/>;
 }

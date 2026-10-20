@@ -42,6 +42,31 @@ test('wake projection allowlists keys and rejects oversized report output',()=>{
  assert.equal(w.private.outcomes.local_wake_verification_failed,1);
  assert.equal(w.private.work.remoteGatewayCalls,3);assert(!JSON.stringify(w).includes('secret'));assert(!JSON.stringify(w).includes('token'));assert.throws(()=>report.serializeDiagnosticReport({text:'x'.repeat(65536)}));
 });
+
+test('wake mismatch categories survive private and group report projection without private metadata',()=>{
+ for(const kind of ['private','group']){const result=report.summarizeWakeForReport({[kind]:{outcomes:{local_silent_flag_binding_mismatch:4,signature:'secret',peer:'secret'}}});assert.equal(result[kind].outcomes.local_silent_flag_binding_mismatch,4);assert(!JSON.stringify(result).includes('secret'));}
+});
+
+test('wake pending observations preserve bounded retry evidence without identifiers or arbitrary reasons',()=>{
+ for(const kind of ['private','group']){
+  const row={requests:4,lastOutcome:'local_silent_flag_binding_mismatch',lastObservedAt:123,nextRetryAt:456,peer:'secret',id:'secret',signature:'secret'};
+  const result=report.summarizeWakeForReport({[kind]:{pendingSample:Array.from({length:100},()=>row)}});
+  assert.equal(result[kind].pendingSample.length,8);
+  assert.deepEqual(result[kind].pendingSample[0],{requests:4,lastObservedAt:123,nextRetryAt:456,lastOutcome:'local_silent_flag_binding_mismatch'});
+  assert(!JSON.stringify(result).includes('secret'));assert.match(result.scope,/eligibility, not a promised send time/);
+  result[kind].pendingSample[0].requests=99;assert.equal(row.requests,4);
+ }
+ const malformed=report.summarizeWakeForReport({private:{pendingSample:[null,{requests:NaN,lastObservedAt:Infinity,nextRetryAt:-1,lastOutcome:'secret'},{requests:1.5,lastObservedAt:'123',nextRetryAt:null,lastOutcome:'validation'}]},group:{pendingSample:{peer:'secret'}}});
+ assert.deepEqual(malformed.private.pendingSample,[{},{},{nextRetryAt:null,lastOutcome:'validation'}]);assert.deepEqual(malformed.group.pendingSample,[]);
+ assert(!JSON.stringify(malformed).includes('secret'));
+});
+test('recovery timing exports bounded numeric evidence and fixed reasons only',()=>{
+ const d=journal.createDiagnosticJournal(()=>1);d.record('recovery_finished',{milliseconds:80300,sleepMs:75000,processCpuMs:7,waitLagMs:80000,setupMs:20,overrunMs:60300,reason:'deadline',peer:'secret'});
+ assert.equal(d.snapshot().events[0].sleepMs,75000);assert.equal(d.snapshot().events[0].reason,'deadline');
+ d.record('recovery_finished',{sleepMs:-1,waitLagMs:Infinity,processCpuMs:NaN,setupMs:1e20,reason:'secret'});
+ const row=d.snapshot().events[1];assert.equal(row.sleepMs,undefined);assert.equal(row.waitLagMs,undefined);assert.equal(row.processCpuMs,undefined);assert.equal(row.setupMs,86400000);assert(!JSON.stringify(d.snapshot()).includes('secret'));
+ d.record('app_active',{sleepMs:1,reason:'deadline'});assert.equal(d.snapshot().events[2].sleepMs,undefined);
+});
 test('network-reset cancellations are separate from active pending or incomplete media',()=>{
  const s=report.summarizeReportMessages({networkResetAt:100,messages:[{direction:'outgoing',status:'pending',at:1,networkCancelledAt:100,attachment:{manifest:{expires:200}}}]},150);
  assert.equal(s.networkResetAt,100);assert.equal(s.private.outgoing.cancelled,1);assert.equal(s.private.outgoing.pending,0);assert.equal(s.incompleteMedia,0);assert.equal(s.oldestOwnPendingSeconds,null);assert.equal(s.incompleteMediaEvidence.outgoing,0);

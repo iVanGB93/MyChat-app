@@ -17,11 +17,13 @@ export function createMessageDelivery(d: {
   connectedPeers():string[];
   /** Opt in only for immutable, revision-cached runtime snapshots. */
   stableSnapshots?:boolean;
+  changed?():void;
 }) {
   const resolving=new Set<string>();
   const retries=new Map<string,{peer:string;failures:number;after:number}>();
   const now=d.now??Date.now;
   let connected=new Set<string>();
+  let dispatchAfter=0;
   let attempts=0,directTimeouts=0,lastTraffic='none',lastOutcome='none';
   type State=Awaited<ReturnType<ReturnType<typeof createRootChatLedger>['snapshot']>>;
   let pendingDerivations=0,cached:{state:State;owner:string;rows:ReturnType<typeof pendingRootChat>;keys:Set<string>}|undefined;
@@ -66,6 +68,7 @@ export function createMessageDelivery(d: {
   async function dispatch() {
       const owner = d.owner(), epoch = generation;
       if (selecting || active.size>=2 || !owner || stopped) return;
+      if(now()<dispatchAfter)return;
       selecting = true;let ownsSelection=true,peer:string|undefined,retryKey:string|undefined,delivered=false,handedOff=false;
       const attempt={phase:'storage',started:now()};
       const current = () => !stopped && generation === epoch && d.owner() === owner;
@@ -106,16 +109,24 @@ export function createMessageDelivery(d: {
             void Promise.resolve().then(()=>current()?d.resolve(message.peer):undefined).catch(()=>{}).finally(()=>resolving.delete(message.peer));
           }
         }
-      } catch(error) { lastOutcome=error instanceof Error?'error:'+error.name:'error'; /* Durable outbox remains pending for a later tick/session. */ }
+      } catch(error) { dispatchAfter=now()+5000;lastOutcome=error instanceof Error?'error:'+error.name:'error'; /* Durable outbox remains pending for a later tick/session. */ }
       finally {
         if(retryKey&&peer&&current()){
           if(delivered)retries.delete(retryKey);
           else {const failures=Math.min(4,(retries.get(retryKey)?.failures??0)+1);if(retries.size>=512&&!retries.has(retryKey))retries.delete(retries.keys().next().value!);retries.set(retryKey,{peer,failures,after:now()+(handedOff?60000:Math.min(15000,1000*2**failures))});}
         }
-        if(ownsSelection)selecting=false;if(peer&&active.get(peer)===attempt)active.delete(peer);schedule(delivered||handedOff);
+        if(ownsSelection)selecting=false;if(peer&&active.get(peer)===attempt)active.delete(peer);schedule(delivered||handedOff);if(peer)d.changed?.();
       }
   }
   return {
+    dispatch,
+    nextDeadline(){
+      if(stopped||!d.owner()||selecting||active.size>=2)return Infinity;
+      if(dispatchAfter>now())return dispatchAfter;
+      if(!cached)return now();
+      return Math.min(Infinity,...cached.rows.filter(m=>!active.has(m.peer)).map(m=>retries.get(m.peer+':'+m.id)?.after??now()));
+    },
+    topologyChanged(){connected.clear();dispatchAfter=0;},
     snapshot:()=>({phase:selecting?'storage':active.values().next().value?.phase??'idle',busy:selecting||active.size>0,collecting,queuedHints:urgent.length,attempts,pendingDerivations,lastTraffic,lastOutcome,directTimeouts,directInFlight:directFlights.size,oldestAttemptMs:Math.max(0,...[...active.values()].map(a=>now()-a.started))}),
     wake(peer:string,id:string){if(stopped||!d.owner())return;if(!urgent.some(m=>m.peer===peer&&m.id===id)){if(urgent.length>=64)urgent.shift();urgent.push({peer,id});}schedule();},
     // An offline outgoing peer must not monopolize the bounded background wake

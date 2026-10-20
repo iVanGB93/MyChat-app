@@ -147,6 +147,12 @@ export function createNeuronConnections(d: {
   }
   return {
     offer, tick,
+    nextDeadline(){
+      if(stopped)return Infinity;
+      const deadlines=allSlots().filter(s=>s.state!=='closing').map(s=>s.state==='authenticating'?s.deadline:s.link!.peer.expiresAt);
+      for(const c of candidates.values())if(!slots.has(c.value.account)&&c.value.expiresAt>d.now()&&occupied()<limit)deadlines.push(Math.max(d.now()+100,c.retryAt));
+      return Math.min(Infinity,...deadlines);
+    },
     // Local lifecycle wake only: discovery refreshes must still preserve backoff.
     resume() { if (stopped) return; for (const c of candidates.values()) { c.failures = 0; c.retryAt = 0; } tick(); },
     setLimit(next: number) {

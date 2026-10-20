@@ -11,6 +11,8 @@ export function parseIdentityInput(value:string):string|null{
  const normalized=value.replace(/[\s\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g,'');
  return parseIdentityLink(normalized)||parseIdentityCode(normalized);
 }
+const listeners=new Set<()=>void>();
+export function subscribeIdentityLinks(fn:()=>void){listeners.add(fn);return()=>{listeners.delete(fn);};}
 let pending:string|null=null;
-export function queueIdentityLink(url:unknown){const account=parseIdentityLink(url);if(account)pending=account;return !!account;}
+export function queueIdentityLink(url:unknown){const account=parseIdentityLink(url);if(account){pending=account;for(const fn of listeners)try{fn();}catch{}}return !!account;}
 export function takeIdentityLink(){const account=pending;pending=null;return account;}

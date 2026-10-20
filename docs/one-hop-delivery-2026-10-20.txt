@@ -1,0 +1,54 @@
+One-hop message delivery — implementation and validation
+
+Sender:
+- Existing direct-first message delivery remains in use.
+- Otherwise select the highest-ranked available custodian. Keep that custodian
+  for the same job while reachable; introduction hints no longer move a held job.
+- Sequential fallback after failure remains. An ambiguous timeout can leave a
+  duplicate stored copy; identical signed IDs/receipts preserve deduplication.
+
+Custodian:
+- The message wake worker first attempts delivery to the addressed recipient
+  through an existing authenticated connection.
+- deliver / group-deliver terminate at the recipient. They never re-deposit a
+  message at a second relay.
+- Successful delivery means a verified, durably stored recipient receipt.
+- Otherwise use the existing FCM gateway (ordinary phones do not hold server
+  credentials). Gateway delegation is not another custody hop.
+- Automatic group backup replication is no longer scheduled by either runtime.
+  Existing replica reading and receipt handling remain compatible.
+
+FCM:
+- Small private messages include the complete encrypted envelope.
+- Shared group payload plus the recipient's encrypted grant are included together
+  only when their complete JSON package fits the existing 3,500-byte budget.
+- Larger payloads retain signed message/digest/device/expiry metadata.
+- custodian identifies the holding neuron, not the FCM gateway. It is an advisory
+  routing hint, not identity authorization or a URL. Gateways bind it to the
+  authenticated requesting peer. Recipient receipt verification is unchanged.
+- Recipient stores verified content using the normal inbox, then attempts its
+  signed receipt on an existing custodian connection. Durable polling retries
+  receipt exchange after reconnection. FCM acceptance never marks delivery.
+- A custodian ID alone does not create an Internet route. Existing authenticated
+  discovery/bootstrap and custody polling are still required if it is disconnected.
+- Older gateways can fall back to signed metadata-only wakes.
+
+Scope:
+These changes cover private and group message custody, including attachment
+descriptors and message controls. Attachment bytes keep their existing encrypted
+stream/chunk transfer. Call signaling is unchanged.
+
+Validation:
+- Mobile npm run check: 1,372 passed, 3 skipped; type/architecture checks passed.
+- AoN npm test: 233 passed, including a real authenticated three-participant
+  WebSocket test: sender -> custodian -> recipient, signed receipt, no FCM call.
+- Added offline/invalid receipt, inline size, retained ciphertext, group independent
+  receipt, no redeposit, and in-memory Dev runtime tests.
+- The refreshed Axonic Dev emulator passed the synthetic one-hop/receipt/inline
+  encryption checks. This is not a real background FCM delivery measurement.
+- Gateway-specific tests: 14 passed, including authenticated custodian binding.
+- AoN source changes are local, not deployed by this task. No production build.
+- Full AoN check:core also detects pre-existing drift outside this change:
+  relayInventory, groupCustodyCourier, rootMessageStatus, attachmentTransfer,
+  callRelayPump, identityProtocol, neuronConnections, rtcAxonTransport,
+  persistentAxon. Those files were not overwritten wholesale.

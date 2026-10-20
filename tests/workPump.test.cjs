@@ -22,10 +22,21 @@ test('events during an await are coalesced but never lost',async()=>{
 });
 test('errors retain a safety retry, stop prevents rescheduling in-flight work',async()=>{
  let release,runs=0;const f=clock(async()=>{if(++runs===1)throw Error('storage');return new Promise(r=>release=r);});
- await f.advance(200);assert.equal(runs,2);assert.equal(f.pump.snapshot().failures,1);f.pump.stop();release(true);
+ await f.advance(5000);assert.equal(runs,2);assert.equal(f.pump.snapshot().failures,1);f.pump.stop();release(true);
  await Promise.resolve();await f.advance(60000);f.pump.wake();assert.equal(f.timers.size,0);assert.equal(runs,2);
 });
 test('quiet media polls back off while still checking at most five minutes later',async()=>{
  let runs=0;const f=clock(async()=>{runs++;},{idleMilliseconds:15000,maximumIdleMilliseconds:300000});
  await f.advance(1800000);assert.equal(runs,10);f.pump.wake();await f.advance(0);assert.equal(runs,11);f.pump.stop();
+});
+test('event-driven empty queues have no timer, and explicit retry deadlines survive',async()=>{
+ let runs=0,delay=Infinity;const f=clock(async()=>{runs++;return false;},{nextDelay:()=>delay});
+ await f.advance(3600000);assert.equal(runs,1);assert.equal(f.timers.size,0);
+ delay=12000;f.pump.wake();await f.advance(0);assert.equal(runs,2);await f.advance(11999);assert.equal(runs,2);
+ delay=Infinity;await f.advance(1);assert.equal(runs,3);assert.equal(f.timers.size,0);f.pump.stop();
+});
+test('a change while calculating a deadline forces another pass instead of sleeping',async()=>{
+ let release,runs=0;const f=clock(async()=>{runs++;return false;},{nextDelay:()=>runs===1?new Promise(r=>release=r):Infinity});
+ await f.advance(0);f.pump.wake();release(Infinity);for(let i=0;i<10;i++)await Promise.resolve();await f.advance(0);
+ assert.equal(runs,2);assert.equal(f.timers.size,0);f.pump.stop();
 });

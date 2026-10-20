@@ -1,0 +1,28 @@
+Immediate send presentation - 2026-10-20
+Scope: com.axonic.dev on both authorized phones. No production build/install.
+
+Baseline (one text each; method timings, not frame timings):
+Phone A: random ID 1.2ms, enqueue 203.6ms, snapshot 244.7ms, derive 31.3ms.
+Phone B: random ID 8.1ms, enqueue 89.7ms, snapshot 40.1ms, derive 10.1ms.
+The visible path waited for local persistence and refreshed history. Network
+message encryption is downstream, not part of the text enqueue command.
+
+Change: bounded account-scoped pending presentation store, shared by private and
+group chats. Actual random message ID is allocated before publication. Save and
+existing network processing continue after yielding to UI. Durable snapshots
+replace matching pending entries; save failure removes them and the existing
+composer error path restores the draft without erasing newer typing. Pending
+presentation is never serialized or passed to network workers. Lock/account
+changes clear it. Hidden screens do not subscribe to pending updates.
+
+Observed Dev samples: pending publication 0-35ms; bubble onLayout 107-232ms.
+Latest private sample: 1ms publication, 136ms layout. These are command-to-layout
+measurements, not physical tap-to-pixel measurements or production guarantees.
+Residual rendering latency remains; do not claim zero-latency display.
+Private text delivered with exactly one durable record. A new labeled Dev-only
+group delivered to the second phone and displayed one logical group bubble;
+no localPending flags reached durable storage.
+
+Validation: 1421 tests passed, 3 skipped, 0 failed; typecheck, module boundaries,
+service cycles, consolidation passed. Covers blocked persistence/failure rollback,
+account switching during asynchronous work, private/group deduplication.

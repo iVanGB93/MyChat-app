@@ -7,14 +7,16 @@ export function createCallRetryScheduler(d: {
   list(): Promise<CallControl[]>; peers(): IdentityPeer[];
   drain(invite: CallControl, peer: IdentityPeer): Promise<number>;
 }) {
-  let stopped=false,busy=false,nextAt=0,cursor=0;
+  let stopped=false,busy=false,nextAt=0,cursor=0,hasPending=true;
   return {
+    changed(){hasPending=true;nextAt=0;},
+    nextDeadline:()=>stopped||!d.current()||!hasPending?Infinity:nextAt,
     stop(){stopped=true;},
     async tick() {
       if(stopped||busy||!d.current()||d.now()<nextAt)return;
       busy=true;nextAt=d.now()+2000;
       try {
-        const rows=(await d.list()).slice(0,64);
+        const rows=(await d.list()).slice(0,64);hasPending=rows.length>0;
         if(stopped||!d.current()||!rows.length)return;
         const peers=d.peers().slice(0,10);
         for(let n=0;n<Math.min(4,rows.length);n++) {

@@ -30,13 +30,14 @@ async function fixture(t,options={}){
  const mod={};new Function('exports','require','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)),options.setTimeout??setTimeout,clearTimeout);
  const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:options.silent?JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]):'private text',now,random:async n=>new Uint8Array(n).fill(12)});
  const data=c.createCustodyWake(envelope,sender);
- return {database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,learnSender:()=>senderAvailable=true,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
+ const legacyGeneric=()=>{const id=notifications.rootMessageNotificationId(recipient.account,sender.account);const n={id,title:'Axonic',body:'Legacy generic',data:{type:'root_neuron_message',account:recipient.account,sender:sender.account,messageId:envelope.id}};shown.push(n);displayed.set(id,n);};
+ return {legacyGeneric,database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,learnSender:()=>senderAvailable=true,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
  onDisplay:fn=>onDisplay=fn,delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
 }
 test('unknown sender lookup is followed by normal signature validation and recovery',async t=>{
  const f=await fixture(t,{unknownSender:true});let looked=0,recovered=0;
  await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;},async()=>{looked++;f.learnSender();return 'recovered';});
- assert.equal(looked,1);assert.equal(recovered,1);assert.equal(f.shown.length,1);
+ assert.equal(looked,1);assert.equal(recovered,1);assert.equal(f.shown.length,0);
 });
 test('failed lookup or an owner change during lookup cannot recover or notify',async t=>{
  for(const change of [false,true]){const f=await fixture(t,{unknownSender:true});let recovered=0;
@@ -59,19 +60,18 @@ test('avatar fetching and group recovery never create generic alerts, including 
  }
 });
 
-test('locked recipient sees one generic signed notice; durable delivery clears it and prevents replay',async t=>{
- const f=await fixture(t);await Promise.all([f.mod.receiveRootMessageWake(f.data),f.mod.receiveRootMessageWake(f.data)]);
- assert.equal(f.shown.length,1);assert(!JSON.stringify(f.shown).includes('private text'));
- f.delivered();await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id);
- assert.equal(f.cancelled[0],f.shown[0].id);await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,1);
+test('locked recipient hints stay silent and do not consume a later verified preview',async t=>{
+ const f=await fixture(t);await Promise.all([f.mod.receiveRootMessageWake(f.data),f.mod.receiveRootMessageWake(f.data)]);assert.equal(f.shown.length,0);
+ f.delivered();await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'Verified message',at:Date.now()});
+ await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,1);assert.equal(f.shown[0].body,'Verified message');
 });
 test('blocked, changed owner, forged and already-delivered messages do not notify',async t=>{
  for(const prepare of [f=>f.block(),f=>f.changeOwner(),f=>f.delivered(),f=>f.data.event=f.data.event.replace('cdcd','abab')]){
  const f=await fixture(t);prepare(f);await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,0);}
 });
 test('a failed OS display can retry, while foreground delivery remains quiet',async t=>{
- const f=await fixture(t);f.fail(true);await assert.rejects(()=>f.mod.receiveRootMessageWake(f.data));f.fail(false);
- await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,1);
+ const f=await fixture(t);f.fail(true);const preview={name:'Peer',text:'Verified',at:Date.now()};await assert.rejects(()=>f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,preview));f.fail(false);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,preview);assert.equal(f.shown.length,1);
  const active=await fixture(t);active.app.currentState='active';await active.mod.receiveRootMessageWake(active.data);assert.equal(active.shown.length,0);
 });
 
@@ -91,10 +91,10 @@ test('background previews use an audible channel while sound opt-out remains sil
 
 test('corrected channel preserves the old OS block and custom sound',async t=>{
  const blocked=await fixture(t);blocked.setChannel({id:'root-messages-v1',importance:0,blocked:true});
- await blocked.mod.receiveRootMessageWake(blocked.data);assert.equal(blocked.channels.length,0);
+ await blocked.mod.finishRootMessageWake(blocked.recipient.account,blocked.sender.account,blocked.envelope.id,{name:'Peer',text:'Verified',at:Date.now()});assert.equal(blocked.channels.length,0);
  assert.equal(blocked.shown[0].android.channelId,'root-messages-v1');
  const custom=await fixture(t);custom.setChannel({importance:3,soundURI:'content://settings/custom'});
- await custom.mod.receiveRootMessageWake(custom.data);assert.equal(custom.channels[0].sound,'content://settings/custom');assert.equal(custom.channels[0].importance,3);
+ await custom.mod.finishRootMessageWake(custom.recipient.account,custom.sender.account,custom.envelope.id,{name:'Peer',text:'Verified',at:Date.now()});assert.equal(custom.channels[0].sound,'content://settings/custom');assert.equal(custom.channels[0].importance,3);
 });
 
 test('message push preference suppresses notices but still runs verified delivery recovery',async t=>{
@@ -105,7 +105,7 @@ test('message push preference suppresses notices but still runs verified deliver
 });
 
 test('durably decrypted message replaces generic hint with a preview and delayed hints cannot erase it',async t=>{
- const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);f.delivered();
+ const f=await fixture(t);f.legacyGeneric();f.delivered();
  const preview={name:'My private nickname',text:'private text',at:Date.now()};
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,preview);
  assert.equal(f.shown.length,2);assert.equal(f.shown[1].title,preview.name);assert.equal(f.shown[1].body,preview.text);assert.equal(f.shown[1].android.style.messages[0].text,preview.text);
@@ -133,7 +133,7 @@ test('control admitted before its first wake remains quiet even without a chat r
  assert.equal(f.shown.length,0);
 });
 test('foreground group preview retires its matching generic direct notification',async t=>{
- const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,1);
+ const f=await fixture(t);f.legacyGeneric();assert.equal(f.displayed.size,1);
  f.app.currentState='active';
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Group',text:'Hello',at:Date.now(),group:'ab'.repeat(32)});
  assert.equal(f.toasts.length,1);assert.equal(f.displayed.size,0);
@@ -196,7 +196,7 @@ test('delayed generic hints, older previews and old read updates preserve the ne
 });
 
 test('a decrypted group message replaces its own generic sender hint',async t=>{
- const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);
+ const f=await fixture(t);f.legacyGeneric();
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Group',text:'Hello group',at:Date.now(),group:'a'.repeat(64)});
  assert.equal(f.displayed.size,1);assert.equal([...f.displayed.values()][0].body,'Hello group');
 });
@@ -220,31 +220,20 @@ test('128 retained previews cannot suppress a later valid signed wake or forget 
  const f=await fixture(t);
  for(let i=0;i<128;i++)await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,i.toString(16).padStart(64,'0'),{name:'Peer',text:'fixture',at:Date.now()});
  f.displayed.clear();f.shown.length=0;
- await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,1);
+ await f.mod.receiveRootMessageWake(f.data);assert.equal(f.shown.length,0);
+ await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'New verified',at:Date.now()});
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'00'.repeat(32),{name:'Peer',text:'old fixture',at:Date.now()});
  assert.equal(f.shown.length,1,'old preview remains deduplicated');
 });
 
-test('stalled recovery cannot postpone an authenticated background notice indefinitely',async t=>{
- const f=await fixture(t);let release,timedOut=false;const stalled=new Promise(resolve=>release=resolve);
- const task=f.mod.receiveRootMessageWake(f.data,()=>stalled);
- await new Promise(resolve=>{const stop=setTimeout(()=>{timedOut=true;release();resolve();},7000);f.onDisplay(()=>{clearTimeout(stop);release();resolve();});});
- await task;assert.equal(timedOut,false);assert.equal(f.shown.length,1);
+test('stalled recovery does not create a speculative notification',async t=>{
+ const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data,async()=>{await new Promise(r=>setTimeout(r,3200));});assert.equal(f.shown.length,0);
 });
-
-test('screen-off native deadline publishes a hint when frame timers never run',async t=>{
- let calls=0,jsTimers=0,release;
- const f=await fixture(t,{setTimeout:()=>{jsTimers++;return 0;},native:{axonMessageWait:async ms=>{
-  assert(ms>=1&&ms<=1000);calls++;await new Promise(resolve=>setTimeout(resolve,ms));
- }}});
- const recovery=new Promise(resolve=>release=resolve);
- f.onDisplay(()=>release());
- await f.mod.receiveRootMessageWake(f.data,()=>recovery);
- assert.equal(f.shown.length,1);assert.equal(jsTimers,0);assert(calls>=2);
- // The losing native deadline must not schedule its entire 25-second budget.
- const count=calls;await new Promise(resolve=>setTimeout(resolve,1100));assert.equal(calls,count);
+test('screen-off native recovery remains silent when no user message is admitted',async t=>{
+ let calls=0,jsTimers=0;
+ const f=await fixture(t,{setTimeout:()=>{jsTimers++;return 0;},native:{axonMessageWait:async ms=>{calls++;await new Promise(r=>setTimeout(r,ms));}}});
+ await f.mod.receiveRootMessageWake(f.data,async()=>{await new Promise(r=>setTimeout(r,600));});assert.equal(f.shown.length,0);assert.equal(jsTimers,0);assert(calls>0);
 });
-
 test('fast native recovery keeps the decrypted preview without a generic replacement',async t=>{
  const f=await fixture(t,{native:{axonMessageWait:ms=>new Promise(resolve=>setTimeout(resolve,ms))}});
  await f.mod.receiveRootMessageWake(f.data,()=>f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'recovered',at:Date.now()}));
@@ -267,13 +256,13 @@ test('a wake deadline survives foreground to background without frame timers',as
  }}});
  f.app.currentState='active';
  const recovery=new Promise(resolve=>release=resolve);
- f.onDisplay(()=>release());
+ setTimeout(()=>release(),600);
  await f.mod.receiveRootMessageWake(f.data,()=>recovery);
- assert.equal(jsTimers,0);assert.equal(f.shown.length,1);
+ assert.equal(jsTimers,0);assert.equal(f.shown.length,0);
 });
 
 test('decrypted preview updates the same hint without sounding twice; a later message can alert',async t=>{
- const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);
+ const f=await fixture(t);f.legacyGeneric();
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'recovered',at:Date.now()});
  assert.equal(f.shown.at(-1).android.onlyAlertOnce,true);
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,'ef'.repeat(32),{name:'Peer',text:'next',at:Date.now()+1});
@@ -281,7 +270,7 @@ test('decrypted preview updates the same hint without sounding twice; a later me
 });
 
 test('a repeated wake retires its stale generic alert after inbox delivery',async t=>{
- const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,1);
+ const f=await fixture(t);f.legacyGeneric();assert.equal(f.displayed.size,1);
  f.delivered();await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,0);assert.equal(f.shown.length,1);
 });
 
@@ -291,13 +280,13 @@ test('a deleted incoming message cannot produce a fresh generic alert from a rel
 });
 
 test('a repeated old hint does not clear a newer conversation alert',async t=>{
- const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);f.delivered();
+ const f=await fixture(t);f.legacyGeneric();f.delivered();
  const n=[...f.displayed.values()][0];f.displayed.set(n.id,{...n,data:{...n.data,messageId:'ef'.repeat(32)}});
  await f.mod.receiveRootMessageWake(f.data);assert.equal(f.displayed.size,1);
 });
 
 test('a repeated hint does not erase its decrypted preview',async t=>{
- const f=await fixture(t);await f.mod.receiveRootMessageWake(f.data);f.delivered();
+ const f=await fixture(t);f.legacyGeneric();f.delivered();
  await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'Unread message',at:Date.now()});
  await f.mod.receiveRootMessageWake(f.data);assert.equal([...f.displayed.values()][0].body,'Unread message');
 });
@@ -314,6 +303,13 @@ test('only ciphertext bound to the verified wake reaches inline recovery',async 
  await f.mod.receiveRootMessageWake(data,async(...args)=>{received=args[5];f.delivered();});assert.deepEqual(received,f.envelope);
  const bad=await fixture(t);let rejected='unset';
  await bad.mod.receiveRootMessageWake({...bad.data,envelope:JSON.stringify({...bad.envelope,id:'00'.repeat(32)})},async(...args)=>{rejected=args[5];bad.delivered();});assert.equal(rejected,undefined);
+});
+
+test('inconsistent inline silent metadata falls back to recovery without creating an alert',async t=>{
+ const f=await fixture(t,{silent:true}),data=c.createCustodyWake(f.envelope,f.sender,true);
+ const envelope={...f.envelope};delete envelope.wakeMode;let calls=0,inline='unset';
+ await f.mod.receiveRootMessageWake({...data,envelope:JSON.stringify(envelope)},async(...args)=>{calls++;inline=args[5];f.delivered();});
+ assert.equal(calls,1,'recover by authenticated relay fetch instead');assert.equal(inline,undefined);assert.equal(f.shown.length,0);
 });
 
 test('delivery during channel setup suppresses a late generic notification',async t=>{

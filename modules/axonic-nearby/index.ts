@@ -1,5 +1,6 @@
 import { requireOptionalNativeModule } from 'expo';
 interface NearbyModule {
+  notificationCallStyle?(id:string,name:string,video:boolean):Promise<boolean>;
   notificationReadActionInShade?(id:string):Promise<boolean>;
   attachmentSha256?(value:string):string;
   attachmentFileSha256?(owner:string,digest:string,completed:boolean,bytes:number):Promise<string>;
@@ -7,8 +8,13 @@ interface NearbyModule {
   attachmentStagedFileSha256?(owner:string,id:string,bytes:number):Promise<string>;
   attachmentPrepareBatch?(owner:string,id:string,key:string,bytes:number,start:number,aads:string[]):Promise<string[]>;
   axonMessageWake?(milliseconds:number):void;
+  axonClockSnapshot?():{elapsedMs:number;uptimeMs:number;processCpuMs:number};
   axonMessageWait?(milliseconds:number):Promise<void>;
+  axonCallSetupWindow?(milliseconds:number):void;
+  axonCallWait?(milliseconds:number):Promise<void>;
   axonConnectedCall?(enabled: boolean): void;
+  axonLanEvents?():boolean;
+  addListener?(event:string,listener:()=>void):{remove():void};
   axonLanStart?(account: string): Promise<void>;
   axonLanStop?(): void;
   axonLanSnapshot?(): { active: boolean; peers: { account: string; host: string; port: number }[] };

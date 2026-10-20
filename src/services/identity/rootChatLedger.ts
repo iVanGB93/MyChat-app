@@ -10,7 +10,7 @@ import { validAccountId } from './identityProtocol.ts';
 import {validAttachmentDescriptor,attachmentDescriptorFingerprint,type AttachmentDescriptor} from './attachmentTransfer.ts';
 import type {AttachmentReceipt} from './attachmentProtocol.ts';
 import type {RootChatReply,RootChatMessage,RootChatContact,RootChatState} from './rootChatTypes.ts';
-import {validRootGroupBackup,queueRootGroupBackup,recoverRootGroupsForPeer,changeRootGroup,receiveRootGroupControl,leaveRootGroup,validGroupContext,validGroupStorage,rootGroupAllowed,encodeRootGroupMessage,rootGroupDeliveryId} from './rootGroups.ts';
+import {ROOT_GROUP_MAX_CONTROL_HISTORY,ROOT_GROUP_MAX_CONTROL_BYTES,validRootGroupBackup,queueRootGroupBackup,recoverRootGroupsForPeer,changeRootGroup,receiveRootGroupControl,leaveRootGroup,validGroupContext,validGroupStorage,rootGroupAllowed,encodeRootGroupMessage,rootGroupDeliveryId} from './rootGroups.ts';
 import type {RootGroupContext,RootGroupMembership,RootGroupBackup} from './rootGroupTypes.ts';
 export type {RootChatReply,RootChatMessage,RootChatContact,RootChatState} from './rootChatTypes.ts';
 const idValid=(id:string)=>/^[a-f0-9]{64}$/.test(id);
@@ -60,7 +60,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    ||(s.groups!==undefined||s.groupPackets!==undefined)&&!validGroupStorage(s,d.owner)
    ||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.group!==undefined&&(!validGroupContext(m.group)||!s.groups?.some(g=>g.id===m.group!.id)))
    ||s.groupActions!==undefined&&(!Array.isArray(s.groupActions)||s.groupActions.length>10000||s.groupActions.some(a=>!validGroupAction(a,d.owner)||!s.groups?.some(g=>g.id===a.group.id)))
-   ||s.groupSeen!==undefined&&(!Array.isArray(s.groupSeen)||s.groupSeen.length>2000||s.groupSeen.some(v=>!validPeer(v.peer)||!idValid(v.id)||typeof v.raw!=='string'||byteLength(v.raw)>2048)))throw Error('Chat storage needs recovery; it was not replaced');
+   ||s.groupSeen!==undefined&&(!Array.isArray(s.groupSeen)||s.groupSeen.length>ROOT_GROUP_MAX_CONTROL_HISTORY||s.groupSeen.some(v=>!validPeer(v.peer)||!idValid(v.id)||typeof v.raw!=='string'||byteLength(v.raw)>2048)))throw Error('Chat storage needs recovery; it was not replaced');
   if(s.groups?.some(g=>g.recoveryPending!==undefined&&(g.recoveryPending!==true||g.admin!==d.owner||g.accepted)||g.backup!==undefined&&(!validRootGroupBackup(g.backup)||g.backup.group.id!==g.id||g.backup.group.admin!==g.admin)))throw Error('Group backup needs recovery; it was not replaced');
   validatedRaw=raw;
   }
@@ -250,7 +250,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    if(a[0]==='axonic-group-members-v1'||a[0]==='axonic-group-leave-v1'||a[0]==='axonic-group-recover-v1'||a[0]==='axonic-group-backup-v1'||a[0]==='axonic-group-recovery-offer-v1'){
     const s=await read(),old=s.groupSeen?.find(v=>v.peer===from&&v.id===id);if(old)return old.raw===raw;
     if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
-    if((s.groupSeen?.length??0)>=2000||s.messages.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming')||s.actions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
+    if((s.groupSeen?.length??0)>=ROOT_GROUP_MAX_CONTROL_HISTORY||(s.groupSeen??[]).reduce((n,p)=>n+byteLength(p.raw),byteLength(raw))>ROOT_GROUP_MAX_CONTROL_BYTES||s.messages.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming')||s.actions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
     if(!receiveRootGroupControl(s,d.owner,from,id,a[0],a[3]))return false;
     signGroups(s,id);(s.groupSeen??=[]).push({peer:from,id,raw});await save(s);return true;
    }

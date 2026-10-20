@@ -2,11 +2,15 @@ import Native from '../../../modules/axonic-nearby';
 import {localAccount} from '../identity';
 import {localRootChat} from '../../services/identity/localRootChat';
 import {localAccountCalls as activeCallSession,localAccountNetworkSnapshot,ensureLocalPeerIdentity} from '../../composition/neuronRuntime';
+import {pendingMessages} from './pendingMessages';
+export {pendingMessages} from './pendingMessages';
 import {createMessagingCommands} from './commands';
 import {createCallCommands} from './callCommands';
 
 const owner = () => localAccount.status().state === 'unlocked' ? localAccount.status().account : null;
-export const messaging = createMessagingCommands({owner, ledger: localRootChat, randomId: () => Native!.identityRandomBytes!(32)});
+export const messaging = createMessagingCommands({owner, ledger: localRootChat, randomId: () => Native!.identityRandomBytes!(32),pending:pendingMessages.begin,yieldUI:()=>new Promise(resolve=>setTimeout(resolve,16))});
+let pendingOwner=owner();
+localAccount.subscribe(()=>{const next=owner();if(next!==pendingOwner)pendingMessages.clear();pendingOwner=next;});
 export const calling = createCallCommands({owner, calls: activeCallSession,
   connected: () => !!localAccountNetworkSnapshot()?.pool?.connections.some(c => c.state === 'connected'), resolve: ensureLocalPeerIdentity});
 
@@ -41,3 +45,7 @@ export {groupMessageInfo} from './groupMessageInfo';
 export {messageInfoDescription} from './messageInfoState';
 
 export {updateSharedProfileAvatar,removeSharedProfileAvatar} from './profile';
+
+export {subscribeAttachmentChanges,subscribeAttachmentContentChanges} from '../../services/identity/attachmentChanges';
+
+export {subscribeChatActivity,nextChatActivityDeadline} from '../../composition/neuronRuntime';

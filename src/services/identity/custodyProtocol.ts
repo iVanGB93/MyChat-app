@@ -31,9 +31,10 @@ const wakeBody=(e:CustodyWake)=>bytes(['axonic-custody-wake-v1',e.version,e.id,e
 const wakeFields=(e:CustodyEnvelope):CustodyWake=>({version:1,id:e.id,sender:e.sender,senderDevice:e.senderDevice,recipient:e.recipient,recipientDevice:e.recipientDevice,expires:e.expires,digest:custodyDigest(e),signature:e.wakeSignature??'',...(e.wakeMode==='silent'?{wakeMode:'silent' as const}:{})});
 // Conservative data budget leaves room for FCM routing fields. No plaintext is added.
 export const CUSTODY_WAKE_DATA_BYTES=3500;
-export function createCustodyWake(e:CustodyEnvelope,record:IdentityRecord,inline=false){
+export function createCustodyWake(e:CustodyEnvelope,record:IdentityRecord,inline=false,custodian?:string){
   if(!e.wakeSignature)return null;
-  const data:{type:string;event:string;record:string;envelope?:string}={type:'neuron_message',event:JSON.stringify(wakeFields(e)),record:recordDigest(record)};
+  const data:{type:string;event:string;record:string;envelope?:string;custodian?:string}={type:'neuron_message',event:JSON.stringify(wakeFields(e)),record:recordDigest(record),
+    ...(custodian&&validAccountId(custodian)?{custodian}:{})};
   if(inline){const envelope=JSON.stringify(e);if(utf8ToBytes(JSON.stringify({...data,envelope})).length<=CUSTODY_WAKE_DATA_BYTES)data.envelope=envelope;}
   return data;
 }
@@ -42,7 +43,10 @@ export function custodyWakeEnvelope(data:unknown,event:CustodyWake,now:number):C
   const raw=(data as {envelope?:unknown})?.envelope;
   if(typeof raw!=='string'||raw.length>CUSTODY_WAKE_DATA_BYTES)return null;
   const e=parseCustody(raw,now);
-  return e?.kind==='envelope'&&e.id===event.id&&e.sender===event.sender&&e.senderDevice===event.senderDevice&&e.recipient===event.recipient&&e.recipientDevice===event.recipientDevice&&e.expires===event.expires&&custodyDigest(e)===event.digest?e:null;
+  // Envelope content signatures do not bind optional wake metadata. Do not
+  // admit an inline copy that lost/changed the verified presentation flag.
+  // Leave the signed hint valid; recovery can fetch the original relay copy.
+  return e?.kind==='envelope'&&e.id===event.id&&e.sender===event.sender&&e.senderDevice===event.senderDevice&&e.recipient===event.recipient&&e.recipientDevice===event.recipientDevice&&e.expires===event.expires&&custodyDigest(e)===event.digest&&e.wakeMode===event.wakeMode&&e.wakeSignature===event.signature?e:null;
 }
 /** Wake verification needs only pinned public keys; private keys never enter FCM. */
 export function verifyCustodyWake(data:unknown,record:IdentityRecord,account:string,device:string,now:number):CustodyWake|null{

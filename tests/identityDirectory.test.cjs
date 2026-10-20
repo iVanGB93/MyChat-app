@@ -117,3 +117,10 @@ test('replica clock skew is tolerated without counting the final uncertainty win
  await worker.tick();assert.equal(worker.snapshot().confirmed,1);assert.equal(worker.snapshot().replicas[0].until,time+dir.DIRECTORY_LEASE-29000);
  now=time+dir.DIRECTORY_LEASE-29000;assert.equal(worker.snapshot().confirmed,0);
 });
+test('directory deadlines sleep without peers and target actual renewal or retry times',async()=>{
+ let now=time,peers=[];const own=identity(),remote=identity();let calls=0;
+ const worker=createIdentityDirectoryReplication({own:()=>packet(own),peers:()=>peers,now:()=>now,request:async()=>{calls++;return JSON.stringify({domain:dir.DIRECTORY_DOMAIN,status:'stored',account:own.record.account,digest:p.recordDigest(own.record),until:now+dir.DIRECTORY_LEASE});}});
+ await worker.tick();assert.equal(calls,0);assert.equal(worker.nextDeadline(),own.record.expiresAt);
+ peers=[remote.record.account];assert.equal(worker.nextDeadline(),time);await worker.tick();assert.equal(calls,1);assert.equal(worker.nextDeadline(),time+dir.DIRECTORY_LEASE-30000);
+ now=worker.nextDeadline();await worker.tick();assert.equal(calls,2);worker.stop();assert.equal(worker.nextDeadline(),Infinity);
+});

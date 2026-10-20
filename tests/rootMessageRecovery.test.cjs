@@ -1,17 +1,33 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 test('background recovery drives delivery without relying on display-frame JS timers',async()=>{const f=fixture({nativeClock:true});await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().jsTimers,0);assert.ok(f.counts().ticks>1);assert.ok(f.counts().ticks<=20,'receipt observation must not pump the whole network every 300ms');assert.ok(f.counts().elapsed>=20000);assert.deepEqual(f.leases,[30000,0]);});
 test('a durable inbox entry does not close the wake transport before the receipt exchange',async()=>{const f=fixture();await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().resumed,1);assert.ok(f.counts().elapsed>=20000);assert.ok(f.counts().elapsed<30000);assert.equal(f.counts().stopped,1);});
-function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClock=false,foreground=false,completeAfter=null,inlineFailure=false}={}){
+function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClock=false,foreground=false,completeAfter=null,inlineFailure=false,inlineDelay=0,diagnosticFailure=false,stopFailure=false,waitDelay=0,sleepDelay=0,clockSamples=false}={}){
  let now=100000,started=0,resumed=0,stopped=0,owner='own',inspects=0,initializes=0,ticks=0,jsTimers=0;const leases=[],inline=[];
- const app={currentState:foreground?'active':'background'};
+ const app={currentState:foreground?'active':'background'};const diagnostics=[];let appliedDelay=0;
  const imports={'react-native':{AppState:app},'../../../modules/axonic-nearby':{default:native?{axonMessageWake:ms=>leases.push(ms),...(nativeClock?{axonMessageWait:async ms=>{app.currentState='background';now+=ms;}}:{})}:{}},'./localAccount':{startLocalAccount:async()=>{if(!owner)inspects++;if(state==='locked'){initializes++;if(resume)state='unlocked';}},localAccount:{status:()=>({state,account:owner}),inspect:async()=>{inspects++;}},localAccountSession:{initialize:async()=>{initializes++;if(resume)state='unlocked';}}},'../../composition/neuronRuntime':{startLocalAccountNetwork:()=>{started++;const resumedBefore=resumed;return {receiveWakeEnvelope:async e=>{inline.push(e);if(inlineFailure)throw Error("inline unavailable");return {};},resume:()=>resumed++,tick:()=>{ticks++;if(fail)throw Error('pump');},stop:()=>stopped++};}},'./localRootChat':{localRootChat:()=>({snapshot:async()=>{if(fail)throw Error('storage');return {messages:[{peer:'peer',id:'id',direction:'incoming'}]};}})}};
- imports['../mobileDeliveryDiagnostics']={deliveryDiagnosticEvent:()=>{}};
+ imports['../mobileDeliveryDiagnostics']={deliveryDiagnosticEvent:(_a,_p,_i,event,details)=>{if(diagnosticFailure&&event==='recovery_finished')throw Error('diagnostic unavailable');diagnostics.push({event,details});}};
+ if(nativeClock){imports['../../../modules/axonic-nearby'].default.axonMessageWait=async ms=>{app.currentState='background';now+=ms;if(!appliedDelay&&waitDelay){now+=waitDelay;appliedDelay=waitDelay;}};}
+ if(clockSamples)imports['../../../modules/axonic-nearby'].default.axonClockSnapshot=()=>({elapsedMs:now,uptimeMs:now-(appliedDelay?sleepDelay:0),processCpuMs:100+(appliedDelay?7:0)});
  const lease={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/messageWakeLease.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(lease,n=>imports[n]);imports['./messageWakeLease']=lease;
  const originalStart=imports['../../composition/neuronRuntime'].startLocalAccountNetwork;
- imports['../../composition/neuronRuntime'].startLocalAccountNetwork=()=>({...originalStart(),recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter});
+ imports['../../composition/neuronRuntime'].startLocalAccountNetwork=()=>{const network=originalStart();return {...network,receiveWakeEnvelope:async e=>{now+=inlineDelay;return network.receiveWakeEnvelope(e);},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
  const out={};new Function('exports','require','Date','setTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageRecovery.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>imports[n],{now:()=>now},(cb,ms)=>{jsTimers++;now+=ms;queueMicrotask(cb);});
- return {out,leases,inline,counts:()=>({started,resumed,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
+ return {out,leases,inline,diagnostics,counts:()=>({started,resumed,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
 }
+
+test('slow inline persistence consumes the recovery budget without aborting the transaction or starting extra polling',async()=>{
+ const f=fixture({nativeClock:true,inlineDelay:25000});await f.out.recoverRootMessage('own','peer','id',160000,undefined,{kind:'inline'});
+ assert.equal(f.inline.length,1);assert.equal(f.counts().elapsed,25000);assert.equal(f.counts().resumed,0);assert.equal(f.counts().ticks,0);assert.equal(f.counts().stopped,1);assert.deepEqual(f.leases,[30000,0]);
+ const d=f.diagnostics.at(-1).details;assert.equal(d.setupMs,25000);assert.equal(d.overrunMs,5000);assert.equal(d.reason,'deadline');
+});
+test('diagnostic exceptions cannot strand recovery; a runtime stop exception still releases the native lease',async()=>{
+ const f=fixture({nativeClock:true,completeAfter:900,diagnosticFailure:true});await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().stopped,1);assert.deepEqual(f.leases,[30000,0]);
+ const g=fixture({nativeClock:true,completeAfter:900,stopFailure:true});await assert.rejects(g.out.recoverRootMessage('own','peer','id',160000),/stop failed/);assert.deepEqual(g.leases,[30000,0]);
+});
+test('late background callback reports sleep separately from process-wide CPU without extending expired recovery',async()=>{
+ const f=fixture({nativeClock:true,waitDelay:80000,sleepDelay:75000,clockSamples:true});await f.out.recoverRootMessage('own','peer','id',200000);
+ const d=f.diagnostics.at(-1).details;assert.equal(d.milliseconds,80300);assert.equal(d.sleepMs,75000);assert.equal(d.processCpuMs,7);assert.equal(d.waitLagMs,80000);assert.equal(d.overrunMs,60300);assert.equal(f.counts().ticks,1);assert.equal(f.counts().stopped,1);
+});
 test('duplicate wake hints share one recovery lease and release their slot after completion',async()=>{
  const f=fixture({nativeClock:true,completeAfter:900}),a=[],b=[];
  await Promise.all([f.out.recoverRootMessage('own','peer','id',160000,m=>a.push(m)),f.out.recoverRootMessage('own','peer','id',160000,m=>b.push(m))]);

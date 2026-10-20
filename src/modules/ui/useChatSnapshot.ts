@@ -1,8 +1,8 @@
 import {readProfileAvatar,readSharedAvatar,subscribeSharedAvatars} from '../storage';
-import {useCallback,useEffect,useState,useMemo,useRef} from 'react';
+import {useCallback,useEffect,useState,useMemo,useRef,useSyncExternalStore} from 'react';
 import {AppState} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
-import {conversations,rootChatView,type RootChatState} from '../messaging';
+import {conversations,pendingMessages,rootChatView,type RootChatState} from '../messaging';
 import {localAccount} from '../identity';
 import {ownChatRevision,subscribeOwnChatWrites} from '../storage/chatStore';
 import {createChatRefresh} from './chatRefresh';
@@ -24,8 +24,8 @@ const snapshots=createChatSnapshotCache({revision:ownChatRevision,
 let snapshotOwner=localAccount.status().account;
 localAccount.subscribe(()=>{const status=localAccount.status();if(status.state!=='unlocked'||status.account!==snapshotOwner){snapshots.clear();avatarSnapshots.clear();}snapshotOwner=status.account;});
 
-/** The visible foreground screen refreshes on durable writes. The slower safety
- * poll reuses unchanged history; hidden screens do no refresh work. */
+/** The visible foreground screen refreshes on durable writes and foreground entry.
+ * Unchanged and hidden screens do no refresh work. */
 export function useChatSnapshot(){
  const focused=useIsFocused(),[foreground,setForeground]=useState(AppState.currentState==='active');
  const [state,setState]=useState<RootChatState>(()=>{const owner=localAccount.status().account;return owner&&snapshots.peek(owner)||{version:1,contacts:[],messages:[]};}),[error,setError]=useState('');
@@ -34,7 +34,7 @@ export function useChatSnapshot(){
   if(!focused||!foreground)return;
   let first=true;
   const refresh=createChatRefresh({owner:()=>localAccount.status().state==='unlocked'?localAccount.status().account:null,read:snapshots.read,fresh:(owner,value)=>snapshots.peek(owner)===value,
-   ready(value,milliseconds){setState(value);setError('');if(first){diagnosticJournal.record('chat_snapshot_ready',{milliseconds});first=false;}},
+   ready(value,milliseconds){const owner=localAccount.status().account;if(owner)pendingMessages.reconcile(owner,value);setState(value);setError('');if(first){diagnosticJournal.record('chat_snapshot_ready',{milliseconds});first=false;}},
    failed(error){if(first){diagnosticJournal.record('chat_snapshot_failed');first=false;}setError(storageErrorText(error));}});
   const off=subscribeOwnChatWrites(refresh.wake);
   let bound=localAccount.status().account;
@@ -45,7 +45,10 @@ export function useChatSnapshot(){
  const avatarPeers=useMemo(()=>[...new Set([...state.contacts.map(c=>c.account),...(state.groups??[]).flatMap(g=>g.members)])].sort().join(','),[state.contacts,state.groups]);
  const [avatars,setAvatars]=useState<{owner:string|null;uris:Record<string,string|null>}>(()=>{const uris:Record<string,string|null>={};if(avatarOwner)for(const peer of avatarPeers.split(',').filter(Boolean)){const uri=avatarSnapshots.peek(avatarOwner,peer);if(uri!==undefined)uris[peer]=uri;}return {owner:avatarOwner,uris};});
  useEffect(()=>{if(!focused||!foreground)return;let active=true,revision=0;const refresh=async()=>{const epoch=++revision;if(!avatarOwner)return;const pairs=await Promise.all(avatarPeers.split(',').filter(Boolean).map(async peer=>[peer,await avatarSnapshots.read(avatarOwner,peer)] as const));if(active&&epoch===revision)setAvatars(previous=>{const uris=Object.fromEntries(pairs);return previous.owner===avatarOwner&&Object.keys(previous.uris).length===pairs.length&&pairs.every(([peer,uri])=>previous.uris[peer]===uri)?previous:{owner:avatarOwner,uris};});};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[avatarOwner,avatarPeers,focused,foreground]);
- const withAvatars=useMemo(()=>({...state,avatarUris:avatars.owner===avatarOwner?avatars.uris:{}}),[state,avatars,avatarOwner]);
+ const subscribePending=useCallback((listener:()=>void)=>focused&&foreground?pendingMessages.subscribe(listener):()=>{},[focused,foreground]);
+ const pendingVersion=useSyncExternalStore(subscribePending,pendingMessages.version,pendingMessages.version);
+ const visible=useMemo(()=>pendingMessages.merge(avatarOwner,state),[state,avatarOwner,pendingVersion]);
+ const withAvatars=useMemo(()=>({...visible,avatarUris:avatars.owner===avatarOwner?avatars.uris:{}}),[visible,avatars,avatarOwner]);
  return {state:withAvatars,error};
 }
 

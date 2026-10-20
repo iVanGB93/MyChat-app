@@ -1,0 +1,45 @@
+Remaining schedule conversion — completed mobile source pass, October 20, 2026
+
+Converted to events and explicit deadlines:
+- Chat snapshots, call history, contact names and connected-peer nicknames.
+- Network status, connection bars and peer quality/ranking views.
+- Typing hints: receive events plus exact expiry deadlines.
+- Attachment progress: coalesced committed-job changes, with no idle UI polling.
+- Storage summaries and gallery export: file-availability and chat changes,
+  separated from chunk progress so each checkpoint does not rescan history.
+- Attachment workers: empty queues sleep; pending retries, preparation lookups,
+  expiry, new connections and policy changes retain recovery paths.
+- Gallery exporter: explicit failed-export retry, immediate backlog continuation,
+  preference/account/foreground/file events; empty state has no scheduled reads.
+- Notification navigation: persisted target, deep link, unlock, foreground and
+  navigator-ready events. Old consumption cannot remove a different newer tap.
+  Transient storage failures retain a bounded retry.
+- Identity-recovery connection deadlines and incoming-call confirmation retries.
+- Play update work only while an update/retry is pending, with native events.
+- Keyboard overlap via per-view native layout events, including modal views.
+- Coordinator count-only diagnostics update from events, not a 15-second sample.
+- Removed the unused generic foreground-poll hook and its obsolete polling test.
+
+Intentional remaining clocks:
+- Elapsed active call time, active recording duration, active playback protection.
+- Active WebRTC statistics sampling (quality cannot be inferred from a UI event).
+- Bounded expiry cleanup, request timeouts, retry backoff and identity leases.
+- Older native clients retain the visible-keyboard fallback until rebuilt.
+- Older AoNs/peers that do not advertise event capabilities retain protocol
+  compatibility polling. This source change does not update those deployments.
+
+Validation:
+- Full check: 1,409 tests passed, three skipped. Typecheck, cycle, module-boundary
+  and consolidation checks passed.
+- Subsequent focused file/export and transport tests passed after final refinements.
+- Local Gradle Axonic Dev build succeeded; installed on emulator-5554 preserving
+  its existing identity and chats. No production build or official-app update.
+- Live native keyboard observer registered and produced two layout events.
+- Live 20-second quiet interval: attachment worker remained at three total runs,
+  zero failures, no scheduled timer and no additional work. No synthetic traffic
+  was sent to real accounts. Legacy inbox/call polling and existing wake work
+  remained visible; this was not an assertion that the whole network was idle.
+- One debugger observation failed with Runtime.evaluate -32601 after live source
+  reloads. Restarting Dev restored evaluation and the existing unlocked account.
+- Physical phones were not visible to ADB; hardware sleep/FCM and two-device
+  transfer checks are not claimed by this pass. No AoN deployment or git push.

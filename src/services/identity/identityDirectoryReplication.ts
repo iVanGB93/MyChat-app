@@ -19,6 +19,11 @@ export function createIdentityDirectoryReplication(d: {
     return { packet: next ? packet : null, peers };
   }
   return {
+    nextDeadline(){
+      const {packet,peers}=state();if(!packet)return Infinity;
+      const expiry=Math.min(packet.record.expiresAt,...copies.values());
+      return copies.size>=3?expiry:Math.min(expiry,...peers.filter(p=>!copies.has(p)).map(p=>retry.get(p)??d.now()));
+    },
     snapshot() { const {packet,peers}=state();return { target: 3, confirmed: copies.size, availablePeers:peers.length,shortfall:Math.max(0,3-copies.size),reason:!packet?'identity_unavailable':copies.size>=3?'target_met':peers.length<3?'insufficient_connected_directory_peers':'awaiting_confirmations',replicas: [...copies].map(([peer, until]) => ({ peer, until })), publishing: running }; },
     async tick() {
       if (running || stopped) return;

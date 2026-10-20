@@ -19,7 +19,7 @@ test('pending, sent, deleted, sticker and unaccepted media never exports',async(
  const f=fixture();f.state.contacts[0].accepted=false;await f.worker.run();assert.equal(f.saved.length,0);
 });
 test('export failure retries separately, preference and locked account suppress exports',async()=>{
- const f=fixture();f.fail(true);await f.worker.run();f.fail(false);await f.worker.run();assert.equal(f.saved.length,1);
+ const f=fixture();f.fail(true);await f.worker.run();assert.equal(f.worker.nextDelay(),15000);f.fail(false);await f.worker.run();assert.equal(f.saved.length,1);assert.equal(f.worker.nextDelay(),Infinity);
  for(const method of ['disable','lock']){const f=fixture();f[method]();await f.worker.run();assert.equal(f.saved.length,0);}
 });
 test('concurrent wakes cannot duplicate an export',async()=>{

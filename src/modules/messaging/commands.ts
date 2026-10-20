@@ -3,12 +3,15 @@ import type {RootChatReply} from '../../services/identity/rootChatTypes';
 import type {RootActionKind} from '../../services/identity/rootChatActionTypes';
 import {rootChatView} from '../../services/identity/rootChatActions';
 
+import type {PendingText} from './pendingMessages';
 type Ledger = ReturnType<typeof createRootChatLedger>;
 /** UI commands persist intent locally. They never require a connected peer. */
 export function createMessagingCommands(d: {
   owner(): string | null;
   ledger(): Ledger;
   randomId(): Promise<string>;
+  pending?(row:PendingText):()=>void;
+  yieldUI?():Promise<void>;
 }) {
   function session(expectedOwner?: string | null) {
     const owner = d.owner();
@@ -22,8 +25,10 @@ export function createMessagingCommands(d: {
       const s=session(expectedOwner);return s.ledger.deleteChats(chats);
     },
     async sendText(peer: string, text: string, reply?: RootChatReply, expectedOwner?: string | null) {
-      const s = session(expectedOwner), id = await s.id();
-      await s.ledger.enqueue(peer, id, text, reply); return id;
+      const started=Date.now(),s = session(expectedOwner), id = await s.id();
+      const remove=d.pending?.({owner:s.owner,id,peer,text,reply,at:started});
+      try{await d.yieldUI?.();s.check();await s.ledger.enqueue(peer,id,text,reply);return id;}
+      catch(error){remove?.();throw error;}
     },
     async act(peer: string, target: RootChatReply, kind: RootActionKind, value = '', expectedOwner?: string | null) {
       const s = session(expectedOwner); await s.ledger.act(peer, await s.id(), target, kind, value);
@@ -54,8 +59,10 @@ export function createMessagingCommands(d: {
       const s = session(); await s.ledger.leaveGroup(group, await s.id());
     },
     async sendGroupText(group: string, text: string, reply?: RootChatReply, expectedOwner?: string | null) {
-      const s = session(expectedOwner), id = await s.id();
-      await s.ledger.enqueueGroup(group, id, text, reply); return id;
+      const started=Date.now(),s = session(expectedOwner), id = await s.id();
+      const remove=d.pending?.({owner:s.owner,id,peer:group,text,reply,group:true,at:started});
+      try{await d.yieldUI?.();s.check();await s.ledger.enqueueGroup(group,id,text,reply);return id;}
+      catch(error){remove?.();throw error;}
     },
     async actGroup(group: string, target: RootChatReply, kind: 'edit' | 'delete' | 'reaction', value = '', expectedOwner?: string | null) {
       const s = session(expectedOwner); await s.ledger.actGroup(group, await s.id(), target, kind, value);

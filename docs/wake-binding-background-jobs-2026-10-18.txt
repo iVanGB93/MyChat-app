@@ -1,0 +1,95 @@
+Wake binding and notification background work — 2026-10-18
+
+Historical initial-phase record. Later authorized AoN deployment and additional
+mobile fixes are recorded in wake-recovery-followup-2026-10-18.txt; the release
+boundary below describes this initial phase, not the later deployment.
+
+Scope and preservation
+- Uncommitted mobile fixes after bb364be (1.1.23). No AoN updates, production
+  builds, publication, official-app installation, queue resets or history deletion.
+- Updated only com.axonic.dev; full pre-update archives validated:
+  builds/phone-dev-before-wss-1792335984602.tar (1,725,742,080 bytes)
+  builds/phone-dev-before-wss-1792335995947.tar (323,228,160 bytes).
+- Both identities and all original message keys preserved: phone A 408, B 163.
+  Official package version/update timestamps unchanged during Dev installation.
+- Native tests add two completed settings-observation WorkSpecs per Dev app.
+  They do not change Android notification permissions, send messages, prune jobs,
+  reset stores or execute the separate storage-recovery instrumentation runner.
+
+Verified bug: Notifee 9.1.8 settings-change completion
+- onBlockStateEvent emits a foreground JS event but did not complete the native
+  BlockStateEvent. Notifee's WorkManager Worker waits for that completion.
+- The background branch also supplied an unlimited headless-task timeout, with
+  no independent deadline for React-context startup.
+- The pinned, idempotent dependency patch completes foreground work in finally,
+  bounds the settings-only headless task/startup to 10 seconds, completes once,
+  and removes the watchdog when the callback succeeds. Notification delivery,
+  reply/read actions and ongoing foreground-service callbacks are unchanged.
+- Package installation hooks reapply the patch. Changed dependency source fails
+  closed for review rather than silently patching a different vendor version.
+- Java harness reproduces the original foreground omission, then checks the
+  fixed normal, exception, timeout, duplicate and late-callback paths.
+- Real Android WorkManager results (both phones, current Dev native patch):
+  A: foreground SUCCEEDED in 162 ms; background SUCCEEDED in 10,036 ms.
+  B: foreground SUCCEEDED in 115 ms; background SUCCEEDED in 10,109 ms.
+  Background instrumentation exercised the startup watchdog, not a claim of
+  ordinary background-message latency. Final read-only SQLite checks show all
+  four test WorkSpecs SUCCEEDED and no unfinished Dev WorkSpecs.
+- This proves a specific leaked-job mechanism. The normal app's earlier battery
+  totals do not expose the WorkSpec class; attribution of all 3h of historical
+  work-lock time to this bug is NOT established. The overlapping 79–86-second
+  recovery observations also remain wall-clock observations, not CPU time or
+  proof that the transport was actively working throughout.
+
+Signed wake hardening and diagnosis
+- The original four gateway silent_flag_binding_mismatch attempts remain
+  unattributed. All retained live Dev wake envelopes verified: A 12/12, B 7/7.
+- Ciphertext signatures/digests do not bind optional wakeMode/wakeSignature.
+  Inline-envelope admission now additionally requires exact agreement with the
+  verified signed wake. Inconsistent inline metadata is not admitted; the valid
+  signed hint still permits ordinary authenticated relay recovery.
+- The existing local forwarder already rejected invalid wakes before making
+  gateway calls. It now distinguishes local_silent_flag_binding_mismatch from
+  local_wake_verification_failed using counterfactual verification for diagnosis
+  ONLY. It never accepts, rewrites, forwards or deletes the mismatched packet.
+- Existing encrypted delivery remains possible; rejection is not a receipt.
+  No wire-version, cryptographic primitive, signed-body or gateway acceptance
+  changes. Ordinary messages and silent read/control traffic stay distinct.
+- Each Dev phone passed 24 in-memory checks covering normal/silent signatures,
+  inline flag/signature tampering, intact fallback hints, and precise local
+  rejection with zero gateway calls and zero storage mutations. These do not
+  recreate or identify the source of the historical gateway attempts.
+
+Validation
+- npm run check: 1,354 passed; 3 optional benchmarks skipped; 0 failed.
+  TypeScript, dependency cycles, module boundaries and consolidation pass.
+- :axonic-nearby:testDebugUnitTest: 41 passed, 0 failed/errors.
+- npm run test:notification-native: original omission reproduced; fixed harness
+  passes callback, watchdog and exactly-once completion assertions.
+- Real Dev signed-wake evidence: builds/wake-binding-dev-1792336095627.json.
+- Pre/post private state evidence: builds/dev-wake-jobs-before-1792335525082.json
+  and builds/dev-wake-jobs-before-1792336295831.json (the latter is the AFTER
+  snapshot despite the generic helper's historical filename prefix).
+- Build/check logs: builds/wake-background-dev-build.log,
+  builds/wake-background-instrumentation-build.log,
+  builds/wake-background-check.log.
+
+Repeat native work test (authorized Dev only)
+1. node scripts/prepare-notification-work-test.cjs
+2. Set JAVA_HOME to the local JDK 17; from android run:
+   .\gradlew.bat :app:assembleDebug :app:assembleDebugAndroidTest
+     -PaxonicSideBySide=true
+     '-PaxonicTestRunner=com.axonic.NotificationBlockWorkInstrumentation'
+     -PreactNativeArchitectures=arm64-v8a --console=plain --max-workers=2
+3. Back up/update com.axonic.dev using the preserving-data updater. Inspect
+   test APK identity (com.axonic.dev.test), install-r it, then explicitly run:
+   adb -s <authorized-device> shell am instrument -w
+     com.axonic.dev.test/com.axonic.NotificationBlockWorkInstrumentation
+4. Reopen Dev and verify identities, baseline message keys and WorkSpec states.
+   Do not run old storage fixtures or reset data as part of this test.
+
+Release boundary
+The previously created 1.1.23 production AAB does NOT contain these fixes.
+The native completion repair requires a new approved production build/update.
+No such build or installation was performed here. Do not describe the normal
+apps or any AoN as having received these changes.

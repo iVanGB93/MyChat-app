@@ -27,15 +27,26 @@ export function summarizeReportMessages(state:RootChatState,now:number){
 }
 export function summarizeWakeForReport(value:unknown){
  const source=value as Record<string,any>|null;
- const project=(v:any)=>!v?null:{work:numericProjection(v.work,['schedulerChecks','storeReads','selectedItems','localGatewayCalls','remoteGatewayCalls','requestPayloadBytes','responsePayloadBytes','elapsedMs']),outcomes:numericProjection(v.outcomes,['forwarded','retry','unsupported','rejected','unavailable','exception','local_wake_verification_failed']),gauges:numericProjection(v,['trackedEnvelopes','backingOff','acceptedEnvelopes'])};
- return {private:project(source?.private),group:project(source?.group),scope:'Current network runtime only. Calls are adapter invocations, not proven transmissions; bytes are JSON bytes, not wire bytes; elapsedMs is request latency, not CPU. Gateway acceptance is not device delivery.'};
+ const outcomes=['recipient_receipt','forwarded','retry','unsupported','rejected','unavailable','exception','local_wake_verification_failed','local_silent_flag_binding_mismatch'];
+ // Keep the scheduler's bounded evidence, not raw queue rows. Without these
+ // observations a cumulative mismatch count cannot distinguish old failures
+ // from a currently retrying packet. Never invent peer/message correlation.
+ const pending=(v:unknown)=>Array.isArray(v)?v.slice(0,8).map(row=>{
+  const result:Record<string,number|string|null>={};
+  for(const key of ['requests','lastObservedAt','nextRetryAt']){const n=row?.[key];if(Number.isSafeInteger(n)&&n>=0)result[key]=n;}
+  if(row?.nextRetryAt===null)result.nextRetryAt=null;
+  if(typeof row?.lastOutcome==='string'&&['validation',...outcomes].includes(row.lastOutcome))result.lastOutcome=row.lastOutcome;
+  return result;
+ }):[];
+ const project=(v:any)=>!v?null:{work:numericProjection(v.work,['schedulerChecks','storeReads','selectedItems','localGatewayCalls','remoteGatewayCalls','requestPayloadBytes','responsePayloadBytes','elapsedMs']),outcomes:numericProjection(v.outcomes,outcomes),gauges:numericProjection(v,['trackedEnvelopes','backingOff','acceptedEnvelopes']),pendingSample:pending(v.pendingSample)};
+ return {private:project(source?.private),group:project(source?.group),scope:'Current network runtime only. Calls are adapter invocations, not proven transmissions; bytes are JSON bytes, not wire bytes; elapsedMs is request latency, not CPU. Gateway acceptance is not device delivery. Each pendingSample contains at most eight locally tracked wake items, not all undelivered messages. lastObservedAt and nextRetryAt use this device clock; nextRetryAt is eligibility, not a promised send time, and null means no eligible gateway is currently known. validation means no more specific outcome was recorded, not successful validation. Rows have no stable aliases: do not correlate array positions across reports.'};
 }
 export function summarizePollingForReport(value:unknown){
  const source=value as Record<string,unknown>|null;
- const keys=['startedPasses','emptyPasses','itemPasses','unsuccessfulPasses','cooldownSkips','busySkips','activePasses','trackedRelays','idleMaximumMs'];
+ const keys=['startedPasses','emptyPasses','itemPasses','unsuccessfulPasses','cooldownSkips','busySkips','activePasses','trackedRelays','eventIdlePeers','idleMaximumMs'];
  return {private:source?numericProjection(source.private,keys):null,group:source?numericProjection(source.group,keys):null,
-  localWork:source?numericProjection(source,['pendingDerivations']):null,
-  scope:'Current network runtime. Passes are local scheduled inbox batches, not wire packets. Item passes saw a packet, not necessarily valid or delivered. Empty passes are not failures. Skips are local checks with no poll started. Unsuccessful passes returned neither a packet nor confirmed empty inbox. Empty-inbox backoff is capped at 15s; explicit relay retry hints can defer up to 60s. Wake/resume restores fast polling. Call polling is unchanged.'};
+  localWork:source?numericProjection(source,['pendingDerivations']):null,events:source?numericProjection(source.events,['sent','acknowledged','received','retries','pending']):null,
+  scope:'Current network runtime. Passes are local scheduled inbox batches, not wire packets. Item passes saw a packet, not necessarily valid or delivered. Empty passes are not failures. Skips are local checks with no poll started. Unsuccessful passes returned neither a packet nor confirmed empty inbox. Event-capable peers stop polling after a confirmed drain until a connection, wake, or inbox-change event. Legacy empty-inbox backoff is capped at 15s; unfinished work can retry. Notice acknowledgment only confirms reconciliation was requested, not message delivery. Call inboxes also sleep when both peers support call-inbox events; older relays retain their compatibility poll.'};
 }
 export function chooseReportRecipient(connections:readonly {account:string;state:string;rank?:number;responseMs?:number|null}[],known:readonly {account:string;name:string}[],blocked:readonly string[]){
  const eligible=known.filter(p=>!blocked.includes(p.account));

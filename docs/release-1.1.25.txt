@@ -1,0 +1,31 @@
+Axonic 1.1.25 / Android versionCode 96 - October 20, 2026
+
+User approved a local production AAB for manual Play Store upload.
+Build and validation evidence: builds/local-production-aab-96.log and
+builds/local-aab-96-validation.json. Previous production artifacts preserved.
+
+Changes since 1.1.24:
+- Event-driven network/custody/call work and bounded recovery deadlines.
+- Verified message previews instead of speculative generic notifications.
+- Incoming Android call presentation, answer/decline routing, bounded background
+  signaling, caller-cancellation handling and unanswered-call expiry.
+- Avoid feedback loops from call-clock-only persistence.
+- Shared pending message presentation before local persistence, with account
+  isolation, failure rollback and private/group reconciliation.
+- Shared group delivery and recovery improvements and related diagnostic tests.
+
+Validation: npm run check passed: 1421 passing, 3 skipped, no failures; TypeScript,
+service cycles, module boundaries and consolidation passed. Native notification
+completion harness passed. Recent Dev evidence is recorded in
+notification-validation-2026-10-20.txt and immediate-send-validation-2026-10-20.txt.
+
+Limits: Dev results are not a release-mode or overnight Doze guarantee. Measured
+bubble layout remains 107-232 ms in Dev. AoN checkout has pending work that is
+not committed/deployed by this app-build operation. No Play upload or official
+phone installation is performed here. Existing release signing is preserved.
+
+Completed artifact: builds/Axonic-1.1.25-96.aab (107595892 bytes).
+SHA256: 42a3737b5a41d5b8fe9b912f1fdbc4f4d89fba782cfad34acea1909229738537
+Bundletool/JAR verification passed; signing certificate matches 1.1.24;
+com.axonic, 1.1.25/96, non-debuggable, no instrumentation, all four ABIs;
+embedded source fingerprint matches current source. Prior AAB unchanged.

@@ -1,8 +1,11 @@
+import {pendingMessages} from '../modules/messaging';
+import {subscribeAttachmentChanges} from '../modules/messaging';
 import {ChatComposer,type ChatComposerHandle} from '../components/chat/ChatComposer';
 import {createMessageTimeFormatter} from '../utils/message-time';
 import {submitComposer} from '../components/chat/submitComposer';
 import {MessageStatusTimes} from '../components/chat/MessageStatusTimes';
-import {useForegroundPoll} from '../hooks/useForegroundPoll';
+import {useForegroundEvents} from '../hooks/useForegroundEvents';
+import {subscribeCallJournalWrites} from '../modules/storage';
 import {useMessageStateClock} from '../modules/ui/useMessageStateClock';
 import {messageInfoDescription} from '../modules/messaging';
 import RootMediaSize from '../components/chat/RootMediaSize';
@@ -60,7 +63,7 @@ import notifee,{EventType} from '@notifee/react-native';
 
 import {handleRootNotificationAction} from '../modules/messaging/notifications';
 
-import {setRootVisibleConversation,queueRootNotificationOpen,pendingRootNotificationOpen,finishRootNotificationOpen} from '../modules/messaging/notifications';
+import {subscribeRootNotificationOpen,setRootVisibleConversation,queueRootNotificationOpen,pendingRootNotificationOpen,finishRootNotificationOpen} from '../modules/messaging/notifications';
 
 import {userInfoStyles as infoStyles} from '../screens/chat/user-info-styles';
 
@@ -68,7 +71,7 @@ import QRCode from 'react-native-qrcode-svg';
 
 import RootIdentityScanner from '../components/RootIdentityScanner';
 
-import { displayIdentity, shortIdentity, parseIdentityInput, identityLink, takeIdentityLink } from '../modules/identity';
+import { displayIdentity, shortIdentity, parseIdentityInput, identityLink, takeIdentityLink, subscribeIdentityLinks } from '../modules/identity';
 
 import RootMessageMenu from '../components/chat/RootMessageMenu';
 
@@ -284,7 +287,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  },[focused,foreground,peer,unreadKey,contact?.accepted,contact?.blocked]);
 
- useEffect(()=>{if(!focused||!foreground)return;let active=true,running=false,last='';const refresh=async()=>{if(running)return;running=true;try{const v=await rootAttachmentProgress(),raw=JSON.stringify(v);if(active&&raw!==last){last=raw;setTransfers(previous=>JSON.stringify(previous)===raw?previous:v);}}catch{}finally{running=false;}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{active=false;clearInterval(timer);};},[focused,foreground]);
+ useForegroundEvents(async current=>{const v=await rootAttachmentProgress();if(current())setTransfers(previous=>JSON.stringify(previous)===JSON.stringify(v)?previous:v);},subscribeAttachmentChanges,focused&&foreground);
 
  useLayoutEffect(()=>{navigation.setOptions({headerTitleAlign:'left',headerBackVisible:false,headerTitle:'',headerLeft:()=> <ChatHeaderIdentity onBack={()=>navigation.goBack()} title={name} syncing={false} color={colors.headerText} avatarUri={state.avatarUris[peer]} isGroup={false} isOnline={activity.online.includes(peer)} onPress={()=>navigation.navigate('Contact',{peer})}/>,headerRight:()=> <View style={{flexDirection:'row',gap:8,marginRight:8}}>
 
@@ -314,7 +317,7 @@ function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
  const attachmentProgress=useMemo(()=>createAttachmentProgressLookup(transfers.jobs,attachmentDigest),[transfers.jobs]);
  const messageList=useMemo(()=>(<FlatList {...messageListRendering} ref={list} inverted data={messages} keyExtractor={m=>m.direction+':'+m.id} style={roomStyles.messageList} contentContainerStyle={roomStyles.messagesList} keyboardShouldPersistTaps="handled"
 
-   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
+   renderItem={({item:m})=>{const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?state.messages.find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <ReplySwipe disabled={m.deleted||contact?.blocked||m.localPending} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View onLayout={()=>pendingMessages.laidOut(owner,m.group?.messageId??m.id)} style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked||m.localPending} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted&&!m.localPending){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{backgroundColor:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble]}>
 
     {!m.deleted&&m.reply&&<View style={{borderLeftWidth:3,borderLeftColor:colors.primary,padding:8,marginBottom:6}}><Text style={{color:colors.primary,fontWeight:'600'}}>{m.reply.author===owner?'You':name}</Text><Text numberOfLines={2} style={{color:colors.textSecondary}}>{quoted?(quoted.attachment?(quoted.attachment.name===IMPORTED_STICKER_CONTENT?'Sticker':quoted.attachment.name):parseSticker(quoted.text)?'Sticker':quoted.text):'Original message unavailable on this device'}</Text></View>}
 
@@ -483,7 +486,7 @@ function Calls({navigation}:Screen<'Tabs'>){
  const {colors}=useTheme(),{state}=useOwnChat(),[rows,setRows]=useState<OwnCallSummary[]>([]),[error,setError]=useState('');
 
  const focused=useIsFocused();
- useForegroundPoll(async current=>{const owner=localAccount.status().account;if(!owner)return;try{const result=await listOwnCallHistory(owner);if(current()&&localAccount.status().account===owner){setRows(previous=>JSON.stringify(previous)===JSON.stringify(result)?previous:result);setError('');}}catch{if(current())setError('Unable to read call history');}},3000,focused);
+ useForegroundEvents(async current=>{const owner=localAccount.status().account;if(!owner)return;try{const result=await listOwnCallHistory(owner);if(current()&&localAccount.status().account===owner){setRows(previous=>JSON.stringify(previous)===JSON.stringify(result)?previous:result);setError('');}}catch(error){if(current())setError('Unable to read call history');throw error;}},subscribeCallJournalWrites,focused);
 
  // Keep focus-only updates from recreating the unchanged native list.
  const calendarDay=dayjs().format('YYYY-MM-DD');
@@ -539,14 +542,15 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
  const ref=useRef(createNavigationContainerRef<Routes>()).current;
 
+ const openPending=useRef<()=>void>(()=>{});
  const visibleRoom=useRef<string|null>(null);
  const visible=()=>{const route=ref.getCurrentRoute(),room=route&&['ChatRoom','GroupRoom'].includes(route.name)?route.key:null;if(visibleRoom.current&&visibleRoom.current!==room)Keyboard.dismiss();visibleRoom.current=room;setRootVisibleConversation(route?.name==='ChatRoom'?{peer:(route.params as Routes['ChatRoom']).peer}:route?.name==='GroupRoom'?{group:(route.params as Routes['GroupRoom']).id}:null);};
 
  useEffect(()=>{
 
-  let alive=true,opening=false;
+  let alive=true,opening=false,dirty=false,failures=0,retry:ReturnType<typeof setTimeout>|undefined;
 
-  const open=async()=>{if(AppState.currentState!=='active'||opening||!alive||!ref.isReady()||localAccount.status().state!=='unlocked')return;opening=true;
+  const open=async()=>{if(opening){dirty=true;return;}if(AppState.currentState!=='active'||opening||!alive||!ref.isReady()||localAccount.status().state!=='unlocked')return;clearTimeout(retry);opening=true;dirty=false;let failed=false;
 
    try{const link=takeIdentityLink();if(link&&link!==localAccount.status().account){ref.navigate('NewChat',{identity:displayIdentity(link)});return;}const account=localAccount.status().account!,target=await pendingRootNotificationOpen(account);if(!target||!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
 
@@ -554,23 +558,23 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
     if(target.inbox)ref.navigate('Tabs',{screen:'Chats'});else if(target.group&&state.groups?.some(g=>g.id===target.group))ref.navigate('GroupRoom',{id:target.group});else ref.navigate('ChatRoom',{peer:target.sender});
 
-    await finishRootNotificationOpen();
+    await finishRootNotificationOpen(target);
     if(target.inbox&&target.unavailable)Alert.alert('Notification update',target.unavailable==='not_received'
      ?'Only a delivery hint is available for this alert; there is no matching chat message to open. Axonic will check for pending deliveries when connected.'
      :target.unavailable==='removed'?'The message for this older notification has been removed. Your remaining chats are unchanged.'
      :'The group for this notification is not available on this device yet. Axonic is checking the network.');
 
-   }catch{}finally{opening=false;}};
+   }catch{failed=true;failures++;}finally{opening=false;if(!failed)failures=0;if(dirty&&alive)void open();else if(failed&&alive&&AppState.currentState==='active')retry=setTimeout(()=>void open(),Math.min(30000,1000*2**Math.min(failures,5)));}};
 
   const stop=notifee.onForegroundEvent(({type,detail})=>{if(type===EventType.PRESS)void queueRootNotificationOpen(detail.notification?.data).then(open).catch(()=>{});else if(type===EventType.ACTION_PRESS)void handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data,detail.input).catch(report);});
 
-  void notifee.getInitialNotification().then(initial=>initial?queueRootNotificationOpen(initial.notification.data):undefined).then(open).catch(()=>{});
+  void notifee.getInitialNotification().then(async initial=>{if(!initial)return;await handleRootNotificationAction(initial.pressAction?.id??'',initial.notification.data);await queueRootNotificationOpen(initial.notification.data);}).then(open).catch(()=>{});
 
-  let timer:ReturnType<typeof setInterval>|undefined;const resume=()=>{if(timer!==undefined)clearInterval(timer);timer=undefined;if(AppState.currentState==='active'){void open();timer=setInterval(()=>void open(),600);}};const appState=AppState.addEventListener('change',resume);resume();return()=>{alive=false;if(timer!==undefined)clearInterval(timer);appState.remove();stop();setRootVisibleConversation(null);};
+  openPending.current=()=>{void open();};const offQueue=subscribeRootNotificationOpen(()=>void open()),offLinks=subscribeIdentityLinks(()=>void open()),offAccount=localAccount.subscribe(()=>void open());const appState=AppState.addEventListener('change',()=>void open());void open();return()=>{alive=false;clearTimeout(retry);openPending.current=()=>{};offQueue();offLinks();offAccount();appState.remove();stop();setRootVisibleConversation(null);};
 
  },[ref]);
 
- return <><NavigationContainer ref={ref} onReady={visible} onStateChange={visible} theme={{...base,colors:{...base.colors,background:colors.background,card:colors.headerBg,text:colors.text,primary:colors.primary,border:colors.neonBorder}}}>
+ return <><NavigationContainer ref={ref} onReady={()=>{visible();openPending.current();}} onStateChange={visible} theme={{...base,colors:{...base.colors,background:colors.background,card:colors.headerBg,text:colors.text,primary:colors.primary,border:colors.neonBorder}}}>
 
   <Stack.Navigator screenOptions={{headerStyle:{backgroundColor:colors.headerBg},headerTintColor:colors.headerText,headerTitleStyle:{...Font.semiBold,color:colors.headerText},contentStyle:{backgroundColor:colors.background}}}>
 

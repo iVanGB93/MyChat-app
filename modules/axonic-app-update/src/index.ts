@@ -25,7 +25,9 @@ interface AxonicAppUpdateNativeModule {
   clearChatRecoverySnapshot?: ()=>Promise<void>;
   getDiagnosticBuildInfo?:()=>Promise<{applicationId:string;versionName:string|null;versionCode:string}>;
   getKeyboardOverlap?: (viewTag:number)=>Promise<{visible:boolean;overlap:number}|null>;
-  addListener?: (event: string, listener: (state: { installStatus: number }) => void) => { remove(): void };
+  watchKeyboardLayout?:(viewTag:number)=>Promise<boolean>;
+  unwatchKeyboardLayout?:(viewTag:number)=>Promise<void>;
+  addListener?: (event: string, listener: (state: { installStatus: number;viewTag?:number }) => void) => { remove(): void };
   getUpdateInfoAsync(): Promise<PlayUpdateInfo>;
   startUpdateAsync?: (immediate: boolean) => Promise<PlayUpdateStartResult>;
   completeUpdateAsync?: () => Promise<void>;
@@ -38,6 +40,12 @@ export const clearChatRecoverySnapshot=async()=>{await nativeModule?.clearChatRe
 export const readNativeChatStorage=(owner:string)=>{if(!nativeModule?.readChatStorage)throw Error('Chat recovery requires an updated native build');return nativeModule.readChatStorage(owner);};
 export async function getDiagnosticBuildInfo(){try{return await nativeModule?.getDiagnosticBuildInfo?.()??null;}catch{return null;}}
 export const supportsKeyboardOverlap=()=>typeof nativeModule?.getKeyboardOverlap==='function';
+export async function observeKeyboardLayout(tag:number,changed:()=>void):Promise<{remove():void}|null>{
+ if(!nativeModule?.watchKeyboardLayout||!nativeModule.addListener)return null;
+ const listener=nativeModule.addListener('onKeyboardLayout',event=>{if(event.viewTag===tag)changed();});
+ try{if(await nativeModule.watchKeyboardLayout(tag))return {remove(){listener.remove();void nativeModule?.unwatchKeyboardLayout?.(tag).catch(()=>{});}};}catch{}
+ listener.remove();return null;
+}
 export async function getKeyboardOverlap(viewTag:number){
   try{return await nativeModule?.getKeyboardOverlap?.(viewTag)??null;}catch{return null;}
 }

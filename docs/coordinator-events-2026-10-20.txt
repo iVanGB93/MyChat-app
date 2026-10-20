@@ -1,0 +1,55 @@
+Coordinator event migration — completed local implementation, 2026-10-20
+
+This supersedes the earlier first-batch note in this file.
+
+The broad setInterval(pump,1000) has been removed from the mobile composition root.
+Each worker now receives state events and owns its next actual deadline. Native
+background ticks invoke only overdue work; they do not restart sleeping workers.
+
+Implemented:
+- Account setup, remembered-peer loads, capability persistence, group recovery,
+  identity replication, push registration and contact-policy refresh are event/deadline driven.
+- Outgoing delivery is independent of inbox recovery. Durable chat writes and
+  queue/connection events wake it; unsuccessful jobs expose their retry deadlines.
+- Private/group inboxes own independent deadlines. Slow requests do not prevent
+  other relay passes from progressing; completion rearms scheduling.
+- Custody wake retries and inbox notices expose deadlines and sleep when idle.
+- Calls wake on durable journal commits, saved FCM call wakes, signaling notices,
+  connection changes and policy changes. Call-state deadlines are separate from
+  potentially slow relay/retry work.
+- New callInboxEvents capability distinguishes peers supporting call-inbox notices.
+  call-inbox-changed is separate from inbox-changed, so text notices do not poll calls.
+- Transport deadlines include authentication/introductions and pending exchanges.
+  Session schedule changes rearm transport work. Native ticks still expire stalled
+  exchanges if Android suspends JS timers.
+- Native LAN discovery emits axonLanChanged on resolution, removal and stop.
+  Dev rebuild required; installed on emulator-5554 preserving its identity.
+- Diagnostic reports include per-worker runs, events, failures and next deadlines.
+
+Intentionally retained:
+- Authentication/lease renewals, request timeouts and unfinished-job retries.
+- Legacy message inbox polling and 3-second legacy call-relay polling. Current
+  live AoNs have not been deployed with this migration and still need compatibility.
+- LAN health/resolution fallback: 30 seconds with native discovery events, 5 seconds
+  for older clients without that native event capability; failed LAN starts retain
+  their retry deadline. This is isolated transport maintenance.
+- Diagnostic samples every 15 seconds and expired custody/media cleanup every minute.
+- UI refresh and attachment-worker schedules are outside this coordinator migration.
+
+Validation:
+- npm run check: 1402 tests, 1399 passed, 3 skipped, zero failures. Typecheck,
+  dependency cycles, module boundaries, consolidation and diff whitespace checks passed.
+- Local AoN shared sources synchronized selectively; npm test: 235 passed.
+- Local Android Axonic Dev debug build compiled successfully; com.axonic.dev verified
+  before installation. Emulator retained its unlocked public identity.
+- Hermes synthetic tests: signed one-hop receipt, encrypted inline payload,
+  event acknowledgment, 1000 idle inbox cycles and state-event coalescing passed.
+- 20-second live emulator observation: zero new scheduler failures. Idle account,
+  capability, outgoing delivery, group recovery, call clock and notice workers had
+  zero runs. Legacy relays and outstanding custody work continued at deadlines.
+- Only emulator-5554 was available; no physical phone background/sleep or two-phone
+  calls were tested in this task. Synthetic tests do not establish hardware delivery.
+
+No production build, official-app installation, commit, push, or live deployment.
+Local AoN source compatibility is tested; the hosted coordinator itself still has
+its existing scheduling until a separate hosted migration/rollout is performed.

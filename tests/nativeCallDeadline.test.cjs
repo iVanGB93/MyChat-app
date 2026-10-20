@@ -1,0 +1,4 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
+const out={};new Function('exports',ts.transpileModule(fs.readFileSync('src/services/identity/nativeCallDeadline.ts','utf8'),{compilerOptions:{module:1}}).outputText)(out);
+test('native call deadline fires without frame timers and ignores cancelled work',async()=>{const pending=[];const d=out.createNativeCallDeadline(ms=>new Promise(resolve=>pending.push({ms,resolve})));let runs=0;const old=d.schedule(()=>runs++,10000);d.cancel(old);d.schedule(()=>runs++,50);assert.deepEqual(pending.map(p=>p.ms),[10000,50]);pending[0].resolve();pending[1].resolve();await Promise.resolve();assert.equal(runs,1);});
+test('native call deadlines bound waits and preserve fractional deadlines',async()=>{const delays=[];const d=out.createNativeCallDeadline(async ms=>{delays.push(ms)});d.schedule(()=>{},999999);d.schedule(()=>{},0.1);assert.deepEqual(delays,[65000,1]);});

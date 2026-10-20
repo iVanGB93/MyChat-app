@@ -14,8 +14,8 @@ function fixture(){
 }
 test('committed writes refresh immediately and bursts coalesce; unchanged views avoid storage',async t=>{
  const f=fixture();t.after(()=>f.refresh.stop());await f.advance(0);await f.advance(1);for(let i=1;i<=30;i++)f.write(i);await f.advance(0);
- assert.equal(f.shown.at(-1).value,30);assert.equal(f.shown.at(-1).at,1);assert.equal(f.reads(),2);assert.equal(f.timers.size,1);
- await f.advance(60000);assert.equal(f.reads(),2);assert(f.shown.length<16,'quiet screen safety checks are slower than the old 700ms poll');
+ assert.equal(f.shown.at(-1).value,30);assert.equal(f.shown.at(-1).at,1);assert.equal(f.reads(),2);assert.equal(f.timers.size,0);
+ const shown=f.shown.length;await f.advance(3600000);assert.equal(f.reads(),2);assert.equal(f.shown.length,shown,'quiet screens do no scheduled refresh work');
 });
 test('a write during a slow read catches up immediately without starving rendering',async t=>{
  const f=fixture();t.after(()=>f.refresh.stop());let release;f.block(new Promise(r=>release=r));await f.advance(0);f.write(7);release();await f.flush();

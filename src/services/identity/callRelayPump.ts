@@ -9,6 +9,7 @@ import type { CallControlReceipt } from './callControlDelivery.ts';
  * Only the recipient's verified receipt clears the durable endpoint outbox.
  */
 export function createCallRelayPump(d: {
+  eventDriven?(peer:string):boolean;
   account: string; device: string; store: CallJournalStore; records: Pick<IdentityRecordStore, 'read'>;
   current(): boolean; now(): number; blocked(account: string): boolean;
   peers(): IdentityPeer[]; direct(): IdentityPeer[]; list(): Promise<CallControl[]>;
@@ -18,6 +19,8 @@ export function createCallRelayPump(d: {
   let stopped = false, busy = false, next = 0, rowCursor = 0, deviceCursor = 0;
   const stats={requests:0,deposits:0,received:0,receipts:0,inventoryReads:0,emptyPolls:0,last:'idle',reply:'none'};
   const urgent=new Set<string>();
+  const idle=new Set<string>();let revision=0,hasPending=true;
+  const peerKey=(p:IdentityPeer)=>p.account+":"+p.device+":"+p.instance;
   const live = () => !stopped && d.current();
   const state = (event: CallControl) => event.caller === d.account
     ? createDurableCallerCallControl(d.store,d.account,event.callId,d.now)
@@ -60,19 +63,21 @@ export function createCallRelayPump(d: {
         }));
       }finally{urgent.delete(invite.callId);}
     },
+    changed(){revision++;idle.clear();next=0;hasPending=true;},
+    nextDeadline:()=>!live()||!d.peers().some(p=>p.expiresAt>d.now()&&(hasPending||!d.eventDriven?.(p.account)||!idle.has(peerKey(p))))?Infinity:next,
     async tick() {
       if (!live() || busy || d.now() < next) return;
-      busy = true; next = d.now() + 3000;
+      busy = true; next = d.now() + 3000;const passRevision=revision;
       try {
         const peers = d.peers().filter(p => p.expiresAt > d.now()).slice(0, 10);
         if (!peers.length) return;
         // Share this pass's read, not mutable call state or verified receipts.
         // Keep polling at 3s: it remains the fallback for incoming calls.
         let inventory:Promise<CallControl[]>|undefined;
-        const rowsForPass=()=>inventory??=(stats.inventoryReads++,d.list().then(rows=>rows.slice(0,64)));
+        const rowsForPass=()=>inventory??=(stats.inventoryReads++,d.list().then(rows=>{hasPending=rows.length>0;return rows.slice(0,64);}));
         await Promise.all(peers.map(async peer=>{
-        const reply = await request(peer, 'poll');
-        if(reply?.kind==='event'&&reply.raw===null)stats.emptyPolls++;
+        const reply = d.eventDriven?.(peer.account)&&idle.has(peerKey(peer))?null:await request(peer, 'poll');
+        if(reply?.kind==='event'&&reply.raw===null){stats.emptyPolls++;if(passRevision===revision&&d.eventDriven?.(peer.account)){if(idle.size>=20)idle.clear();idle.add(peerKey(peer));}}
         if (reply?.kind === 'event' && typeof reply.raw === 'string') {
           if (typeof reply?.raw !== 'string' || !active(peer)) return;
           stats.received++;const receipt = await d.receive(reply.raw, peer);

@@ -1,5 +1,6 @@
+import {subscribeLocalNetworkChanges} from '../modules/network';
 import RenderBoundary from '../components/ui/RenderBoundary';
-import {useForegroundPoll} from '../hooks/useForegroundPoll';
+import {useForegroundEvents} from '../hooks/useForegroundEvents';
 import {requestInitialNotificationPermission} from '../services/notificationPermission';
 import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
 import {startAppMaintenance} from '../modules/maintenance';
@@ -97,7 +98,7 @@ function LocalAccountContent() {
   const [restoring, setRestoring] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
 
   const [connections,setConnections]=useState(0);
-  useForegroundPoll(()=>setConnections(localAccountNetworkSnapshot()?.pool?.connections.filter(c=>c.state==='connected').length??0),1000);
+  useForegroundEvents(()=>setConnections(localAccountNetworkSnapshot()?.pool?.connections.filter(c=>c.state==='connected').length??0),subscribeLocalNetworkChanges);
 
   const generation = useRef(0), actionRunning = useRef(false);
 

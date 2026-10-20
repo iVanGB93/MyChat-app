@@ -1,8 +1,9 @@
+import {subscribeRelayChanges} from '../modules/network';
 import React,{useEffect,useState} from 'react';
 import {Alert,Text,TouchableOpacity,View} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
 import {useTheme} from '../contexts/ThemeContext';
-import {useForegroundPoll} from '../hooks/useForegroundPoll';
+import {useForegroundEvents} from '../hooks/useForegroundEvents';
 import {localAccountRelayInventory,subscribeRelayInventoryAccess,localAccountWakeDiagnostics,resetLocalNetworkWork} from '../modules/network';
 import {relayPacketDetails,relayCategories,relayPacketCategory,type RelayCategory,type RelayInventory} from '../services/identity/relayInventory';
 
@@ -15,9 +16,9 @@ export default function RelayInventoryPanel(){
   'This cancels pending sends, downloads, receipts and call signaling, and removes encrypted packets held for other users. Some messages or media may never arrive.\n\nChats, contacts, identity, saved media and call history stay on this phone. Nothing is deleted from other devices or AoNs; peers may send packets again.\n\nAxonic will close. Reopen it to apply the reset before networking starts. This cannot be undone.',
   [{text:'Keep network work',style:'cancel'},{text:'Reset and close',style:'destructive',onPress:()=>{setResetting(true);void resetLocalNetworkWork(true).catch(e=>Alert.alert('Network reset',e instanceof Error?e.message:'Reset could not be requested.')).finally(()=>setResetting(false));}}]);
  const [wake,setWake]=useState<ReturnType<typeof localAccountWakeDiagnostics>>(null),[showWake,setShowWake]=useState(false);
- useForegroundPoll(()=>setWake(localAccountWakeDiagnostics()),10000,focused);
+ useForegroundEvents(()=>setWake(localAccountWakeDiagnostics()),subscribeRelayChanges,focused);
  useEffect(()=>subscribeRelayInventoryAccess(()=>{setData(null);setWake(null);setExpanded(null);setPage(0);}),[]);
- useForegroundPoll(async current=>{try{const next=await localAccountRelayInventory();if(current()){setData(next);setError(next?'':'Unlock your account to inspect relay storage.');}}catch{if(current()){setData(null);setError('Relay storage could not be read. No records were changed.');}}},10000,focused);
+ useForegroundEvents(async current=>{try{const next=await localAccountRelayInventory();if(current()){setData(next);setError(next?'':'Unlock your account to inspect relay storage.');}}catch{if(current()){setData(null);setError('Relay storage could not be read. No records were changed.');}}},subscribeRelayChanges,focused);
  const allRows=data?.rows??[],rows=allRows.filter(r=>relayPacketCategory(r,data?.observedAt??Date.now())===category),last=Math.max(0,Math.ceil(rows.length/50)-1),selected=Math.min(page,last),visible=rows.slice(selected*50,(selected+1)*50);
  const text={color:colors.textSecondary},button={padding:12,borderWidth:1,borderColor:colors.border,borderRadius:10};
  return <View style={{marginTop:24,gap:12}}>

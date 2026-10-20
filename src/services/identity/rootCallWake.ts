@@ -1,3 +1,4 @@
+import Native from '../../../modules/axonic-nearby';
 import {readRootNotificationPreferences} from './rootNotificationPreferences';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
@@ -11,6 +12,8 @@ import type {CallControl} from './callControlProtocol';
 import type {NeuronCallView} from './neuronCallCoordinator';
 import {DEVICE_REMOVAL_KEY} from './deviceRemoval';
 import {NETWORK_WORK_RESET_KEY} from './networkWorkReset';
+const wakeListeners=new Set<(owner:string)=>void>();
+export function subscribeRootCallWakes(listener:(owner:string)=>void){wakeListeners.add(listener);return()=>{wakeListeners.delete(listener);};}
 const KEY='@axonic_root_call_wake_owner_v1';
 let opening:Promise<SQLite.SQLiteDatabase>|undefined;
 let tail:Promise<unknown>=Promise.resolve();
@@ -49,7 +52,7 @@ let liveNotice:string|null=null;
 /** Called only with the verified coordinator view, including direct axon delivery. */
 export async function syncRootCallNotification(account:string,view:NeuronCallView<string>|null){
  return serial(async()=>{
-  const ringing=view&&!view.outgoing&&view.status==='ringing'&&AppState.currentState!=='active';
+  const ringing=view&&!view.outgoing&&view.status==='ringing'&&(view.expiresAt??Infinity)>Date.now()&&AppState.currentState!=='active';
   const id=view?'root-call:'+view.id:null;
   if(liveNotice&&(!ringing||liveNotice!==id)){await notifee.cancelNotification(liveNotice);liveNotice=null;}
   if(!ringing){if(id)await notifee.cancelNotification(id);return false;}
@@ -62,10 +65,11 @@ export async function syncRootCallNotification(account:string,view:NeuronCallVie
   await ensureCallChannel();
   const channel=await notifee.getChannel?.('incoming-calls-v2');if(channel?.blocked)return false;
   if(AppState.currentState==='active'||(await context())?.account!==account)return false;
-  await notifee.displayNotification({id:id!,title:name,body:'Incoming '+view.media+' call. Open Axonic to answer.',
+  await notifee.displayNotification({id:id!,title:name,body:'Incoming '+view.media+' call',
    data:{type:'root_neuron_call',callId:view.id,account},
    android:{channelId:'incoming-calls-v2',category:AndroidCategory.CALL,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
-    pressAction:{id:'root-call-open',launchActivity:'default'},timeoutAfter:60000}});
+    pressAction:{id:'root-call-open',launchActivity:'default'},fullScreenAction:{id:'root-call-open',launchActivity:'default'},ongoing:true,autoCancel:false,actions:[{title:'Decline',pressAction:{id:'root-call-decline',launchActivity:'default'}},{title:'Answer',pressAction:{id:'root-call-answer',launchActivity:'default'}}],timeoutAfter:Math.max(1,Math.min(60000,(view.expiresAt??Date.now()+60000)-Date.now()))}});
+  await Native?.notificationCallStyle?.(id!,name,view.media==='video');
   liveNotice=id;
   return true;
  });
@@ -88,6 +92,7 @@ export async function receiveRootCallWake(data:unknown){
    const count=await tx.getFirstAsync<{n:number}>('SELECT COUNT(*) AS n FROM wakes');if(!prior&&(count?.n??64)>=64)return;
    await tx.runAsync('INSERT INTO wakes(owner,call_id,sequence,expires,raw) VALUES (?,?,?,?,?) ON CONFLICT(owner,call_id) DO UPDATE SET sequence=excluded.sequence,expires=excluded.expires,raw=excluded.raw,consumed=0',owner.account,event.callId,event.sequence,event.expiresAt,raw);changed=true;
   });
+  if(changed)for(const listener of wakeListeners)try{listener(owner.account);}catch{/* Durable wake remains queued. */}
   const id='root-call:'+event.callId;
   if(event.kind!=='invite'){await notifee.cancelNotification(id);return;}
   if(!(await readRootNotificationPreferences(owner.account)).calls)return;
@@ -96,9 +101,10 @@ export async function receiveRootCallWake(data:unknown){
   if((await context())?.account!==owner.account)return;
   await ensureCallChannel();
 
-  await notifee.displayNotification({id,title:name,body:'Incoming '+event.media+' call. Open Axonic to answer.',data:{type:'root_neuron_call',callId:event.callId,account:owner.account},
+  await notifee.displayNotification({id,title:name,body:'Incoming '+event.media+' call',data:{type:'root_neuron_call',callId:event.callId,account:owner.account},
    android:{channelId:'incoming-calls-v2',category:AndroidCategory.CALL,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
-    pressAction:{id:'root-call-open',launchActivity:'default'},timeoutAfter:Math.max(1,event.expiresAt-Date.now())}});
+    pressAction:{id:'root-call-open',launchActivity:'default'},fullScreenAction:{id:'root-call-open',launchActivity:'default'},ongoing:true,autoCancel:false,actions:[{title:'Decline',pressAction:{id:'root-call-decline',launchActivity:'default'}},{title:'Answer',pressAction:{id:'root-call-answer',launchActivity:'default'}}],timeoutAfter:Math.max(1,event.expiresAt-Date.now())}});
+  await Native?.notificationCallStyle?.(id,name,event.media==='video');
 
  });
 }

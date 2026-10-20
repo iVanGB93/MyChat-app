@@ -4,7 +4,7 @@ const ts = require('typescript'), { DatabaseSync } = require('node:sqlite');
 test('mobile journal SQL preserves CAS, ownership and state across database reopen', async () => {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'axonic-call-sql-'));
   const filename = path.join(folder, 'calls.db');
-  let database, inventory, history, tail=Promise.resolve(), transactionOpen=false, historyBytes=0;
+  let database, inventory, history, subscribe, tail=Promise.resolve(), transactionOpen=false, historyBytes=0;
   const read=(s,...args)=>database.prepare(s).get(...args)??null;
   const sql = {
     execAsync: async s => { database.exec(s); },
@@ -32,7 +32,7 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
       if(name==='./identityProtocol')return {validAccountId:v=>typeof v==='string'&&/^axonic:1:[0-9a-f]{64}$/.test(v)};
       throw Error(name);
     },exports);
-    inventory=exports.listMobileCallJournals;history=exports.listOwnCallHistory;return exports.createMobileCallJournalStore();
+    subscribe=exports.subscribeCallJournalWrites;inventory=exports.listMobileCallJournals;history=exports.listOwnCallHistory;return exports.createMobileCallJournalStore();
   }
   try {
     const owner='axonic:1:'+'ab'.repeat(32), other='axonic:1:'+'cd'.repeat(32), id='ef'.repeat(32);
@@ -47,6 +47,16 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
     const first={record:{account:owner},callId:id,kind:'invite',expiresAt:10,issuedAt:1,caller:owner,callee:other,media:'voice'};
     const journal=JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify(first)}]});
     assert.equal(await store.compareAndSet(owner,id,saved,journal),true);
+    let changes=0;const off=subscribe(()=>changes++);
+    const observed=JSON.stringify({...JSON.parse(journal),observedAt:20});
+    assert.equal(await store.compareAndSet(owner,id,journal,observed),true);
+    assert.equal(changes,0,'clock persistence must not schedule another call tick');
+    assert.equal(await store.compareAndSet(owner,id,observed,journal),true);
+    assert.equal(changes,0);
+    const updated=JSON.stringify({...JSON.parse(journal),receipt:'new'});
+    assert.equal(await store.compareAndSet(owner,id,journal,updated),true);
+    assert.equal(changes,1,'new signaling/receipt data must notify');
+    assert.equal(await store.compareAndSet(owner,id,updated,journal),true);off();
     assert.equal((await inventory(owner)).length,1);
     assert.deepEqual(await history(owner),[{id,peer:other,outgoing:true,media:'voice',at:1}]);
     assert.deepEqual(await history(other),[]);

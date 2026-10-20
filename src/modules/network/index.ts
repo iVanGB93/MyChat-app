@@ -5,3 +5,7 @@ export {startLocalAccountNetwork, localAccountNetworkSnapshot, localAccountDirec
 export {allowedAxons,setAllowedAxons,subscribeAllowedAxons,loadAllowedAxons} from '../../services/allowedAxons';
 
 export {recoverySettings,defaultRecoverySettings,subscribeRecoverySettings,loadRecoverySettings,saveRecoverySettings} from '../../services/recoverySettings';
+
+export {subscribeLocalNetworkChanges} from '../../composition/neuronRuntime';
+
+export {subscribeRelayChanges} from '../../composition/neuronRuntime';

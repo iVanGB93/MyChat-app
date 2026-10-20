@@ -46,7 +46,7 @@ export function createPersistentAxon(d: {
   onCallControl?(raw: string, peer: IdentityPeer): Promise<string | null>;
   onCallMedia?(raw: string, peer: IdentityPeer, localInstance: string): Promise<boolean>;
   onDirectory?(raw: string, peer: IdentityPeer): Promise<string>;
-  onCustody?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {groupCustody?:boolean};
+  onCustody?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {groupCustody?:boolean;custodyEvents?:boolean;callInboxEvents?:boolean};
   onSignal?(raw: string, peer: IdentityPeer): Promise<boolean>;
   testMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
   chatMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
@@ -100,7 +100,7 @@ export function createPersistentAxon(d: {
   let peerPushGateway = false, peerPush = false, peerRelay = false, peerMediaRelay = false, peerMediaForward = false;
   let peerCalls = false;
   let peerMedia = false;
-  let peerTests = false, peerDirectory = false, peerCustody = false, peerGroupCustody = false, peerChat = false;
+  let peerTests = false, peerDirectory = false, peerCustody = false, peerGroupCustody = false, peerCustodyEvents = false, peerCallInboxEvents = false, peerChat = false;
   const chat = d.chatMessages ? createAxonNormalMessages({
     local: { account: d.record.account, device: publicDevice(d.signingSeed, d.chatMessages.encryptionSeed).id, instance: bytesToHex(d.instance) },
     encryptionSeed: d.chatMessages.encryptionSeed, peer: () => peer, store: d.store, now: d.now, random: d.random,
@@ -115,6 +115,9 @@ export function createPersistentAxon(d: {
   }) : null;
   let peerSignals = false, signalBusy = false, signalWindow = d.now(), signalCount = 0;
   let peerIntroductions = false, introducing = false, introduceAt = d.now() + 5000;
+  const scheduleListeners=new Set<()=>void>();
+  const qualityListeners=new Set<()=>void>();
+  const scheduleChanged=()=>{for(const listener of scheduleListeners)try{listener();}catch{}};
   let authenticating = false, renewalAt = 0, inboundBusy = false, sequence = 0;
   let custodyWaiting = 0, pushWaiting = 0, attachmentWaiting = 0;
   let callWaiting=0,callBurst=0;
@@ -140,6 +143,7 @@ export function createPersistentAxon(d: {
     const elapsed=Math.max(1,d.now()-start);quality.updatedAt=d.now();
     if(media){quality.mediaResponseMs=quality.mediaSamples?quality.mediaResponseMs*.8+elapsed*.2:elapsed;quality.mediaSamples++;if(bytes>=4096)quality.mediaBytesPerSecond=quality.mediaBytesPerSecond?quality.mediaBytesPerSecond*.8+(bytes*1000/elapsed)*.2:bytes*1000/elapsed;}
     else {quality.responseMs=quality.samples?quality.responseMs*.8+elapsed*.2:elapsed;quality.samples++;}
+    for(const listener of qualityListeners)try{listener();}catch{}
   }
   let pending: { started:number; until:number; operation:string; id: number; resolve(raw: string): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | null = null;
   let resolveReady!: (link: NeuronLink) => void, rejectReady!: (error: Error) => void;
@@ -195,7 +199,7 @@ export function createPersistentAxon(d: {
       const grace=peer&&(operation==='describe'||operation==='authenticate'||operation==='introductions'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
       const timeout=grace?Math.max(1,Math.min(15000,peer!.expiresAt-d.now())):
         operation === 'call-control' || operation === 'call-media' || operation === 'call-relay' || operation === 'call-media-relay' || operation === 'call-media-forward' ? 15000 : 4000;
-      pending = { started:d.now(), operation, id, resolve, reject, until:d.now()+timeout, timer:setTimeout(() => stop('exchange-timeout:' + operation),timeout) };
+      pending = { started:d.now(), operation, id, resolve, reject, until:d.now()+timeout, timer:setTimeout(() => stop('exchange-timeout:' + operation),timeout) };scheduleChanged();
       try { send({ version: 1, kind: 'request', id, operation, body }); }
       catch { stop(); }
     });
@@ -221,7 +225,7 @@ export function createPersistentAxon(d: {
       renewalAt = d.now() + 20_000;
     } catch { stop('authentication-error'); }
     finally {
-      authenticating = false; notifyWaiters();
+      authenticating = false; notifyWaiters();scheduleChanged();
       if(peer&&!stopped){const waiting=deferredFrames;deferredFrames=[];deferredBytes=0;for(const raw of waiting)void receive(raw);}
     }
   }
@@ -244,7 +248,7 @@ export function createPersistentAxon(d: {
     // A stalled route can delay arrival of the first lookup. Measuring the
     // next interval from its start compresses arrivals after recovery and
     // trips the receiver's ten-second admission limit.
-    finally { introducing = false; introduceAt = d.now() + 15_000; notifyWaiters(); }
+    finally { introducing = false; introduceAt = d.now() + 15_000; notifyWaiters();scheduleChanged(); }
   }
   async function receive(raw: string) {
     try {
@@ -302,7 +306,7 @@ export function createPersistentAxon(d: {
         peerCalls = peerMedia || Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('call-control-v1');
         peerSignals = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('rtc-signals-v1');
         peerDirectory = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('identity-directory-v1');
-        peerGroupCustody = f.groupCustody===1;
+        peerGroupCustody = f.groupCustody===1;peerCustodyEvents=f.custodyEvents===1;peerCallInboxEvents=f.callInboxEvents===1;
         peerCustody = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('custody-v1');
         peerTests = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('test-messages-v2');
         peerChat = Array.isArray(f.features) && f.features.length <= 8 && f.features.includes('chat-text-v1');
@@ -405,9 +409,11 @@ export function createPersistentAxon(d: {
   } catch { stop(); }
   const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onAttachment?.streams===true&&d.onSignal&&d.wire.attachments!==false?{attachmentStreams:1}:{}), ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1,...(d.onAttachment.uploadBatch?{attachmentUploadBatch:1}:{})}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onAttachment?.streams===true&&d.onSignal&&d.wire.attachments!==false?{attachmentStreams:1}:{}), ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}),...(d.onCustody?.custodyEvents?{custodyEvents:1}:{}),...(d.onCustody?.callInboxEvents?{callInboxEvents:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1,...(d.onAttachment.uploadBatch?{attachmentUploadBatch:1}:{})}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
     ready, stop,
+    subscribeSchedule(listener:()=>void){scheduleListeners.add(listener);return()=>{scheduleListeners.delete(listener);};},
+    subscribeQuality(listener:()=>void){qualityListeners.add(listener);return()=>{qualityListeners.delete(listener);};},
     mediaRelayPeer:()=>peerMediaRelay && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
     mediaForwardPeer:()=>peerMediaForward && peer && !stopped && d.current() && peer.expiresAt>d.now()?{...peer}:null,
     async mediaRelayRequest(raw:string,forward=false):Promise<boolean> {
@@ -530,7 +536,7 @@ export function createPersistentAxon(d: {
           bulkNext=d.now()+Math.max(5,250*count/128);
         }
         return await new Promise<string>((resolve,reject)=>{
-          const id=++sequence;mediaPending.set(id,{bulk:true,until:d.now()+15000,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),15000)});
+          const id=++sequence;mediaPending.set(id,{bulk:true,until:d.now()+15000,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),15000)});scheduleChanged();
           try{send({version:1,kind:'bulk-request',id,body:raw});}catch{stop('bulk-send-failed');}
         }).then(value=>permitted()?value:null);
       }catch{return null;}finally{bulkWaiting--;}
@@ -548,7 +554,7 @@ export function createPersistentAxon(d: {
           mediaCredits--;
           return await new Promise<string>((resolve,reject)=>{
             const id=++sequence,until=d.now()+4000;
-            mediaPending.set(id,{until,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),4000)});
+            mediaPending.set(id,{until,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),4000)});scheduleChanged();
             try{send({version:1,kind:'media-request',id,body:raw});}catch{stop('media-send-failed');}
           }).then(value=>permitted()?value:null);
         }catch{return null;}finally{mediaWaiting--;}
@@ -566,6 +572,8 @@ export function createPersistentAxon(d: {
         attachmentNext=d.now()+50;const result=await exchange('attachment',raw);return permitted()?result:null;
       }catch{return null;}finally{attachmentWaiting--;release();}
     },
+    supportsCallInboxEvents:()=>peerCallInboxEvents&&peerCustodyEvents&&peerCustody&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
+    supportsCustodyEvents:()=>peerCustodyEvents&&peerCustody&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsGroupCustody: () => peerGroupCustody && peerCustody && !!peer && !stopped && d.current() && peer.expiresAt>d.now(),
     supportsCustody: () => peerCustody && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async custodyRequest(raw: string): Promise<string | null> {
@@ -593,6 +601,10 @@ export function createPersistentAxon(d: {
     sendSignal(raw: string) {
       if (!peer || peer.expiresAt <= d.now() || !peerSignals || !d.onSignal || stopped || !d.current()) return false;
       try { send({ version: 1, kind: 'signal', body: raw }); return true; } catch { stop(); return false; }
+    },
+    nextDeadline(){
+      if(stopped)return Infinity;
+      return Math.min(pending?.until??Infinity,...[...mediaPending.values()].map(task=>task.until),peer?peer.expiresAt:started+10000,peer&&!authenticating?Math.max(d.now()+1000,renewalAt):Infinity,peer&&peerIntroductions&&d.introductions&&!introducing&&!authenticating?Math.max(d.now()+1000,introduceAt):Infinity);
     },
     tick() {
       if (stopped) return;

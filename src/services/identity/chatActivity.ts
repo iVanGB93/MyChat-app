@@ -1,10 +1,11 @@
 /** Ephemeral hints carried only by an already authenticated, encrypted chat channel. */
-export function createChatActivity(d:{owner():string|null;now():number;allowed(peer:string,group?:string):Promise<boolean>;send(peer:string,raw:string):Promise<boolean>}){
+export function createChatActivity(d:{owner():string|null;now():number;allowed(peer:string,group?:string):Promise<boolean>;changed?():void;send(peer:string,raw:string):Promise<boolean>}){
  const incoming=new Map<string,number>(),lastSent=new Map<string,number>();
  let generation=0;
  return {
+  nextDeadline:()=>Math.min(Infinity,...[...incoming.values()].filter(until=>until>d.now())),
   typing:(peer:string,group?:string)=>(incoming.get((group??'direct')+':'+peer)??0)>d.now(),
-  clear(){generation++;incoming.clear();lastSent.clear();},
+  clear(){generation++;incoming.clear();lastSent.clear();d.changed?.();},
   async receive(from:string,raw:string):Promise<boolean|null>{
    let packet:unknown;try{packet=JSON.parse(raw);}catch{return null;}
    if(!Array.isArray(packet)||packet[0]!=='axonic-chat-activity-v1')return null;
@@ -16,7 +17,7 @@ export function createChatActivity(d:{owner():string|null;now():number;allowed(p
    const key=(group??'direct')+':'+from;
    if(incoming.size>=100&&!incoming.has(key))for(const [peer,until] of incoming)if(until<=d.now())incoming.delete(peer);
    if(incoming.size>=100&&!incoming.has(key))return false;
-   incoming.set(key,packet[2]?Math.min(packet[3],d.now()+7000):0);return true;
+   incoming.set(key,packet[2]?Math.min(packet[3],d.now()+7000):0);d.changed?.();return true;
   },
   async notify(peer:string,typing:boolean,group?:string){
    const owner=d.owner(),epoch=generation,key=(group??'direct')+':'+peer;if(!owner)return;

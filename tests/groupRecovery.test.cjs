@@ -13,3 +13,7 @@ test('locking during random generation does not queue metadata under another acc
  let owner='one',queued=0;const r=createGroupRecovery({owner:()=>owner,peers:()=>['peer'],now:()=>0,random:async()=>{owner=null;return 'nonce';},recover:async()=>{queued++;}});
  await r.tick();assert.equal(queued,0);
 });
+test('explicit reconnect survives a disconnect and reconnect between coordinator runs',async()=>{
+ let now=0,calls=0;const r=createGroupRecovery({owner:()=> 'owner',peers:()=>['peer'],now:()=>now,random:async()=> 'nonce',recover:async()=>{calls++;}});
+ await r.tick();assert.equal(r.nextDeadline(),Infinity);r.connected('peer');assert.equal(r.nextDeadline(),60000);now=60000;await r.tick();assert.equal(calls,2);assert.equal(r.nextDeadline(),Infinity);
+});

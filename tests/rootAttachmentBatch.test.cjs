@@ -4,6 +4,7 @@ function fixture(){
  const out={};new Function('require','exports','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>{
   if(name.includes('async-storage'))return {default:{getItem:async k=>rows.get(k),setItem:async(k,v)=>rows.set(k,v)}};
   if(name.includes('axonic-nearby'))return {default:{identityRandomBytes:async()=>String(++seq).padStart(64,'0')}};
+  if(name==='./attachmentChanges')return {attachmentChanged(){}};
   if(name==='./rootGroups')return {validGroupContext:()=>true};
   if(name==='./rootMessageFeedback')return {publishRootMessageFeedback:event=>feedback.push(event)};
   if(name==='./localRootChat')return {localRootChat:()=>({snapshot:async()=>({messages:groupMessages})})};

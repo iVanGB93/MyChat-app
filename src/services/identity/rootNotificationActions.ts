@@ -1,3 +1,4 @@
+import {queueRootCallNotificationAction} from './rootCallNotificationAction';
 import {AppState} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {cancelRootMessageNotification} from './rootMessageNotification';
@@ -10,6 +11,7 @@ import {rootChatView} from './rootChatActions';
 let tail:Promise<unknown>=Promise.resolve();
 /** OS actions operate only on a message already admitted into this device's own inbox. */
 export function handleRootNotificationAction(action:string,data:unknown,input?:string){
+ if(action==='root-call-answer'||action==='root-call-decline')return queueRootCallNotificationAction(action,data).then(()=>{});
  if(!['root-reply','root-mark-read'].includes(action))return Promise.resolve();
  const task=tail.then(async()=>{
   const target=rootNotificationTarget(data),messageId=(data as {messageId?:string})?.messageId;

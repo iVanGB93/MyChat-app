@@ -10,7 +10,7 @@ import {rootChatView} from '../services/identity/rootChatActions';
 import {queueRootAttachmentSource,rootAttachmentTimings} from '../services/identity/rootAttachmentRuntime';
 import {BOOTSTRAP_NEURONS} from '../services/identity/internetAxonTransport';
 import {getDiagnosticBuildInfo} from '../../modules/axonic-app-update/src';
-import {localAccountNetworkSnapshot,localAccountDirectorySnapshot,localAccountWakeDiagnostics,localAccountPollingDiagnostics,localAccountDiagnosticNetworkEpoch} from './neuronRuntime';
+import {localAccountCoordinatorDiagnostics,localAccountNetworkSnapshot,localAccountDirectorySnapshot,localAccountWakeDiagnostics,localAccountPollingDiagnostics,localAccountDiagnosticNetworkEpoch} from './neuronRuntime';
 import {diagnosticJournal} from '../services/diagnosticJournal';
 import {mobileDeliveryDiagnostics,clearDeliveryCapture} from '../services/mobileDeliveryDiagnostics';
 import {REPORT_ISSUES,REPORT_WHEN,REPORT_MAX_BYTES,chooseReportRecipient,summarizeReportMessages,summarizeWakeForReport,summarizePollingForReport,numericProjection,serializeDiagnosticReport,type ReportIssue,type ReportWhen} from '../services/diagnosticReport';
@@ -38,7 +38,7 @@ export async function prepareDiagnosticReport(issue:ReportIssue,when:ReportWhen)
   device:{platform:Platform.OS,osVersion:String(Platform.Version),model:Platform.OS==='android'?Platform.constants.Model:null,manufacturer:Platform.OS==='android'?Platform.constants.Manufacturer:null},
   context:{appState,notificationAuthorization:notifications?.authorizationStatus??null,notificationPreferences:preferences,storage},
 network:{runtimeStartedAt:networkStartedAt,counterScope:'Do not compare counters across different runtimeStartedAt or missing epochs',available:!!network,connected:connections.filter(c=>c.state==='connected').length,authenticating:connections.filter(c=>c.state==='authenticating').length,routes:{lan:connections.filter(c=>c.state==='connected'&&c.route==='lan').length,private:connections.filter(c=>c.state==='connected'&&c.route==='private').length,internet:connections.filter(c=>c.state==='connected'&&c.route==='internet').length},replicas:directory?numericProjection(directory,['confirmed','target']):null,hasRuntimeError:!!network?.error,wake},
-  inboxPolling:summarizePollingForReport(inspect(localAccountPollingDiagnostics)),messages:summarizeReportMessages(state,capturedAt),history:journal,mediaTimings,deliveryCapture,
+  coordinator:inspect(localAccountCoordinatorDiagnostics),inboxPolling:summarizePollingForReport(inspect(localAccountPollingDiagnostics)),messages:summarizeReportMessages(state,capturedAt),history:journal,mediaTimings,deliveryCapture,
   unavailable:['Native cold-start time','Actual chat frame-render time','Crash/ANR history','Battery usage, CPU and wake-lock duration','OS Doze/battery restrictions','Wire byte counts','Confirmed notification visibility','Local relay-store residence time','History before this process/account observation window'],
   interpretation:'Do not infer message loss from retry ratios. Initial state and counters are not historical transitions. Device delivery, notification presentation and read are separate. User symptom may predate the available history.'};
  const json=serializeDiagnosticReport(report),id=bytesToHex(sha256(new TextEncoder().encode(json)));

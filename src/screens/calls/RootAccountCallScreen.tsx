@@ -1,3 +1,5 @@
+import {subscribeRootCallNotificationAction,takeRootCallNotificationAction} from '../../modules/messaging/notifications';
+import {subscribeOwnChatWrites} from '../../modules/storage';
 import {callScreenCaptureAvailable} from '../../services/call-screen-capture';
 import {hasScreenShareOverlay,allowScreenShareOverlay,useScreenShareOverlay} from '../../hooks/useScreenShareOverlay';
 import {readSharedAvatar,subscribeSharedAvatars} from '../../modules/storage';
@@ -38,14 +40,21 @@ export default function RootAccountCallScreen(){
  const [avatarUri,setAvatarUri]=useState<string|null>(null);
  useEffect(()=>{let active=true;setAvatarUri(null);const owner=localAccount.status().account,peer=call?.peerUser;const refresh=async()=>{if(!owner||!peer)return;const uri=await readSharedAvatar(owner,peer);if(active)setAvatarUri(uri);};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[call?.peerUser]);
  const running=useRef(false),{colors}=useTheme(),[name,setName]=useState(''),[minimizedId,setMinimizedId]=useState<string|null>(null);
- useEffect(()=>{let alive=true;const peer=call?.peerUser;if(!peer)return;setName(shortIdentity(peer));const refresh=async()=>{try{const s=await conversations().snapshot();if(alive)setName(s.contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer));}catch{if(alive)setName(shortIdentity(peer));}};void refresh();const timer=setInterval(()=>void refresh(),1000);return()=>{alive=false;clearInterval(timer);};},[call?.peerUser]);
- useEffect(()=>{if(call?.status!=='ringing')return;let active=true;const owner=localAccount.status().account;if(owner)void readRootNotificationPreferences(owner).then(p=>{if(active&&p.sound)playLooping(call.outgoing?'caller_ringback':'ringtone');}).catch(()=>{});return()=>{active=false;stopLooping();};},[call?.status,call?.outgoing]);
+ useEffect(()=>{let alive=true,running=false,dirty=false;const peer=call?.peerUser;if(!peer)return;setName(shortIdentity(peer));const refresh=async()=>{dirty=true;if(running)return;running=true;try{do{dirty=false;try{const s=await conversations().snapshot();if(alive)setName(s.contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer));}catch{if(alive)setName(shortIdentity(peer));}}while(alive&&dirty);}finally{running=false;}};void refresh();const off=subscribeOwnChatWrites(()=>void refresh());return()=>{alive=false;off();};},[call?.peerUser]);
+ useEffect(()=>{
+  if(call?.status!=='ringing')return;let active=true,generation=0;
+  const sync=()=>{const own=++generation;void stopLooping();if(AppState.currentState!=='active'||(call.expiresAt??Infinity)<=Date.now())return;
+   const owner=localAccount.status().account;if(owner)void readRootNotificationPreferences(owner).then(p=>{if(active&&own===generation&&AppState.currentState==='active'&&p.sound)void playLooping(call.outgoing?'caller_ringback':'ringtone');}).catch(()=>{});
+  };
+  sync();const listener=AppState.addEventListener('change',sync);
+  return()=>{active=false;generation++;listener.remove();void stopLooping();};
+ },[call?.id,call?.status,call?.outgoing,call?.expiresAt]);
  useEffect(()=>subscribeLocalAccountCalls(v=>{if(v?.outgoing&&v.status==='finding')confirmationCall.current=v.id;else if(v?.status!=='ended')confirmationCall.current=null;setCall(v);setError('');}),[]);
  useEffect(()=>{
   if(!call||call.outgoing||call.status!=='ringing')return;
-  let confirmed=false,pending=false,active=true;
-  const confirm=async()=>{if(!active||confirmed||pending||AppState.currentState!=='active')return;pending=true;try{confirmed=!!await localAccountCalls()?.confirmRinging(call.id);}catch{/* Retry transient account/runtime startup without changing the incoming UI. */}finally{pending=false;}};
-  void confirm();const timer=setInterval(()=>void confirm(),1000),listener=AppState.addEventListener('change',state=>{if(state==='active')void confirm();});return()=>{active=false;clearInterval(timer);listener.remove();};
+  let confirmed=false,pending=false,active=true,timer:ReturnType<typeof setTimeout>|undefined;
+  const confirm=async()=>{if(!active||confirmed||pending||AppState.currentState!=='active')return;clearTimeout(timer);pending=true;try{confirmed=!!await localAccountCalls()?.confirmRinging(call.id);}catch{/* Retry transient account/runtime startup without changing the incoming UI. */}finally{pending=false;if(active&&!confirmed&&AppState.currentState==='active')timer=setTimeout(()=>void confirm(),1000);}};
+  void confirm();const listener=AppState.addEventListener('change',state=>{clearTimeout(timer);if(state==='active')void confirm();});return()=>{active=false;clearTimeout(timer);listener.remove();};
  },[call?.id,call?.outgoing,call?.status]);
  useEffect(()=>{
   if(call?.status!=='ended')return;
@@ -60,6 +69,13 @@ export default function RootAccountCallScreen(){
   try{await ensureRootCallPermissions(call.media);if(calls!==localAccountCalls()||!await calls?.accept(call.id))throw Error('This call is no longer available.');}
   catch(e){setError(e instanceof Error?e.message:'Unable to answer');}finally{running.current=false;setBusy(false);}
  };
+ useEffect(()=>{
+  if(!call||call.outgoing||call.status!=='ringing')return;
+  let active=true,pending=false;
+  const act=async()=>{if(!active||pending||AppState.currentState!=='active')return;const owner=localAccount.status().account;if(!owner)return;pending=true;
+   try{const action=await takeRootCallNotificationAction(owner,call.id);if(!active)return;if(action==='root-call-decline')end();else if(action==='root-call-answer')await answer();}catch{setError('Unable to complete notification action. Use the call controls.');}finally{pending=false;}};
+  void act();const off=subscribeRootCallNotificationAction(()=>void act()),state=AppState.addEventListener('change',()=>void act());return()=>{active=false;off();state.remove();};
+ },[call?.id,call?.outgoing,call?.status]);
  const previewUrl=useRingingCameraPreview(call?.id,call?.media==='video'&&['ringing','connecting'].includes(call.status)&&minimizedId!==call.id);
  if(!call)return null;
  // The outgoing confirmation sheet owns Finding and its failure/cancellation.

@@ -1,0 +1,81 @@
+Axonic 1.1.24 / Android versionCode 95 — local production build, October 18, 2026
+
+STATUS: User explicitly approved the local AAB build; completed and validated.
+No commit/push, deployment, installation, publication, deletion or reset in this
+build pass. Previous production artifacts and phone data remain intact.
+Version code 95 follows retained 1.1.23 / 94. Play Console availability has not
+been independently verified; do not claim the version is published or reserved.
+
+Completed artifact
+- builds/Axonic-1.1.24-95.aab, 107,568,637 bytes.
+- SHA256 d8cf40947cf168f857388a3f6965b190b9e3778a7f109af132b7907bd856b171.
+- Local Gradle production build succeeded in 50 seconds. Notifee release Java
+  and AxonicNearby release Kotlin compiled with the new native fixes.
+- Bundletool validation and JAR signature verification passed. Upload signing
+  certificate matches retained 1.1.23, whose artifact hash remained unchanged.
+- Manifest verified: com.axonic, 1.1.24 / 95, non-debuggable, no instrumentation;
+  screen overlay and media-projection service permissions retained.
+- Four Android ABIs present; embedded Expo configuration matches the current
+  source fingerprint listed below. No EAS cloud compilation or Sentry upload.
+- Evidence: builds/local-production-aab-95.log,
+  builds/local-aab-95-validation.json, builds/local-aab-95-manifest.xml,
+  builds/local-aab-95-signature.txt. Existing Gradle deprecation and standard
+  self-signed/no-timestamp certificate warnings remain.
+- Bundle checks do not establish on-device release startup or official upgrade.
+
+Changes since 1.1.23
+- Notifee settings-change WorkManager completion fixed for foreground events;
+  settings-only background startup bounded with exactly-once completion.
+  Install hooks reapply the pinned patch and reject dependency-source drift.
+- Message recovery budget includes inline persistence. Slow durable writes are
+  not interrupted and cannot start an additional full polling window afterward.
+- Runtime/native leases release before best-effort diagnostics. Diagnostic
+  failures cannot strand resources; late callbacks do not renew expired work.
+- Signed inline wake metadata must match the verified hint. Mismatched inline
+  data is not admitted, while the valid hint can use normal relay recovery.
+  Invalid signed flags are never repaired, accepted or forwarded automatically.
+- Reports retain local wake-mismatch counters and bounded redacted pending-wake
+  observations, plus elapsed/sleep/process-CPU/setup/wait-delay recovery timing.
+  Process CPU is app-wide; gateway acceptance is not device delivery.
+- All earlier 1.1.23 transfer, rendering, storage and screen-sharing changes are
+  retained. No wire-format, permissions, account schema or identity changes here.
+
+Preparation validation
+- Full npm run check on 1.1.24: 1,362 passed, 3 skipped, zero failed; TypeScript,
+  cycles, boundaries and consolidation passed.
+  Log: builds/production-95-preparation-check.log.
+- Native notification harness reproduced the original leak, then passed fixed
+  completion/watchdog/exactly-once assertions. Native RTC identity/stream guard
+  harness passed. These compile test harnesses, not a production Android app.
+- Expo production config resolves com.axonic, 1.1.24 / 95; app.json, package.json
+  and package-lock versions match. Native versionCode prepared as 95.
+- Existing Google-services file, local upload keystore and prior AAB are present;
+  no credential values exported. Upload keystore matched existing EAS credentials;
+  completed bundle signing matched the prior artifact certificate.
+- Latest source fingerprint:
+  eacf7471b3ec86bcfdad01729aa1cd84ae153fce9156efa5aaa3884714133b89.
+- Earlier same-fix Dev validation: 53 signed-wake/report checks on each phone,
+  recovery budget/cleanup tests on both, 41 native unit tests, original identities
+  and all 408/163 message keys retained. No new phone operations in preparation.
+  See wake-binding-background-jobs-2026-10-18.txt,
+  wake-recovery-followup-2026-10-18.txt and wake-mismatch-roundtrip-2026-10-18.txt.
+
+Executed build procedure (future builds still require separate approval)
+1. Reconfirm version/output availability and use the local JDK17/Android SDK.
+2. Reapply dependency patches, regenerate native production configuration only
+   as needed (no clean/data wipes), and preserve native modules/feature flags.
+3. Use the local signing wrapper and production Gradle init script; dotenv and
+   development EXPO_PUBLIC overrides disabled, Sentry automatic uploads disabled.
+   Existing signing is verified through EAS credentials; compilation stays local.
+4. Build all four Android ABIs into a new builds/Axonic-1.1.24-95.aab, without
+   overwriting earlier artifacts. No auto-install or submit command.
+5. Validate bundle, manifest version/package/non-debuggable state, embedded source
+   fingerprint, four ABIs, JAR signature and certificate match to 1.1.23.
+   Save exact artifact hash, size and verification evidence before delivery.
+
+Remaining limitations
+Historical wake mismatch origin is still unconfirmed; recent gateway traces
+have not recurred. ThirdNeuron's short-lived WSL observations remain separate
+from app readiness. No overnight Doze, new official-app upgrade or release-mode
+WAN screen-sharing test is claimed. Dev and unit results do not prove these.
+A future official-app installation/publication requires separate authorization.

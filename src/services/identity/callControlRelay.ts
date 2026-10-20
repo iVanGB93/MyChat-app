@@ -13,6 +13,7 @@ type Row = Route & ({ event: CallControl; raw: string; receipt: null } | { event
  * Call sweep periodically even while idle. No FCM payload is admitted by this service.
  */
 export function createCallControlRelay(d: {
+  changed?(peer:string):void;
   records: Pick<IdentityRecordStore, 'read'>; now(): number; current(): boolean; blocked(account: string): boolean;
 }) {
   const rows = new Map<string, Row>();
@@ -56,6 +57,7 @@ export function createCallControlRelay(d: {
         if (rows.size >= 128 || [...rows.values()].filter(row => row.sender === peer.account).length >= 16) return false;
         rows.set(key, { sender: peer.account, senderDevice: peer.device, target, targetDevice,
           expiresAt: event.expiresAt, event, raw, receipt: null });
+        try{d.changed?.(target);}catch{/* Notice does not undo stored work. */}
         return true;
       });
     },
@@ -84,6 +86,7 @@ export function createCallControlRelay(d: {
         // Drop the delivered event immediately. Keep only the recipient's signed receipt until expiry.
         rows.set(key, { sender: row.sender, senderDevice: row.senderDevice, target: row.target,
           targetDevice: row.targetDevice, expiresAt: Math.min(row.expiresAt, receipt.expiresAt), event: null, raw: null, receipt: raw });
+        try{d.changed?.(row.sender);}catch{/* Receipt is already stored. */}
         return true;
       });
     },

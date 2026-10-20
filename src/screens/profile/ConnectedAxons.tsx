@@ -1,6 +1,8 @@
-import React, {useCallback, useState} from 'react';
+import {subscribeOwnChatWrites} from '../../modules/storage';
+import React, {useState} from 'react';
+import {useForegroundEvents} from '../../hooks/useForegroundEvents';
 import {Text, View} from 'react-native';
-import {useFocusEffect} from '@react-navigation/native';
+import {useIsFocused} from '@react-navigation/native';
 import {useTheme} from '../../contexts/ThemeContext';
 import {localAccount, shortIdentity} from '../../modules/identity';
 import {conversations, rootChatView} from '../../modules/messaging';
@@ -11,25 +13,15 @@ export default function ConnectedAxons({connections}: {
 }) {
   const {colors} = useTheme();
   const [names, setNames] = useState<Record<string, string>>({});
-  useFocusEffect(useCallback(() => {
-    let active = true, running = false;
-    const refresh = async () => {
-      if (running) return;
-      running = true;
-      try {
-        const owner = localAccount.status().account;
-        if (!owner) {if (active) setNames({}); return;}
-        const state = rootChatView(owner, await conversations().snapshot());
-        if (active) setNames(Object.fromEntries(state.contacts
-          .filter(contact => !state.hiddenChats?.includes(contact.account) && contact.alias.trim())
-          .map(contact => [contact.account, contact.alias])));
-      } catch {if (active) setNames({});}
-      finally {running = false;}
-    };
-    void refresh();
-    const timer = setInterval(() => void refresh(), 2000);
-    return () => {active = false; clearInterval(timer);};
-  }, []));
+  const focused=useIsFocused();
+  useForegroundEvents(async current=>{
+    const owner=localAccount.status().account;
+    if(!owner){if(current())setNames({});return;}
+    const state=rootChatView(owner,await conversations().snapshot());
+    if(current()&&localAccount.status().account===owner)setNames(Object.fromEntries(state.contacts
+      .filter(contact=>!state.hiddenChats?.includes(contact.account)&&contact.alias.trim())
+      .map(contact=>[contact.account,contact.alias])));
+  },subscribeOwnChatWrites,focused);
   if (!connections.length) return null;
   return <View style={{marginTop: 12}}>
     {connections.map((connection, index) => {

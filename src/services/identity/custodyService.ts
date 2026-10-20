@@ -55,13 +55,25 @@ export function validateCustodyRows(value: unknown, limits: CustodyLimits = DEFA
 /** Ordinary participant's bounded custody service. Authenticated caller is supplied by the Axon, never the payload.
  * No relay-to-relay deposits. Holding confirmation is NOT a delivery receipt.
  */
-export function createCustodyService(d: { owner: string; store: CustodyStore; records: IdentityRecordStore; now(): number; current(): boolean; stored?(packet:CustodyEnvelope):Promise<void> }) {
+export function createCustodyService(d: { owner: string; store: CustodyStore; records: IdentityRecordStore; now(): number; current(): boolean; stored?(packet:CustodyEnvelope):Promise<void>;
+  receiveOwn?(packet:CustodyEnvelope,relay:string):Promise<CustodyReceipt|null>;
+  changed?(peer:string):void;
+}) {
   const limits = d.store.limits ?? DEFAULT_CUSTODY_LIMITS;
   let queued = 0;
   const prune = (rows: CustodyRow[]) => { for (let i = rows.length - 1; i >= 0; i--) if (rows[i].expires <= d.now()) rows.splice(i, 1); };
   async function handle(peer: string, raw: string): Promise<string> {
     if (!d.current() || !validAccountId(peer) || peer === d.owner || raw.length > 8000) return JSON.stringify({ status: 'rejected' });
     const request = JSON.parse(raw);
+    // A delivery terminates at its addressed recipient. It can never become
+    // another deposit, so even an authenticated relay cannot extend the route.
+    if(request.operation==='deliver'){
+      const envelope=parseCustody(JSON.stringify(request.packet),d.now());
+      if(!envelope||envelope.kind!=='envelope'||envelope.recipient!==d.owner||!d.receiveOwn
+        ||!await verifyCustody(envelope,d.records,d.now())||!d.current())return JSON.stringify({status:'rejected'});
+      const receipt=await d.receiveOwn(envelope,peer);
+      return JSON.stringify(receipt&&d.current()?{status:'delivered',packet:receipt}:{status:'rejected'});
+    }
     let packet: CustodyEnvelope | CustodyReceipt | null = null;
     if (request.operation === 'deposit' || request.operation === 'receipt') {
       packet = parseCustody(JSON.stringify(request.packet), d.now());
@@ -81,7 +93,7 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
         return JSON.stringify({status:'ok',packet:row?.packet??null});
       });
     }
-    let deposited:CustodyEnvelope|null=null;
+    let deposited:CustodyEnvelope|null=null,changed:string|null=null;
     const result=await d.store.transaction(rows => {
       validateCustodyRows(rows, limits); prune(rows);
       if (!d.current()) return JSON.stringify({ status: 'rejected' });
@@ -92,7 +104,7 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
           if (!old || old.recipient !== packet.recipient || old.recipientDevice !== packet.recipientDevice
             || old.expires !== packet.expires || old.digest !== packet.digest) return JSON.stringify({ status: 'rejected' });
           // Replace ciphertext atomically. A consumed receipt remains only a digest tombstone.
-          if (old.packet) old.packet = packet;
+          if (old.packet) {if(old.packet.kind==='envelope')changed=packet.sender;old.packet = packet;}
           return JSON.stringify({ status: 'accepted' });
         }
         const digest = custodyDigest(packet);
@@ -104,6 +116,7 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
         rows.push({ sender: packet.sender, recipient: packet.recipient, recipientDevice: packet.recipientDevice,
           id: packet.id, expires: packet.expires, digest, packet });
         deposited=packet;
+        changed=packet.recipient;
         return JSON.stringify({ status: 'held' });
       }
       if (request.operation === 'poll') {
@@ -122,9 +135,23 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
     });
     // Notify only after durable commit. Push failure must never undo custody or imply delivery.
     if(deposited&&d.current()&&d.stored)void Promise.resolve().then(()=>d.stored!(deposited!)).catch(()=>{});
+    if(changed&&d.current())try{d.changed?.(changed);}catch{/* The committed row is recovered on reconnect. */}
     return result;
   }
   return {
+    /** Only the existing authenticated recipient connection is eligible. */
+    async deliverDirect(packet:CustodyEnvelope,request:(recipient:string,raw:string)=>Promise<string|null>):Promise<boolean>{
+      if(!d.current()||packet.expires<=d.now())return false;
+      try{
+        const response=JSON.parse(await request(packet.recipient,JSON.stringify({operation:'deliver',packet}))??'{}');
+        const receipt=parseCustody(JSON.stringify(response.packet),d.now());
+        if(response.status!=='delivered'||receipt?.kind!=='receipt'||receipt.id!==packet.id
+          ||receipt.sender!==packet.sender||receipt.recipient!==packet.recipient||receipt.digest!==custodyDigest(packet))return false;
+        // The ordinary receipt handler verifies signatures, device/expiry and
+        // durable row bindings before removing ciphertext.
+        return JSON.parse(await handle(packet.recipient,JSON.stringify({operation:'receipt',packet:receipt}))).status==='accepted';
+      }catch{return false;}
+    },
     async receive(peer: string, raw: string): Promise<string> {
       if (queued >= 16 || typeof raw !== 'string' || raw.length > 8000) return JSON.stringify({ status: 'rejected' });
       queued++;

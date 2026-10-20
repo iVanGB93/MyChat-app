@@ -1,5 +1,5 @@
 import {storageRetryDelay} from '../storage/storageReadSafety';
-/** One focused screen: coalesce committed changes, retain a safety poll, and
+/** One focused screen: coalesce committed changes, retry failed reads, and
  * never replace the last good view with an empty view on a storage failure. */
 export function createChatRefresh<T>(d:{owner():string|null;read(owner:string):Promise<T|undefined>;
  fresh?(owner:string,value:T):boolean;
@@ -18,7 +18,7 @@ export function createChatRefresh<T>(d:{owner():string|null;read(owner:string):P
    else dirty=true;
    failures=0;
   }catch(error){if(!stopped&&d.owner()===owner){failures++;d.failed(error);}}
-  finally{running=false;if(!stopped)arm(dirty?0:failures?storageRetryDelay(failures):5000);}
+  finally{running=false;if(!stopped&&(dirty||failures))arm(dirty?0:storageRetryDelay(failures));}
  }
  function wake(owner:string){if(stopped||owner!==d.owner())return;dirty=true;
   if(!running){if(timer!==undefined)cancel(timer);arm(0);}

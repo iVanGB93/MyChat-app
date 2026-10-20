@@ -1,6 +1,6 @@
 import React,{createContext,forwardRef,useCallback,useContext,useEffect,useRef,useState} from 'react';
 import {AppState,findNodeHandle,Keyboard,KeyboardAvoidingView,Platform,ScrollView,StyleSheet,TextInput,View,type ScrollViewProps,type TextInputProps,type ViewProps} from 'react-native';
-import {getKeyboardOverlap,supportsKeyboardOverlap} from '../../../modules/axonic-app-update';
+import {getKeyboardOverlap,supportsKeyboardOverlap,observeKeyboardLayout} from '../../../modules/axonic-app-update';
 import {keyboardScrollDelta} from '../../utils/keyboard-visibility';
 
 type FieldContext={focus(input:TextInput):void;blur(input:TextInput):void};
@@ -16,26 +16,28 @@ export function KeyboardAvoidingScreen({children,style,keyboardVerticalOffset,..
  const nativeInsets=Platform.OS==='android'&&Number(Platform.Version)>=30&&supportsKeyboardOverlap();
  useEffect(()=>{
   if(!nativeInsets)return;
-  let active=true,running=false,visible=Keyboard.isVisible();
-  let settle:ReturnType<typeof setTimeout>|undefined;
+  let active=true,running=false,dirty=false,visible=Keyboard.isVisible();
+  let settle:ReturnType<typeof setTimeout>|undefined,timer:ReturnType<typeof setInterval>|undefined,observer:{remove():void}|null=null,watching=false;
   const refresh=async()=>{
-   if(running||AppState.currentState!=='active')return;
+   if(!active||AppState.currentState!=='active')return;if(running){dirty=true;return;}dirty=false;
    const tag=findNodeHandle(root.current);if(tag===null)return;
    running=true;
+   if(!observer&&!watching){watching=true;void observeKeyboardLayout(tag,()=>void refresh()).then(value=>{watching=false;if(!active){value?.remove();return;}observer=value;if(value){clearInterval(timer);timer=undefined;}});}
    try{
     const next=await getKeyboardOverlap(tag);
     if(active&&next){visible=next.visible;setLayout(current=>current.visible===next.visible&&current.overlap===next.overlap?current:next);}
-   }finally{running=false;}
+   }finally{running=false;if(dirty&&active)void refresh();}
   };
-  // Events handle transitions; retain a slower visible-keyboard fallback for OEM resizing.
+  // Native view-layout events cover IME resizing, including modal windows.
+  // Older clients retain a visible-keyboard fallback until their native update.
   const changed=()=>{void refresh();clearTimeout(settle);settle=setTimeout(()=>void refresh(),180);};
   refreshLayout.current=changed;
   const show=Keyboard.addListener('keyboardDidShow',()=>{visible=true;changed();});
   const hide=Keyboard.addListener('keyboardDidHide',()=>{visible=false;changed();});
   const frame=Keyboard.addListener('keyboardDidChangeFrame',changed);
   const app=AppState.addEventListener('change',state=>{if(state==='active')changed();});
-  changed();const timer=setInterval(()=>{if(visible)void refresh();},1000);
-  return()=>{active=false;refreshLayout.current=()=>{};clearTimeout(settle);clearInterval(timer);show.remove();hide.remove();frame.remove();app.remove();};
+  timer=setInterval(()=>{if(visible)void refresh();},1000);changed();
+  return()=>{active=false;refreshLayout.current=()=>{};clearTimeout(settle);clearInterval(timer);observer?.remove();show.remove();hide.remove();frame.remove();app.remove();};
  },[nativeInsets]);
  return <View {...props} ref={root} collapsable={false} style={[{flex:1},style,nativeInsets&&{paddingBottom:Math.max(typeof basePadding==='number'?basePadding:0,layout.overlap)}]} onLayout={event=>{
   props.onLayout?.(event);refreshLayout.current();if(!nativeInsets)root.current?.measureInWindow((_x,y)=>setTop(y));

@@ -3,6 +3,8 @@ import * as SQLite from 'expo-sqlite';
 import { validAccountId } from './identityProtocol';
 import type { CallJournalStore } from './durableCallControl';
 import type { CallControl } from './callControlProtocol';
+const listeners=new Set<(owner:string)=>void>();
+export function subscribeCallJournalWrites(listener:(owner:string)=>void){listeners.add(listener);return()=>{listeners.delete(listener);};}
 let opening: Promise<SQLite.SQLiteDatabase> | undefined;
 let tail: Promise<unknown> = Promise.resolve();
 function serial<T>(work:()=>Promise<T>):Promise<T> {
@@ -98,6 +100,15 @@ export function createMobileCallJournalStore(): CallJournalStore {
         } else await tx.runAsync('UPDATE call_journal SET data=? WHERE owner=? AND call_id=?', after, owner, callId);
         saved = true;
       });
+      // Clock observations preserve rollback protection, but are not new signaling.
+      // Emitting for them makes coordinator.snapshot -> write -> tick loop forever.
+      let changed=before!==after;
+      if(changed&&before!==null)try{
+        const previous=JSON.parse(before),next=JSON.parse(after);
+        delete previous.observedAt;delete next.observedAt;
+        changed=JSON.stringify(previous)!==JSON.stringify(next);
+      }catch{/* Malformed/legacy content still invalidates consumers. */}
+      if(saved&&changed)for(const listener of listeners)try{listener(owner);}catch{/* Commit already succeeded. */}
       return saved;
       });
     },

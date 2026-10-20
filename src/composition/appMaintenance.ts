@@ -21,6 +21,16 @@ export function startAppMaintenance(){
  const check=()=>{void appUpdates.check();};check();
  const lifecycle=AppState.addEventListener('change',next=>{if(next==='active')void appUpdates.check(['downloading','available'].includes(appUpdates.snapshot().status));});
  const install=observePlayInstallStatus(()=>{void appUpdates.check(true);});
- let ticks=0;const timer=setInterval(()=>{const status=appUpdates.snapshot().status;if(status==='downloading'||['available','error'].includes(status)&&++ticks%6===0)void appUpdates.check(true);},10000);
- return()=>{if(!active)return;active=false;owners--;if(owners===0){stopRingerModeListener();stopSounds?.();stopSounds=undefined;}links.remove();clearInterval(timer);lifecycle.remove();install?.remove();};
+ // Native install events are primary. A bounded fallback exists only while an
+ // update or retry is pending; idle/current/background states have no timer.
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ const schedule=()=>{
+  if(timer!==undefined)clearTimeout(timer);timer=undefined;
+  if(!active||AppState.currentState!=='active')return;
+  const status=appUpdates.snapshot().status;
+  const delay=status==='downloading'?10000:['available','error'].includes(status)?60000:0;
+  if(delay)timer=setTimeout(()=>{timer=undefined;void appUpdates.check(true).finally(schedule);},delay);
+ };
+ const offUpdates=appUpdates.subscribe(schedule),clockLifecycle=AppState.addEventListener('change',schedule);schedule();
+ return()=>{if(!active)return;active=false;owners--;if(owners===0){stopRingerModeListener();stopSounds?.();stopSounds=undefined;}links.remove();clearTimeout(timer);offUpdates();clockLifecycle.remove();lifecycle.remove();install?.remove();};
 }

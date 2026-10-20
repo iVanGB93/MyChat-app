@@ -54,3 +54,12 @@ test('call unknown/rejected replies are not mislabeled as empty inboxes',async()
   await q.tick();assert.equal(q.diagnostics().emptyPolls,0);q.stop();
  }
 });
+test('call inbox sleeps after explicit empty response and wakes on an event or new session',async()=>{
+ let now=0,requests=0;const peer={account:'a',device:'d',instance:'i',expiresAt:999999};
+ const q=load('callRelayPump').createCallRelayPump({account:'owner',device:'d',now:()=>now,current:()=>true,eventDriven:()=>true,peers:()=>[peer],list:async()=>[],request:async()=>{requests++;return '{"kind":"event","raw":null}';}});
+ await q.tick();assert.equal(q.nextDeadline(),Infinity);now=5000;await q.tick();assert.equal(requests,1);q.changed();await q.tick();assert.equal(requests,2);assert.equal(q.nextDeadline(),Infinity);peer.instance='new';assert(Number.isFinite(q.nextDeadline()));now+=3000;await q.tick();assert.equal(requests,3);q.stop();
+});
+test('call event racing the empty reply cannot leave the inbox asleep',async()=>{
+ let release;const peer={account:'a',device:'d',instance:'i',expiresAt:999999};const q=load('callRelayPump').createCallRelayPump({account:'owner',device:'d',now:()=>0,current:()=>true,eventDriven:()=>true,peers:()=>[peer],list:async()=>[],request:async()=>{await new Promise(r=>release=r);return '{"kind":"event","raw":null}';}});
+ const pass=q.tick();await new Promise(setImmediate);q.changed();release();await pass;assert(Number.isFinite(q.nextDeadline()));q.stop();
+});

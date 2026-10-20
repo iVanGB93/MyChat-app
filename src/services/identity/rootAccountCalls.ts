@@ -22,6 +22,9 @@ export function createRootAccountCalls(d:{
  listPending?():Promise<CallControl[]>;
  current():boolean; now():number; random():Promise<Uint8Array>;
  contacts():Promise<{account:string;alias:string;blocked:boolean}[]>;
+ contactsRevision?():number;
+ eventCallPeer?(peer:string):boolean;
+ inboxChanged?(peer:string):void;
  changed(view:NeuronCallView<string>|null):void;
  wakes?:{pending():Promise<{raw:string}[]>;finish(id:string):Promise<void>};
 }){
@@ -31,7 +34,21 @@ export function createRootAccountCalls(d:{
  let contacts:Awaited<ReturnType<typeof d.contacts>>=[];
  const current=()=>!stopped&&d.current()&&d.identity.status().account===account&&d.identity.callDevice()===device;
  const blocked=(peer:string)=>!policyReady||contacts.some(c=>c.account===peer&&c.blocked);
- const refresh=async()=>{const next=await d.contacts();if(!current())throw Error('Call interrupted');contacts=next;policyReady=true;};
+ let policyRevision:number|undefined,policyFlight:Promise<void>|undefined;
+ const refresh=async()=>{
+  if(d.contactsRevision&&policyReady&&policyRevision===d.contactsRevision())return;
+  if(policyFlight)return policyFlight;
+  policyFlight=(async()=>{
+   do{
+    const revision=d.contactsRevision?.(),next=await d.contacts();
+    if(!current())throw Error('Call interrupted');
+    if(d.contactsRevision&&revision!==d.contactsRevision())continue;
+    contacts=next;policyRevision=revision;policyReady=true;return;
+   }while(current());
+   throw Error('Call interrupted');
+  })();
+  try{await policyFlight;}finally{policyFlight=undefined;}
+ };
  const readRecord=async(peer:string)=>peer===account?d.identity.publicRecord():d.records.read(peer);
  const name=(peer:string)=>contacts.find(c=>c.account===peer)?.alias||peer;
  const control=createCallControlRuntime({account,device,store:d.store,records:{read:readRecord},now:d.now,current,blocked,
@@ -72,10 +89,10 @@ export function createRootAccountCalls(d:{
     void control.drain(invite,peer).catch(()=>{});
    void pump.flushTerminal(invite).catch(()=>{});
   }});
- const relay=createCallControlRelay({records:d.records,now:d.now,current,blocked});
+ const relay=createCallControlRelay({changed:d.inboxChanged,records:d.records,now:d.now,current,blocked});
  const endpoint=createCallRelayEndpoint(relay);
  const mediaRelay=createCallMediaRelay({records:d.records,now:d.now,current,blocked,forward:(...args)=>d.network().forwardMedia(...args)});
- const pump=createCallRelayPump({account,device,store:d.store,records:{read:readRecord},current,now:d.now,blocked,
+ const pump=createCallRelayPump({eventDriven:d.eventCallPeer,account,device,store:d.store,records:{read:readRecord},current,now:d.now,blocked,
   list:d.listPending??d.list,peers:()=>d.network().relayPeers().filter(p=>!blocked(p.account)),direct:()=>d.network().callPeers(),
   request:(...args)=>d.network().callRelayRequest(...args),
   receive:async(raw,peer)=>{await refresh();await coordinator.ready();const receipt=await control.receiveRelayed(raw,peer);
@@ -96,7 +113,9 @@ export function createRootAccountCalls(d:{
   }
  }
  return {
-  coordinator,
+  coordinator,clock:coordinator.tick,nextClockDeadline:coordinator.nextDeadline,
+  changed(){retry.changed();pump.changed();},
+  nextDeadline:()=>Math.min(coordinator.nextDeadline(),retry.nextDeadline(),pump.nextDeadline()),
   relayMetadata:()=>relay.metadata(account),
   diagnostics:()=>({relay:pump.diagnostics(),call:coordinator.diagnostics()}),
   async receiveRelay(raw:string,peer:IdentityPeer){await refresh();return endpoint(raw,peer);},

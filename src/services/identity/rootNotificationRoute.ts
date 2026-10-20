@@ -1,6 +1,10 @@
 import {rootChatView} from './rootChatActions';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {validAccountId} from './identityProtocol';
+const listeners=new Set<()=>void>();
+export function subscribeRootNotificationOpen(fn:()=>void){listeners.add(fn);return()=>{listeners.delete(fn);};}
+let tail:Promise<unknown>=Promise.resolve();
+function serial<T>(fn:()=>Promise<T>){const work=tail.then(fn);tail=work.catch(()=>{});return work;}
 const KEY='@axonic_root_notification_open_v1';
 let visible:{peer?:string;group?:string}|null=null;
 export function setRootVisibleConversation(value:typeof visible){visible=value;}
@@ -16,7 +20,8 @@ export async function queueRootNotificationOpen(data:unknown){
  if(target){
   // Legacy generic alerts have a message ID but no decrypted preview metadata.
   if(d.messageId&&!d.messageAt&&!d.messagePreviews&&/^[a-f0-9]{64}$/.test(d.messageId))target.hintId=d.messageId;
-  await AsyncStorage.setItem(KEY,JSON.stringify(target));
+  await serial(()=>AsyncStorage.setItem(KEY,JSON.stringify(target)));
+  for(const fn of listeners)try{fn();}catch{};
  }
 }
 export async function pendingRootNotificationOpen(account:string){
@@ -35,5 +40,5 @@ export async function pendingRootNotificationOpen(account:string){
  if(group&&!state.groups?.some((g:{id:string})=>g.id===group))return {...target,inbox:true,unavailable:'group_unknown' as const};
  return {...target,...(group?{group}:{} )};
 }
-export async function finishRootNotificationOpen(){await AsyncStorage.removeItem(KEY);}
+export async function finishRootNotificationOpen(expected?:RootNotificationTarget){await serial(async()=>{if(expected){const raw=await AsyncStorage.getItem(KEY);if(!raw)return;const actual=JSON.parse(raw);if(actual.account!==expected.account||actual.sender!==expected.sender||actual.hintId!==expected.hintId||actual.hintId===undefined&&actual.group!==expected.group)return;}await AsyncStorage.removeItem(KEY);});}
 import {ownChatStore} from '../../modules/storage/chatStore';

@@ -5,6 +5,7 @@ function fixture(){
  const state={version:1,contacts:[{account:sender,accepted:true,blocked:false}],messages:[{id,peer:sender,direction:'incoming',text:'hello',status:'delivered'}]};
  const ledger={snapshot:async()=>state,enqueue:async(...args)=>calls.push(['reply',...args]),act:async(...args)=>calls.push(['read',...args]),enqueueGroup:async(...args)=>calls.push(['group',...args]),markGroupRead:async(...args)=>calls.push(['group-read',...args])};
  const imports={
+  './rootCallNotificationAction':{queueRootCallNotificationAction:async()=>false},
   'react-native':{AppState:{currentState:'active'}},
   '@react-native-async-storage/async-storage':{default:{getItem:async key=>storage.get(key)??null,setItem:async(key,value)=>{if(failSave&&JSON.parse(value).rows[0].done)throw Error('disk unavailable');storage.set(key,value);}}},
   '@notifee/react-native':{default:{getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}}},

@@ -16,6 +16,8 @@ type Session = ReturnType<typeof createPersistentAxon>;
  */
 export function createIdentityNetwork(d: {
   onConnected?(candidate:NeuronCandidate):void;
+  onWorkChanged?():void;
+  onQualityChanged?():void;
   identity: Identity; store: IdentityRecordStore; now(): number; limit?: number;
   onSignal?(signal: AxonSignal, via: string): void;
   onTestMessage?: TestMessageHandler;
@@ -41,6 +43,8 @@ export function createIdentityNetwork(d: {
   const routing=createSessionRouting({now:d.now,sessions:()=>sessions,connections:()=>pool?.snapshot().connections??[]});
   const {rankedConnections,rankedSessions}=routing;
   const connectedListeners=new Set<(peer:string)=>void>();
+  const topologyListeners=new Set<()=>void>();
+  const topologyChanged=()=>{d.onWorkChanged?.();for(const listener of topologyListeners)try{listener();}catch{/* Observers cannot close sockets. */}};
   let signaling: ReturnType<typeof createAxonSignaling> | null = null;
   const sendSignal = (via: string, raw: string) => [...sessions].some(s => s.snapshot().account === via && s.sendSignal(raw));
   const directory = createIntroductionDirectory(d.now);
@@ -64,13 +68,14 @@ export function createIdentityNetwork(d: {
       send: sendSignal, receive: (signal, via) => d.onSignal?.(signal, via),
     });
     const open = async (candidate: NeuronCandidate, context: ConnectionContext, incoming?: AxonWire) => {
+        let unSchedule:(()=>void)|undefined;
         let wire: AxonWire | undefined, session: Session | undefined, closed = false;
         const valid = () => !disposed && enabled && own === generation && !context.signal.aborted;
         const close = () => {
           if (closed) return;
-          closed = true; directory.remove(candidate.account);
+          closed = true;unSchedule?.(); directory.remove(candidate.account);
           context.signal.removeEventListener('abort', close);
-          if (session) { sessions.delete(session); session.stop(); }
+          if (session) { sessions.delete(session); session.stop(); topologyChanged(); }
           try { wire?.close(); } catch { /* Continue releasing the pool reservation. */ }
         };
         context.signal.addEventListener('abort', close, { once: true });
@@ -84,17 +89,18 @@ export function createIdentityNetwork(d: {
           }, {
             list: () => (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && c.expiresAt !== null)
               .map(c => ({ account: c.account, expiresAt: c.expiresAt! })),
-            received: peers => { if (valid()) directory.replace(candidate.account, peers); },
+            received: peers => { if (valid()) {directory.replace(candidate.account, peers);d.onWorkChanged?.();} },
           }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage, d.onDirectory, d.onPush, d.onCallControl, d.onCallMedia, d.onCallRelay, d.onCallMediaRelay, d.onRelayedCallMedia, d.onAttachment);
           if (closed || !valid() || session.snapshot().state === 'closed') { session.stop(); close(); return null; }
-          sessions.add(session);
+          sessions.add(session);const offSchedule=session.subscribeSchedule?.(()=>d.onWorkChanged?.()),offQuality=session.subscribeQuality?.(()=>d.onQualityChanged?.());unSchedule=()=>{offSchedule?.();offQuality?.();};
           const link = await session.ready;
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
           if(!incoming){try{d.onConnected?.({...candidate});}catch{/* Locator persistence cannot hold an authenticated socket open. */}}
           for(const listener of connectedListeners){try{listener(candidate.account);}catch{/* Observers do not own the connection. */}}
+          topologyChanged();
           return { peer: link.peer, close };
         } catch { close(); return null; }
-        finally { if (!session || session.snapshot().state === 'closed') context.signal.removeEventListener('abort', close); }
+        finally { if (!session || session.snapshot().state === 'closed') context.signal.removeEventListener('abort', close);d.onWorkChanged?.(); }
       };
     const ownedPool = createNeuronConnections({ localAccount: desired, limit, now: d.now, open,preferRtc:peer=>!!streamPeer(peer) });
     pool = ownedPool;
@@ -104,6 +110,8 @@ export function createIdentityNetwork(d: {
   reconcile();
   return {
     subscribeConnected(listener:(peer:string)=>void){connectedListeners.add(listener);return()=>{connectedListeners.delete(listener);};},
+    eventCallPeers:()=>[...sessions].filter(s=>s.supportsCallInboxEvents()).map(s=>s.snapshot().account!),
+    subscribeTopology(listener:()=>void){topologyListeners.add(listener);return()=>{topologyListeners.delete(listener);};},
     attachmentStreamPeer:streamPeer,
     profileOfferPeers:()=>[...sessions].filter(s=>s.supportsProfileOffers()).map(s=>s.snapshot().account!).filter(Boolean),
     sendSignal,
@@ -152,6 +160,7 @@ export function createIdentityNetwork(d: {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.directoryRequest(raw) ?? Promise.resolve(null);
     },
+    eventCustodians:()=>[...sessions].filter(s=>s.supportsCustodyEvents()).map(s=>s.snapshot().account!).filter(Boolean),
     custodians() {return rankedConnections().filter(c=>[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsCustody())).map(c=>c.account);},
     profilePeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsProfileUpdates()).map(s=>s.snapshot().account!).filter(Boolean),
     timestampPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsMessageTimestamps()).map(s=>s.snapshot().account!).filter(Boolean),
@@ -187,6 +196,7 @@ export function createIdentityNetwork(d: {
       return false;
     },
     resume() { reconcile(); if (account) pool?.resume(); },
+    nextDeadline:()=>Math.min(pool?.nextDeadline()??Infinity,...[...sessions].map(s=>s.nextDeadline())),
     tick() { reconcile(); for (const session of sessions) session.tick(); if (account) pool?.tick(); },
     setParticipation(value: boolean) { enabled = value; reconcile(); },
     snapshot() {

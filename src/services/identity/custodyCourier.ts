@@ -12,6 +12,7 @@ const CUSTODIAN_BACKOFF_MS = 120_000;
 export function createCustodyCourier(d: {
   owner(): string | null; allowed(peer: string): boolean; now(): number; records: IdentityRecordStore;
   own: OwnCustodyStore; messages?: TestMessageStore; relays(): string[];
+  eventDriven?(peer:string):boolean;
   /** Normal-chat adapter must durably apply the verified receipt before relay consumption. */
   held?(envelope:CustodyEnvelope):Promise<void>;
   confirmReceipt?(receipt: CustodyReceipt, current: () => boolean, relay:string): Promise<boolean>;
@@ -22,7 +23,7 @@ export function createCustodyCourier(d: {
   let epoch = 0, stopped = false;
   const depositing = new Set<string>();
   const unavailable = new Map<string, number>();
-  const polls = createRelayPollSchedule(d.now);
+  const polls = createRelayPollSchedule(d.now,10,d.eventDriven);
   const skips = new Map<string, { until: number; ids: string[] }>();
   const deferred = new Map<string, Map<string,{until:number;attempts:number}>>();
   const acknowledged = new Set<string>(), drained = new Set<string>();
@@ -34,6 +35,7 @@ export function createCustodyCourier(d: {
   }
   return {
     diagnostics:polls.diagnostics,
+    nextDeadline:()=>stopped||!d.owner()?Infinity:polls.nextDeadline(d.relays()),
     recoveryComplete(sender:string,id:string) {
       const relays=[...new Set(d.relays())].slice(0,10);
       return !stopped&&acknowledged.has(sender+':'+id)&&depositing.size===0&&relays.length>0&&relays.every(relay=>drained.has(relay)&&!polls.busy(relay));
@@ -54,7 +56,8 @@ export function createCustodyCourier(d: {
         }
         if (!saved || !l.current() || saved.envelope.recipient !== peer || saved.envelope.expires <= d.now()) return;
         // Keep one custodian when reachable; prefer locally ranked candidates otherwise.
-        const preferred = saved.relay && candidates.includes(saved.relay) ? saved.relay : candidates[0];
+        const preferred = saved.relay && candidates.includes(saved.relay)
+          ? saved.relay : candidates[0];
         for(const relay of [preferred,...candidates.filter(r=>r!==preferred)].slice(0,3)){
         if(!l.current())return;
         // A connected socket can still time out or fail to service custody.
@@ -107,7 +110,13 @@ export function createCustodyCourier(d: {
               if(reply?.status==='retry')outcome.retryAfterMs=reply.retryAfterMs;
               break;
             }
-            if (!reply.packet) { outcome.empty=true;if(!incomplete&&!rejected.size)drained.add(relay);break; }
+            if (!reply.packet) {
+              outcome.empty=true;
+              // An expired exclusion that was offered but not returned is no
+              // longer held. Keep exclusions actually used by this request.
+              for(const [id,value] of rejected)if(value.until<=d.now()&&!pass.includes(id))rejected.delete(id);
+              if(!incomplete&&!rejected.size)drained.add(relay);break;
+            }
             outcome.item=true;
             const packet = parseCustody(JSON.stringify(reply.packet), d.now());
             if (!packet || pass.includes(packet.id)) break;
@@ -152,7 +161,7 @@ export function createCustodyCourier(d: {
             else incomplete=true;
           }
         } catch { /* This relay retries without blocking the other custodians. */ }
-        finally { passSchedule.finish(outcome); }
+        finally { passSchedule.finish({...outcome,settled:drained.has(relay)}); }
       }));
     },
     resume(peer?:string) { drained.clear();acknowledged.clear();polls.resume(peer); },

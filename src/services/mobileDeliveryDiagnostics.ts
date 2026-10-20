@@ -1,5 +1,5 @@
 import {AppState} from 'react-native';
-import {diagnosticJournal} from './diagnosticJournal';
+import {diagnosticJournal,type DiagnosticDetails} from './diagnosticJournal';
 import {localAccount} from './identity/localAccount';
 import {createDeliveryDiagnostics} from './deliveryDiagnostics';
 import {rootChatView} from './identity/rootChatActions';
@@ -13,10 +13,10 @@ export function captureDeliveryState(owner:string,state:RootChatState){
  captureOwner=owner;
  for(const m of rootChatView(owner,state).messages.slice(-128))if(!m.deleted)mobileDeliveryDiagnostics.observe(m.direction+':'+m.peer+':'+m.id,rootMessageStatus(m),m.direction,AppState.currentState==='active');
 }
-export function deliveryDiagnosticEvent(owner:string,peer:string,id:string,event:'wake_verified'|'notification_requested'|'recovery_started'|'recovery_finished'){
+export function deliveryDiagnosticEvent(owner:string,peer:string,id:string,event:'wake_verified'|'notification_requested'|'recovery_started'|'recovery_finished',details:DiagnosticDetails={}){
  if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
  if(captureOwner&&captureOwner!==owner)mobileDeliveryDiagnostics.clear();captureOwner=owner;
- diagnosticJournal.record(event);
+ diagnosticJournal.record(event,details);
  mobileDeliveryDiagnostics.event('incoming:'+peer+':'+id,event,'incoming',AppState.currentState==='active');
 }
 export function clearDeliveryCapture(){captureOwner=null;mobileDeliveryDiagnostics.clear();}

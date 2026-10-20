@@ -1,0 +1,32 @@
+Event-driven custody delivery — 2026-10-20
+
+Implemented locally in the mobile app and AoN source.
+
+Protocol
+- Authenticated sessions negotiate custodyEvents:1 separately from existing capabilities.
+- Authentication/reconnection schedules initial private and group inbox reconciliation.
+- A successfully committed new envelope notifies its recipient. A committed signed receipt notifies its sender.
+- inbox-changed carries a bounded revision number, no plaintext. Its matching accepted response confirms only that local reconciliation was requested.
+- A drained event-capable inbox sleeps until a notice, reconnect, explicit wake/resume, or other recovery event. Older peers retain adaptive polling for compatibility.
+- Missing/mismatched notice acknowledgments retry with bounded exponential backoff. A newer commit during an in-flight notice cannot be cleared by the older ACK.
+- Delivery is still confirmed only by the recipient's signed durable receipt. FCM gateway acceptance and notice acceptance never mark a message delivered.
+- On reconnect, envelopes previously accepted by an FCM gateway become eligible for direct delivery again.
+- Private/group wake workers invalidate their cached custody view on changes instead of periodically rereading unchanged stores.
+- Rejected packet bookkeeping is retired only after an explicit empty response that did not exclude the expired entry. A rejection on one group relay cannot prevent another relay from sleeping.
+
+Timers intentionally retained
+- Existing runtime maintenance ticks, bounded unfinished-work retries, expiration, and connection maintenance remain. This change removes recurring empty inbox network requests between upgraded peers; it does not remove every timer from the app.
+- Durable custody plus initial reconciliation recovers volatile notices after process restart. No claim of exactly-once network transmission: duplicate delivery remains idempotent.
+
+Validation
+- npm run check: 1,388 tests; 1,385 passed, 3 skipped, zero failures. Typecheck, service cycles, module boundaries and consolidation passed.
+- AoN npm test: 235 passed, zero failures; subsequent diagnostic-counter addition compiled.
+- Real authenticated WebSocket test: initially empty recipient remains idle through 1,000 processing cycles; a later deposit triggers delivery, and its signed receipt triggers a sender inbox event.
+- Axonic Dev emulator: current Hermes runtime passed synthetic in-memory event ACK and 1,000-cycle idle checks. No real messages/accounts changed by this check.
+- Regression coverage includes late ACKs, events racing an empty response, reconnect during FCM acceptance, compatibility, failed commits, and expired rejected entries.
+
+Limits / rollout
+- These changes have not been deployed to either live AoN or released to production in this task. The Play Store app is unchanged.
+- Only emulator-5554 was available at final device verification. Physical-phone background/FCM tests of this version remain outstanding.
+- Selected shared event/custody sources were synchronized. Unrelated pre-existing AoN shared-source drift was not overwritten wholesale.
+- No production build, commit, push, or deployment performed.

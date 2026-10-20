@@ -1,4 +1,7 @@
-import {useForegroundPoll} from '../../hooks/useForegroundPoll';
+import {subscribeOwnChatWrites} from '../../modules/storage';
+import {subscribeAttachmentContentChanges} from '../../modules/messaging';
+const subscribeStorageChanges=(fn:()=>void)=>{const a=subscribeOwnChatWrites(fn),b=subscribeAttachmentContentChanges(fn);return()=>{a();b();};};
+import {useForegroundEvents} from '../../hooks/useForegroundEvents';
 import {useIsFocused} from '@react-navigation/native';
 import React,{useState} from 'react';
 import {ScrollView,Text,Pressable,View} from 'react-native';
@@ -20,7 +23,7 @@ const bytes=(n:number)=>n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?(n/1024)
 export default function RootChatStorageScreen({route,navigation}:NativeStackScreenProps<RootAccountRoutes,'ChatStorage'>){
  const focused=useIsFocused();
  const {colors}=useTheme(),owner=localAccount.status().account,[state,setState]=useState<RootChatState>({version:1,contacts:[],messages:[]}),[error,setError]=useState(''),[storedSizes,setStoredSizes]=useState<Record<string,number>>({});
- useForegroundPoll(async current=>{try{const snapshot=await conversations().snapshot();if(current()&&localAccount.status().account===owner){const next=rootChatView(owner!,snapshot),sizes:Record<string,number>={};for(const message of next.messages){if(!message.attachment||message.deleted)continue;const digest=attachmentDigest(message.attachment.manifest);if(digest in sizes)continue;try{const file=rootAttachmentFile(owner!,digest);sizes[digest]=file.exists?file.size:0;}catch{sizes[digest]=0;}}setStoredSizes(old=>JSON.stringify(old)===JSON.stringify(sizes)?old:sizes);setState(old=>JSON.stringify(old)===JSON.stringify(next)?old:next);setError('');}}catch{if(current())setError('Could not read chat storage');}},2000,focused);
+ useForegroundEvents(async current=>{try{const snapshot=await conversations().snapshot();if(current()&&localAccount.status().account===owner){const next=rootChatView(owner!,snapshot),sizes:Record<string,number>={};for(const message of next.messages){if(!message.attachment||message.deleted)continue;const digest=attachmentDigest(message.attachment.manifest);if(digest in sizes)continue;try{const file=rootAttachmentFile(owner!,digest);sizes[digest]=file.exists?file.size:0;}catch{sizes[digest]=0;}}setStoredSizes(old=>JSON.stringify(old)===JSON.stringify(sizes)?old:sizes);setState(old=>JSON.stringify(old)===JSON.stringify(next)?old:next);setError('');}}catch{if(current())setError('Could not read chat storage');}},subscribeStorageChanges,focused);
 
  const peer=route.params?.peer,group=route.params?.group;
  const messages=state.messages.filter(m=>group?m.group?.id===group:peer?!m.group&&m.peer===peer:true);

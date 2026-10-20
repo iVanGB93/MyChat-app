@@ -1,0 +1,42 @@
+Group-control capacity fix — local work, 2026-10-20
+
+Observed code defect (phone state not yet collected):
+Delivered membership/recovery packets counted against a 2,000 total outbox
+ceiling. Incoming control replay history also stopped at 2,000. A generic
+error conflated capacity, packet byte size, and invalid operation IDs.
+
+Mobile changes:
+- Separate 4,096 pending-control budget from 20,000 retained-control history.
+- Limit new outgoing/incoming control history to 16 MiB of raw payload per
+  direction; retained records are never automatically deleted.
+- Preserve existing messages, pending work, receipts and replay evidence.
+- Skip identical metadata already pending for the same recipient on recovery.
+  After confirmed delivery, a fresh recovery request can resend the metadata.
+- Reject conflicting same-ID payloads before capacity/deduplication handling.
+- Distinct outgoing errors for pending capacity, retained count, byte capacity,
+  invalid operation IDs and oversized membership packets.
+- Ten-member wire compatibility limit remains unchanged. Do not increase this
+  until old receivers and the fixed-size encrypted control transport are handled.
+
+Verification:
+- TypeScript check passed.
+- 84 group/chat/reset regression tests passed.
+- scripts/test-group-capacity-dev.cjs passed in emulator-5554 Axonic Dev.
+  Retained 2,000 completed records; membership update and reopen succeeded;
+  12 recoveries did not duplicate pending metadata; delivery allowed fresh resend.
+  Test used isolated in-memory storage: zero real chat writes or network calls.
+
+AoN staging WARNING — DO NOT DEPLOY:
+The selected sync-core copy also brought older mobile-only differences into
+previously clean AoN rootGroups.ts/rootChatLedger.ts. AoN types lack the mobile
+network-reset fields. Build fails until this accidental scope expansion is
+removed or deliberately reviewed. Safety review rejected reverting those copied
+additions; user approval requested. They were introduced in this task by
+sync-core, not pre-existing AoN edits. Retain the intentional group-capacity hunks.
+The shared-source hashes currently describe full copied mobile files and must
+not be claimed as parity if isolated patches are used instead.
+The hosted reconnect test also failed once and needs investigation/rerun after
+the source isolation is resolved. No commit/push/deploy or production build made.
+
+Limits remain bounded, not an unlimited history design. No claim of repairing
+the user's installed production app: it needs a separately approved update.

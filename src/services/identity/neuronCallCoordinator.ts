@@ -10,7 +10,7 @@ import type { CallMediaTransport } from './callMediaTransport.ts';
 export interface NeuronCallView<Peer = number> {
   id: string; peerUser: Peer; peerName: string; outgoing: boolean; media: 'voice' | 'video';
   status: 'finding' | 'ringing' | 'connecting' | 'ready' | 'ended'; reason?: string;
-  transport?: CallMediaTransport;
+  expiresAt?: number; transport?: CallMediaTransport;
 }
 type ControlInput = Omit<CallControl, 'version' | 'record' | 'device' | 'signature'>;
 type MediaInput = Omit<CallMediaSignal, 'version' | 'record' | 'device' | 'signature'>;
@@ -145,7 +145,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     if(s.status==='accepted'&&!s.confirmed&&view.outgoing&&s.selectedDevice&&s.acceptance){
       await control(e,'selected',{selectedDevice:s.selectedDevice,acceptance:s.acceptance});return;
     }
-    if(!s.confirmed||!s.selectedDevice||!s.acceptance)return;
+    if(!s.confirmed||!s.selectedDevice||!s.acceptance){if(d.now()>=e.expiresAt){await terminate(e);finish('Call confirmation expired');}return;}
     if(view.status==='ringing'){view={...view,status:'connecting'};emit();}
     const peerDevice=view.outgoing?s.selectedDevice:e.callerDevice;
     const context=d.callRoute?routedContext(e,s.acceptance,peerDevice):d.contexts().find(c=>c.peer.account===remote(e)&&c.peer.device===peerDevice);
@@ -171,6 +171,11 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     if(!media){media=openMedia(e,s.acceptance,context);view={...view,status:'ready',transport:media.transport};emit();}
   }
   return {
+    nextDeadline(){
+      if(!current()||!active||!view||view.status==='ended')return Infinity;
+      if(awaitingRouteSince!==null)return awaitingRouteSince+(media?45000:10000);
+      return view.status==='ready'?Infinity:active.expiresAt;
+    },
     ready:recover,
     async peerReady(user:Peer){const target=await d.resolve(user);return current()&&!!target&&!d.blocked(target.account)&&
       (d.contexts().some(c=>c.peer.account===target.account)||!!d.callRoute?.(target.account,''));},
@@ -181,7 +186,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
       const e=(await d.list()).find(e=>e.kind==='invite'&&e.callId===id&&e.callee===d.account);
       if(!e||!current()||d.blocked(e.caller)||(await state(e).snapshot(d.now()))?.status!=='ringing')return false;
       const peer=d.lookup(e.caller);if(!peer||!current())return false;
-      active=e;view={id:e.callId,peerUser:peer.user,peerName:peer.name,outgoing:false,media:e.media,status:'ringing'};emit();return true;
+      active=e;view={id:e.callId,expiresAt:e.expiresAt,peerUser:peer.user,peerName:peer.name,outgoing:false,media:e.media,status:'ringing'};emit();return true;
     });},
     diagnostics:()=>({...diagnostics}),
     snapshot:()=>view?{...view}:null,
@@ -195,7 +200,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
       const issuedAt=d.now(),raw=d.sign({callId:bytesToHex(bytes),caller:d.account,callee:target.account,callerDevice:d.device,
         media:kind,kind:'invite',invitation:null,sequence:0,issuedAt,expiresAt:issuedAt+60000});
       if(!await d.submit(raw)||!current())throw Error('Could not save the call invitation.');
-      declined.clear();active=JSON.parse(raw);view={id:active!.callId,peerUser:user,peerName:target.name,outgoing:true,media:kind,status:'finding'};emit();return view.id;
+      declined.clear();active=JSON.parse(raw);view={id:active!.callId,expiresAt:active!.expiresAt,peerUser:user,peerName:target.name,outgoing:true,media:kind,status:'finding'};emit();return view.id;
     });},
     observe(event:CallControl){return serial(async()=>{
       await recover();if(!current())return;
@@ -203,7 +208,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
         const s=await state(event).snapshot(d.now());if(!s||s.status!=='ringing')return;
         const peer=d.lookup(event.caller);if(!peer)return;
         if(view&&view.status!=='ended'||d.busy()){await control(event,'busy');return;}
-        declined.clear();active=event;view={id:event.callId,peerUser:peer.user,peerName:peer.name,outgoing:false,media:event.media,status:'ringing'};emit();
+        declined.clear();active=event;view={id:event.callId,expiresAt:event.expiresAt,peerUser:peer.user,peerName:peer.name,outgoing:false,media:event.media,status:'ringing'};emit();
       }
       if(active&&event.callId===active.callId&&view?.outgoing&&['reject','busy'].includes(event.kind)){
         declined.add(event.device);

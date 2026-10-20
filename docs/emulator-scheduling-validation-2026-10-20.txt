@@ -1,0 +1,40 @@
+Emulator validation — 2026-10-20
+
+Scope: emulator-5554 and emulator-5556, com.axonic.dev, Metro development
+bundle. No production build, phone installation, data wipe, or AoN deployment.
+The updated AoN source remains local; live emulator routes do not establish
+that the new AoN scheduling code has been deployed or validated remotely.
+
+Setup
+- Reused running Metro and emulator 5554.
+- Started Medium_Phone_API_36_1_B without resetting its data.
+- Installed existing local Dev APK 1.1.24/code 95 on emulator 5556 as the
+  separate com.axonic.dev package. Kept its older com.axonic package intact.
+- Created a new emulator-only Dev identity; its randomly generated local
+  credential was remembered through the app's normal secure session store.
+  No credential or recovery phrase was written to this report or a script.
+
+Results
+- In-memory scheduling assertions ran in both Hermes Dev runtimes: 1,000
+  idle relay cycles produced no poll; custody notice ACK resumed work;
+  100 simultaneous task changes coalesced into one run.
+- Real A-to-B text: delivered/read, delivery observed at 3,211 ms.
+- Real B-to-A text: delivered/read, delivery observed at 1,773 ms.
+- Generated 18,944-byte attachment: delivered, SHA-256 matched,
+  completion observed at 1,743 ms.
+- Background recipient: delivered at observed 270 ms; exactly one content
+  notification, no generic notification; subsequent read receipt added no
+  sender notification. This was warm background, not cold FCM or Doze.
+- Recipient force-stopped, labeled text queued, then Dev explicitly reopened:
+  recovered automatically, one incoming copy, sender received delivery,
+  same identity and existing history retained. Delivery observed 20,306 ms
+  after unlock. This delay remains a finding; root cause is not established.
+- Account startup logs on recipient: inspect 164 ms, resume 89 ms.
+- Final attachment-worker snapshots on both devices: not running, no
+  scheduled timer, zero failures. A snapshot is not a long idle-duration test.
+
+Timing caveat: observed delivery timings include debugger and polling overhead.
+These results are not release-mode benchmarks or phone battery tests.
+
+Follow-up: investigate the restart-to-delivery gap; validate the deployed AoN
+update separately; use phones for screen-off, Doze and cold notification tests.

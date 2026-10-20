@@ -10,6 +10,7 @@ import {rootAttachmentFile,removeRootAttachmentContent,rootAttachmentExportLink,
 import {createReceivedMediaExporter,type MediaExportRecord} from './receivedMediaExport';
 import {subscribeOwnChatWrites} from '../../modules/storage/chatStore';
 import {createWorkPump} from '../workPump';
+import {subscribeAttachmentContentChanges} from './attachmentChanges';
 
 const native=Platform.OS==='android'?requireOptionalNativeModule<{supported:boolean;copyShared?(uri:string):Promise<string>;save(uri:string,name:string,mime:string,kind:string):Promise<string>;available(uri:string):Promise<boolean>;deleteOwned(uri:string,id:string):Promise<'deleted'|'missing'|'needs-confirmation'>;requestDelete(uri:string,id:string):Promise<boolean>}>('AxonicMediaStore'):null;
 const preference='@axonic/auto-save-received-media';
@@ -42,12 +43,13 @@ export function startRootMediaExport(){
   }
   return await worker!.run();
  }
- const scheduler=createWorkPump({run:pump,idleMilliseconds:15000,maximumIdleMilliseconds:300000}),wake=scheduler.wake;
+ const scheduler=createWorkPump({run:pump,idleMilliseconds:15000,maximumIdleMilliseconds:300000,nextDelay:()=>AppState.currentState==='active'?worker?.nextDelay()??Infinity:Infinity}),wake=scheduler.wake;
+ const offFiles=subscribeAttachmentContentChanges(wake);
  const offWrites=subscribeOwnChatWrites(owner=>{if(owner===localAccount.status().account)wake();});
  const offAccount=localAccount.subscribe(()=>{epoch++;worker=undefined;bound=null;wake();});
  preferenceListeners.add(wake);
  const subscription=AppState.addEventListener('change',state=>{if(state==='active')wake();});
- return {wake,stop(){stopped=true;scheduler.stop();offWrites();offAccount();preferenceListeners.delete(wake);subscription.remove();}};
+ return {wake,stop(){stopped=true;scheduler.stop();offFiles();offWrites();offAccount();preferenceListeners.delete(wake);subscription.remove();}};
 }
 
 /** Explicit storage action may ask Android to remove an older owned export. */

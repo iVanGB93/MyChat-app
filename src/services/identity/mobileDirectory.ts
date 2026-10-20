@@ -16,5 +16,5 @@ export function createMobileDirectory(identity: ReturnType<typeof createLocalIde
   const lookup = createIdentityDirectoryLookup({ pins, now: Date.now, current: live,
     peers: () => network()?.directoryPeers() ?? [], request: (peer, raw) => network()?.directoryRequest(peer, raw) ?? Promise.resolve(null) });
   const unsubscribe = identity.subscribe(() => { if (!live()) { worker.invalidate(); lookup.invalidate(); } });
-  return { receive, lookup: lookup.lookup, tick: worker.tick, snapshot: worker.snapshot, stop() { stopped = true; lookup.stop(); unsubscribe(); worker.stop(); } };
+  return { receive, lookup: lookup.lookup, tick: worker.tick,nextDeadline:worker.nextDeadline, snapshot: worker.snapshot, stop() { stopped = true; lookup.stop(); unsubscribe(); worker.stop(); } };
 }

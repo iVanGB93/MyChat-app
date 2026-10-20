@@ -1,3 +1,4 @@
+import {attachmentContentChanged} from './attachmentChanges';
 import {Directory,File,Paths} from 'expo-file-system';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
@@ -43,6 +44,7 @@ export function removeRootAttachmentContent(owner:string,digest:string){
  const directory=folder(owner,digest),shared=sharedReference(directory);
  if(shared){new File(directory,'shared.json').delete();releaseSharedPayload(owner,shared);}
  else {const content=new File(directory,'content');if(content.exists)content.delete();}
+ attachmentContentChanged();
 }
 export const rootAttachmentPartial=(owner:string,digest:string)=>new File(folder(owner,digest),'partial');
 /** Expiring, attempt-owned directories make a crashed stream reclaimable without
@@ -212,5 +214,5 @@ export async function commitRootAttachmentFile(job:AttachmentJob,current:()=>boo
   digest=bytesToHex(checksum.digest());
  }
  check(current);if(!/^[a-f0-9]{64}$/.test(digest)||digest!==job.descriptor.checksum){if(final.exists)final.delete();throw new AttachmentFileReset('Attachment checksum failed');}
- if(!final.exists)partial.move(final);
+ if(!final.exists)partial.move(final);attachmentContentChanged();
 }

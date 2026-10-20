@@ -1,3 +1,5 @@
+import {attachmentChanged} from './attachmentChanges';
+import {attachmentWorkDelay} from './attachmentSchedule';
 import {publishRootMessageFeedback} from './rootMessageFeedback';
 import {createRootAttachmentStreams,type AttachmentStreams} from './rootAttachmentStreams';
 import {ownChatRevision,subscribeOwnChatWrites} from '../../modules/storage/chatStore';
@@ -24,6 +26,8 @@ type Selection={createdAt?:number;shared?:SharedSelection;id:string;peer:string;
 // Preparation is independent of current connectivity; transport checks capability on reconnect.
 function canShare(peers:string[]){return peers.length>1;}
 let activeTimings:(()=>{startedAt:number;observedAt:number;stages:ReturnType<ReturnType<typeof createAttachmentTiming>['snapshot']>})|null=null;
+let inspectScheduler:(()=>ReturnType<ReturnType<typeof createWorkPump>['snapshot']>)|null=null;
+export const rootAttachmentSchedulerDiagnostics=()=>inspectScheduler?.()??null;
 /** Local aggregate diagnostics; no identities, paths or payloads. */
 export const rootAttachmentTimings=()=>localAccount.status().state==='unlocked'?activeTimings?.()??null:null;
 let activeControls:{cancel(digest:string):Promise<void>;retry(digest:string):Promise<void>}|null=null;
@@ -36,7 +40,7 @@ const selectionListeners=new Set<(owner:string)=>void>();
 const key=(owner:string)=>'@axonic_attachment_selections_v1:'+owner;
 async function selections(owner:string):Promise<Selection[]>{const raw=await AsyncStorage.getItem(key(owner)),rows=raw?JSON.parse(raw):[];
  if(!Array.isArray(rows)||rows.length>64||rows.some(r=>r.createdAt!==undefined&&(!Number.isSafeInteger(r.createdAt)||r.createdAt<0||r.createdAt>8640000000000000)||r.shared!==undefined&&(!/^[a-f0-9]{64}$/.test(r.shared.id)||!Number.isSafeInteger(r.shared.count)||r.shared.count<2||r.shared.count>9||!Number.isSafeInteger(r.shared.slot)||r.shared.slot<0||r.shared.slot>=r.shared.count)||!/^[a-f0-9]{64}$/.test(r.id)||!validAccountId(r.peer)||typeof r.name!=='string'||r.name.length>120||typeof r.mime!=='string'||r.mime.length>100||typeof r.failed!=='boolean'||r.caption!==undefined&&(typeof r.caption!=='string'||new TextEncoder().encode(r.caption).length>1600)||r.reply!==undefined&&!(r.group?validGroupReply(r.reply):validRootReply(r.reply,owner,r.peer))||r.group!==undefined&&!validGroupContext(r.group)))throw Error('Invalid attachment selections');return rows;}
-function changeSelections(owner:string,change:(rows:Selection[])=>void|Promise<void>){const work=selectionsTail.then(async()=>{const rows=await selections(owner);await change(rows);await AsyncStorage.setItem(key(owner),JSON.stringify(rows));for(const listener of selectionListeners)listener(owner);});selectionsTail=work.catch(()=>{});return work;}
+function changeSelections(owner:string,change:(rows:Selection[])=>void|Promise<void>){const work=selectionsTail.then(async()=>{const rows=await selections(owner);await change(rows);await AsyncStorage.setItem(key(owner),JSON.stringify(rows));attachmentChanged();for(const listener of selectionListeners)listener(owner);});selectionsTail=work.catch(()=>{});return work;}
 export async function queueRootAttachmentSource(peer:string,uri:string,name:string,mime='application/octet-stream',expectedOwner?:string,reply?:RootChatReply,caption?:string,diagnosticId?:string){
  const owner=localAccount.status().account;if(!owner||expectedOwner&&owner!==expectedOwner||!validAccountId(peer)||peer===owner)throw Error('Choose a valid peer identity');
  if(reply!==undefined&&!validRootReply(reply,owner,peer))throw Error('Invalid reply');
@@ -225,11 +229,19 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
     if(current()){scannedRevision=cached.revision;scanAfter=Date.now()+30000;}
    }
    if(current())return await worker.tick({maxSteps:32,maxMilliseconds:50});
-  }catch{/* Retain selections and job checkpoints on unavailable storage or a locked account. */}finally{busy=false;}
+  }finally{busy=false;}
  }
- // Progress yields between bursts without adding transfer latency. Quiet or
- // disconnected work backs off to a five-second safety poll, not five polls/s.
- const pump=createWorkPump({run:tick,idleMilliseconds:200,maximumIdleMilliseconds:5000});
+ // Progress yields between bursts. Empty queues sleep; pending work has deadlines.
+ const pump=createWorkPump({run:tick,idleMilliseconds:200,maximumIdleMilliseconds:5000,nextDelay:async()=>{
+  const account=owner();if(!account)return Infinity;
+  const now=Date.now(),jobs=await store.list(account);
+  // Idle stores sleep. Pending jobs retain bounded retries; disconnected jobs
+  // wake on topology changes or their expiry, rather than querying empty routes.
+  let next=attachmentWorkDelay(jobs,now,job=>network.peers().length>0&&allowedJob(job));
+  if((await selections(account)).some(s=>!s.failed))next=Math.min(next,15000);
+  return next;
+ }});
+ inspectScheduler=pump.snapshot;
  const wakeOwner=(account:string)=>{if(account===owner())pump.wake();};
  const offWrites=subscribeOwnChatWrites(wakeOwner);selectionListeners.add(wakeOwner);
  return {wake:pump.wake,receive:(...args:Parameters<typeof worker.receive>)=>timing.measure('serve',async()=>{
@@ -242,6 +254,6 @@ export function startRootAttachmentRuntime(network:{streams?:AttachmentStreams;s
   }
   if(owner()!==account||epoch!==generation)return null;
   const result=await worker.receive(...args);pump.wake();return result;
- }),stop(){if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===controls)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;pump.stop();offWrites();selectionListeners.delete(wakeOwner);unsubscribe();worker.stop();},cancel:controls.cancel};
+ }),stop(){if(inspectScheduler===pump.snapshot)inspectScheduler=null;if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===controls)activeControls=null;stopped=true;snapshots.clear();streams?.stop();mediaExport.stop();epoch++;pump.stop();offWrites();selectionListeners.delete(wakeOwner);unsubscribe();worker.stop();},cancel:controls.cancel};
 }
 

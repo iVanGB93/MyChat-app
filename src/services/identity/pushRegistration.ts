@@ -3,6 +3,7 @@ export function createPushRegistration(d: { current(): boolean; token(): Promise
   let stopped = false, busy = false, next = 0, epoch = 0;
   let retryBindingAt=0;
   return {
+    nextDeadline:()=>stopped||!d.current()?Infinity:Math.max(d.now()+1000,next),
     async tick() {
       if (stopped || busy || !d.current() || d.now() < next) return;
       busy = true; const own = epoch; next = d.now() + 30000;

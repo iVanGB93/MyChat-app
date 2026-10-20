@@ -3,6 +3,63 @@ const {load,fixture,now}=require('./helpers/attachment.cjs'),chat=load('rootChat
 const key=()=>crypto.randomBytes(32).toString('hex');
 const view=load('rootChatActions').rootChatView;
 
+test('completed group controls do not consume pending capacity and remain intact after update/reopen',async()=>{
+ const f=setup(),g=await f.group(),s=JSON.parse(f.raws[0]),sample=s.groupPackets[0];
+ s.groupPackets=Array.from({length:2000},(_,i)=>({...sample,id:i.toString(16).padStart(64,'0'),status:'delivered'}));
+ f.raws[0]=JSON.stringify(s);
+ await f.apis[0].updateGroup(g,key(),'Updated family',f.accounts.slice(1));
+ const after=await f.apis[0].snapshot();
+ assert.deepEqual(after.groupPackets.slice(0,2000),s.groupPackets);
+ assert.equal(after.groups[0].name,'Updated family');
+ assert.equal(after.groupPackets.filter(p=>p.status==='pending').length,2);
+ const reopened=chat.createRootChatLedger({owner:f.accounts[0],current:()=>true,now:()=>now,read:async()=>f.raws[0],write:async raw=>{f.raws[0]=raw;}});
+ assert.deepEqual(await reopened.snapshot(),after);
+});
+test('full pending group queue rejects atomically with precise reason, not membership-size error',async()=>{
+ const f=setup(),g=await f.group(),s=JSON.parse(f.raws[0]),sample=s.groupPackets[0];
+ s.groupPackets=Array.from({length:groups.ROOT_GROUP_MAX_PENDING_PACKETS},(_,i)=>({...sample,id:i.toString(16).padStart(64,'0'),status:'pending'}));
+ f.raws[0]=JSON.stringify(s);const before=f.raws[0];
+ await assert.rejects(f.apis[0].updateGroup(g,key(),'Updated family',f.accounts.slice(1)),/pending-delivery queue is full/);
+ assert.equal(f.raws[0],before);
+});
+test('reconnect recovery reuses identical pending metadata, but resends after delivery',async()=>{
+ const f=setup(),g=await f.group();
+ await f.apis[0].recoverGroupsForPeer(f.accounts[1],key());
+ const first=(await f.apis[0].snapshot()).groupPackets;
+ for(let i=0;i<10;i++)await f.apis[0].recoverGroupsForPeer(f.accounts[1],key());
+ assert.deepEqual((await f.apis[0].snapshot()).groupPackets,first);
+ await f.deliver(0,1);
+ await f.apis[0].recoverGroupsForPeer(f.accounts[1],key());
+ assert.equal((await f.apis[0].snapshot()).groupPackets.length,first.length+1);
+ assert.equal((await f.apis[0].snapshot()).groups[0].id,g);
+});
+test('incoming group control history crosses old 2000 ceiling without losing replay protection',async()=>{
+ const f=setup(),g=await f.group(),s=JSON.parse(f.raws[1]),sample=s.groupSeen[0];
+ s.groupSeen=Array.from({length:2000},(_,i)=>({...sample,id:i.toString(16).padStart(64,'0')}));
+ f.raws[1]=JSON.stringify(s);
+ await f.apis[0].updateGroup(g,key(),'New family',f.accounts.slice(1));
+ const packet=chat.pendingRootChat(await f.apis[0].snapshot(),f.accounts[0]).find(p=>p.peer===f.accounts[1]);
+ assert(await f.apis[1].receive(f.accounts[0],packet.id,packet.raw));
+ assert(await f.apis[1].receive(f.accounts[0],packet.id,packet.raw));
+ const after=await f.apis[1].snapshot();
+ assert.deepEqual(after.groupSeen.slice(0,2000),s.groupSeen);
+ assert.equal(after.groupSeen.length,2001);
+ const changed=JSON.parse(packet.raw);changed[3].name='Forged';
+ assert.equal(await f.apis[1].receive(f.accounts[0],packet.id,JSON.stringify(changed)),false);
+});
+test('identical group operation retries at capacity add nothing; ID conflicts remain rejected',()=>{
+ const f=setup(),owner=f.accounts[0],peer=f.accounts[1],g=key(),id=key();
+ const s={version:1,messages:[],contacts:[]};
+ groups.changeRootGroup(s,owner,g,id,'Family',[peer]);
+ const packet=s.groupPackets[0];
+ s.groupPackets.push(...Array.from({length:groups.ROOT_GROUP_MAX_PENDING_PACKETS-1},(_,i)=>({...packet,id:i.toString(16).padStart(64,'0')})));
+ const before=JSON.stringify(s);
+ groups.changeRootGroup(s,owner,g,id,'Family',[peer]);
+ assert.equal(JSON.stringify(s),before);
+ assert.throws(()=>groups.changeRootGroup(s,owner,g,id,'Other',[peer]),/ID conflict/);
+ assert.equal(JSON.stringify(s),before);
+});
+
 function signedSetup(){
  const seeds=[0,1,2].map(()=>crypto.randomBytes(32)),pub=require('@noble/curves/ed25519.js').ed25519;
  const accounts=seeds.map(s=>load('identityProtocol').accountId(Buffer.from(pub.getPublicKey(s)).toString('hex'))),raws=[null,null,null];

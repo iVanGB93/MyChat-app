@@ -3,6 +3,8 @@ import { createIdentityNetwork } from './identityNetwork';
 import { createNativeAxonConnector, adoptNativeAxonWire, type NativeAxonTransport } from './nativeAxonTransport';
 
 export interface NativeAxonLan extends NativeAxonTransport {
+  axonLanEvents?():boolean;
+  addListener?(event:string,listener:()=>void):{remove():void};
   axonLanStart(account: string): Promise<void>;
   axonLanStop(): void;
   axonLanSnapshot(): { active: boolean; peers: { account: string; host: string; port: number }[] };
@@ -88,10 +90,13 @@ export function createLanIdentityRuntime(d: Dependencies) {
       error = null; void accept(own);
     }).catch(() => {
       if (active === own) { error = 'Connect to Wi-Fi to discover nearby neurons'; retryAt = d.now() + 5000; stopLan(); }
-    }).finally(() => { starting = false; });
+    }).finally(() => { starting = false;d.onWorkChanged?.(); });
   }
   const unsubscribe = d.identity.subscribe(reconcile);
+  const eventDiscovery=d.native.axonLanEvents?.()===true&&!!d.native.addListener;
+  const discoveryListener=eventDiscovery?d.native.addListener!('axonLanChanged',()=>d.onWorkChanged?.()):null;
   return {
+    nextDeadline:()=>disposed?Infinity:Math.min(network.nextDeadline(),retryAt>d.now()?retryAt:Infinity,d.now()+(eventDiscovery?30000:5000)),
     tick() {
       if (disposed) return;
       for (const [account, until] of failedLan) if (until <= d.now()) failedLan.delete(account);
@@ -149,10 +154,11 @@ export function createLanIdentityRuntime(d: Dependencies) {
           ||network.attachmentStreamPeer(account)?.device!==device)return false;
         for(const [peer,wanted] of streamRequests)if(wanted.until<=d.now())streamRequests.delete(peer);
         if(!streamRequests.has(account)&&streamRequests.size>=5)return false;
-        streamRequests.set(account,{device,until:d.now()+30000});return true;
+        streamRequests.set(account,{device,until:d.now()+30000});d.onWorkChanged?.();return true;
       },
       open:(account:string,device:string)=>{if(!rtc)throw Error('RTC unavailable');return rtc.openStream(account,device);},
       listen:(handler:Parameters<NonNullable<typeof rtc>['listenStreams']>[0])=>rtc?.listenStreams(handler)??(()=>{})},
+    subscribeTopology:network.subscribeTopology,eventCallPeers:network.eventCallPeers,
     profilePeers:network.profilePeers,timestampPeers:network.timestampPeers,sharedAttachmentPeers:network.sharedAttachmentPeers,attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
     attachmentBulkPeers:network.attachmentBulkPeers,attachmentBulkRequest:network.attachmentBulkRequest,
     attachmentUploadBatchPeers:network.attachmentUploadBatchPeers,
@@ -171,8 +177,8 @@ export function createLanIdentityRuntime(d: Dependencies) {
     callControlRequest: network.callControlRequest,
     directoryPeers: network.directoryPeers,
     directoryRequest: network.directoryRequest,
-    custodians: network.custodians,
+    custodians: network.custodians,eventCustodians:network.eventCustodians,
     snapshot: () => ({ ...network.snapshot(), rtc: rtc?.snapshot() ?? [], discovering: !!active && !starting, error }),
-    stop() { if (disposed) return; disposed = true; unsubscribe(); rtc?.stop(); network.stop(); stopLan(); failedLan.clear();streamRequests.clear(); },
+    stop() { if (disposed) return; disposed = true; discoveryListener?.remove();unsubscribe(); rtc?.stop(); network.stop(); stopLan(); failedLan.clear();streamRequests.clear(); },
   };
 }

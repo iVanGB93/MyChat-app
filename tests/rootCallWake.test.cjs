@@ -14,6 +14,7 @@ function fixture(){
   withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(db);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const native={displayNotification:async n=>shown.push(n),cancelNotification:async id=>cancelled.push(id)};
  const imports={
+  '../../../modules/axonic-nearby':{default:{notificationCallStyle:async()=>true}},
   '../../modules/storage/chatStore':{ownChatStore:owner=>({read:async()=>storage.get('@axonic_root_chat_v1:'+owner)??null})},
   '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null,setItem:async(k,v)=>storage.set(k,v)}},
   'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'}},
@@ -114,4 +115,12 @@ test('new callers and contacts without a nickname get a generic call label',asyn
   assert.equal(f.shown.length,1,path);assert.equal(f.shown[0].title,'Unknown caller',path);
   assert.ok(!f.shown[0].body.includes(f.sender.account));
  }
+});
+
+test('incoming call notification supplies answer, decline, full-screen routing and call category',async()=>{const f=fixture();await f.init();await f.mod.receiveRootCallWake(f.data);const n=f.shown[0];assert.equal(n.android.category,'call');assert.equal(n.android.fullScreenAction.launchActivity,'default');assert.deepEqual(n.android.actions.map(a=>a.pressAction.id),['root-call-decline','root-call-answer']);assert.equal(n.android.ongoing,true);assert(!n.body.includes('Open Axonic'));});
+test('expired incoming call cannot recreate a ringing notification',async()=>{
+ const f=fixture();await f.init();await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing',expiresAt:Date.now()-1});assert.equal(f.shown.length,0);
+});
+test('direct incoming notification preserves remaining invitation deadline',async()=>{
+ const f=fixture();await f.init();await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing',expiresAt:Date.now()+5000});assert.equal(f.shown.length,1);assert.ok(f.shown[0].android.timeoutAfter<=5000);
 });

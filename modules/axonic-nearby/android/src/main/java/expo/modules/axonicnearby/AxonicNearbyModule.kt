@@ -24,9 +24,10 @@ class AxonicNearbyModule : Module() {
   private var axonLan: AxonLan? = null
   private val foregroundGate = AxonForegroundGate()
   private var backgroundClose: java.util.concurrent.ScheduledFuture<*>? = null
+  private var callSetupUntil = 0L
   private var wakeUntil = 0L
   private val wakeTimer = Executors.newSingleThreadScheduledExecutor()
-  private fun transportAllowed() = foregroundGate.allowed(SystemClock.elapsedRealtime()) || protectedCall() || SystemClock.elapsedRealtime() < wakeUntil
+  private fun transportAllowed() = foregroundGate.allowed(SystemClock.elapsedRealtime()) || protectedCall() || SystemClock.elapsedRealtime() < wakeUntil || SystemClock.elapsedRealtime() < callSetupUntil
   private var connectedCall = false
   private fun protectedCall(): Boolean {
     if (!connectedCall) return false
@@ -49,6 +50,19 @@ class AxonicNearbyModule : Module() {
   }
   override fun definition() = ModuleDefinition {
     Name("AxonicNearby")
+    Events("axonLanChanged")
+    Function("axonLanEvents") { true }
+    // Aggregate process clocks only. Deltas distinguish sleep from elapsed
+    // callbacks; process CPU covers all threads, not one message or recovery.
+    Function("axonClockSnapshot") {
+      mapOf("elapsedMs" to SystemClock.elapsedRealtime().toDouble(),
+        "uptimeMs" to SystemClock.uptimeMillis().toDouble(),
+        "processCpuMs" to android.os.Process.getElapsedCpuTime().toDouble())
+    }
+    AsyncFunction("notificationCallStyle") { id: String, name: String, video: Boolean ->
+      val context = appContext.reactContext ?: throw IllegalStateException("App context unavailable")
+      NotificationCallStyle.install(context, id, name, video)
+    }
     AsyncFunction("notificationReadActionInShade") { id: String ->
       val context = appContext.reactContext ?: throw IllegalStateException("App context unavailable")
       NotificationReadAction.install(context, id)
@@ -69,6 +83,20 @@ class AxonicNearbyModule : Module() {
       Unit
     } }
 
+    // Only the verified live call's remaining invitation window; independent of message wakes.
+    Function("axonCallSetupWindow") { milliseconds: Int -> synchronized(this@AxonicNearbyModule) {
+      require(milliseconds in 0..65000)
+      callSetupUntil = if (milliseconds == 0) 0L else SystemClock.elapsedRealtime() + milliseconds
+      wakeTimer.schedule({ synchronized(this@AxonicNearbyModule) {
+        if (!transportAllowed()) closeBackgroundAxons()
+      } }, milliseconds.toLong(), TimeUnit.MILLISECONDS)
+      Unit
+    } }
+    AsyncFunction("axonCallWait") { milliseconds: Int, promise: Promise ->
+      require(milliseconds in 0..65000)
+      wakeTimer.schedule({ promise.resolve(null) }, milliseconds.toLong(), TimeUnit.MILLISECONDS)
+    }
+
     Function("axonConnectedCall") { enabled: Boolean -> synchronized(this@AxonicNearbyModule) {
       connectedCall = enabled
       if (!transportAllowed()) closeBackgroundAxons()
@@ -77,7 +105,7 @@ class AxonicNearbyModule : Module() {
       val context = requireNotNull(appContext.reactContext)
       check(transportAllowed()) { "Axon transport requires an active app" }
       axonLan?.stop(); axonLan = null; axons.closeLan()
-      val next = AxonLan(context, account, axons)
+      val next = AxonLan(context, account, axons) { context.mainExecutor.execute { runCatching { sendEvent("axonLanChanged", emptyMap<String, Any>()) } } }
       axonLan = next
       try { next.start() } catch (error: Exception) { next.stop(); axonLan = null; throw error }
     } }

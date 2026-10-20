@@ -12,10 +12,10 @@ export function createReceivedMediaExporter(d:{
  link?(digest:string,uri:string):Promise<void>;
  remove?(digest:string,uri:string):Promise<boolean>;
 }){
- let busy=false;
- return {async run(){
+ let busy=false,retry=false;
+ return {nextDelay:()=>retry?15000:Infinity,async run(){
   if(busy||!d.current())return;busy=true;
-  try{
+  try{retry=false;
    if(!d.current())return;
    const rows=await d.read(),state=await d.snapshot();let attempts=0;
    const incoming=new Map<string,RootChatState['messages'][number]>(),removed=new Set<string>();
@@ -44,7 +44,7 @@ export function createReceivedMediaExporter(d:{
     const digest=attachmentDigest(a.manifest);
     if(rows[digest]){await d.link?.(digest,rows[digest].uri);continue;}
     const source=d.source(digest);if(!source)continue;
-    if(attempts++>=10)return saved>0;
+    if(attempts++>=10){retry=true;return saved>0;}
     const kind=a.mime.startsWith('image/')?'image':a.mime.startsWith('video/')?'video':'document';
     const extension:Record<string,string>={'image/jpeg':'jpg','image/png':'png','image/webp':'webp','image/gif':'gif','image/heic':'heic','video/mp4':'mp4','video/quicktime':'mov','audio/mp4':'m4a','audio/ogg':'ogg','audio/mpeg':'mp3'};
     const supplied=a.name.replace(/[\\/:*?"<>|\x00-\x1f\x7f]/g,'_').slice(0,80)||'Attachment';
@@ -56,7 +56,7 @@ export function createReceivedMediaExporter(d:{
      rows[digest]={uri,peer:m.peer,id:m.id};await d.write(rows);
      saved++;
      if(d.current())await d.link?.(digest,uri);
-    }catch{/* Private file remains usable; retry next pass. Native save is idempotent. */}
+    }catch{retry=true;/* Private file remains usable; retry at a bounded deadline. */}
    }
   }finally{busy=false;}
  }};

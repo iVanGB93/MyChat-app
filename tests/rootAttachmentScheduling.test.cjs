@@ -10,6 +10,7 @@ function fixture(mode){
  if(mode==='group')snapshot.groups=[{id:selection.group.id,accepted:true,members:[owner,peer,rows[1].peer]}];
  const worker={enqueue:async(_,direction)=>{if(mode==='save-failure'&&direction==='outgoing')throw Error('Storage unavailable');events.push(direction);},receive:async()=>workerDeps.allowed(peer)?'ready':'rejected',tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
  const deps={
+ './attachmentChanges':{attachmentChanged(){}},
  '../../modules/storage/chatStore':{ownChatRevision:()=>revision,subscribeOwnChatWrites:f=>{writeListener=f;return()=>{};}},
  '../workPump':{createWorkPump:d=>{const out={};new Function('exports','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/workPump.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,f=>{timers.push(f);return f;},f=>{const i=timers.indexOf(f);if(i>=0)timers.splice(i,1);});return out.createWorkPump(d);}},
  './localAccount':{localAccount:{status:()=>({account:owner,state:locked?'locked':'unlocked'}),subscribe:f=>{listener=f;return()=>{};}}},

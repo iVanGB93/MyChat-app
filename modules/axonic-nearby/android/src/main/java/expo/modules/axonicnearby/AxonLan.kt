@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * JavaScript's shared identity protocol must verify them before admitting a neuron.
  * Snapshots/pull accepts avoid an unbounded stream of React Native bridge events.
  */
-internal class AxonLan(private val context: Context, private val account: String, private val sockets: AxonSockets) {
+internal class AxonLan(private val context: Context, private val account: String, private val sockets: AxonSockets, private val changed: () -> Unit = {}) {
   private val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
   private val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
   private val active = AtomicBoolean(false)
@@ -89,7 +89,7 @@ internal class AxonLan(private val context: Context, private val account: String
           resolveNext()
         } }
         override fun onServiceLost(info: NsdServiceInfo) { synchronized(this@AxonLan) {
-          services.remove(info.serviceName); peers.remove(info.serviceName); resolvedAt.remove(info.serviceName)
+          services.remove(info.serviceName); peers.remove(info.serviceName); resolvedAt.remove(info.serviceName); changed()
         } }
       }.also { nsd.discoverServices("_axonic-id._tcp.", NsdManager.PROTOCOL_DNS_SD, wifi, context.mainExecutor, it) }
     } catch (error: Exception) { stop(); throw error }
@@ -123,6 +123,7 @@ internal class AxonLan(private val context: Context, private val account: String
           if (info.attributes["v"]?.toString(Charsets.UTF_8) != "1" || !peer.matches(Regex("axonic:1:[0-9a-f]{64}"))
             || peer == account || host == null || !local(host) || info.port !in 1..65535) return
           peers[name] = mapOf("account" to peer, "host" to host.hostAddress!!, "port" to info.port)
+          changed()
         } } finally { finish() }
       }
     }
@@ -169,6 +170,6 @@ internal class AxonLan(private val context: Context, private val account: String
     registration?.let { runCatching { nsd.unregisterService(it) } }; registration = null
     callback?.let { runCatching { cm.unregisterNetworkCallback(it) } }; callback = null
     runCatching { multicast?.release() }; multicast = null
-    services.clear(); peers.clear(); resolvedAt.clear()
+    services.clear(); peers.clear(); resolvedAt.clear(); changed()
   }
 }

@@ -5,13 +5,19 @@ import {bytesToHex,hexToBytes,utf8ToBytes} from '@noble/hashes/utils.js';
 import type {RootChatState,RootChatMessage} from './rootChatTypes.ts';
 import type {RootGroup,RootGroupContext,RootGroupMembership,RootGroupBackup} from './rootGroupTypes.ts';
 export const ROOT_GROUP_MAX_MEMBERS=10;
+// Pending delivery and retained replay/conflict evidence are different budgets.
+// Preserve existing records; never evict pending work or old receipt evidence.
+export const ROOT_GROUP_MAX_PENDING_PACKETS=4096;
+export const ROOT_GROUP_MAX_CONTROL_HISTORY=20000;
+export const ROOT_GROUP_MAX_CONTROL_BYTES=16*1024*1024;
+export const ROOT_GROUP_MAX_PACKET_BYTES=2048;
 const hex=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
 const bytes=(v:string)=>new TextEncoder().encode(v).length;
 /** The custody outbox keys by delivery ID, so every audience member needs its own stable ID. */
 export const rootGroupDeliveryId=(logical:string,recipient:string,kind='message')=>bytesToHex(sha256(utf8ToBytes(JSON.stringify(['axonic-group-delivery-v1',kind,logical,recipient]))));
 export function validGroupContext(v:unknown):v is RootGroupContext{const g=v as RootGroupContext;return !!g&&Object.keys(g).sort().join(',')==='id,messageId,revision'&&hex(g.id)&&hex(g.messageId)&&Number.isSafeInteger(g.revision)&&g.revision>=1&&g.revision<=1000000;}
 export function validGroupMembership(v:unknown):v is RootGroupMembership{const g=v as RootGroupMembership;return !!g&&hex(g.id)&&validAccountId(g.admin)&&typeof g.name==='string'&&!!g.name.trim()&&bytes(g.name)<=80&&Number.isSafeInteger(g.revision)&&g.revision>=1&&g.revision<=1000000&&Array.isArray(g.members)&&g.members.length>=1&&g.members.length<=ROOT_GROUP_MAX_MEMBERS&&g.members.every(validAccountId)&&new Set(g.members).size===g.members.length&&g.members.includes(g.admin)&&(g.photo===undefined||g.photo===null||hex(g.photo));}
-export function validGroupStorage(s:RootChatState,owner:string){return (s.groups===undefined||Array.isArray(s.groups)&&s.groups.length<=64&&s.groups.every(g=>validGroupMembership(g)&&typeof g.accepted==='boolean'&&typeof g.blocked==='boolean'&&(g.muted===undefined||typeof g.muted==='boolean'))&&new Set(s.groups.map(g=>g.id)).size===s.groups.length)&&(s.groupPackets===undefined||Array.isArray(s.groupPackets)&&s.groupPackets.length<=2000&&s.groupPackets.every(p=>!!p&&hex(p.id)&&validAccountId(p.peer)&&p.peer!==owner&&typeof p.raw==='string'&&bytes(p.raw)<=2048&&['pending','delivered'].includes(p.status)));}
+export function validGroupStorage(s:RootChatState,owner:string){return (s.groups===undefined||Array.isArray(s.groups)&&s.groups.length<=64&&s.groups.every(g=>validGroupMembership(g)&&typeof g.accepted==='boolean'&&typeof g.blocked==='boolean'&&(g.muted===undefined||typeof g.muted==='boolean'))&&new Set(s.groups.map(g=>g.id)).size===s.groups.length)&&(s.groupPackets===undefined||Array.isArray(s.groupPackets)&&s.groupPackets.length<=ROOT_GROUP_MAX_CONTROL_HISTORY&&s.groupPackets.every(p=>!!p&&hex(p.id)&&validAccountId(p.peer)&&p.peer!==owner&&typeof p.raw==='string'&&bytes(p.raw)<=ROOT_GROUP_MAX_PACKET_BYTES&&['pending','delivered'].includes(p.status)));}
 const membership=(g:RootGroup):RootGroupMembership=>({id:g.id,admin:g.admin,name:g.name,revision:g.revision,members:[...g.members],...(g.photo!==undefined?{photo:g.photo}:{})});
 const same=(a:RootGroupMembership,b:RootGroupMembership)=>JSON.stringify(membership(a as RootGroup))===JSON.stringify(membership(b as RootGroup));
 const backupBody=(g:RootGroupMembership)=>utf8ToBytes(JSON.stringify(['axonic-group-backup-v1',g.id,g.admin,g.name,g.revision,g.members,g.photo??null]));
@@ -49,9 +55,23 @@ export function recoverRootGroupsForPeer(s:RootChatState,owner:string,peer:strin
 }
 function queue(s:RootChatState,owner:string,id:string,recipients:string[],tag:string,body:unknown){
  const packets=recipients.filter(p=>p!==owner).map(peer=>{const deliveryId=rootGroupDeliveryId(id,peer,tag);return {peer,id:deliveryId,raw:JSON.stringify([tag,peer,deliveryId,body]),status:'pending' as const};});
- if(!hex(id)||packets.some(p=>bytes(p.raw)>2048)||(s.groupPackets?.length??0)+packets.length>2000)throw Error('Group outbox is full or membership is too large');
+ if(!hex(id))throw Error('Invalid group operation ID');
+ if(packets.some(p=>bytes(p.raw)>ROOT_GROUP_MAX_PACKET_BYTES))throw Error('Group membership packet exceeds the supported byte limit');
  for(const p of packets){const old=s.groupPackets?.find(v=>v.id===p.id&&v.peer===p.peer);if(old&&old.raw!==p.raw||s.messages.some(m=>m.id===p.id&&m.peer===p.peer&&m.direction==='outgoing')||s.actions?.some(a=>a.id===p.id&&a.peer===p.peer&&a.direction==='outgoing'))throw Error('Group packet ID conflict');}
- for(const p of packets)if(!s.groupPackets?.some(v=>v.id===p.id&&v.peer===p.peer))(s.groupPackets??=[]).push(p);
+ const rows=s.groupPackets??[],fresh=packets.filter(p=>!rows.some(v=>v.id===p.id&&v.peer===p.peer));
+ // Recovery offers carry immutable metadata, not user actions. Reuse outstanding
+ // identical work on reconnect, but resend after delivery (a peer may have restored).
+ const recoveryTags=new Set(['axonic-group-backup-v1','axonic-group-recover-v1','axonic-group-recovery-offer-v1','axonic-group-members-v1']);
+ const bodyText=JSON.stringify(body);
+ const additions=fresh.filter(p=>!recoveryTags.has(tag)||!rows.some(v=>{
+  if(v.peer!==p.peer||v.status!=='pending')return false;
+  try{const a=JSON.parse(v.raw);return a[0]===tag&&JSON.stringify(a[3])===bodyText;}catch{return false;}
+ }));
+ if(!additions.length)return;
+ if(rows.filter(p=>p.status==='pending').length+additions.length>ROOT_GROUP_MAX_PENDING_PACKETS)throw Error('Group pending-delivery queue is full; existing work is preserved');
+ if(rows.length+additions.length>ROOT_GROUP_MAX_CONTROL_HISTORY)throw Error('Group control history capacity reached; existing history is preserved');
+ if([...rows,...additions].reduce((n,p)=>n+bytes(p.raw),0)>ROOT_GROUP_MAX_CONTROL_BYTES)throw Error('Group control history byte capacity reached; existing history is preserved');
+ (s.groupPackets??=[]).push(...additions);
 }
 export function changeRootGroup(s:RootChatState,owner:string,id:string,packetId:string,name:string,members:string[],photo?:string|null){
  const old=s.groups?.find(g=>g.id===id);if(old?.recoveryPending)throw Error('Confirm recovered group details first');if(old&&old.admin!==owner)throw Error('Only the group creator can change membership');

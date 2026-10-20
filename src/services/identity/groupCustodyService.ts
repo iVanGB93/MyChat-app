@@ -32,12 +32,23 @@ export function validateGroupCustodyRows(rows:GroupCustodyRow[]){
   }
  }
 }
-export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStore;records:IdentityRecordStore;now():number;current():boolean;stored?(grant:CustodyEnvelope):Promise<void>}){
+export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStore;records:IdentityRecordStore;now():number;current():boolean;stored?(grant:CustodyEnvelope):Promise<void>;
+ receiveOwn?(grant:CustodyEnvelope,payload:GroupCustodyPayload,relay:string):Promise<CustodyReceipt|null>;
+ changed?(peer:string):void;
+}){
  let queued=0,replicating=false,nextReplica=0;
  const reply=(status:string,extra:object={})=>JSON.stringify({status,...extra});
  const sweep=(rows:GroupCustodyRow[])=>{for(let i=rows.length-1;i>=0;i--)if(rows[i].expires<=d.now()||rows[i].accepted&&rows[i].recipients.every(v=>v.consumed)||!rows[i].accepted&&rows[i].stagedUntil<=d.now())rows.splice(i,1);};
  async function handle(peer:string,raw:string){
   const q=JSON.parse(raw);let payload:GroupCustodyPayload|undefined,packet:CustodyEnvelope|CustodyReceipt|undefined;
+  if(q.operation==='group-deliver'){
+   const grant=parseCustody(JSON.stringify(q.packet),d.now());
+   if(!grant||grant.kind!=='envelope'||grant.recipient!==d.owner||!d.receiveOwn
+    ||!await verifyGroupCustodyPayload(q.payload,d.records,d.now())||!matchesGroupGrant(q.payload,grant)
+    ||!await verifyCustody(grant,d.records,d.now())||!d.current())return reply('rejected');
+   const receipt=await d.receiveOwn(grant,q.payload,peer);
+   return receipt&&d.current()?reply('delivered',{packet:receipt}):reply('rejected');
+  }
   if(q.operation==='group-begin'){
    if(!validGroupCustodyPayload(q.payload,d.now()))return reply('rejected');
    // A replica may not yet know the original sender. Admit its root-signed
@@ -52,7 +63,7 @@ export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStor
   }else if(q.operation==='group-grant'||q.operation==='group-receipt'){
    const p=parseCustody(JSON.stringify(q.packet),d.now());if(!p||p.kind!==(q.operation==='group-grant'?'envelope':'receipt')||p.kind==='receipt'&&p.recipient!==peer||!await verifyCustody(p,d.records,d.now())||!d.current())return reply('rejected');packet=p;
   }
-  const wakes:CustodyEnvelope[]=[];
+  const wakes:CustodyEnvelope[]=[],changed=new Set<string>();
   const result=await d.store.transaction(rows=>{
    validateGroupCustodyRows(rows);sweep(rows);if(!d.current())return reply('rejected');
    if(payload){
@@ -83,11 +94,11 @@ export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStor
     // manufacture missing grants; all recipients must have validated proofs.
     if(row.digest!==q.digest)return reply('rejected');if(row.accepted)return reply('held');
     if(row.recipients.some(v=>!v.grant))return reply('incomplete');row.accepted=true;
-    for(const v of row.recipients)wakes.push(v.grant!);return reply('held');
+    for(const v of row.recipients){wakes.push(v.grant!);changed.add(v.recipient);}return reply('held');
    }
    if(q.operation==='group-receipt'&&packet?.kind==='receipt'&&row.accepted){
     const v=row.recipients.find(v=>v.id===packet!.id);if(!v||packet.expires!==row.expires||packet.digest!==v.digest||packet.recipient!==v.recipient||packet.recipientDevice!==v.recipientDevice)return reply('rejected');
-    if(!v.consumed){v.receipt=packet;}
+    if(!v.consumed){if(!v.receipt)changed.add(row.sender);v.receipt=packet;}
     if(row.recipients.every(v=>v.receipt||v.consumed)){row.payload=null;for(const recipient of row.recipients)recipient.grant=null;}
     return reply('accepted');
    }
@@ -96,9 +107,22 @@ export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStor
   });
   // Never notify or report held before the transaction successfully commits.
   if(d.current())for(const grant of wakes)void Promise.resolve().then(()=>d.stored?.(grant)).catch(()=>{});
+  if(d.current())for(const peer of changed)try{d.changed?.(peer);}catch{/* Retain committed work. */}
   return result;
  }
  return {async receive(peer:string,raw:string){if(!d.current()||!validAccountId(peer)||peer===d.owner||typeof raw!=='string'||raw.length>16000||queued>=4)return reply('rejected');queued++;try{return await handle(peer,raw);}catch{return reply('rejected');}finally{queued--;}},
+ async payloadFor(grant:CustodyEnvelope){
+  return d.store.transaction(rows=>{validateGroupCustodyRows(rows);return structuredClone(rows.find(r=>r.accepted&&r.expires>d.now()&&r.sender===grant.sender&&r.recipients.some(v=>v.id===grant.id&&v.digest===custodyDigest(grant)))?.payload??null);});
+ },
+ async deliverDirect(grant:CustodyEnvelope,request:(peer:string,raw:string)=>Promise<string|null>){
+  try{
+   const row=await d.store.transaction(rows=>{validateGroupCustodyRows(rows);return structuredClone(rows.find(r=>r.accepted&&r.sender===grant.sender&&r.payload&&r.recipients.some(v=>v.id===grant.id&&v.grant&&!v.receipt&&!v.consumed))??null);});
+   if(!row||!d.current()||row.expires<=d.now())return false;
+   const response=JSON.parse(await request(grant.recipient,JSON.stringify({operation:'group-deliver',packet:grant,payload:row.payload}))??'{}');
+   if(response.status!=='delivered'||response.packet?.id!==grant.id||response.packet?.digest!==custodyDigest(grant))return false;
+   return JSON.parse(await handle(grant.recipient,JSON.stringify({operation:'group-receipt',id:row.id,packet:response.packet}))).status==='accepted';
+  }catch{return false;}
+ },
  async replicate(peers:string[],request:(peer:string,raw:string)=>Promise<string|null>){
   if(replicating||!d.current()||d.now()<nextReplica)return;replicating=true;nextReplica=d.now()+30000;
   try{

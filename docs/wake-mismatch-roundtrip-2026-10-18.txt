@@ -1,0 +1,69 @@
+Wake mismatch continuation — 2026-10-18
+
+Scope
+Read-only authenticated AoN status checks and isolated Axonic Dev tests on both
+phones. Preserved prior uncommitted work. No deploy, commit/push, install, build,
+normal-app operation, queue reset, history deletion or test message sent.
+
+New evidence
+- Final check at 15:42:00 UTC (11:42 EDT): First/Second still had zero new
+  gateway rejections, with process uptimes 686 and 475 seconds respectively.
+  Third's next check at 15:42:02 UTC showed another fresh process (one second
+  uptime), confirming its observations are not one continuous monitoring window.
+- At 15:40:47 UTC (11:40:47 EDT), First/Second still had no verification
+  rejections or trace rows in their post-deployment processes. Neither had
+  local invalid-signature/missing-silence outcomes in its forwarding scheduler.
+- Each gateway had one tracked wake item backing off. New gateway retries were
+  no_authorized_destination, not signature mismatch. This does not identify a
+  stale build or prove a message is undelivered. Existing exponential backoff
+  was active; no manual retry, invented push registration or flag repair used.
+- Third exposed the same runtime release, zero forwarding attempts and only
+  one scheduler check. A subsequent systemd read showed a fresh service start
+  at 11:41:08 EDT, NRestarts=0. Its short-lived observation must NOT be used as
+  evidence of a long rejection-free interval. WSL also reports an existing
+  /etc/wsl.conf line-6 syntax warning. No WSL configuration was changed here.
+- At 15:40:32 UTC, live Dev counters showed no local mismatch or rejected wake.
+  A: 12 private and 4 group items had gateway acceptance; B: 7 private items.
+  No pending wake sample remained. These are normal-runtime observations, not
+  test-generated sends or proof of message/device delivery. The network epochs
+  began around 15:35:28 UTC, so they cannot clear the historical incident.
+
+Fix implemented
+The mobile report previously discarded scheduler.pendingSample. A cumulative
+mismatch counter alone could not say when the failure occurred or whether a
+retained item was still retrying. Reports now include at most eight private and
+eight group observations: request count, fixed last-outcome code, last-observed
+timestamp and next-retry eligibility timestamp (or null for no eligible gateway).
+Projection drops all IDs, content, secrets and arbitrary reason text; malformed
+numbers/rows cannot bypass the allowlist. No stable aliases or cross-report row
+correlation are claimed. 'validation' is a nonspecific scheduler state, not proof
+of successful validation. Retry time is eligibility, not a delivery promise.
+This uses existing observations; no new polling, background work or storage.
+
+Protocol investigation / validation
+- Current private parsing/storage and group grant serialization preserve the
+  wake flag and exact signed event bytes. Unit tests cover private SQLite
+  roundtrip/factory reopen, worker restart, inline-to-hint fallback and group
+  commit/reload/poll/wake-view roundtrip for both alert and silent messages.
+- Each Dev phone passed 53 isolated checks using its loaded Hermes modules:
+  legitimate signatures; flag/signature tampering rejection; inline/hint binding;
+  three serialization hops; legacy-gateway fallback; group grant wake projection;
+  bounded/redacted pending-report projection. Gateway responses are in-memory
+  fixtures, not live FCM, actual remote endpoints or a real delivery benchmark.
+  No live keys, messages, SQLite writes, notifications or network sends in tests.
+- Full npm run check: 1,362 passed, 3 optional tests skipped, zero failed;
+  TypeScript, dependency cycles, module boundaries and consolidation passed.
+- Final Dev preservation: same identities, all baseline message keys retained
+  (408 and 163), and zero unfinished WorkManager jobs on either Dev phone.
+- Evidence: builds/wake-binding-dev-1792338004245.json,
+  builds/wake-roundtrip-check.log, builds/dev-wake-summary-*.json,
+  builds/dev-wake-followup-final-*.json, builds/*-wake-followup-*.json.
+
+Limits and release boundary
+The original recurring silent_flag_binding_mismatch sender remains UNCONFIRMED.
+No new trace establishes its role/build, and current roundtrip tests do not
+reproduce it. The protocol implementation skill guided rejection/binding checks;
+no verification relaxation, alternate-flag acceptance, automatic metadata repair
+or receipt inference was introduced. AoNs remain on 367537e / 22153b67eb63.
+The only new application behavior this continuation changes is report output.
+It is available in Dev/source, not the normal apps or an existing production AAB.

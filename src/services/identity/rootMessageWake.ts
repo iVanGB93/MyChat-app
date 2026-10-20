@@ -1,3 +1,4 @@
+import {verifyGroupCustodyPayload,matchesGroupGrant,type GroupCustodyPayload} from './groupCustodyProtocol';
 import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
 import {diagnosticJournal} from '../diagnosticJournal';
 import {createMessageNotificationDeadline} from './messageNotificationDeadline';
@@ -29,10 +30,6 @@ async function muted(owner:string,sender:string,group?:string){
  const state=JSON.parse(raw);if(state.version!==1||!Array.isArray(state.contacts))throw Error('Contact policy unavailable');
  return !!group&&state.groups?.some((g:{id:string;muted?:boolean})=>g.id===group&&g.muted===true)||state.contacts.some((c:{account:string;muted?:boolean})=>c.account===sender&&c.muted===true);
 }
-async function unresolvedMutedGroup(owner:string,sender:string){
- const raw=await ownChatStore(owner).read();if(!raw)return false;
- const state=JSON.parse(raw);return Array.isArray(state.groups)&&state.groups.some((g:{muted?:boolean;members?:string[]})=>g.muted===true&&g.members?.includes(sender));
-}
 async function messageChannel(sound:boolean){
  // Android channel sound is immutable. The old channel was created without one.
  // Retain an explicit OS block instead of bypassing it with the corrected channel.
@@ -43,12 +40,7 @@ async function messageChannel(sound:boolean){
   ...(sound?{sound:old?.soundURI||'default'}:{}),vibration:sound});
  return id;
 }
-async function alreadyReceived(owner:string,sender:string,id:string){
- const raw=await ownChatStore(owner).read();if(!raw)return false;
- const ledger=JSON.parse(raw);if(ledger.version!==1||!Array.isArray(ledger.messages))throw Error('Chat state unavailable');
- return [...ledger.messages,...(ledger.actions??[]),...(ledger.groupActions??[]),...(ledger.removedMessages??[])] .some((m:{id:string;peer:string;direction:string})=>m.id===id&&m.peer===sender&&m.direction==='incoming')||(ledger.groupSeen??[]).some((m:{id:string;peer:string})=>m.id===id&&m.peer===sender);
-}
-/** A stalled account/network startup must not withhold an already authenticated alert. */
+/** Give bounded recovery time without manufacturing an alert from routing metadata. */
 async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>number){
  // React Native frame timers may stop with the display off. Native completions
  // still reach the headless task while its FCM execution window is active.
@@ -67,7 +59,7 @@ async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>numbe
  finally{finished=true;if(timer!==undefined)clearTimeout(timer);}
 }
 /** Signed hint with optional ciphertext. Plaintext remains unavailable until local unlock. */
-export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope)=>Promise<void>,recoverSender?:ReturnType<typeof createWakeSenderRecovery>){
+export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>Promise<void>,recoverSender?:ReturnType<typeof createWakeSenderRecovery>){
  setStage('context');
  const reject=(reason:string)=>{setStage(reason);diagnosticJournal.record('wake_failed',{reason});};
  const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048){reject('invalid-payload');return;}
@@ -85,7 +77,12 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||await rootWakeBlocked(owner.account,sender)){reject('context-changed');return;}
  const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event){reject('signature-or-record-invalid');return;}setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified');
  const deadline=createMessageNotificationDeadline();
- const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,custodyWakeEnvelope(data,event,Date.now())??undefined)).then(()=>{},()=>{setStage('recovery-failed');});
+ const hint=(data as {custodian?:unknown})?.custodian;
+ const custodian=typeof hint==='string'&&validAccountId(hint)?hint:undefined;
+ let envelope=custodyWakeEnvelope(data,event,Date.now())??undefined,payload:GroupCustodyPayload|undefined;
+ const rawPayload=(data as {payload?:unknown}).payload;
+ if(rawPayload!==undefined){try{const parsed=typeof rawPayload==='string'&&rawPayload.length<=3500?JSON.parse(rawPayload):null;if(envelope&&await verifyGroupCustodyPayload(parsed,records,Date.now())&&matchesGroupGrant(parsed,envelope))payload=parsed;else envelope=undefined;}catch{envelope=undefined;}}
+ const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,envelope,custodian,payload)).then(()=>{},()=>{setStage('recovery-failed');});
  // Three seconds without new progress, capped at ten seconds overall. A preview
  // publishes independently; retries and repeated milestones cannot extend this.
  await waitForRecovery(recovery,10000,deadline.remaining);
@@ -97,55 +94,15 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
    await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner.account,sender,event.id,event.expires);
    await cancelRootMessageNotification(owner.account,sender,event.id);setStage('silent-control');return;
   }
-  let admitted=false,previouslyAlerted=false;
-  await database.withExclusiveTransactionAsync(async tx=>{
-   await tx.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
-   const prior=await tx.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
-   if(prior?.displayed){previouslyAlerted=prior.displayed===1;setStage('already-notified');return;}
-   if(!prior){
-    await tx.runAsync('INSERT INTO notices(owner,sender,id,expires) VALUES(?,?,?,?)',owner.account,sender,event.id,event.expires);}
-   admitted=true;
-  });
-  if(!admitted){
-   // A repeated relay hint may outlive its inbox delivery. Retire only the
-   // matching generic alert; never erase a decrypted preview or a newer hint.
-   if(previouslyAlerted&&await alreadyReceived(owner.account,sender,event.id)){
-    const current=await currentRootMessageNotification(owner.account,sender);
-    if(!current?.data?.messagePreviews)await cancelRootMessageNotification(owner.account,sender,event.id);
-   }
-   return;
-  }
-  const id=rootMessageNotificationId(owner.account,sender);
-  const suppress=await alreadyReceived(owner.account,sender,event.id)||await rootWakeBlocked(owner.account,sender)||await muted(owner.account,sender);
-  if(suppress||AppState.currentState==='active'){
-   setStage(suppress?'policy-or-received':'foreground');
-   await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
-   if(suppress)await cancelRootMessageNotification(owner.account,sender,event.id);return;
-  }
-  const latest=await rootWakeContext();if(latest?.account!==owner.account||latest.device!==owner.device||event.expires<=Date.now())return;
-  const preferences=await readRootNotificationPreferences(owner.account);if(!preferences.messages)return;
-  // Until decryption identifies the conversation, do not ring for a possibly muted group.
-  // Keep the hint pending: verified direct-message previews still notify normally.
-  if(await unresolvedMutedGroup(owner.account,sender))return;
-  const channelId=await messageChannel(preferences.sound);
-  // A metadata-only hint must not replace an already decrypted preview.
-  if(await currentRootMessageNotification(owner.account,sender)){
-   await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);return;
-  }
-  // Delivery can finish while Android creates/reads the notification channel.
-  if(await alreadyReceived(owner.account,sender,event.id)||await rootWakeBlocked(owner.account,sender)||String(AppState.currentState)==='active'){
-   await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);return;
-  }
-  setStage('generic');
-  deliveryDiagnosticEvent(owner.account,sender,event.id,'notification_requested');
-  await notifee.displayNotification({id,title:'Axonic',body:'You may have new messages. Open Axonic to check.',
-   data:{type:'root_neuron_message',account:owner.account,sender,messageId:event.id},
-   android:{channelId,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
-    pressAction:{id:'root-message-open',launchActivity:'default'},timeoutAfter:Math.max(1,event.expires-Date.now())}});
-  if(localAccount.status().state==='unlocked'&&localAccount.status().account===owner.account)diagnosticJournal.record('notification_fallback_posted');
-  await database.runAsync('UPDATE notices SET displayed=1 WHERE owner=? AND sender=? AND id=?',owner.account,sender,event.id);
+  // A verified routing hint is not proof of a new user-visible message.
+  // Only finishRootMessageWake may notify, after durable decrypted admission.
+  // Retire legacy generic alerts without touching a real preview or consuming
+  // this delivery: a later successful recovery must still be able to notify.
+  const notice=await currentRootMessageNotification(owner.account,sender);
+  if(notice&&!notice.data?.messagePreviews)await cancelRootMessageNotification(owner.account,sender,event.id);
+  setStage('awaiting-verified-message');
  });
- // Keep the headless task alive for bounded recovery after the alert is visible.
+ // Keep the headless task alive for bounded recovery; hints remain silent.
  await waitForRecovery(recovery,25000);
 }
 /** Invoked only after durable inbox admission, including direct delivery racing a delayed hint. */
