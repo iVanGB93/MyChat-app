@@ -30,6 +30,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
   signMedia(input: MediaInput): string; contexts(): CallMediaContext[];
   sendMedia(account: string, device: string, raw: string): Promise<boolean>;
   loadIceConfig?: CallMediaTransport['loadIceConfig'];
+  acquirePeer?(account:string,device:string,id:string,current:()=>boolean):Promise<import('./sharedRtcCall.ts').SharedRtcCallLease>;
   callRoute?(account:string,device:string): {expiresAt:number}|null;
   sendRoutedMedia?(raw:string):Promise<boolean>;
   changed(view: NeuronCallView<Peer> | null): void;
@@ -101,6 +102,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
         else throw Error('Media receiver not ready');
       }});
     const transport:CallMediaTransport={
+      ...(d.acquirePeer?{acquirePeer:()=>d.acquirePeer!(context.peer.account,context.peer.device,e.callId,usable)}:{}),
       loadIceConfig:d.loadIceConfig??(async()=>({ice_servers:[{urls:['stun:stun.l.google.com:19302','stun:stun1.l.google.com:19302']}],ice_transport_policy:'all'})),
       subscribe(fn){if(listener)throw Error('Media already mounted');listener=fn;
         if(usable())for(const signal of buffered.splice(0))fn(signal.kind,signal.data as unknown as Record<string,unknown>);

@@ -84,7 +84,8 @@ function patchPeer(source, name) {
     const spec=edits[name]; if(!spec)throw Error('Unknown native source');
     const exclusion=require('./patch-webrtc-screen-exclusion.cjs');
     const hasExclusion=name==='WebRTCModule.java'&&source.includes('// Axonic: screen control exclusion.');
-    const clean=source.replace(/\r\n/g,'\n');
+    const shared=require('./patch-webrtc-shared-call.cjs');
+    const clean=shared.strip(source.replace(/\r\n/g,'\n'),name);
     const normalized=stream.strip(hasExclusion?exclusion.stripModuleExclusion(clean):clean,name);let original=normalized;
     for(const [old,next] of [...spec.changes].reverse())original=original.split(next).join(old);
     if(crypto.createHash('sha256').update(original).digest('hex')!==spec.hash)throw Error('Unexpected WebRTC peer source: '+name);
@@ -92,7 +93,7 @@ function patchPeer(source, name) {
     let previous=original;const supported=[original,expected];
     for(let i=0;i<spec.changes.length;i++){const [old,next]=spec.changes[i];previous=previous.split(old).join(next);if((name==='PeerConnectionObserver.java'&&[2,4].includes(i))||(name==='WebRTCModule.java'&&i===1))supported.push(previous);}
     if(!supported.includes(normalized))throw Error('Partial native peer guard patch');
-    const result=stream.apply(expected,name);
+    const result=shared.apply(stream.apply(expected,name),name);
     return hasExclusion?exclusion.patchExclusion(result,'module','124.0.7'):result;
 }
 if (require.main === module) {

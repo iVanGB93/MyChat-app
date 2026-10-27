@@ -30,5 +30,5 @@ test('export snapshots cannot mutate retained observations and restarted capture
  const d=out.createDeliveryDiagnostics();d.start();d.observe('secret','stored','outgoing');d.snapshot().events[0].event='read';assert.equal(d.snapshot().events[0].event,'stored');d.start();assert.equal(d.snapshot().events.length,0);
 });
 test('individual message info uses the shared four-state resolver, not the raw transport flag',()=>{
- const source=fs.readFileSync('src/navigation/RootAccountNavigator.tsx','utf8').split('function MessageInfo(')[1].split('\nfunction ')[0];assert(source.includes('deliveryStatusLabel(rootMessageStatus(message,now))'));assert(source.includes('messageInfoDescription(message,now)'));assert(source.includes('useMessageStateClock(tracked)'));assert(!source.includes("message.status==='delivered'?'Delivered':'Pending'"));
+ const source=fs.readFileSync('src/screens/chat/RootMessageInfoScreen.tsx','utf8').split('function MessageInfo(')[1].split('\nfunction ')[0];assert(source.includes('deliveryStatusLabel(rootMessageStatus(message,now))'));assert(source.includes('messageInfoDescription(message,now)'));assert(source.includes('useMessageStateClock(tracked)'));assert(!source.includes("message.status==='delivered'?'Delivered':'Pending'"));
 });

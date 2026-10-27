@@ -62,7 +62,7 @@ export function createCustodyCourier(d: {
         if(!l.current())return;
         // A connected socket can still time out or fail to service custody.
         // Back off that peer so it cannot starve the next available custodian.
-        let response: { status?: string } | null = null;
+        let response: { status?: string; retryAfterMs?: number } | null = null;
         try { response = await request(relay, { operation: 'deposit', packet: saved.envelope }); }
         catch { /* Treat transport failure like an unanswered request. */ }
         if (l.current() && response?.status === 'held') {
@@ -75,7 +75,11 @@ export function createCustodyCourier(d: {
           // Quotas/rejections can belong to one recipient. Do not make that
           // recipient's failed deposit disable this relay for unrelated chats.
           if (unavailable.size >= 256) unavailable.delete(unavailable.keys().next().value!);
-          unavailable.set(relay+':'+peer, d.now() + CUSTODIAN_BACKOFF_MS);
+          // A bounded busy/retry response is not evidence of a failed relay.
+          const delay=response?.status==='retry'
+            ? Number.isFinite(response.retryAfterMs)?Math.min(60000,Math.max(1000,response.retryAfterMs!)):5000
+            : CUSTODIAN_BACKOFF_MS;
+          unavailable.set(relay+':'+peer, d.now() + delay);
         }
         }
       } finally { depositing.delete(peer); }
@@ -164,7 +168,9 @@ export function createCustodyCourier(d: {
         finally { passSchedule.finish({...outcome,settled:drained.has(relay)}); }
       }));
     },
-    resume(peer?:string) { drained.clear();acknowledged.clear();polls.resume(peer); },
+    // A new wake invalidates the drain observation, not a receipt already
+    // accepted in this account epoch. Clearing receipts strands overlapping wakes.
+    resume(peer?:string) { drained.clear();polls.resume(peer); },
     invalidate() { epoch++; acknowledged.clear();drained.clear();unavailable.clear(); skips.clear(); deferred.clear();polls.resume(); },
     stop() { stopped = true; epoch++; acknowledged.clear();drained.clear();skips.clear(); deferred.clear(); },
   };

@@ -1,5 +1,9 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),{DatabaseSync}=require('node:sqlite');
-const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer}=load('attachmentTransfer');
+const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer:makeTransfer}=load('attachmentTransfer');
+function createAttachmentTransfer(d){
+ const {store,readChunk,readChunks,writeChunk,writeChunks,commitFile,peers,request,sharedPeers,bulkPeers,blockStreamPeers,uploadBatchPeers,batchChunks,batchWindow,bulkRequest,directStream,serveStream,...policy}=d;
+ return makeTransfer({...policy,storage:{jobs:store,files:{readChunk,readChunks,writeChunk,writeChunks,commitFile}},connections:{peers,request,sharedPeers,bulkPeers:bulkPeers??peers,blockStreamPeers:blockStreamPeers??peers,uploadBatchPeers:uploadBatchPeers??peers,batchChunks,batchWindow:batchWindow??(()=>d.downloadWindow?Math.min(2,d.downloadWindow):1),bulkRequest:bulkRequest??request,directStream,serveStream}});
+}
 function directContext(t,overrides={}){
  const f=context(t),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
  const peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
@@ -7,6 +11,19 @@ function directContext(t,overrides={}){
   request:(_p,raw)=>sender.receive(raw,peer),...overrides(f,base)});
  return {...f,sender,receiver,begin:async()=>{await sender.enqueue(f.descriptor,'outgoing');await receiver.enqueue(f.descriptor,'incoming');}};
 }
+
+test('stale direct peer is not probed again before each relay block or receipt lookup',async t=>{
+ const f=context(t,3_000_001),base=f.deps(0);let probes=0;
+ const sender=createAttachmentTransfer({...base,peers:()=>[f.manifest.recipient,...base.peers()],request:async(peer,raw)=>{
+  if(JSON.parse(raw).operation==='direct-status'){probes++;return null;}
+  return base.request(peer,raw);
+ }});
+ await sender.enqueue(f.descriptor,'outgoing');await sender.tick();
+ const before=probes;assert.equal((await f.job(0)).phase,'uploading');
+ await sender.tick();await sender.tick();assert.equal((await f.job(0)).phase,'confirming');
+ await sender.tick();assert.equal(probes,before);assert.equal(f.rows[0].received,2);
+ assert.equal((await f.job(0)).receipt,null,'custody alone is never delivery');
+});
 test('direct stream uses normal file verification and signed delivery receipt',async t=>{
  const events=[];const f=directContext(t,(f,base)=>({directStream:async(job,live)=>{
   assert(await live());assert.equal(job.descriptor.checksum,f.descriptor.checksum);
@@ -18,6 +35,27 @@ test('direct stream uses normal file verification and signed delivery receipt',a
  assert.deepEqual((await f.job(1)).delivery,{version:1,scope:'payload',method:'peer',relays:[],at:now,partial:false});
  assert.equal((await f.job(0)).delivery.scope,'receipt');assert.equal((await f.job(0)).delivery.method,'peer');
 });
+test('DTLS sender does not need encrypted relay block capabilities',async t=>{
+ let attempts=0,bulk=0;
+ const f=directContext(t,(f)=>({blockStreamPeers:()=>[],bulkPeers:()=>[],sharedPeers:()=>[],
+  bulkRequest:async()=>{bulk++;throw Error('No relay block capability');},
+  directStream:async(job,live)=>{assert(await live());attempts++;f.written.push(f.plain.slice());return true;}}));
+ await f.begin();await f.receiver.tick();await f.receiver.tick();
+ assert.equal(attempts,1);assert.equal(bulk,0);assert.equal((await f.job(1)).phase,'complete');
+ assert((await f.job(0)).receipt);
+});
+
+test('unavailable DTLS-only sender cannot receive plaintext through block fallback',async t=>{
+ let attempts=0,bulk=0;
+ const f=directContext(t,()=>({blockStreamPeers:()=>[],bulkPeers:()=>[],
+  bulkRequest:async()=>{bulk++;throw Error('Unexpected fallback');},
+  directStream:async()=>{attempts++;return 'unavailable';}}));
+ await f.begin();for(let n=0;n<4;n++)await f.receiver.tick();
+ assert.equal(attempts,1);assert.equal(bulk,0);assert.equal((await f.job(1)).cursor,0);
+ assert.equal((await f.job(1)).receipt,null);
+ f.advance(1001);await f.receiver.tick();assert.equal(attempts,2);
+});
+
 for(const failure of ['unavailable','disconnect'])test(`direct stream ${failure} falls back to encrypted chunks`,async t=>{
  let attempts=0;const f=directContext(t,()=>({directStream:async()=>{attempts++;if(failure==='disconnect')throw Error('lost channel');return false;}}));
  await f.begin();for(let n=0;n<8;n++)await f.receiver.tick();
@@ -108,7 +146,7 @@ test('older attachment adapters reject stream requests without changing the job'
 });
 test('a newly connected sender can stream a partially downloaded attachment',async t=>{
  let receivedCursor=-1;const f=directContext(t,(f)=>({directStream:async(job)=>{receivedCursor=job.cursor;f.written.splice(0,f.written.length,f.plain.slice());return true;}}));
- await f.begin();const j=await f.job(1);f.written.push(f.plain.slice(0,4096));
+ await f.begin();const j=await f.job(1);f.written.push(f.plain.slice(0,3_000_000));
  await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
  await f.receiver.tick();await f.receiver.tick();assert.equal(receivedCursor,1);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
  assert.equal((await f.job(1)).delivery.partial,false);assert.equal((await f.job(1)).delivery.method,'peer');
@@ -128,7 +166,7 @@ test('relay download upgrades when the sender connects later and keeps real sour
 });
 test('legacy partial media does not invent the source of previously downloaded bytes',async t=>{
  const f=directContext(t,()=>({}));await f.begin();const j=await f.job(1);
- f.written.push(f.plain.slice(0,4096));await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
+ f.written.push(f.plain.slice(0,3_000_000));await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
  for(let i=0;i<8;i++)await f.receiver.tick();
  assert.equal((await f.job(1)).phase,'complete');assert.equal((await f.job(1)).delivery.partial,true);
 });
@@ -147,7 +185,8 @@ test('reused journal writer hides uncommitted checkpoints, rolls back on lock, a
   };
  };
  const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/mobileAttachmentJobs.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?{openDatabaseAsync}:load(n.slice(2)),out);
- const f=context(t),store=out.createMobileAttachmentJobs(),worker=createAttachmentTransfer({...f.deps(0),store});
+ const phases=[];const measure=async(stage,work)=>{try{const result=await work();phases.push({stage,ok:true});return result;}catch(error){phases.push({stage,ok:false});throw error;}};
+ const f=context(t),store=out.createMobileAttachmentJobs(Date.now,measure),worker=createAttachmentTransfer({...f.deps(0),store});
  const original=await worker.enqueue(f.descriptor,'outgoing'),changed={...original,revision:1,cursor:1,phase:'uploading'};
  let release,active=true;gate=new Promise(r=>release=r);
  const pending=store.save(changed,0,()=>active);
@@ -155,7 +194,8 @@ test('reused journal writer hides uncommitted checkpoints, rolls back on lock, a
  assert.equal((await store.get(original.owner,original.digest)).revision,0);
  assert.equal(await store.isCurrent(original.owner,original.digest,0),true,'reader cannot see the uncommitted revision');
  assert.equal(await store.isCurrent(original.owner,original.digest,1),false);
- active=false;release();await assert.rejects(pending,/locked/);gate=null;
+ phases.length=0;active=false;release();await assert.rejects(pending,/locked/);gate=null;
+ assert.ok(phases.some(p=>p.stage==='checkpointTransaction'&&!p.ok));assert.ok(!phases.some(p=>p.stage==='checkpointPublish'),'rolled-back changes are never published');
  assert.equal((await store.get(original.owner,original.digest)).cursor,0);
  const other=out.createMobileAttachmentJobs();
  assert.deepEqual(await Promise.all([store.save(changed,0,()=>true),other.save({...changed,cursor:2},0,()=>true)]),[true,false]);
@@ -163,6 +203,7 @@ test('reused journal writer hides uncommitted checkpoints, rolls back on lock, a
  assert.equal(await store.isCurrent(original.owner,original.digest,0),false,'another store invalidates the old revision');
  assert.equal(await store.isCurrent(original.owner,original.digest,1),true);
  assert.equal(connections.length,2,'one reader and one writer are reused across store factories');
+ assert.ok(phases.some(p=>p.stage==='checkpointQueue'&&p.ok));assert.ok(phases.some(p=>p.stage==='checkpointWrite'&&p.ok));assert.ok(phases.some(p=>p.stage==='checkpointPublish'&&p.ok));
 });
 
 test('indexed liveness rejects absent, cancelled and archived jobs and invalid arguments',async t=>{
@@ -196,157 +237,48 @@ test('journal liveness fallback still delivers for adapters without indexed chec
  for(let i=0;i<8;i++)await receiver.tick();assert.equal((await f.job(1)).phase,'complete');assert.equal(f.written.length,3);
 });
 
-for(const window of [2,4])test(`negotiated three-chunk window ${window} preserves final bytes and receipt`,async t=>{
- const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};const counts=[];
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>window,
- request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:(_p,raw)=>{counts.push(JSON.parse(raw).count);return sender.receive(raw,peer);}});
- await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<8&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
- assert.deepEqual(counts,[3,3,3,3,2]);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
-});
-
-for(const chunks of [3,32])for(const window of [2,4])test(`batch ${chunks} window ${window} drains requests and checkpoints only the verified prefix on failure`,async t=>{
- const f=context(t,4096*chunks*5+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let active=0,peak=0;
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>chunks,batchWindow:()=>window,
- request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
-  active++;peak=Math.max(peak,active);const index=JSON.parse(raw).index;
-  try{await new Promise(r=>setTimeout(r,index===0?10:1));if(index===chunks)throw Error('lost batch');return await sender.receive(raw,peer);}finally{active--;}
- }});
- await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
- assert.equal(peak,chunks===32?Math.min(window,2):window);assert.equal(active,0);assert.equal((await f.job(1)).cursor,chunks);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain.slice(0,chunks*4096)));
-});
-
-test('temporary batch unavailability preserves the verified prefix and resumes after one second',async t=>{
- const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let failed=false;
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>2,
- request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
-  if(JSON.parse(raw).index===3&&!failed){failed=true;return JSON.stringify({status:'unavailable'});}
-  return sender.receive(raw,peer);
- }});
- await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();assert.equal((await f.job(1)).cursor,3);
- f.advance(1000);for(let n=0;n<4;n++)await receiver.tick();
- assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
-});
-
-for(const fail of [false,true])test(`single-chunk pipeline stays bounded and preserves verified prefix: failure=${fail}`,async t=>{
- const f=context(t,4096*20+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
- let release,active=0,peak=0;const gate=new Promise(r=>release=r),started=[];
- const receiver=createAttachmentTransfer({...f.deps(1),downloadWindow:4,peers:()=>[source],request:async(_p,raw)=>{
-  const request=JSON.parse(raw);if(request.operation!=='direct-get')return sender.receive(raw,peer);
-  started.push(request.index);active++;peak=Math.max(peak,active);
-  try{if(request.index===1){await gate;if(fail)throw Error('lost chunk');}return await sender.receive(raw,peer);}finally{active--;}
- }});
- await receiver.enqueue(f.descriptor,'incoming');const work=receiver.tick();
- try{for(let n=0;n<100&&!started.includes(4);n++)await new Promise(setImmediate);
-  assert(started.includes(4),'replenishes before adjacent slow read finishes');assert(peak<=4);assert(started.every(i=>i<16));
- }finally{release();await work;}
- assert.equal(active,0);assert.equal((await f.job(1)).cursor,fail?1:16);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain.slice(0,(fail?1:16)*4096)));
-});
-
-test('RTC pipeline replenishes a verified batch before a slower adjacent batch completes',async t=>{
- const f=context(t,4096*13+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
- let release,active=0,peak=0;const gate=new Promise(r=>release=r),started=[];
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>3,batchWindow:()=>2,
- request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
-  const index=JSON.parse(raw).index;started.push(index);active++;peak=Math.max(peak,active);
-  try{if(index===3)await gate;return await sender.receive(raw,peer);}finally{active--;}
- }});
- await receiver.enqueue(f.descriptor,'incoming');const work=receiver.tick();
- try{for(let n=0;n<100&&!started.includes(6);n++)await new Promise(setImmediate);
-  assert(started.includes(6),'third request starts while second is held');assert.equal(peak,2);
- }finally{release();await work;}
- assert.equal(active,0);assert.equal((await f.job(1)).cursor,14);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
-});
-
-for(const fail of [false,true])test(`large batch prefetch is capped at two and preserves verified prefix: failure=${fail}`,async t=>{
- const f=context(t,512*1024+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let active=0,peak=0;
- const receiver=createAttachmentTransfer({...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],batchWindow:()=>4,
- request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
-  active++;peak=Math.max(peak,active);const index=JSON.parse(raw).index;
-  try{await new Promise(setImmediate);if(fail&&index===128)throw Error('lost second batch');return await sender.receive(raw,peer);}finally{active--;}
- }});
- await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
- assert.equal(peak,2);assert.equal(active,0);
- assert.equal((await f.job(1)).cursor,fail?128:129);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(fail?f.plain.slice(0,512*1024):f.plain));
-});
-
-for(const failure of ['none','write','tamper','lock','cancel'])test('bounded local write batches preserve byte checks, checkpoints and replay: '+failure,async t=>{
- const f=context(t,65*4096+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000},base=f.deps(1),retained=[],counts=[];
- let failed=false,receiver;
- const deps={...base,peers:()=>[source],bulkPeers:()=>[source],batchChunks:()=>32,batchWindow:()=>2,
-  request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{const value=await sender.receive(raw,peer),r=JSON.parse(raw);if(failure==='tamper'&&!failed&&r.index===32){failed=true;const response=JSON.parse(value),bytes=Buffer.from(response.data,'base64');bytes[bytes.length-1]^=1;response.data=bytes.toString('base64');return JSON.stringify(response);}return value;},
-  writeChunk:()=>{throw Error('Unexpected single write');},writeChunks:async(job,index,parts,current)=>{
-   assert(parts.length<=32);counts.push(parts.length);retained.push(...parts);
-   if(index===32&&!failed&&['write','lock','cancel'].includes(failure)){failed=true;
-    if(failure==='write'){await base.writeChunk(job,index,parts[0],current);throw Error('Partial write');}
-    if(failure==='lock')f.lock();else await receiver.cancel(job.digest);return;
+// New protocol: one authenticated block per envelope, at most two in flight.
+for(const failure of ['none','unavailable','tamper','write','lock','cancel'])test('block window verifies only a contiguous durable prefix: '+failure,async t=>{
+ const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const base=f.deps(1),source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
+ let failed=false,active=0,peak=0,receiver;const retained=[],counts=[];
+ const deps={...base,peers:()=>[source],batchWindow:()=>2,request:(_p,raw)=>sender.receive(raw,peer),
+  bulkRequest:async(_p,raw)=>{const q=JSON.parse(raw);counts.push(q.count);active++;peak=Math.max(peak,active);
+   try{await new Promise(setImmediate);const value=await sender.receive(raw,peer);
+    if(q.index===1&&!failed&&failure==='unavailable'){failed=true;return JSON.stringify({status:'unavailable'});}
+    if(q.index===1&&!failed&&failure==='tamper'){failed=true;const r=JSON.parse(value),bytes=Buffer.from(r.data,'base64');bytes[bytes.length-1]^=1;r.data=bytes.toString('base64');return JSON.stringify(r);}
+    return value;
+   }finally{active--;}
+  },
+  writeChunks:async(j,index,parts,current)=>{assert.equal(parts.length,1);retained.push(...parts);
+   if(index===1&&!failed&&['write','lock','cancel'].includes(failure)){failed=true;
+    if(failure==='write')throw Error('disk');
+    if(failure==='lock')f.lock();else await receiver.cancel(j.digest);return;
    }
-   for(let n=0;n<parts.length;n++)await base.writeChunk(job,index+n,parts[n],current);
+   await base.writeChunk(j,index,parts[0],current);
   }};
  receiver=createAttachmentTransfer(deps);await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
- assert(retained.every(p=>p.every(b=>b===0)),'temporary plaintext is cleared');
+ assert.equal(active,0);assert.equal(peak,2);assert(counts.every(n=>n===1));
+ assert(retained.every(p=>p.every(v=>v===0)));
  if(failure!=='none'){
-  if(failure==='lock')f.unlock();const job=await f.job(1);assert.equal(job.receipt,null);assert.equal(job.cursor,failure==='lock'||failure==='cancel'?0:32);
-  receiver.stop();receiver=createAttachmentTransfer(deps);if(failure==='cancel')await receiver.retry(job.digest);f.advance(11000);
+  f.unlock();const j=await f.job(1);assert.equal(j.receipt,null);assert.equal(j.cursor,['lock','cancel'].includes(failure)?0:1);
+  receiver.stop();receiver=createAttachmentTransfer(deps);if(failure==='cancel')await receiver.retry(j.digest);f.advance(11000);
  }
- for(let n=0;n<12&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
- assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);assert(retained.every(p=>p.every(b=>b===0)));
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
- if(failure==='none')assert.deepEqual(counts,[32,32,2]);
-});
-
-test('direct 512 KiB batches deliver a larger file with two batch reads and a verified receipt',async t=>{
- const f=context(t,787252),baseSender=f.deps(0);let reads=0;
- const sender=createAttachmentTransfer({...baseSender,readChunk:()=>{throw Error('Single read used');},readChunks:async(job,index,count)=>{reads++;return Promise.all(Array.from({length:count},(_,n)=>baseSender.readChunk(job,index+n)));}});await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let batches=0;
- const base=f.deps(1),receiver=createAttachmentTransfer({...base,peers:()=>[source],bulkPeers:()=>[source],
-  request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:(_p,raw)=>{batches++;return sender.receive(raw,peer);}});
- await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<8&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
- assert.equal(batches,2);assert.equal(reads,2);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
- assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
-});
-
-for(const mode of ['short','tampered','locked'])test('batch read fails closed: '+mode,async t=>{
- const f=context(t,16384),base=f.deps(0);
- const sender=createAttachmentTransfer({...base,readChunks:async(job,index,count)=>{
-  const chunks=await Promise.all(Array.from({length:count},(_,n)=>base.readChunk(job,index+n)));
-  if(mode==='short')chunks.pop();if(mode==='tampered')chunks[0]={...chunks[0],ciphertext:'00'.repeat(chunks[0].ciphertext.length/2)};if(mode==='locked')f.lock();return chunks;
- }});const job=await sender.enqueue(f.descriptor,'outgoing');
- const response=JSON.parse(await sender.receive(JSON.stringify({version:1,operation:'direct-get-batch',digest:job.digest,index:0,count:3}),{account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000}));
- assert.notEqual(response.status,'ok');assert.equal(response.data,undefined);
-});
-
-test('tampered bulk tail preserves only verified prefix and resumes after worker recreation',async t=>{
- const f=context(t,512*1024+19),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
- const source=f.ids[0].record.account,peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};let tamper=true;
- const deps={...f.deps(1),peers:()=>[source],bulkPeers:()=>[source],request:(_p,raw)=>sender.receive(raw,peer),bulkRequest:async(_p,raw)=>{
-  const response=JSON.parse(await sender.receive(raw,peer));if(tamper){tamper=false;const bytes=Buffer.from(response.data,'base64');bytes[bytes.length-1]^=1;response.data=bytes.toString('base64');}return JSON.stringify(response);
- }};
- let receiver=createAttachmentTransfer(deps);await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
- assert.equal((await f.job(1)).cursor,127);assert.equal((await f.job(1)).receipt,null);assert.equal(f.written.length,127);
- receiver.stop();receiver=createAttachmentTransfer(deps);f.advance(11000);
  for(let n=0;n<8&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
- assert.equal((await f.job(1)).phase,'complete');assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
+ assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
+ assert.equal(crypto.createHash('sha256').update(Buffer.concat(f.written.map(Buffer.from))).digest('hex'),f.descriptor.checksum);
 });
 
-test('bulk serving stops when the owner locks and cannot leak a partial batch',async t=>{
- const f=context(t,512*1024),base=f.deps(0);let reads=0;
- const sender=createAttachmentTransfer({...base,readChunk:async(...args)=>{if(++reads===17)f.lock();return base.readChunk(...args);}});
- const job=await sender.enqueue(f.descriptor,'outgoing');
- const response=await sender.receive(JSON.stringify({version:1,operation:'direct-get-batch',digest:job.digest,index:0,count:128}),{account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000});
- assert.equal(JSON.parse(response).status,'unavailable');assert.equal(reads,17);assert(!response.includes('data'));
+for(const mode of ['short','tampered','locked'])test('block serving fails closed: '+mode,async t=>{
+ const f=context(t,9001),base=f.deps(0);
+ const sender=createAttachmentTransfer({...base,readChunks:async(j,index,count)=>{
+  const chunks=await Promise.all(Array.from({length:count},(_,n)=>base.readChunk(j,index+n)));
+  if(mode==='short')chunks.pop();if(mode==='tampered')chunks[0]={...chunks[0],ciphertext:'00'.repeat(chunks[0].ciphertext.length/2)};if(mode==='locked')f.lock();return chunks;
+ }});
+ const j=await sender.enqueue(f.descriptor,'outgoing'),peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
+ const result=JSON.parse(await sender.receive(JSON.stringify({version:1,operation:'direct-get-batch',digest:j.digest,index:0,count:1}),peer));
+ assert.notEqual(result.status,'ok');assert.equal(result.data,undefined);
+ assert.equal(await sender.receive(JSON.stringify({version:1,operation:'direct-get',digest:j.digest,index:0}),peer),null);
 });
 
 test('optional indexed journal benchmark uses identical committed rows', {skip:process.env.AXON_JOURNAL_BENCHMARK!=='1'},async t=>{
@@ -399,26 +331,22 @@ test('slow requests exhaust the burst time budget without starting another reque
 test('per-job membership policy rejects direct media and stops in-flight upload after removal',async t=>{
  const f=context(t);let allowed=true,reads=0;const deps=f.deps(0),sender=createAttachmentTransfer({...deps,allowedJob:()=>allowed,readChunk:async(...args)=>{reads++;allowed=false;return deps.readChunk(...args);}});
  await sender.enqueue(f.descriptor,'outgoing');allowed=false;await sender.tick();assert.equal(f.chunks.size,0);
- const peer={account:f.ids[1].record.account,device:f.ids[1].device.id,instance:'1'.repeat(64),expiresAt:now+60000},raw=JSON.stringify({version:1,operation:'direct-get',digest:a.attachmentDigest(f.manifest),index:0});
+ const peer={account:f.ids[1].record.account,device:f.ids[1].device.id,instance:'1'.repeat(64),expiresAt:now+60000},raw=JSON.stringify({version:1,operation:'direct-get-batch',count:1,digest:a.attachmentDigest(f.manifest),index:0});
  assert.equal(JSON.parse(await sender.receive(raw,peer)).status,'unavailable');assert.equal(reads,0);
  allowed=true;await sender.tick();await sender.tick();assert.equal(f.chunks.size,0);assert.equal((await f.job(0)).cursor,0);sender.stop();
 });
-for(const batched of [false,true])test('relay upload negotiates batching or legacy fallback: '+batched,async t=>{
- const f=context(t,1024*1024+19),base=f.deps(0),calls={put:0,batch:0};
- const sender=createAttachmentTransfer({...base,uploadWindow:4,uploadBatchPeers:()=>batched?[f.ids[2].record.account]:[],batchChunks:()=>32,
-  request:async(p,raw)=>{if(JSON.parse(raw).operation==='put')calls.put++;return base.request(p,raw);},
-  readChunks:async(j,index,count)=>Promise.all(Array.from({length:count},(_,n)=>base.readChunk(j,index+n))),bulkRequest:async(p,raw)=>{calls.batch++;return base.request(p,raw);}});
- await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<300&&(await f.job(0)).phase!=='confirming';n++)await sender.tick();
- assert.equal((await f.job(0)).cursor,257);assert.equal((await f.job(0)).phase,'confirming');assert.equal((await f.job(0)).receipt,null);assert.equal(f.complete.length,0);
- assert.deepEqual(calls,batched?{put:0,batch:9}:{put:257,batch:0});
- const receiver=createAttachmentTransfer({...f.deps(1),downloadWindow:4});await receiver.enqueue(f.descriptor,'incoming');for(let n=0;n<90&&(await f.job(1)).phase!=='complete';n++)await receiver.tick();
- assert.equal((await f.job(1)).phase,'complete');f.advance(3000);await sender.tick();assert.equal((await f.job(0)).phase,'complete');sender.stop();receiver.stop();
+test('an incapable peer never causes scalar upload fallback',async t=>{
+ const f=context(t,9001),base=f.deps(0),calls=[];
+ const sender=createAttachmentTransfer({...base,blockStreamPeers:()=>[],request:async(p,raw)=>{calls.push(JSON.parse(raw).operation);return base.request(p,raw);}});
+ await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
+ assert.equal(calls.length,0);assert.equal((await f.job(0)).cursor,0);assert.equal(f.chunks.size,0);
 });
+
 test('lost batch response replays safely and never advances an unacknowledged cursor',async t=>{
- const f=context(t,33*4096),base=f.deps(0);let lost=true,calls=0;
+ const f=context(t,3_000_001),base=f.deps(0);let lost=true,calls=0;
  const sender=createAttachmentTransfer({...base,uploadBatchPeers:()=>[f.ids[2].record.account],batchChunks:()=>32,bulkRequest:async(p,raw)=>{calls++;const result=await base.request(p,raw);if(lost){lost=false;return null;}return result;}});
- await sender.enqueue(f.descriptor,'outgoing');await sender.tick();await sender.tick();assert.equal(f.chunks.size,32);assert.equal((await f.job(0)).cursor,0);
- f.advance(10001);for(let n=0;n<5;n++)await sender.tick();assert.equal(f.chunks.size,33);assert.equal((await f.job(0)).phase,'confirming');assert.equal(calls,3);assert.equal(f.complete.length,0);sender.stop();
+ await sender.enqueue(f.descriptor,'outgoing');await sender.tick();await sender.tick();assert.equal(f.chunks.size,1);assert.equal((await f.job(0)).cursor,0);
+ f.advance(10001);for(let n=0;n<5;n++)await sender.tick();assert.equal(f.chunks.size,2);assert.equal((await f.job(0)).phase,'confirming');assert.equal(calls,2);assert.equal(f.complete.length,0);sender.stop();
 });
 for(const mode of ['cancel','lock','wrong-ack','completed-without-receipt'])test('batch sender preserves lifecycle/receipt guard: '+mode,async t=>{
  const f=context(t),base=f.deps(0);let sender;
@@ -428,10 +356,19 @@ for(const mode of ['cancel','lock','wrong-ack','completed-without-receipt'])test
  await sender.enqueue(f.descriptor,'outgoing');await sender.tick();await sender.tick();f.unlock();assert.equal((await f.job(0)).cursor,0);assert.equal(f.complete.length,0);assert.equal((await f.job(0)).receipt,null);sender.stop();
 });
 
-function jobs(t,capture){const database=new DatabaseSync(':memory:');if(capture)capture.database=database;t.after(()=>database.close());const tx={runAsync:async(s,...p)=>database.prepare(s).run(...p),getAllAsync:async(s,...p)=>database.prepare(s).all(...p),getFirstAsync:async(s,...p)=>database.prepare(s).get(...p)??null};
- const db={...tx,getFirstSync:(s,...p)=>database.prepare(s).get(...p)??null,execAsync:async s=>database.exec(s),withTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(tx);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
- const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/mobileAttachmentJobs.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?{openDatabaseAsync:async()=>db}:load(n.slice(2)),out);return out.createMobileAttachmentJobs(capture?.now);}
-function context(t,size){const f=fixture(size),store=jobs(t),rows=[],chunks=new Map(),complete=[],written=[],descriptor={manifest:f.manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'photo.png',mime:'image/png'};let clock=now,active=true;
+function jobs(t,capture){const database=new DatabaseSync(':memory:');if(capture)capture.database=database;t.after(()=>database.close());const tx={getFirstSync:(s,...p)=>database.prepare(s).get(...p)??null,runAsync:async(s,...p)=>{const result=database.prepare(s).run(...p);capture?.onWrite?.(s);return result;},getAllAsync:async(s,...p)=>{if(capture)capture.scans=(capture.scans??0)+1;return database.prepare(s).all(...p);},getFirstAsync:async(s,...p)=>{if(capture?.rejectAsyncCounts&&s.includes('COUNT(*)'))throw Error('Unexpected async capacity read');return database.prepare(s).get(...p)??null;}};
+ const db={...tx,execSync:s=>{if(capture&&s==='BEGIN')capture.transactions=(capture.transactions??0)+1;return database.exec(s);},getFirstSync:(s,...p)=>database.prepare(s).get(...p)??null,execAsync:async s=>{if(capture&&s==='BEGIN')capture.transactions=(capture.transactions??0)+1;return database.exec(s);},withTransactionAsync:async fn=>{if(capture)capture.transactions=(capture.transactions??0)+1;database.exec('BEGIN');try{await fn(tx);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
+ const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/mobileAttachmentJobs.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?{openDatabaseAsync:async()=>{if(capture)capture.opens=(capture.opens??0)+1;return db;}}:load(n.slice(2)),out);if(capture)capture.createStore=out.createMobileAttachmentJobs;return out.createMobileAttachmentJobs(capture?.now);}
+test('checkpoint capacity checks avoid async query turns and preserve terminal records',async t=>{
+ const f=context(t,100),capture={rejectAsyncCounts:true},store=jobs(t,capture);
+ const worker=createAttachmentTransfer({...f.deps(0),store});
+ const job=await worker.enqueue(f.descriptor,'outgoing');
+ assert.equal(await store.save({...job,phase:'expired',revision:1},0,()=>true),true);
+ assert.equal((await store.get(job.owner,job.digest)).phase,'expired');
+ assert.equal(await store.save({...job,phase:'queued',revision:2},1,()=>true),false);
+ assert.equal((await store.get(job.owner,job.digest)).revision,1);
+});
+function context(t,size=6_000_001){const f=fixture(size),store=jobs(t),rows=[],chunks=new Map(),complete=[],written=[],descriptor={manifest:f.manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'photo.png',mime:'image/png'};let clock=now,active=true;
  // The real AttachmentStore contract serializes transactions. Model that here
  // too, including concurrent legacy puts, instead of racing cloned snapshots.
  let transactionTail=Promise.resolve();
@@ -451,7 +388,7 @@ test('durable attachment jobs survive worker recreation and only complete after 
  assert.equal((await f.job(1)).phase,'complete');assert.equal(f.chunks.size,0);f.advance(3000);await sender.tick();assert.equal((await f.job(0)).phase,'complete');assert(f.complete.includes('incoming'));assert(f.complete.includes('outgoing'));
 });
 test('last download window publishes only after file verification and durable receipt in the same turn',async t=>{
- const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
  for(let i=0;i<5;i++)await sender.tick();
  const base=f.deps(1),events=[];
  const receiver=createAttachmentTransfer({...base,downloadWindow:4,
@@ -459,22 +396,22 @@ test('last download window publishes only after file verification and durable re
   completed:async(job,current)=>{assert.deepEqual(events,['verified']);assert.deepEqual((await f.job(1)).receipt,job.receipt);assert(job.receipt);events.push('published');await base.completed(job,current);}});
  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();
  assert.deepEqual(events,['verified','published']);assert.equal((await f.job(1)).phase,'confirming');
- assert.equal(f.chunks.size,3,'custody is retained until the remote receipt is acknowledged');
+ assert.equal(f.chunks.size,2,'custody is retained until the remote receipt is acknowledged');
  await receiver.tick();assert.equal((await f.job(1)).phase,'complete');assert.equal(f.chunks.size,0);assert.equal(f.complete.length,1);
 });
 
 test('locking during final verification prevents receipt signing and immediate publication',async t=>{
- const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
+ const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
  const base=f.deps(1);let signed=0;
  const receiver=createAttachmentTransfer({...base,downloadWindow:4,
   commitFile:async(...args)=>{await base.commitFile(...args);f.lock();},
   signReceipt:async m=>{signed++;return base.signReceipt(m);}});
  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();f.unlock();
- assert.equal(signed,0);assert.equal((await f.job(1)).receipt,null);assert.equal(f.complete.length,0);assert.equal(f.chunks.size,3);
+ assert.equal(signed,0);assert.equal((await f.job(1)).receipt,null);assert.equal(f.complete.length,0);assert.equal(f.chunks.size,2);
 });
 
 test('failed immediate publication resumes from its durable receipt after worker recreation',async t=>{
- const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
+ const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
  const base=f.deps(1);let signed=0;
  const deps={...base,downloadWindow:4,signReceipt:async m=>{signed++;return base.signReceipt(m);}};
  let receiver=createAttachmentTransfer({...deps,completed:async()=>{throw Error('chat storage temporarily unavailable');}});
@@ -484,7 +421,7 @@ test('failed immediate publication resumes from its durable receipt after worker
 });
 
 test('lost chunk reply retries the same ciphertext without inflating remote progress',async t=>{
- const f=context(t),deps=f.deps(0);let lost=true;const sender=createAttachmentTransfer({...deps,request:async(p,raw)=>{const result=await deps.request(p,raw);if(JSON.parse(raw).operation==='put'&&lost){lost=false;return null;}return result;}});
+ const f=context(t),deps=f.deps(0);let lost=true;const sender=createAttachmentTransfer({...deps,request:async(p,raw)=>{const result=await deps.request(p,raw);if(JSON.parse(raw).operation==='put-batch'&&lost){lost=false;return null;}return result;}});
  await sender.enqueue(f.descriptor,'outgoing');await sender.tick();await sender.tick();assert.equal(f.rows[0].received,1);f.advance(11000);
  for(let i=0;i<6;i++)await sender.tick();assert.equal(f.rows[0].received,f.chunks.size);assert.equal(f.rows[0].received,3);assert.equal(f.complete.length,0);
 });
@@ -518,7 +455,7 @@ test('two endpoints deliver directly with no third-party custody and retain sign
  await workers[0].enqueue(f.descriptor,'outgoing');await workers[1].enqueue(f.descriptor,'incoming');
  for(let n=0;n<12;n++){await workers[0].tick();await workers[1].tick();f.advance(2100);}
  assert.equal((await f.job(0)).phase,'complete');assert.equal((await f.job(1)).phase,'complete');
- assert.equal(f.rows.length,0);assert.equal(f.chunks.size,0);assert(operations.includes('direct-get'));assert(operations.includes('direct-receipt'));
+ assert.equal(f.rows.length,0);assert.equal(f.chunks.size,0);assert(operations.includes('direct-get-batch'));assert(operations.includes('direct-receipt'));
  assert(operations.every(o=>o.startsWith('direct-')));assert(f.complete.includes('outgoing'));
 });
 
@@ -566,10 +503,10 @@ test('direct receipt retries are bounded and stop when the account locks',async 
 test('direct own-file endpoint rejects other accounts, wrong devices, counterfeit receipts and locked reads',async t=>{
  const f=context(t),worker=createAttachmentTransfer(f.deps(0));await worker.enqueue(f.descriptor,'outgoing');
  const peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
- const raw=operation=>JSON.stringify({version:1,operation,digest:a.attachmentDigest(f.manifest),index:0,receipt:{signature:'00'.repeat(64)}});
- for(const invalid of [{...peer,account:f.ids[2].record.account},{...peer,device:f.ids[2].device.id},{...peer,expiresAt:now-1}])assert.notEqual(JSON.parse(await worker.receive(raw('direct-get'),invalid)).status,'ok');
+ const raw=operation=>JSON.stringify({version:1,operation,digest:a.attachmentDigest(f.manifest),index:0,count:1,receipt:{signature:'00'.repeat(64)}});
+ for(const invalid of [{...peer,account:f.ids[2].record.account},{...peer,device:f.ids[2].device.id},{...peer,expiresAt:now-1}])assert.notEqual(JSON.parse(await worker.receive(raw('direct-get-batch'),invalid)).status,'ok');
  assert.equal(JSON.parse(await worker.receive(raw('direct-receipt'),peer)).status,'rejected');assert.equal((await f.job(0)).receipt,null);
- assert.equal(JSON.parse(await worker.receive(raw('direct-get'),peer)).status,'ok');f.lock();assert.equal(JSON.parse(await worker.receive(raw('direct-get'),peer)).status,'rejected');
+ assert.equal(JSON.parse(await worker.receive(raw('direct-get-batch'),peer)).status,'ok');f.lock();assert.equal(JSON.parse(await worker.receive(raw('direct-get-batch'),peer)).status,'rejected');
  assert.equal(await worker.receive(JSON.stringify({operation:'get'}),peer),null);
 });
 
@@ -620,10 +557,10 @@ test('finished jobs leave the active queue but retain receipt lookups beyond 128
 
 test('legacy completed-job retirement rolls back on lock and preserves active work and receipts',async t=>{
  const f=fixture(),capture={},store=jobs(t,capture);await store.list(f.manifest.sender);
- const manifest=f.manifest,job={version:1,owner:manifest.sender,digest:a.attachmentDigest(manifest),descriptor:{manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'fixture.bin',mime:'application/octet-stream'},direction:'outgoing',revision:7,phase:'complete',cursor:3,relay:null,next:0,failures:0,receipt:a.signAttachmentReceipt(manifest,f.ids[1].signingSeed,f.ids[1].record,now),custodians:[],acknowledged:[]};
- capture.database.prepare('INSERT INTO jobs VALUES(?,?,?,?)').run(job.owner,job.digest,job.revision,JSON.stringify(job));let calls=0;
- await assert.rejects(store.retire(job.owner,()=>++calls===1),/locked/);assert.equal((await store.list(job.owner)).length,1);
- await store.retire(job.owner,()=>true);assert.deepEqual(await store.list(job.owner),[]);assert.deepEqual(await store.get(job.owner,job.digest),job);
+ const manifest=f.manifest,job={version:1,owner:manifest.sender,digest:a.attachmentDigest(manifest),descriptor:{manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'fixture.bin',mime:'application/octet-stream'},direction:'outgoing',revision:7,phase:'complete',cursor:1,relay:null,next:0,failures:0,receipt:a.signAttachmentReceipt(manifest,f.ids[1].signingSeed,f.ids[1].record,now),custodians:[],acknowledged:[]};
+ capture.database.prepare('INSERT INTO jobs VALUES(?,?,?,?)').run(job.owner,job.digest,job.revision,JSON.stringify(job));let active=true;capture.onWrite=sql=>{if(sql.startsWith('INSERT INTO finished_jobs'))active=false;};
+ await assert.rejects(store.retire(job.owner,()=>active),/locked/);assert.equal((await store.list(job.owner)).length,1);
+ capture.onWrite=undefined;await store.retire(job.owner,()=>true);assert.deepEqual(await store.list(job.owner),[]);assert.deepEqual(await store.get(job.owner,job.digest),job);
  assert.equal(await store.save({...job,revision:8},6,()=>true),false);
 });
 
@@ -635,11 +572,28 @@ test('paused jobs retire after expiration so abandoned transfers cannot permanen
  assert.equal(await store.save({...paused,phase:'queued',revision:paused.revision+1},paused.revision,()=>true),false);
 });
 
+test('maintenance scans follow durable queue changes and expiry instead of an idle polling interval',async t=>{
+ const f=context(t);let clock=now;const capture={now:()=>clock},store=jobs(t,capture),other=capture.createStore(()=>clock);
+ const owner=f.manifest.sender;
+ await store.retire(owner,()=>true);const emptyScans=capture.scans;
+ clock+=120000;await store.retire(owner,()=>true);assert.equal(capture.scans,emptyScans);
+ const worker=createAttachmentTransfer({...f.deps(0),store:other}),job=await worker.enqueue(f.descriptor,'outgoing');
+ await store.retire(owner,()=>true);assert.equal(capture.scans,emptyScans+1,'another journal instance invalidates an empty observation');
+ const scanned=capture.scans;
+ assert(await other.save({...job,revision:1,phase:'downloading'},0,()=>true));
+ await store.retire(owner,()=>true);assert.equal(capture.scans,scanned,'progress does not rescan unchanged expiry');
+ assert.equal(await other.save({...job,revision:2},0,()=>true),false);
+ clock=job.descriptor.manifest.expires-1;await store.retire(owner,()=>true);assert.equal(capture.scans,scanned);
+ clock++;await store.retire(owner,()=>true);assert.equal((await store.get(owner,job.digest)).phase,'expired');
+ const expiredScans=capture.scans;clock+=120000;await store.retire(owner,()=>true);assert.equal(capture.scans,expiredScans);
+ worker.stop();
+});
+
 
 test('network-stored callback waits for every encrypted chunk and never implies recipient delivery',async t=>{
- const f=context(t);let held=0;const worker=createAttachmentTransfer({...f.deps(0),stored:async(job,current)=>{assert(current());held++;assert.equal(f.chunks.size,Math.ceil(f.manifest.bytes/a.ATTACHMENT_CHUNK_BYTES));}});
+ const f=context(t);let held=0;const worker=createAttachmentTransfer({...f.deps(0),stored:async(job,current)=>{assert(current());held++;assert.equal(f.chunks.size,Math.ceil(f.manifest.bytes/a.ATTACHMENT_STREAM_BLOCK_BYTES));}});
  await worker.enqueue(f.descriptor,'outgoing');await worker.tick();assert.equal(held,0);
- const count=Math.ceil(f.manifest.bytes/a.ATTACHMENT_CHUNK_BYTES);
+ const count=Math.ceil(f.manifest.bytes/a.ATTACHMENT_STREAM_BLOCK_BYTES);
  for(let n=0;n<count;n++){await worker.tick();if(n<count-1)assert.equal(held,0);}
  assert.equal(held,1);assert.equal(f.complete.length,0);assert.equal((await f.job(0)).phase,'confirming');
 });
@@ -647,24 +601,24 @@ test('network-stored callback waits for every encrypted chunk and never implies 
 test('download read-ahead overlaps requests but persists only an ordered verified prefix',async t=>{
  const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
  const base=f.deps(1);let outstanding=0,maximum=0;const release=[];
- const receiver=createAttachmentTransfer({...base,downloadWindow:4,request:async(p,raw)=>{if(JSON.parse(raw).operation!=='get')return base.request(p,raw);outstanding++;maximum=Math.max(maximum,outstanding);await new Promise(r=>release.push(r));try{return await base.request(p,raw);}finally{outstanding--;}}});
- await receiver.enqueue(f.descriptor,'incoming');const work=receiver.tick();while(release.length<3)await new Promise(setImmediate);
- release[2]();release[1]();release[0]();await work;
- assert.equal(maximum,3);assert.equal(outstanding,0);assert.equal((await f.job(1)).cursor,3);assert.equal(f.written.length,3);
+ const receiver=createAttachmentTransfer({...base,downloadWindow:4,request:async(p,raw)=>{if(JSON.parse(raw).operation!=='get-batch'||JSON.parse(raw).index>=2)return base.request(p,raw);outstanding++;maximum=Math.max(maximum,outstanding);await new Promise(r=>release.push(r));try{return await base.request(p,raw);}finally{outstanding--;}}});
+ await receiver.enqueue(f.descriptor,'incoming');const work=receiver.tick();while(release.length<2)await new Promise(setImmediate);
+ release[1]();release[0]();await work;
+ assert.equal(maximum,2);assert.equal(outstanding,0);assert.equal((await f.job(1)).cursor,2);assert.equal(f.written.length,2);
  await receiver.tick();await receiver.tick();assert.equal((await f.job(1)).phase,'complete');
 });
 test('failed prefetched chunk keeps durable prefix and retries without skipping or duplicating bytes',async t=>{
  const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
  const base=f.deps(1);let corrupt=true;const indices=[];
- const receiver=createAttachmentTransfer({...base,downloadWindow:4,request:async(p,raw)=>{const request=JSON.parse(raw);if(request.operation==='get'){indices.push(request.index);if(corrupt&&request.index===1)return JSON.stringify({status:'ok',chunk:{index:1,ciphertext:'00',proof:[]}});}return base.request(p,raw);}});
+ const receiver=createAttachmentTransfer({...base,downloadWindow:4,request:async(p,raw)=>{const request=JSON.parse(raw);if(request.operation==='get-batch'){indices.push(request.index);if(corrupt&&request.index===1)return JSON.stringify({status:'ok',chunk:{index:1,ciphertext:'00',proof:[]}});}return base.request(p,raw);}});
  const job=await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();assert.equal((await f.job(1)).cursor,1);assert.equal(f.written.length,1);assert.equal((await f.job(1)).receipt,null);
- corrupt=false;await receiver.retry(job.digest);await receiver.tick();assert.equal((await f.job(1)).cursor,3);assert.deepEqual(indices,[0,1,2,1,2]);
+ corrupt=false;await receiver.retry(job.digest);await receiver.tick();assert.equal((await f.job(1)).cursor,3);assert.deepEqual(indices,[0,1,1,2]);
 });
 test('cancelling a prefetched window drains requests and never publishes their bytes',async t=>{
  const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
  const base=f.deps(1);let release,requests=0;const gate=new Promise(r=>release=r);
  const receiver=createAttachmentTransfer({...base,downloadWindow:4,request:async(p,raw)=>{requests++;await gate;return base.request(p,raw);}});
- const job=await receiver.enqueue(f.descriptor,'incoming'),work=receiver.tick();while(requests<3)await new Promise(setImmediate);await receiver.cancel(job.digest);release();await work;
+ const job=await receiver.enqueue(f.descriptor,'incoming'),work=receiver.tick();while(requests<2)await new Promise(setImmediate);await receiver.cancel(job.digest);release();await work;
  assert.equal(f.written.length,0);assert.equal((await f.job(1)).phase,'cancelled');assert.equal((await f.job(1)).receipt,null);
  for(const downloadWindow of [0,5,NaN])assert.throws(()=>createAttachmentTransfer({...base,downloadWindow}),/window/);
 });
@@ -674,9 +628,9 @@ test('verified download window uses one checkpoint and replays safely after chec
  const base=f.deps(1);let fail=true;const checkpoints=[];
  const store={...base.store,save:async(j,expected,current)=>{if(j.cursor>0&&j.direction==='incoming'&&!j.receipt){checkpoints.push(j.cursor);if(fail)throw Error('disk unavailable');}return base.store.save(j,expected,current);}};
  const receiver=createAttachmentTransfer({...base,store,downloadWindow:4});const job=await receiver.enqueue(f.descriptor,'incoming');
- await receiver.tick();assert.equal((await f.job(1)).cursor,0);assert.equal(f.written.length,3);assert.deepEqual(checkpoints,[3]);
+ await receiver.tick();assert.equal((await f.job(1)).cursor,0);assert.equal(f.written.length,2);assert.deepEqual(checkpoints,[2]);
  receiver.stop();fail=false;const resumed=createAttachmentTransfer({...base,store,downloadWindow:4});await resumed.retry(job.digest);await resumed.tick();
- assert.equal((await f.job(1)).cursor,3);assert.deepEqual(checkpoints,[3,3]);
+ assert.equal((await f.job(1)).cursor,2);assert.deepEqual(checkpoints,[2,2]);
  await resumed.tick();await resumed.tick();assert.equal((await f.job(1)).phase,'complete');
  assert.equal(crypto.createHash('sha256').update(Buffer.concat(f.written)).digest('hex'),f.descriptor.checksum);
 });
@@ -699,7 +653,7 @@ test('attachment timings aggregate fixed stages and preserve failures without re
 });
 
 test('offline custody cleanup does not republish a delivered attachment every tick',async t=>{
- const f=context(t),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
+ const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
  const base=f.deps(1);let online=true,publications=0;
  const receiver=createAttachmentTransfer({...base,downloadWindow:4,peers:()=>online?base.peers():[],completed:async(...args)=>{publications++;return base.completed(...args);}});
  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();online=false;
@@ -727,20 +681,20 @@ test('indexed attachment policy matches first-reference group rules and is isola
 test('upload window drains all replies, preserves exact encrypted chunks and batches its checkpoint',async t=>{
  const f=context(t),deps=f.deps(0);let tail=Promise.resolve(),active=0,peak=0,saves=0;
  const sender=createAttachmentTransfer({...deps,uploadWindow:4,store:{...deps.store,save:async(...args)=>{saves++;return deps.store.save(...args);}},request:async(peer,raw)=>{
-  if(JSON.parse(raw).operation!=='put')return deps.request(peer,raw);
+  if(JSON.parse(raw).operation!=='put-batch')return deps.request(peer,raw);
   active++;peak=Math.max(peak,active);const result=tail.then(()=>deps.request(peer,raw));tail=result.catch(()=>{});
   try{const reply=await result;await new Promise(r=>setTimeout(r,5));return reply;}finally{active--;}
  }});
  await sender.enqueue(f.descriptor,'outgoing');await sender.tick();const before=saves;await sender.tick();
- assert.equal(peak,3);assert.equal(active,0);assert.equal(saves-before,1);assert.equal((await f.job(0)).cursor,3);assert.equal(f.rows[0].received,3);
+ assert.equal(peak,1);assert.equal(active,0);assert.equal(saves-before,1);assert.equal((await f.job(0)).cursor,1);assert.equal(f.rows[0].received,1);await sender.tick();await sender.tick();
  const receiver=createAttachmentTransfer({...f.deps(1),downloadWindow:1});await receiver.enqueue(f.descriptor,'incoming');for(let i=0;i<8;i++)await receiver.tick();
  assert.equal((await f.job(1)).phase,'complete');assert.equal(f.chunks.size,0);
 });
 test('upload window failure waits for all work and resumes without inventing a received prefix',async t=>{
  const f=context(t),deps=f.deps(0);let active=0,fail=true,tail=Promise.resolve();
  const sender=createAttachmentTransfer({...deps,uploadWindow:4,request:async(peer,raw)=>{
-  const request=JSON.parse(raw);if(request.operation!=='put')return deps.request(peer,raw);
-  active++;try{if(request.chunk.index===1&&fail){await new Promise(r=>setTimeout(r,5));return null;}
+  const request=JSON.parse(raw);if(request.operation!=='put-batch')return deps.request(peer,raw);
+  active++;try{if(request.index===0&&fail){await new Promise(r=>setTimeout(r,5));return null;}
    const result=tail.then(()=>deps.request(peer,raw));tail=result.catch(()=>{});return await result;
   }finally{active--;}
  }});
@@ -748,37 +702,49 @@ test('upload window failure waits for all work and resumes without inventing a r
  fail=false;f.advance(11000);for(let i=0;i<4;i++)await sender.tick();assert.equal(f.rows[0].received,3);assert.equal((await f.job(0)).cursor,3);
 });
 
-test('encrypted file resumes byte-for-byte through real negotiated media sessions after reconnect',async t=>{
- const f=context(t,256*1024),{createPersistentAxon}=load('persistentAxon');let sessions=[],workers=[],clock=now,dead=false;
- const records=new Map(f.ids.map(v=>[v.record.account,v.record]));const recordStore={read:async id=>records.get(id)??null,compareAndSet:async(id,expected,next)=>{records.set(id,next);return true;}};
- const deps=i=>({...f.deps(i),downloadWindow:4,uploadWindow:4,peers:()=>[f.ids[1-i].record.account],request:async(_,raw)=>sessions[i].attachmentRequest(raw)});
- workers=[createAttachmentTransfer(deps(0)),createAttachmentTransfer(deps(1))];t.after(()=>{workers.forEach(w=>w.stop());sessions.forEach(s=>s.stop());});
- const connect=async()=>{
-  dead=false;const listeners=[],ends=[];sessions=f.ids.slice(0,2).map((id,i)=>createPersistentAxon({...id,instance:new Uint8Array(crypto.randomBytes(32)),store:recordStore,now:()=>clock,current:()=>true,random:async n=>new Uint8Array(crypto.randomBytes(n)),onClosed(){},
-   onAttachment:async(raw,peer)=>(await workers[i].receive(raw,peer))??'{"status":"rejected"}',wire:{mediaLane:true,listen(fn,end){listeners[i]=fn;ends[i]=end;return()=>{listeners[i]=null;};},send(raw){setTimeout(()=>{if(!dead)listeners[1-i]?.(raw);},2);},close(){if(dead)return;dead=true;ends.forEach(end=>end?.());}}}));
-  await Promise.all(sessions.map(s=>s.ready));
- };
- const timer=setInterval(()=>{clock+=5;},5);t.after(()=>clearInterval(timer));
- await workers[0].enqueue(f.descriptor,'outgoing');await workers[1].enqueue(f.descriptor,'incoming');await connect();
- for(let i=0;i<3;i++)await workers[1].tick();const before=(await f.job(1)).cursor;assert(before>0&&before<64);
- sessions.forEach(s=>s.stop());workers[1].stop();workers[1]=createAttachmentTransfer(deps(1));await connect();
- assert.equal((await f.job(1)).cursor,before);
- for(let i=0;i<24&&(await f.job(1)).phase!=='complete';i++)await workers[1].tick();
- assert.equal((await f.job(1)).phase,'complete');assert.deepEqual(Buffer.concat(f.written.map(v=>Buffer.from(v))),Buffer.from(f.plain));
- assert((await f.job(0)).receipt);assert(sessions.every(s=>s.snapshot().mediaLane&&s.snapshot().state==='connected'));
-});
-
-test('negotiated bulk sessions resume after a 512 KiB checkpoint and verify the final receipt',async t=>{
- const f=context(t,787252),{createPersistentAxon}=load('persistentAxon');let sessions=[],workers=[],dead=false;const epoch=Date.now();
+test('negotiated block sessions resume after a 3 MB checkpoint and verify the final receipt',async t=>{
+ const f=context(t,3_000_001),{createPersistentAxon}=load('persistentAxon');let sessions=[],workers=[],dead=false;const epoch=Date.now();
  const records=new Map(f.ids.map(v=>[v.record.account,v.record])),recordStore={read:async id=>records.get(id)??null,compareAndSet:async(id,_expected,next)=>{records.set(id,next);return true;}};
  const deps=i=>({...f.deps(i),peers:()=>[f.ids[1-i].record.account],bulkPeers:()=>sessions[i]?.supportsAttachmentBulk()?[f.ids[1-i].record.account]:[],
   request:(_,raw)=>sessions[i].attachmentRequest(raw),bulkRequest:(_,raw)=>sessions[i].attachmentBulkRequest(raw)});
  workers=[createAttachmentTransfer(deps(0)),createAttachmentTransfer(deps(1))];t.after(()=>{workers.forEach(w=>w.stop());sessions.forEach(s=>s.stop());});
  async function connect(){dead=false;const listeners=[],ends=[];sessions=f.ids.slice(0,2).map((id,i)=>createPersistentAxon({...id,instance:new Uint8Array(crypto.randomBytes(32)),store:recordStore,now:()=>now+Date.now()-epoch,current:()=>true,random:async n=>new Uint8Array(crypto.randomBytes(n)),onClosed(){},
-  onAttachment:async(raw,peer)=>(await workers[i].receive(raw,peer))??'{"status":"rejected"}',wire:{mediaLane:true,bulkAttachments:true,listen(fn,end){listeners[i]=fn;ends[i]=end;return()=>{listeners[i]=null;};},send(raw){setTimeout(()=>{if(!dead)listeners[1-i]?.(raw);},2);},close(){if(dead)return;dead=true;ends.forEach(end=>end?.());}}}));await Promise.all(sessions.map(s=>s.ready));}
+  onAttachment:async(raw,peer)=>(await workers[i].receive(raw,peer))??'{"status":"rejected"}',wire:{mediaLane:true,bulkAttachments:true,blockStreams:true,listen(fn,end){listeners[i]=fn;ends[i]=end;return()=>{listeners[i]=null;};},send(raw){setTimeout(()=>{if(!dead)listeners[1-i]?.(raw);},2);},close(){if(dead)return;dead=true;ends.forEach(end=>end?.());}}}));await Promise.all(sessions.map(s=>s.ready));}
  await workers[0].enqueue(f.descriptor,'outgoing');await workers[1].enqueue(f.descriptor,'incoming');await connect();await workers[1].tick();
- assert.equal((await f.job(1)).cursor,128);sessions.forEach(s=>s.stop());workers[1].stop();workers[1]=createAttachmentTransfer(deps(1));await connect();
+ assert.equal((await f.job(1)).cursor,1);sessions.forEach(s=>s.stop());workers[1].stop();workers[1]=createAttachmentTransfer(deps(1));await connect();
  for(let i=0;i<8&&(await f.job(1)).phase!=='complete';i++)await workers[1].tick();
  assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
  assert(sessions.every(s=>s.snapshot().state==='connected'&&s.snapshot().bulkAttachments));
+});
+
+for(const mode of ['lock','cancel'])test('async platform decrypt rechecks liveness and erases plaintext after '+mode,async t=>{
+ const f=context(t,19);let plain,called=0,receiver;
+ const sender=createAttachmentTransfer(f.deps(0));
+ receiver=createAttachmentTransfer({...f.deps(1),decryptBlock:async(cipher,key,aad)=>{
+  called++;plain=f.plain.slice();
+  await Promise.resolve();if(mode==='lock')f.lock();else await receiver.cancel(a.attachmentDigest(f.manifest));return plain;
+ }});
+ await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<3;i++)await sender.tick();
+ await receiver.enqueue(f.descriptor,'incoming');for(let i=0;i<3;i++)await receiver.tick();
+ assert.equal(called,1);assert.equal(f.written.length,0);assert.equal((await f.job(1)).receipt,null);assert(plain.every(n=>n===0));
+});
+
+test('empty retirement avoids opening a writer or entering a transaction',async t=>{
+ const capture={},store=jobs(t,capture),owner=fixture(1).manifest.sender;
+ await store.retire(owner,()=>true);assert.equal(capture.opens,1);assert.equal(capture.transactions??0,0);
+ await store.retire(owner,()=>true);assert.equal(capture.opens,1);assert.deepEqual(await store.list(owner),[]);
+});
+
+test('successful custody publication is not repeated by receipt polling; invalidate rechecks durable history',async t=>{
+ const f=context(t);let held=0;const worker=createAttachmentTransfer({...f.deps(0),stored:async()=>{held++;}});
+ await worker.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await worker.tick();
+ assert.equal((await f.job(0)).phase,'confirming');assert.equal(held,1);
+ for(let i=0;i<3;i++){f.advance(3000);await worker.tick();}assert.equal(held,1);assert.equal(f.complete.length,0);
+ worker.invalidate();f.advance(3000);await worker.tick();assert.equal(held,2);
+});
+test('failed custody publication retries instead of suppressing the durable mark',async t=>{
+ const f=context(t);let held=0;const worker=createAttachmentTransfer({...f.deps(0),stored:async()=>{if(++held===1)throw Error('storage unavailable');}});
+ await worker.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await worker.tick();
+ assert.equal(held,1);f.advance(120001);for(let i=0;i<8;i++)await worker.tick();
+ assert.equal(held,2);assert.equal((await f.job(0)).phase,'confirming');assert.equal(f.complete.length,0);
 });

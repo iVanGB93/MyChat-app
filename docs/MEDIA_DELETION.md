@@ -1,5 +1,9 @@
 # Managed media deletion
 
+Historical behavior reference. For the current media ownership and external-file
+deletion behavior, read [single-copy media](single-copy-media-2026-10-23.txt).
+Do not apply older private-copy/export assumptions to current-format media.
+
 - Delete for me is local and excluded from peer state/digest responses.
 - Delete for everyone queues an Axion mutation durably before updating the UI.
   Peers persist the mutation before acknowledging it. Sender identity must match

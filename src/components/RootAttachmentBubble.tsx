@@ -8,25 +8,27 @@ import {Image,Linking,Platform,Pressable,Text,View,type GestureResponderEvent} f
 import * as IntentLauncher from 'expo-intent-launcher';
 import {useTheme} from '../contexts/ThemeContext';
 import {localAccount} from '../modules/identity';
-import {attachmentDigest} from '../modules/messaging';
+import {attachmentDigest,attachmentBlockBytes} from '../modules/media';
 import {rootAttachmentFile} from '../modules/storage';
 import type {RootChatMessage} from '../modules/messaging';
-import {controlRootAttachment} from '../modules/messaging';
+import {controlRootAttachment} from '../modules/media';
 import FullscreenImageViewer from './chat/fullscreen-image-viewer';
 import {messageBubbleStyles as styles} from './chat/message-bubble-styles';
 import {Ionicons} from '@expo/vector-icons';
-export default function RootAttachmentBubble({message,progress,showSize=false,onError,onLongPress,audioFooter}:{message:RootChatMessage;progress?:{phase:string;cursor:number;bytes:number;failures:number;canPause:boolean};showSize?:boolean;audioFooter?:React.ReactNode;onLongPress?(event:GestureResponderEvent):void;onError(error:string):void}){
+import {useTransferProgress} from '../modules/ui/transferState';
+export default function RootAttachmentBubble({message,progress:initialProgress,showSize=false,onError,onLongPress,audioFooter}:{message:RootChatMessage;progress?:{phase:string;cursor:number;bytes:number;failures:number;canPause:boolean};showSize?:boolean;audioFooter?:React.ReactNode;onLongPress?(event:GestureResponderEvent):void;onError(error:string):void}){
  const [changing,setChanging]=useState(false),[preview,setPreview]=useState(false),[imagePreview,setImagePreview]=useState(false);
  const {colors}=useTheme(),descriptor=message.attachment!,owner=localAccount.status().account;
  const digest=useMemo(()=>attachmentDigest(descriptor.manifest),[descriptor.manifest]);
+ const progress=useTransferProgress(digest)??initialProgress;
  // File availability and shared payload paths can change; never cache them.
  const file=owner?rootAttachmentFile(owner,digest):null;
  const exists=!!file?.exists;
  const sticker=descriptor.name===IMPORTED_STICKER_CONTENT&&descriptor.manifest.bytes<=MAX_STICKER_BYTES&&/^image\/(png|webp|gif)$/.test(descriptor.mime);
  const ready=exists&&(message.direction==='outgoing'||message.status==='delivered');
- const percent=progress?Math.min(100,Math.floor(progress.cursor*4096/descriptor.manifest.bytes*100)):0;
+ const percent=progress?Math.min(100,Math.floor(progress.cursor*attachmentBlockBytes(descriptor.manifest)/descriptor.manifest.bytes*100)):0;
  const expired=descriptor.manifest.expires<=Date.now(),reset=message.networkCancelledAt!==undefined,paused=progress?.phase==='cancelled';
- const label=message.status==='delivered'&&!exists?'Removed from this device':message.status==='delivered'?(message.direction==='incoming'?'Received':'Delivered'):reset?'Canceled by network reset':expired?'Attachment expired':paused?'Paused on this device':progress?.phase==='confirming'?'Waiting for confirmation':`${message.direction==='outgoing'?'Sending':'Receiving'} · ${percent}%`;
+ const label=message.status==='delivered'&&!exists?'Not available on this device':message.status==='delivered'?(message.direction==='incoming'?'Received':'Delivered'):reset?'Canceled by network reset':expired?'Attachment expired':paused?'Paused on this device':progress?.phase==='confirming'?'Waiting for confirmation':`${message.direction==='outgoing'?'Sending':'Receiving'} · ${percent}%`;
  async function control(action:'pause'|'retry'){if(changing)return;setChanging(true);try{await controlRootAttachment(digest,action);}catch(error){onError(error instanceof Error?error.message:'Unable to update transfer');}finally{setChanging(false);}}
  async function open(){try{if(!ready||!file||localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)return;
   if(Platform.OS==='android')await IntentLauncher.startActivityAsync('android.intent.action.VIEW',{data:file.contentUri,type:descriptor.mime,flags:1});else await Linking.openURL(file.uri);

@@ -4,8 +4,8 @@ import java.security.MessageDigest
 
 /** Bounded public ciphertext leaf input, never a key or plaintext. */
 internal object AttachmentHash {
-  // Shipping 4 KiB ciphertext leaf plus its canonical envelope.
-  internal const val MAX_CANONICAL_BYTES = 8300
+  // One 3 MB ciphertext block, hex encoded, plus authentication tag/envelope.
+  internal const val MAX_CANONICAL_BYTES = 6_000_128
   fun sha256(value: String): String {
     require(value.length in 1..MAX_CANONICAL_BYTES && value.all { it.code < 128 }) { "Invalid attachment hash input" }
     val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.US_ASCII))

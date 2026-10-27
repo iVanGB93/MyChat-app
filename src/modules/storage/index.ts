@@ -5,6 +5,6 @@ export {listOwnCallHistory,subscribeCallJournalWrites,type OwnCallSummary} from 
 export {subscribeOwnChatWrites} from './chatStore';
 export {readProfileAvatar,storeProfileAvatar} from './profileStore';
 
-export {getAutoSaveReceivedMedia,setAutoSaveReceivedMedia,removeRootDownloadedMedia,saveRootDownloadedMedia,finishRootMediaCleanup,withRootSharedFile} from '../../services/identity/rootMediaExport';
+export {getAutoSaveReceivedMedia,setAutoSaveReceivedMedia,removeRootDownloadedMedia,saveRootDownloadedMedia,finishRootMediaCleanup,withRootSharedFile,withRootPickedMedia,pickRootSharedMedia} from '../../services/identity/rootMediaExport';
 
 export {readSharedAvatar,subscribeSharedAvatars} from './sharedProfileStore';

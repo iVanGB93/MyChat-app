@@ -1,0 +1,41 @@
+Direct DTLS path review — 2026-10-23
+
+Scope and finding
+The existing directAttachmentStream already sends original binary file bytes,
+not application-layer ciphertext, on an authenticated WebRTC DTLS lane.
+rootAttachmentStreams restricts it to the manifest account/device and live job.
+The sender nevertheless eagerly prepares ciphertext and a ciphertext Merkle
+root in prepareRootAttachment before publishing the signed descriptor.
+Removing that preparation is NOT completed by this change. It needs a separate
+stable content commitment and authenticated relay representation; replacing the
+root after sending would invalidate manifest digests, jobs, and receipts.
+Normal chat envelope encryption has not been changed either.
+
+Implemented
+Allow the actual sender to attempt the authenticated direct stream independently
+of encrypted block-stream/shared-custody capability advertisements. Keep bounded
+retry deadlines; no such exception for custodians. Fallback continues to require
+encrypted block capability. Copied this shared transfer module into the isolated
+AoN worktree with sync-core, updating its source hash. No deployment or commit.
+
+Validation
+97 passing transfer/direct-stream tests; one optional benchmark skipped.
+20 passing root-stream/WebRTC boundary tests.
+New 1,000,000 / 5,000,000 / 10,000,000 byte cases verify that concatenated binary
+lane output equals the original file, with no AEAD expansion or block envelopes.
+These are local correctness tests, NOT measured live WebRTC throughput.
+Mobile TypeScript and AoN build passed. Hosted attachment tests passed when rerun
+outside sandbox (sandbox run blocked temporary-file atomic rename with EPERM).
+
+Live boundary
+Started both existing emulators without wiping data. Only old debuggable com.axonic
+1.0.17 clients installed, no com.axonic.dev. No live-transfer acceptance claimed.
+No phone app installation, production build, service change, data reset or deletion.
+Unrelated pre-existing staged and unstaged repository work preserved.
+
+Remaining
+Implement direct-first preparation without eagerly generating relay ciphertext;
+retain authenticated peer binding, immutable content identity, encrypted custody,
+safe direct-to-relay transition and signed delivery receipts. Update emulator
+development clients preserving their accounts, then run live tests. Do not label
+the entire requested encryption/preparation change complete based on these tests.

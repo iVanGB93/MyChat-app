@@ -1,7 +1,8 @@
 import type {ConfirmAttachment} from './attachmentPreview';
 import * as DocumentPicker from 'expo-document-picker';
 import {localAccount,validAccountId} from '../identity';
-import {queueRootAttachmentBatch,rootGroupAttachmentAudience,type RootChatReply} from '../messaging';
+import {type RootChatReply} from '../messaging';
+import {queueRootAttachmentBatch,rootGroupAttachmentAudience} from '../media';
 export async function pickRootAttachment(peer:string,reply?:RootChatReply,confirm?:ConfirmAttachment,groupId?:string){
  const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked'||!groupId&&(!validAccountId(peer)||peer===owner))throw Error('Unlock your account and choose a peer');
  const audience=groupId?await rootGroupAttachmentAudience(groupId,reply):null;

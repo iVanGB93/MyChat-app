@@ -1,40 +1,33 @@
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from '../identity';
 import {localRootChat} from '../../services/identity/localRootChat';
-import {localAccountCalls as activeCallSession,localAccountNetworkSnapshot,ensureLocalPeerIdentity} from '../../composition/neuronRuntime';
 import {pendingMessages} from './pendingMessages';
 export {pendingMessages} from './pendingMessages';
 import {createMessagingCommands} from './commands';
-import {createCallCommands} from './callCommands';
 
 const owner = () => localAccount.status().state === 'unlocked' ? localAccount.status().account : null;
 export const messaging = createMessagingCommands({owner, ledger: localRootChat, randomId: () => Native!.identityRandomBytes!(32),pending:pendingMessages.begin,yieldUI:()=>new Promise(resolve=>setTimeout(resolve,16))});
 let pendingOwner=owner();
 localAccount.subscribe(()=>{const next=owner();if(next!==pendingOwner)pendingMessages.clear();pendingOwner=next;});
-export const calling = createCallCommands({owner, calls: activeCallSession,
-  connected: () => !!localAccountNetworkSnapshot()?.pool?.connections.some(c => c.state === 'connected'), resolve: ensureLocalPeerIdentity});
+
 
 /** Read and preference operations only. UI cannot inject protocol IDs or admit incoming traffic. */
 export function conversations() {
   const ledger = localRootChat();
   return {snapshot: ledger.snapshot, configure: ledger.configure, configureGroup: ledger.configureGroup, markGroupRead: ledger.markGroupRead};
 }
-/** Active-call controls only; initiation must go through calling.start. */
-export function localAccountCalls(): Pick<NonNullable<ReturnType<typeof activeCallSession>>, 'snapshot' | 'accept' | 'end' | 'confirmRinging'> | null {
-  return activeCallSession();
-}
-export {subscribeLocalAccountCalls} from '../../composition/neuronRuntime';
-export type {NeuronCallView} from '../../services/identity/neuronCallCoordinator';
+
+
+
 export type {RootChatState,RootChatMessage,RootChatReply,RootChatContact} from '../../services/identity/rootChatTypes';
 export {rootChatView,ROOT_REACTIONS,type RootActionKind} from '../../services/identity/rootChatActions';
 export {rootGroupMessages,rootGroupMessageIndex,rootGroupPhoto} from '../../services/identity/rootGroups';
 export {rootStickerDraft} from '../../services/identity/rootStickerDraft';
 export {forwardRootMessage} from '../../services/identity/rootMessageForward';
-export {queueRootAttachmentBatch,queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,
-  rootAttachmentProgress,retryRootAttachmentSelection,removeRootAttachmentSelection,controlRootAttachment} from '../../services/identity/rootAttachmentRuntime';
-export {attachmentDigest} from '../../services/identity/attachmentProtocol';
-export {createRootVoiceRecorder,rootVoiceRecordingActive} from '../../services/identity/rootVoiceRecorder';
-export {startRootCallLease,stopRootCallLease,markRootCallConnected,rootCallMayRunBackground} from '../../services/identity/rootCallLifetime';
+
+
+
+
 
 export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';
 export {mobileDeliveryDiagnostics,clearDeliveryCapture} from '../../services/mobileDeliveryDiagnostics';
@@ -42,10 +35,10 @@ export {mobileDeliveryDiagnostics,clearDeliveryCapture} from '../../services/mob
 export {peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';
 
 export {groupMessageInfo} from './groupMessageInfo';
-export {messageInfoDescription} from './messageInfoState';
+export {messageInfoDescription,messageInfoTimeline,messageInfoRoutes} from './messageInfoState';
 
 export {updateSharedProfileAvatar,removeSharedProfileAvatar} from './profile';
 
-export {subscribeAttachmentChanges,subscribeAttachmentContentChanges} from '../../services/identity/attachmentChanges';
+
 
 export {subscribeChatActivity,nextChatActivityDeadline} from '../../composition/neuronRuntime';

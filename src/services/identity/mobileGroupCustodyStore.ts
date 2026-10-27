@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import {validAccountId} from './identityProtocol';
-import {validateGroupCustodyRows,type GroupCustodyStore,type GroupCustodyRow} from './groupCustodyService';
+import {validateGroupCustodyRows} from './groupCustodyService';
+import type {GroupCustodyStore,GroupCustodyRow} from './relayStorage';
 let opening:Promise<SQLite.SQLiteDatabase>|undefined,tail:Promise<unknown>=Promise.resolve();
 const revisions=new Map<string,number>();
 export function createMobileGroupCustodyStore(owner:string):GroupCustodyStore&{inspect():Promise<GroupCustodyRow[]>}{

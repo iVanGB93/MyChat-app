@@ -3,6 +3,26 @@ const exportsObject={};
 new Function('exports',ts.transpileModule(fs.readFileSync('src/services/identity/callRetryScheduler.ts','utf8'),{
  compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(exportsObject);
 const {createCallRetryScheduler}=exportsObject;
+test('historical journals settle across bounded passes and wake only on a new event',async()=>{
+ let clock=0,reads=0,drains=0;
+ const rows=Array.from({length:9},(_,i)=>({callId:String(i),caller:'self',callee:'peer'}));
+ const s=createCallRetryScheduler({account:'self',current:()=>true,now:()=>clock,list:async()=>{reads++;return rows;},
+ peers:()=>[{account:'peer',device:'d',instance:'i',expiresAt:999999}],pending:async()=>false,drain:async()=>{drains++;return 0;}});
+ for(let i=0;i<4;i++){await s.tick();clock+=2000;}
+ assert.equal(s.nextDeadline(),Infinity);assert.equal(drains,0);
+ s.changed();assert.equal(s.nextDeadline(),0);await s.tick();assert(reads>0);
+});
+test('unknown outbox retains retry and mid-read journal changes cannot be lost',async()=>{
+ let pending=true,changed=false;
+ const s=createCallRetryScheduler({account:'self',current:()=>true,now:()=>100,list:async()=>[{callId:'c',caller:'self',callee:'peer'}],
+ peers:()=>[{account:'peer',expiresAt:9999}],pending:async()=>{if(!changed){changed=true;s.changed();return false;}return pending?undefined:false;},drain:async()=>0});
+ await s.tick();assert.equal(s.nextDeadline(),0);await s.tick();assert.equal(s.nextDeadline(),2100);
+ pending=false;s.changed();await s.tick();assert.equal(s.nextDeadline(),Infinity);
+});
+test('disconnected calls wait for topology event rather than a two-second timer',async()=>{
+ const s=createCallRetryScheduler({account:'self',current:()=>true,now:()=>100,list:async()=>[{callId:'c',caller:'self',callee:'peer'}],peers:()=>[],drain:async()=>0});
+ await s.tick();assert.equal(s.nextDeadline(),Infinity);s.changed();assert.equal(s.nextDeadline(),0);
+});
 test('scheduler fairly rotates bounded batches and resumes on a newly connected peer',async()=>{
  let clock=100,peers=[],seen=[];
  const rows=Array.from({length:7},(_,i)=>({callId:String(i),caller:'self',callee:'peer'}));

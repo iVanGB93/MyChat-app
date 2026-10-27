@@ -3,8 +3,9 @@ import type {RootChatReply} from '../messaging';
 import * as ImagePicker from 'expo-image-picker';
 import {localAccount} from '../identity';
 import {validAccountId} from '../identity';
-import {queueRootAttachmentBatch,rootGroupAttachmentAudience} from '../messaging';
+import {queueRootAttachmentBatch,rootGroupAttachmentAudience} from '../media';
 import {ATTACHMENT_MAX_BYTES} from '../../services/identity/attachmentProtocol';
+import {withRootPickedMedia,pickRootSharedMedia} from '../storage';
 
 /** Native selection can background and lock the app; only stage bytes until normal unlock. */
 export async function pickRootMedia(peer:string,source:'camera'|'library',reply?:RootChatReply,groupId?:string,confirm?:ConfirmAttachment){
@@ -18,7 +19,7 @@ export async function pickRootMedia(peer:string,source:'camera'|'library',reply?
  if(localAccount.status().account!==owner)throw Error('Account changed');
  const result=source==='camera'
   ?await ImagePicker.launchCameraAsync({mediaTypes:['images'],quality:0.7})
-  :await ImagePicker.launchImageLibraryAsync({mediaTypes:['images','videos'],allowsMultipleSelection:true,selectionLimit:4,quality:0.7});
+  :await (pickRootSharedMedia()??ImagePicker.launchImageLibraryAsync({mediaTypes:['images','videos'],allowsMultipleSelection:true,selectionLimit:4,quality:1}));
  if(result.canceled)return;
  if(localAccount.status().account!==owner)throw Error('Account changed');
  const drafts:import('./attachmentPreview').AttachmentPreviewDraft[]=result.assets.map(asset=>{
@@ -30,6 +31,6 @@ export async function pickRootMedia(peer:string,source:'camera'|'library',reply?
  if(drafts.length>4)throw Error('Choose up to four attachments at a time');
  const selected=confirm?await confirm(drafts):drafts;if(!selected)return;
  if(localAccount.status().account!==owner)throw Error('Account changed');
- return queueRootAttachmentBatch({peer,owner,reply,audience:audience??undefined,items:selected});
+ return withRootPickedMedia(selected.map(item=>({...item,assetId:result.assets.find(a=>a.uri===item.uri)?.assetId})),items=>queueRootAttachmentBatch({peer,owner,reply,audience:audience??undefined,items}));
 }
 export const pickRootGroupMedia=(id:string,source:'camera'|'library',confirm?:ConfirmAttachment,reply?:RootChatReply)=>pickRootMedia(id,source,reply,id,confirm);

@@ -11,6 +11,8 @@ interface Reader {read(count:number):Uint8Array;close():void}
 interface Writer {write(bytes:Uint8Array):void;close():void}
 export interface DirectAttachmentStreamAdapter {
  role:'send'|'receive';expected:DirectAttachmentExpectation;
+ /** WSS may use a smaller bounded record/window on the shared control socket. */
+ frameBytes?:8192|32768;windowBytes?:65536|524288;
  /** Includes unlocked owner, exact remote device, policy, job revision and expiry. */
  live():boolean;now():number;
  /** Idle waits may wake on incoming frames; burst yields must still yield to UI work. */
@@ -31,6 +33,7 @@ export interface DirectAttachmentStreamAdapter {
  * A session is single-use, including after failure; fallback starts a fresh attempt.
  */
 export function createDirectAttachmentStream(d:DirectAttachmentStreamAdapter){
+ const frameBytes=d.frameBytes??DIRECT_FRAME_BYTES,windowBytes=d.windowBytes??DIRECT_WINDOW_BYTES;
  const e={...d.expected},hex=(s:unknown)=>typeof s==='string'&&/^[0-9a-f]{64}$/.test(s);
  if(!hex(e.digest)||!hex(e.checksum)||!Number.isSafeInteger(e.bytes)||e.bytes<1||e.bytes>MAX_BYTES
   ||d.role==='send'&&!d.reader||d.role==='receive'&&!d.writer)throw Error('Invalid direct attachment');
@@ -57,21 +60,21 @@ export function createDirectAttachmentStream(d:DirectAttachmentStreamAdapter){
  async function receive(data:unknown){
   const size=typeof data==='string'?data.length:data instanceof ArrayBuffer?data.byteLength:Infinity;
   if(finished())throw Error('Direct attachment closed');
-  if(size<1||size>(typeof data==='string'?1024:DIRECT_FRAME_BYTES)||queued+size>DIRECT_WINDOW_BYTES+2048){
+  if(size<1||size>(typeof data==='string'?1024:frameBytes)||queued+size>windowBytes+2048){
    const error=Error('Direct attachment receive bound');abort(error);throw error;
   }
   queued+=size;
   const work=tail.then(async()=>{
    current();
    if(typeof data!=='string'){
-    if(d.role!=='receive'||state!=='streaming'||!writer||size!==Math.min(DIRECT_FRAME_BYTES,e.bytes-offset))throw Error('Unexpected direct bytes');
+    if(d.role!=='receive'||state!=='streaming'||!writer||size!==Math.min(frameBytes,e.bytes-offset))throw Error('Unexpected direct bytes');
     writer.write(new Uint8Array(data as ArrayBuffer));offset+=size;last=d.now();
     if(offset===e.bytes){
      writer.close();writer=undefined;state='verifying';
      const hash=await d.hash();current();
      if(hash!==e.checksum)throw Error('Direct attachment checksum mismatch');
      control('complete',{bytes:e.bytes,checksum:hash});complete();
-    }else if(offset-ack>=DIRECT_WINDOW_BYTES/2){
+    }else if(offset-ack>=windowBytes/2){
      await d.consumed?.(offset);current();ack=offset;control('ack',{offset});
     }
     return;
@@ -86,7 +89,7 @@ export function createDirectAttachmentStream(d:DirectAttachmentStreamAdapter){
    }else if(state==='waiting'&&keys==='digest,kind'&&m.kind==='ready'){
     state='streaming';last=d.now();
    }else if(state==='streaming'&&keys==='digest,kind,offset'&&m.kind==='ack'&&Number.isSafeInteger(m.offset)
-     &&m.offset>ack&&m.offset<=offset&&m.offset%DIRECT_FRAME_BYTES===0){ack=m.offset;last=d.now();
+     &&m.offset>ack&&m.offset<=offset&&m.offset%frameBytes===0){ack=m.offset;last=d.now();
    }else if(state==='streaming'&&keys==='bytes,checksum,digest,kind'&&m.kind==='complete'&&offset===e.bytes&&m.bytes===e.bytes&&m.checksum===e.checksum){complete();
    }else throw Error('Invalid direct acknowledgement');
   }).catch(error=>{abort(error);throw error;}).finally(()=>{queued-=size;});
@@ -96,13 +99,13 @@ export function createDirectAttachmentStream(d:DirectAttachmentStreamAdapter){
   try{
    while(!finished()){
     current();
-    if(d.role==='send'&&state==='streaming'&&offset<e.bytes&&offset-ack<DIRECT_WINDOW_BYTES){
-     reader??=d.reader!();const count=Math.min(DIRECT_FRAME_BYTES,e.bytes-offset),value=reader.read(count);
+    if(d.role==='send'&&state==='streaming'&&offset<e.bytes&&offset-ack<windowBytes){
+     reader??=d.reader!();const count=Math.min(frameBytes,e.bytes-offset),value=reader.read(count);
      current();if(!(value instanceof Uint8Array)||value.length!==count)throw Error('Short direct source');
      offset+=count;d.send(value);
      // Yield after a bounded burst, not every buffer: per-buffer native timer
      // round trips otherwise dominate fast local links. Credit still caps memory.
-     if(offset%(DIRECT_WINDOW_BYTES/2)===0)await d.wait();
+     if(offset%(windowBytes/2)===0)await d.wait();
     }else await d.wait(true);
    }
   }catch(error){abort(error);}

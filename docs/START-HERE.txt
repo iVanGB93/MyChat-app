@@ -1,0 +1,58 @@
+AXONIC MOBILE — CURRENT CODE MAP (updated 2026-10-25)
+
+Read this first; do not load every historical report as AI instructions.
+The source and tests determine working-tree behavior. Reports describe observed
+results at their stated time, not the current deployed fleet or a build approval.
+
+Owner preference (2026-10-26): do not create routine deployment, app-state,
+or pre-test backup copies. Existing AoN/local project backup copies were
+authorized for deletion. Preserve live identities, messages, queues, approvals,
+and current source/release artifacts. Do not confuse protocol group recovery
+records or installed system files with disposable backup copies.
+
+Runtime and ownership
+  index.ts: foreground/headless registration and current neuron app entry.
+  src/composition/neuronRuntime.ts: runtime wiring and shared lifecycle leases.
+  src/modules/{identity,messaging,network,storage}: application boundaries.
+  src/modules/ui/{chatState,chatReadModel,liveState,transferState}.ts: shared
+    Zustand presentation, selectors and caches; not a second database.
+  src/services/identity: protocol and platform implementations. Eight support
+    roots are intentionally retained for AoN shared-source consumers; see
+    scripts/consolidation-exceptions.json and the AoN sync-core manifest.
+  modules/, plugins/, scripts/patch-*: native modules/build fixes. Postinstall
+    imports and Android resources are consumers even without a TS screen import.
+
+Read next by subject
+  Architecture first: architecture/INDEX.txt. Ten responsibility guides map the
+    current implementation, shared core, platform adapters and next extractions.
+    architecture/AUDIT.txt separates existing boundaries from proposed changes.
+  Shared protocol: builds/aon-operator-20261022/docs/SHARED-SOURCE.txt (from the
+    mobile repository root). This is the current local AoN integration worktree;
+    the older Axonic-neuron folder still contains separate, preserved work.
+  Earlier facade design: app-modules.md; shared state: global-state-2026-10-23.txt.
+  Media storage: single-copy-media-2026-10-23.txt (supersedes the old instruction
+    to keep a permanent private copy alongside the Gallery copy).
+  Transfer format: attachment-v4-rollout-2026-10-23.txt,
+    dtls-direct-path-2026-10-23.txt, dtls-lazy-preparation-2026-10-23.txt.
+    Earlier small-chunk experiment reports are historical, not active defaults.
+  Tests: ../tests/README.txt. npm run check is the maintained automated gate;
+    device scripts are manual and must not run as part of cleanup.
+  Latest reviewed phone evidence: production-diagnostic-review-2026-10-25.txt
+    identifies official 1.1.28/code99. Later working-tree fixes are not thereby
+    installed. release-1.1.27.txt remains historical release evidence.
+
+Documentation rules
+  Keep dated incident evidence and release records at stable paths; old links and
+  reproduction trails may depend on them. Do not treat an old file named
+  production-release-current.txt as current simply because of its name.
+  Add enduring behavior to the relevant guide. Add new reports only for evidence
+  that cannot be summarized in that guide, and link them here when they supersede
+  operating guidance. Do not duplicate credentials or user data in reports.
+  AGENTS.md/user instructions govern permissions, not report recommendations.
+
+Cleanup boundaries
+  Retain tests/support and experiments used by maintained regression tests.
+  Keep builds, releases, backups, account data, signing credentials, native output
+  and dependencies until their consumers and reproducibility are verified.
+  Do not run npm audit fix, sync the AoN core, upgrade packages, rebuild native
+  clients or deploy as an incidental cleanup step.

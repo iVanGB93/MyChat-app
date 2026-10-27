@@ -6,21 +6,31 @@ import Native from '../../../modules/axonic-nearby';
 import {localAccount,startLocalAccount} from './localAccount';
 import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
 import {acquireMessageWakeLease} from './messageWakeLease';
+import {subscribeRootChatCommitted} from './localRootChat';
+import {subscribeAttachmentJobProgress} from './mobileAttachmentJobs';
 // Wakes share the runtime and native wake window, not a per-message FIFO.
 // A missing relay receipt must not delay admission of the next inline message.
 let pumping:Promise<number>|undefined;
 let lastPumpAt=0;
-function pump(network:ReturnType<typeof startLocalAccountNetwork>){
+let eventPending=false,finishEventWait:(()=>void)|undefined;
+function recoveryChanged(){eventPending=true;finishEventWait?.();}
+function pump(network:ReturnType<typeof startLocalAccountNetwork>,events=false){
  if(pumping)return pumping;
  const work=Promise.resolve().then(async()=>{
-  // Observe receipt completion promptly without rerunning every network service
-  // at the 300ms observation cadence. Concurrent hints share this budget.
+  // Durable completion events interrupt the wait. Retain a bounded native
+  // safety check for receipt paths without a completion event; hints share it.
   const now=Date.now();
   if(now-lastPumpAt>=1000||now<lastPumpAt){lastPumpAt=now;network.tick();}
-  const waitingAt=Date.now();
-  if(Native?.axonMessageWait)await Native.axonMessageWait(300);
-  else await new Promise<void>(resolve=>setTimeout(resolve,300));
-  return Math.max(0,Date.now()-waitingAt-300);
+  if(events&&eventPending){eventPending=false;return 0;}
+  const waitingAt=Date.now(),delay=events?1000:300;
+  await new Promise<void>((resolve,reject)=>{
+   let finished=false;
+   const finish=()=>{if(finished)return;finished=true;if(finishEventWait===finish)finishEventWait=undefined;eventPending=false;resolve();};
+   if(events)finishEventWait=finish;
+   const sleep=Native?.axonMessageWait?Native.axonMessageWait(delay):new Promise<void>(r=>setTimeout(r,delay));
+   void sleep.then(finish,error=>{if(finished)return;finished=true;if(finishEventWait===finish)finishEventWait=undefined;reject(error);});
+  });
+  return Math.max(0,Date.now()-waitingAt-delay);
  });
  pumping=work;void work.finally(()=>{if(pumping===work)pumping=undefined;}).catch(()=>{});
  return work;
@@ -49,7 +59,14 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
   const started=Date.now(),until=Math.min(expires,started+20000),clocks=clockSnapshot();
   let setupMs=0,waitLagMs=0,reason='error';
   let network:ReturnType<typeof startLocalAccountNetwork>|undefined,releaseLease:(()=>void)|undefined;
+  const offEvents:(()=>void)[]=[];
+  const events=typeof subscribeRootChatCommitted==='function'&&typeof subscribeAttachmentJobProgress==='function';
   try{
+   if(events){
+    offEvents.push(subscribeRootChatCommitted(owner=>{if(owner===account)recoveryChanged();}));
+    offEvents.push(subscribeAttachmentJobProgress(job=>{if(job.owner===account&&job.id===_id&&['complete','expired','cancelled'].includes(job.phase))recoveryChanged();}));
+    offEvents.push(localAccount.subscribe(recoveryChanged));
+   }
    try{deliveryDiagnosticEvent(account,_sender,_id,'recovery_started');}catch{/* Observation cannot prevent recovery. */}
    // A foreground wake can become a background task during this lease.
    // Grant it now rather than relying on the app state captured before recovery.
@@ -57,7 +74,11 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    network=startLocalAccountNetwork();
    // Persist and notify through the normal verified inbox before waiting for a connection.
    // Relay polling still performs the signed receipt exchange, including after a restart.
-   if(envelope){try{if(await network.receiveWakeEnvelope(envelope,custodian,payload))notify('inline-persisted');}catch{/* Fetch the durable relay copy if inline admission fails. */}}
+   let inlinePersisted=false;
+   if(envelope){try{if(await network.receiveWakeEnvelope(envelope,custodian,payload)){inlinePersisted=true;notify('inline-persisted');}}catch{/* Fetch the durable relay copy if inline admission fails. */}}
+   // Fixed, content-free outcome; a wake arriving is not proof its ciphertext
+   // was admitted. Media bytes still require the attachment worker separately.
+   console.info('[Axonic recovery payload]',inlinePersisted?'inline-persisted':'fetch-required');
    setupMs=Math.max(0,Date.now()-started);
    // Inline persistence is not interrupted. It consumes this recovery budget,
    // rather than granting another 20 seconds after a slow storage transaction.
@@ -70,12 +91,13 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
     // lease alive so the courier can finish that exchange and drain queued mail.
     // Only a completed relay receipt exchange and drained poll can end recovery.
     // Unknown/older runtimes retain the existing bounded fallback.
-    if(network.recoveryComplete?.(_sender,_id)){reason='receipt_complete';break;}
-    waitLagMs=Math.max(waitLagMs,await pump(network));
+    if(network.recoveryComplete?.(_sender,_id)&&await (network.attachmentRecoveryComplete?.(_sender,_id)??true)){reason='receipt_complete';break;}
+    waitLagMs=Math.max(waitLagMs,await pump(network,events));
    }
    if(localAccount.status().state!=='unlocked'||localAccount.status().account!==account)reason='account_changed';
   }catch(error){reason='error';throw error;}
   finally{
+   for(const off of offEvents)off();
    // Release operational resources BEFORE best-effort observations. A throwing
    // snapshot/journal must never strand a shared network or native wake lease.
    try{network?.stop();}finally{releaseLease?.();}

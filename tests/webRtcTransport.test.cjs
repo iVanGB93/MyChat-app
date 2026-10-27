@@ -1,12 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),ts=require('typescript');
-function harness(failConfig=false,missing=false,rejectCandidates=false){
+function harness(failConfig=false,missing=false,rejectCandidates=false,shared=false,noShared=false){
   const effects=[],cleanups=[],sent=[],legacySent=[],pcs=[];
-  let configReads=0,subscriptions=0,listener,closed=0,stopped=0,disconnected=0;
+  let configReads=0,subscriptions=0,listener,closed=0,stopped=0,disconnected=0,released=0,detached=0;
   const track={kind:'audio',stop(){stopped++;}},stream={getTracks:()=>[track]};
   class PC {
     constructor(config){this.config=config;this.iceGatheringState='complete';this.signalingState='stable';pcs.push(this);}
-    addTrack(){} getStats(){return Promise.resolve(new Map());} getSenders(){return [];}
+    addTrack(){return {replaceTrack:async track=>{assert.equal(track,null);detached++;}};} getStats(){return Promise.resolve(new Map());} getSenders(){return [];}
+    getTransceivers(){return [];}
+    getReceivers(){return [];}
     createOffer(){return Promise.resolve({type:'offer',sdp:'v=0'});}
     createAnswer(){return Promise.resolve({type:'answer',sdp:'v=0'});}
     setLocalDescription(d){this.localDescription={...d,toJSON:()=>d};
@@ -20,6 +22,7 @@ function harness(failConfig=false,missing=false,rejectCandidates=false){
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports={};
   new Function('require','exports',code)(name=>{
+    if(name.includes('callQualityMonitor')){const api={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/callQualityMonitor.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(()=>require('./helpers/attachment.cjs').load('eventDeadlineTask'),api);return api;}
     if(name==='./useWebRTCCore')return loadHook('useWebRTCCore');
     if(name.includes('call-screen-capture'))return {callScreenCaptureAvailable:true,excludeScreenControls:async()=>{}};
     if(name.includes('callCameraPreview'))return {callCameraPreview:{stop:async()=>{}}};
@@ -37,33 +40,54 @@ function harness(failConfig=false,missing=false,rejectCandidates=false){
   const exports=loadHook('useWebRTCCore');
   const transport={send:async(...args)=>{sent.push(args);return !(rejectCandidates&&args[0]==='ice-candidate');},subscribe:fn=>{listener=fn;return()=>{listener=null;};},
     loadIceConfig:async()=>{if(failConfig)throw Error('unavailable');return {ice_servers:[],ice_transport_policy:'all'};}};
+  transport.acquirePeer=async()=>{
+    if(failConfig||noShared)throw Error('Shared peer unavailable');
+    const pc=new PC({network:true});
+    return {connection:pc,channelLabel:'call',current:()=>true,validateRemote:s=>s==='v=0\r\na=x-axonic-call-peer:shared\r\n',release:()=>released++};
+  };
   const hook=exports.default({callId:'one-call',peerUserId:14,callType:'voice',isOutgoing:true,
     mediaTransport:missing?undefined:transport,onDisconnected:()=>{disconnected++;}});
   for(const effect of effects){const cleanup=effect();if(cleanup)cleanups.push(cleanup);}
   return {hook,sent,legacySent,pcs,emit:(...a)=>listener?.(...a),unmount:()=>cleanups.forEach(f=>f()),
-    counts:()=>({configReads,subscriptions,closed,stopped,disconnected})};
+    counts:()=>({configReads,subscriptions,closed,stopped,disconnected,released,detached})};
 }
 const settle=()=>new Promise(r=>setImmediate(r));
+test('shared call borrows the network PC and hangup detaches tracks without closing it',async()=>{
+ const h=harness(false,false,false,true);
+ await h.hook.startAsOfferer();await settle();assert.equal(h.pcs.length,1);assert.equal(h.pcs[0].config.network,true);
+ h.emit('answer',{type:'answer',sdp:'v=0\r\na=x-axonic-call-peer:shared\r\n'});await settle();assert.equal(h.pcs[0].remoteDescription.type,'answer');
+ h.unmount();await settle();assert.equal(h.counts().closed,0);assert.equal(h.counts().released,1);
+ assert.equal(h.counts().detached,1);assert.equal(h.counts().stopped,1);
+ assert.equal(h.pcs[0].ontrack,null);assert.equal(h.pcs[0].onicecandidate,null);
+});
 test('neuron adapter exclusively owns signaling and ICE; cleanup stops native media',async()=>{
   const h=harness();
   try {
     await h.hook.startAsOfferer();await settle();
     assert.deepEqual(h.sent.map(e=>e[0]),['offer'],'gathered ICE cannot queue ahead of the neuron offer');assert.deepEqual(h.legacySent,[]);
-    assert.equal(h.counts().configReads,0);assert.equal(h.counts().subscriptions,0);assert.equal(h.pcs[0].config.bundlePolicy,'max-bundle');
-    h.emit('answer',{type:'answer',sdp:'v=0'});await settle();
+    assert.equal(h.counts().configReads,0);assert.equal(h.counts().subscriptions,0);assert.equal(h.pcs[0].config.network,true);
+    h.emit('answer',{type:'answer',sdp:'v=0\r\na=x-axonic-call-peer:shared\r\n'});await settle();
     assert.equal(h.pcs[0].remoteDescription.type,'answer');
   } finally {h.unmount();}
-  assert.equal(h.counts().closed,1);assert.equal(h.counts().stopped,1);
-  const count=h.sent.length;h.pcs[0].onicecandidate({candidate:{toJSON:()=>({candidate:'late'})}});
+  await settle();assert.equal(h.counts().closed,0);assert.equal(h.counts().released,1);assert.equal(h.counts().stopped,1);
+  const count=h.sent.length;h.pcs[0].onicecandidate?.({candidate:{toJSON:()=>({candidate:'late'})}});
   await settle();assert.equal(h.sent.length,count);
 });
-test('failed neuron ICE config fails closed without Django fallback or peer creation',async()=>{
+test('unavailable shared peer and failed ICE lookup fail closed',async()=>{
   const h=harness(true);
   try {
     await settle();await h.hook.startAsOfferer();await settle();
     assert.equal(h.pcs.length,0);assert.equal(h.sent.length,0);assert.equal(h.legacySent.length,0);
     assert.equal(h.counts().configReads,0);assert.equal(h.counts().disconnected,1);
   } finally {h.unmount();}
+});
+
+test('unavailable shared peer uses negotiated call-only ICE and closes only its owned PC',async()=>{
+ const h=harness(false,false,false,false,true);
+ try{await h.hook.startAsOfferer();await settle();assert.equal(h.pcs.length,1);assert.equal(h.pcs[0].config.iceTransportPolicy,'all');assert.equal(h.pcs[0].config.network,undefined);
+  assert(h.sent.find(e=>e[0]==='offer')[1].sdp.includes('a=x-axonic-call-peer:dedicated'));
+  h.emit('answer',{type:'answer',sdp:'v=0\r\na=fingerprint:sha-256 '+Array(32).fill('AA').join(':')+'\r\na=x-axonic-call-peer:dedicated\r\n'});await settle();assert.equal(h.pcs[0].remoteDescription.type,'answer');
+ }finally{h.unmount();}await settle();assert.equal(h.counts().closed,1);assert.equal(h.counts().released,0);
 });
 
 test('missing neuron transport fails closed without creating a peer connection',async()=>{

@@ -1,0 +1,50 @@
+DIAGNOSTICS AND AI ADAPTERS
+Two related responsibilities: observe/report domain behavior; expose approved app
+operations and events to AI clients. Diagnostics do not authorize mutations.
+
+File: src/modules/diagnostics/index.ts
+File: src/composition/diagnosticReports.ts
+File: src/services/diagnosticReport.ts
+File: src/services/diagnosticJournal.ts
+File: src/services/deliveryDiagnostics.ts
+File: src/services/identity/relayInventory.ts
+AoN: src/reporting.ts
+AoN: src/observability.ts
+AoN: src/chatSync.ts
+AoN: src/dashboardEvents.ts
+AoN: integrations/mcp/src/tools.mjs
+AoN: integrations/mcp/src/operations.mjs
+AoN: integrations/mcp/src/watcher.mjs
+AoN: integrations/openclaw
+
+Contract: bounded, redacted observations with source revision/runtime fingerprint,
+process/network epoch and explicit known/unknown fields. Distinguish created,
+queued, stored, delivered, read, webhook accepted and AI processed. Local absence
+of a receipt is not confirmed non-delivery. Compare counters only within epochs.
+
+AI clients are adapters to the same account rules, not a parallel message store.
+Use stable IDs/cursors, durable pending payloads and verified completion evidence.
+Approval must be rechecked at dispatch. Unknown sender approval, destructive
+operation approval and OAuth scopes are different gates. Never treat a model's
+claim, operational note or HTTP error as verified acceptance.
+
+Integration scope
+  SecondNeuron MCP: repository-owned tools/events/auth/idempotency implementation.
+  ATOMiX OpenClaw: repository channel plus host config; inspect actual capability
+    configuration before claiming Telegram-equivalent tools or group permissions.
+  Muse: external VM listener. Local reviewed packages/reports are evidence, not
+    a guarantee the VM runs them. Coordinate with Muse; do not maintain an
+    untracked second live copy or claim her activation from local tests alone.
+
+Test: tests/diagnosticReport.test.cjs
+Test: tests/relayInventory.test.cjs
+AoN: tests/reporting.test.mjs
+AoN: integrations/mcp/test
+Run hosted and integration suites in their own package roots. Live acceptance
+requires event->wake->processing->one verified reply, reconnect/catch-up and
+preserved cursor/dedup. Local unit tests do not prove a hosted AI was awakened.
+
+Next extraction: common observation vocabulary and stable command/event contracts;
+retain platform-specific listener machinery and credentials outside shared core.
+Guide: identity.txt
+Guide: messaging.txt

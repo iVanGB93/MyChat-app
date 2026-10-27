@@ -88,6 +88,7 @@ export function createIdentityNetwork(d: {
             close(); context.onClosed();
           }, {
             list: () => (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && c.expiresAt !== null)
+              .filter(c=>![...sessions].some(s=>s.snapshot().account===c.account&&s.supportsRtcEndpoint?.()===false))
               .map(c => ({ account: c.account, expiresAt: c.expiresAt! })),
             received: peers => { if (valid()) {directory.replace(candidate.account, peers);d.onWorkChanged?.();} },
           }, (raw, peer) => signaling?.receive(raw, peer) ?? Promise.resolve(false), d.onTestMessage, d.onCustody, d.onChatMessage, d.onDirectory, d.onPush, d.onCallControl, d.onCallMedia, d.onCallRelay, d.onCallMediaRelay, d.onRelayedCallMedia, d.onAttachment);
@@ -113,6 +114,10 @@ export function createIdentityNetwork(d: {
     eventCallPeers:()=>[...sessions].filter(s=>s.supportsCallInboxEvents()).map(s=>s.snapshot().account!),
     subscribeTopology(listener:()=>void){topologyListeners.add(listener);return()=>{topologyListeners.delete(listener);};},
     attachmentStreamPeer:streamPeer,
+    wssStreamPeer:(account:string)=>[...sessions].map(s=>s.wssStreamPeer()).find(p=>p?.account===account)??null,
+    supportsWssBinary:(account:string,instance:string)=>[...sessions].some(s=>s.wssStreamPeer()?.account===account&&s.wssStreamPeer()?.instance===instance&&s.supportsWssBinary()),
+    sendWssBinary:(account:string,instance:string,raw:Uint8Array)=>[...sessions].find(s=>s.wssStreamPeer()?.account===account&&s.wssStreamPeer()?.instance===instance)?.sendWssBinary(raw,instance)??false,
+    sendWssStream:(account:string,instance:string,raw:string)=>[...sessions].find(s=>s.wssStreamPeer()?.account===account&&s.wssStreamPeer()?.instance===instance)?.sendWssStream(raw,instance)??false,
     profileOfferPeers:()=>[...sessions].filter(s=>s.supportsProfileOffers()).map(s=>s.snapshot().account!).filter(Boolean),
     sendSignal,
     mediaContexts: () => [...sessions].flatMap(s => { const c=s.mediaContext(); return c ? [c] : []; }),
@@ -168,6 +173,7 @@ export function createIdentityNetwork(d: {
     sharedAttachmentPeers:()=>[...sessions].filter(s=>s.snapshot().state==='connected'&&s.supportsSharedAttachments()).map(s=>s.snapshot().account!).filter(Boolean),
     attachmentPeers(){return rankedConnections('media').filter(c=>[...sessions].some(s=>s.snapshot().account===c.account&&s.supportsAttachments())).map(c=>c.account);},
     attachmentRequest(target:string,raw:string){return [...sessions].find(s=>s.snapshot().account===target&&s.snapshot().state==='connected')?.attachmentRequest(raw)??Promise.resolve(null);},
+    attachmentBlockStreamPeers(){return [...sessions].filter(s=>s.supportsAttachmentBlockStreams()).map(s=>s.snapshot().account!);},
     attachmentBulkPeers(){return [...sessions].filter(s=>s.supportsAttachmentBulk()).map(s=>s.snapshot().account!);},
     attachmentUploadBatchPeers(){return [...sessions].filter(s=>s.supportsAttachmentUploadBatch()).map(s=>s.snapshot().account!);},
     attachmentBatchChunks(target:string){return [...sessions].find(s=>s.snapshot().account===target&&s.supportsAttachmentBulk())?.attachmentBatchChunks()??1;},

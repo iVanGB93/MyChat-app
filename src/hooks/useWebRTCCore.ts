@@ -1,25 +1,16 @@
+import {createCallQualityMonitor,type CallQuality} from '../services/callQualityMonitor';
 import {deliverCallSignal} from '../services/callSignalRetry';
 import {createCallScreenShare} from '../services/callScreenShare';
 import {createCallEndHandshake} from '../services/callEndHandshake';
 import {excludeScreenControls} from '../services/call-screen-capture';
-import {CALL_VIDEO_STATE,callVideoState,readCallVideoState} from '../services/callVideoPresentation';
+import {callVideoState,readCallVideoState} from '../services/callVideoPresentation';
 import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
 import {callCameraPreview} from '../services/callCameraPreview';
-/* ------------------------------------------------------------------ */
-/*  useWebRTC — peer-to-peer audio/video using react-native-webrtc    */
-/*  Mirrors the web app's signaling flow exactly:                      */
-/*    Caller  → receives call_accepted → creates offer → sends        */
-/*    Callee  → receives offer → creates answer → sends               */
-/*    Both    → trickle ICE candidates + full SDP with gathered ICE    */
-/*                                                                      */
-/*  ICE/TURN strategy                                                   */
-/*    The authenticated neuron adapter supplies ICE configuration:   */
-/*    STUN + TURN servers configured for the user's connectivity mode: */
-/*      auto   → try P2P first, fall back to TURN relay               */
-/*      p2p    → STUN only, never use relay                            */
-/*      server → TURN relay only (iceTransportPolicy = 'relay')        */
-/*    connectionType exposes the actual path chosen: 'p2p' | 'relayed' */
-/* ------------------------------------------------------------------ */
+import {createCallPeerSelection,callPeerMode,callPeerDescription,type SelectedCallPeer,type CallPeerMode} from '../services/callPeerSelection';
+/** Prefer the authenticated network peer; negotiate a call-only ICE fallback
+ * when it cannot connect. Signaling stays bound to the accepted call. Cleanup
+ * releases shared peers and closes only call-owned connections.
+ */
 
 import { useRef, useCallback, useEffect, useState } from 'react';
 import {
@@ -35,31 +26,14 @@ import { createCallRecovery } from '../services/callRecovery';
 import { debugLog } from '../services/diagnostics';
 import { readCallSignal } from '../services/call-signal';
 import { videoQualityParameters, type VideoQualityMode } from '../services/video-quality';
-import type { CallType, IceConfig } from '../types';
+import type { CallType } from '../types';
 import type { CallMediaTransport } from '../services/call-media-transport';
 
 /** The ICE gather timeout — same as web app */
 const ICE_GATHER_TIMEOUT = 5000;
-/** Fallback config if the server is unreachable */
-const FALLBACK_ICE_CONFIG: IceConfig = {
-  ice_servers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-  ],
-  ice_transport_policy: 'all',
-};
-
 export type ConnectionType = 'connecting' | 'p2p' | 'relayed';
 
-export type CallQualityLevel = 'unknown' | 'poor' | 'fair' | 'good';
-
-export interface CallQuality {
-  level: CallQualityLevel;
-  roundTripTimeMs: number | null;
-  packetLossPercent: number | null;
-  bitrateKbps: number | null;
-}
-
+export type {CallQuality,CallQualityLevel} from '../services/callQualityMonitor';
 export interface UseWebRTCOptions {
   callId: string;
   callType: CallType;
@@ -94,12 +68,17 @@ export default function useWebRTCCore({
     if (!mediaTransport) { disconnectedRef.current?.(); return; }
     const version=(signalVersions.current[type]??0)+1;signalVersions.current[type]=version;
     const current=()=>!cleanedUp.current&&(type==='ice-candidate'||signalVersions.current[type]===version);
-    void deliverCallSignal({kind:type,current,now:Date.now,send:()=>mediaTransport.send(type,data),
+    const payload=(type==='offer'||type==='answer')&&sharedPeer.current?callPeerDescription(data,sharedPeer.current.mode):data;
+    void deliverCallSignal({kind:type,current,now:Date.now,send:()=>mediaTransport.send(type,payload),
       wait:ms=>new Promise<void>(resolve=>{const timer=setTimeout(()=>{signalWaits.current.delete(timer);resolve();},ms);signalWaits.current.set(timer,resolve);}),
     }).then(sent=>{if(!sent&&type!=='ice-candidate'&&current())disconnectedRef.current?.();});
   }, [mediaTransport]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
+  const sharedPeer=useRef<SelectedCallPeer|null>(null);
+  const peerSelection=useRef<ReturnType<typeof createCallPeerSelection>|null>(null);
+  const peerFlight=useRef<Promise<RTCPeerConnection>|null>(null);
+  const callSenders=useRef<ReturnType<RTCPeerConnection['getSenders']>>([]);
   const [videoQualityMode, setVideoQualityMode] = useState<VideoQualityMode>('automatic');
   const [videoQualityError, setVideoQualityError] = useState<string | null>(null);
   const videoQualityModeRef = useRef<VideoQualityMode>('automatic');
@@ -111,13 +90,23 @@ export default function useWebRTCCore({
   const hasRemoteDesc = useRef(false);
   const fullDescriptionSent = useRef(false);
   const cleanedUp = useRef(false);
-  const iceConfigRef = useRef<IceConfig>(FALLBACK_ICE_CONFIG);
-  const iceConfigReadyRef = useRef<Promise<void> | null>(null);
+  const selection=()=>{
+    if(!mediaTransport)throw Error('Call transport unavailable');
+    return peerSelection.current??=createCallPeerSelection({id:String(callId),current:()=>!cleanedUp.current,
+      acquire:mediaTransport.acquirePeer,loadIceConfig:()=>mediaTransport.loadIceConfig(),
+      create:cfg=>new RTCPeerConnection({iceServers:cfg.ice_servers,iceTransportPolicy:cfg.ice_transport_policy,bundlePolicy:'max-bundle'} as any)});
+  };
   /** Serial queue to prevent signal race conditions (mirrors web app). */
   const signalQueue = useRef<Promise<void>>(Promise.resolve());
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const refreshSharedRemote=(pc:RTCPeerConnection)=>{
+    if(!sharedPeer.current?.current()||cleanedUp.current)return;
+    // Reused transceivers need not emit a second track event on the next call.
+    const tracks=pc.getReceivers().flatMap(r=>r.track&&r.track.readyState!=='ended'&&(r.track.kind==='audio'||callType==='video')?[r.track]:[]);
+    if(tracks.length)setRemoteStream(new MediaStream(tracks));
+  };
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isScreenSharing,setIsScreenSharing]=useState(false),[screenShareBusy,setScreenShareBusy]=useState(false),[screenShareError,setScreenShareError]=useState<string|null>(null);
@@ -150,24 +139,9 @@ export default function useWebRTCCore({
     packetLossPercent: null,
     bitrateKbps: null,
   });
-  const qualityTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const qualitySampleRef = useRef<{ timestamp: number; bytesSent: number } | null>(null);
+  const qualityMonitor = useRef<ReturnType<typeof createCallQualityMonitor>|null>(null);
 
-  /* ---- Resolve this call's ICE configuration before negotiating ---- */
-  useEffect(() => {
-    iceConfigReadyRef.current = (mediaTransport?.loadIceConfig() ?? Promise.reject(Error('Call transport unavailable'))).then((cfg) => {
-      if (cleanedUp.current) return;
-      iceConfigRef.current = cfg;
-      debugLog(
-        `[WebRTC] ICE config loaded — policy: ${cfg.ice_transport_policy}, servers: ${cfg.ice_servers.length}`
-      );
-    }).catch(() => {
-      if (cleanedUp.current) return;
-      // A failed configuration must not start an offer.
-      cleanup();
-      disconnectedRef.current?.();
-    });
-  }, []);
+
 
   /* ---- helpers ---- */
 
@@ -277,64 +251,14 @@ export default function useWebRTCCore({
     if (pcRef.current) void applyVideoBitrate(pcRef.current);
   }, [applyVideoBitrate]);
 
-  const measureCallQuality = useCallback(async (pc: RTCPeerConnection) => {
-    try {
-      const stats: RTCStatsReport = await (pc as any).getStats();
-      let bytesSent = 0;
-      let roundTripTimeMs: number | null = null;
-      let packetsLost = 0;
-      let packetsSent = 0;
-
-      stats.forEach((report: any) => {
-        if (report.type === 'outbound-rtp' && report.kind === 'video') {
-          bytesSent = Number(report.bytesSent) || 0;
-          packetsSent = Number(report.packetsSent) || 0;
-        }
-        if (report.type === 'candidate-pair' && (report.state === 'succeeded' || report.nominated)) {
-          const rtt = Number(report.currentRoundTripTime);
-          if (Number.isFinite(rtt) && rtt >= 0) roundTripTimeMs = Math.round(rtt * 1000);
-        }
-        if (report.type === 'remote-inbound-rtp' && report.kind === 'video') {
-          const rtt = Number(report.roundTripTime);
-          if (Number.isFinite(rtt) && rtt >= 0) roundTripTimeMs = Math.round(rtt * 1000);
-          packetsLost = Number(report.packetsLost) || packetsLost;
-          packetsSent = Number(report.packetsSent) || packetsSent;
-        }
-      });
-
-      const now = Date.now();
-      const previous = qualitySampleRef.current;
-      const bitrateKbps = previous && now > previous.timestamp && bytesSent >= previous.bytesSent
-        ? Math.round(((bytesSent - previous.bytesSent) * 8) / (now - previous.timestamp))
-        : null;
-      qualitySampleRef.current = { timestamp: now, bytesSent };
-
-      const packetLossPercent = packetsSent > 0
-        ? Math.round((packetsLost / (packetsSent + packetsLost)) * 1000) / 10
-        : null;
-      const poor = (roundTripTimeMs != null && roundTripTimeMs >= 350)
-        || (packetLossPercent != null && packetLossPercent >= 8);
-      const fair = (roundTripTimeMs != null && roundTripTimeMs >= 180)
-        || (packetLossPercent != null && packetLossPercent >= 3);
-      const level: CallQualityLevel = poor ? 'poor' : fair ? 'fair' : (roundTripTimeMs != null || packetLossPercent != null) ? 'good' : 'unknown';
-
-      setCallQuality({ level, roundTripTimeMs, packetLossPercent, bitrateKbps });
-      qualityLevelRef.current = level;
-      await applyVideoBitrate(pc);
-    } catch (err) {
-      console.warn('[WebRTC] quality stats failed:', err);
-    }
-  }, [applyVideoBitrate]);
-
   const startQualityMonitoring = useCallback((pc: RTCPeerConnection) => {
     if (callType !== 'video') return;
-    if (qualityTimerRef.current) clearInterval(qualityTimerRef.current);
-    qualitySampleRef.current = null;
-    measureCallQuality(pc).catch(() => {});
-    qualityTimerRef.current = setInterval(() => {
-      if (!cleanedUp.current) measureCallQuality(pc).catch(() => {});
-    }, 3000);
-  }, [callType, measureCallQuality]);
+    qualityMonitor.current?.stop();
+    const monitor=createCallQualityMonitor({current:()=>!cleanedUp.current&&pcRef.current===pc,now:Date.now,
+      stats:()=>pc.getStats(),failed:err=>console.warn('[WebRTC] quality stats failed:',err),
+      publish:async value=>{setCallQuality(value);qualityLevelRef.current=value.level;await applyVideoBitrate(pc);}});
+    qualityMonitor.current=monitor;monitor.start();
+  }, [callType, applyVideoBitrate]);
 
   /** Flush buffered ICE candidates after remote description is set. */
   const flushCandidates = useCallback(() => {
@@ -391,21 +315,22 @@ export default function useWebRTCCore({
     }
   }, []);
 
-  /** Create RTCPeerConnection with the fetched ICE config, add local tracks, wire up handlers. */
+  /** Borrow the authenticated network connection and attach this call's media. */
   const createPeerConnection = useCallback(
-    (stream: MediaStream): RTCPeerConnection => {
-      const { ice_servers, ice_transport_policy } = iceConfigRef.current;
-
-      const pc = new RTCPeerConnection({
-        iceServers: ice_servers,
-        iceTransportPolicy: ice_transport_policy,
-        // Neuron peers support BUNDLE: use one allocation for audio and video.
-        bundlePolicy:'max-bundle' as const,
-      } as any);
+    async (stream: MediaStream, mode:CallPeerMode|'prefer-shared'='prefer-shared'): Promise<RTCPeerConnection> => {
+      if(pcRef.current){if(mode!=='prefer-shared'&&sharedPeer.current?.mode!==mode)throw Error('Call peer mode changed');return pcRef.current;}
+      if(peerFlight.current)return peerFlight.current;
+      const build=async()=>{
+      const lease=await selection().select(mode);
+      if(cleanedUp.current){lease.release();throw Error('Call ended');}
+      sharedPeer.current=lease;
+      const pc = lease.connection as RTCPeerConnection;
       pcRef.current = pc;
       if(callType==='video'){
+        const label=lease.channelLabel;
         const attach=(channel:RTCDataChannel)=>{
-          if(channel.label!==CALL_VIDEO_STATE||videoStateChannel.current){channel.close();return;}
+          if(channel.label!==label)return;
+          if(videoStateChannel.current){channel.close();return;}
           videoStateChannel.current=channel;
           endHandshake.current?.close();
           const ending=createCallEndHandshake(String(callId),{
@@ -418,16 +343,19 @@ export default function useWebRTCCore({
           publishVideoState();
         };
         (pc as any).ondatachannel=(event:{channel:RTCDataChannel})=>attach(event.channel);
-        if(isOutgoing)attach(pc.createDataChannel(CALL_VIDEO_STATE,{ordered:true}));
+        if(isOutgoing)attach(pc.createDataChannel(label,{ordered:true}));
       }
       hasRemoteDesc.current = false;
       fullDescriptionSent.current = false;
       startQualityMonitoring(pc);
 
       // Add local tracks
-      stream.getTracks().forEach((track) => {
-        pc.addTrack(track, stream);
-      });
+      for(const track of stream.getTracks()){
+        if(cleanedUp.current)throw Error('Call ended');
+        const reusable=pc.getTransceivers().find(t=>!t.stopped&&!t.sender.track&&t.receiver.track?.kind===track.kind);
+        if(reusable){await reusable.sender.replaceTrack(track);if(cleanedUp.current){await reusable.sender.replaceTrack(null);throw Error('Call ended');}reusable.direction='sendrecv';callSenders.current.push(reusable.sender);}
+        else callSenders.current.push(pc.addTrack(track, stream));
+      }
 
       // Remote stream
       (pc as any).ontrack = (event: any) => {
@@ -485,6 +413,9 @@ export default function useWebRTCCore({
       };
 
       return pc;
+      };
+      peerFlight.current=build();
+      try{return await peerFlight.current;}finally{peerFlight.current=null;}
     },
     [peerUserId, sendSignal, mediaTransport, isOutgoing, onConnected, onDisconnected, waitForIceGathering, detectConnectionType, startQualityMonitoring],
   );
@@ -495,11 +426,11 @@ export default function useWebRTCCore({
     debugLog('[WebRTC] startAsOfferer');
     try {
       const stream = await acquireMedia();
-      await iceConfigReadyRef.current;
       if (cleanedUp.current) return;
-      const pc = createPeerConnection(stream);
+      const pc = await createPeerConnection(stream);
 
       const offer = await pc.createOffer({} as any);
+      if(cleanedUp.current)return;
       await pc.setLocalDescription(offer);
 
       // Wait for ICE gathering (up to 5s), then send full offer
@@ -512,6 +443,7 @@ export default function useWebRTCCore({
       }
     } catch (err) {
       console.error('[WebRTC] startAsOfferer error:', err);
+      if(!cleanedUp.current)disconnectedRef.current?.();
     }
   }, [acquireMedia, createPeerConnection, waitForIceGathering, sendSignal, peerUserId]);
 
@@ -521,11 +453,13 @@ export default function useWebRTCCore({
     debugLog('[WebRTC] startAsAnswerer — acquiring media, waiting for offer');
     try {
       await acquireMedia();
-      // PeerConnection is created when the offer arrives (in signal handler)
+      // Start shared discovery, but let the authenticated offer choose the mode.
+      if(!cleanedUp.current&&mediaTransport)void selection().warm();
     } catch (err) {
       console.error('[WebRTC] startAsAnswerer error:', err);
+      if(!cleanedUp.current)disconnectedRef.current?.();
     }
-  }, [acquireMedia]);
+  }, [acquireMedia,createPeerConnection,mediaTransport]);
 
   /* ---- Handle incoming WebRTC signals ---- */
   useEffect(() => {
@@ -555,17 +489,19 @@ export default function useWebRTCCore({
             // instead of dropping the offer and leaving a fake call timer
             // with no peer connection.
             const stream = localStreamRef.current ?? await acquireMedia();
-            await iceConfigReadyRef.current;
-            if (cleanedUp.current) return;
+                  if (cleanedUp.current) return;
             // Create PC if not yet created
-            const pc = pcRef.current ?? createPeerConnection(stream);
+            const pc = await createPeerConnection(stream,callPeerMode(data.sdp));
+            if(sharedPeer.current&&!sharedPeer.current.validateRemote(data.sdp))throw Error('Shared peer certificate changed');
 
             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
             hasRemoteDesc.current = true;
             flushCandidates();
 
             const answer = await pc.createAnswer();
+            if(cleanedUp.current)return;
             await pc.setLocalDescription(answer);
+            if(sharedPeer.current?.mode==='shared'){refreshSharedRemote(pc);onConnected?.();void detectConnectionType(pc);}
 
             await waitForIceGathering(pc);
 
@@ -584,7 +520,10 @@ export default function useWebRTCCore({
           try {
             const pc = pcRef.current;
             if (!pc) return;
+            if(sharedPeer.current&&callPeerMode(data.sdp)!==sharedPeer.current.mode)throw Error('Call peer mode changed');
+            if(sharedPeer.current&&!sharedPeer.current.validateRemote(data.sdp))throw Error('Shared peer certificate changed');
             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+            if(sharedPeer.current?.mode==='shared'){refreshSharedRemote(pc);onConnected?.();void detectConnectionType(pc);}
             hasRemoteDesc.current = true;
             flushCandidates();
           } catch (err) {
@@ -667,6 +606,7 @@ export default function useWebRTCCore({
   const cleanup = useCallback(() => {
     debugLog('[WebRTC] cleanup');
     cleanedUp.current = true;
+    peerSelection.current?.stop();
     screenShareRef.current?.close();
     endHandshake.current?.close();endHandshake.current=null;
     videoStateChannel.current?.close();videoStateChannel.current=null;
@@ -675,13 +615,23 @@ export default function useWebRTCCore({
     for(const [timer,resolve] of signalWaits.current){clearTimeout(timer);resolve();}
     signalWaits.current.clear();
 
-    if (qualityTimerRef.current) {
-      clearInterval(qualityTimerRef.current);
-      qualityTimerRef.current = null;
-    }
+    qualityMonitor.current?.stop();qualityMonitor.current=null;
 
     if (pcRef.current) {
-      pcRef.current.close();
+      if(sharedPeer.current){
+        // Stop this call's senders, never the network connection or data channels.
+        const detached=callSenders.current.map(sender=>sender.replaceTrack(null).catch(()=>{}));
+        const pc=pcRef.current;
+        (pc as any).ontrack=null;(pc as any).onicecandidate=null;
+        (pc as any).oniceconnectionstatechange=null;(pc as any).ondatachannel=null;
+        const lease=sharedPeer.current;sharedPeer.current=null;
+        void Promise.allSettled([...detached,signalQueue.current]).then(async()=>{
+          if(!lease.current())return;
+          if(pc.signalingState==='have-local-offer')await pc.setLocalDescription({type:'rollback'} as any);
+          else if(pc.signalingState==='have-remote-offer')await pc.setRemoteDescription({type:'rollback'} as any);
+        }).catch(()=>{/* Network owner retains the transport; no call may close it. */}).finally(()=>lease.release());
+      }
+      callSenders.current=[];
       pcRef.current = null;
     }
 

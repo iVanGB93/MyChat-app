@@ -19,6 +19,20 @@ type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'>
     peers: { account: string; endpoint: string }[] };
 };
 const validAccount = (id: string) => /^axonic:1:[0-9a-f]{64}$/.test(id);
+/** One current signaling route per destination, using the existing local peer
+ * ranking. Discovery iteration order must not silently override that choice. */
+export function rankedRtcIntroductions<T extends {account:string;via:string;expiresAt:number}>(
+  introductions:readonly T[], connections:readonly {account:string;state:string}[], now:number,
+):T[]{
+  const rank=new Map(connections.filter(c=>c.state==='connected').map((c,i)=>[c.account,i]));
+  const selected=new Map<string,T>();
+  for(const peer of introductions){
+    if(peer.expiresAt<=now||!rank.has(peer.via))continue;
+    const old=selected.get(peer.account);
+    if(!old||rank.get(peer.via)!<rank.get(old.via)!||peer.via===old.via&&peer.expiresAt>old.expiresAt)selected.set(peer.account,peer);
+  }
+  return [...selected.values()];
+}
 /** Development-only foreground LAN composition. Call tick once per second.
  * No account in an advertisement is trusted until the axon verifies its signatures.
  */
@@ -111,7 +125,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
         try { if (active) nearby = new Set(d.native.axonLanSnapshot().peers.map(p => p.account)); } catch { /* RTC remains a fallback. */ }
         // An introduction is a signaling locator, not proof that an endpoint
         // supports RTC. Keep the configured direct route to a bootstrap peer.
-        for (const peer of state.introductions) if (state.account && state.account < peer.account
+        for (const peer of rankedRtcIntroductions(state.introductions,state.pool?.connections??[],d.now())) if (state.account && state.account < peer.account
           && !internetPeers.some(seed=>seed.account===peer.account)
           && (!nearby.has(peer.account) || lanDeferred(peer.account)))
           network.offer({ account: peer.account, endpoint: 'rtc:' + peer.via, route: 'internet', expiresAt: peer.expiresAt });
@@ -120,7 +134,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
         // until RTC authentication succeeds, with its usual limits and backoff.
         for(const [peer,wanted] of streamRequests){
           if(wanted.until<=d.now()){streamRequests.delete(peer);continue;}
-          if(state.account&&state.account<peer&&!internetPeers.some(seed=>seed.account===peer)
+          if(state.account&&state.account<peer
             &&network.attachmentStreamPeer(peer)?.device===wanted.device)
             network.offer({account:peer,endpoint:'rtc:'+peer,route:'internet',expiresAt:d.now()+30000});
         }
@@ -144,13 +158,38 @@ export function createLanIdentityRuntime(d: Dependencies) {
     resume() { retryAt = 0; failedLan.clear(); network.resume(); },
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,
+    acquireCallPeer(account:string,device:string,id:string,current:()=>boolean):Promise<import('./sharedRtcCall').SharedRtcCallLease>{
+      return new Promise((resolve,reject)=>{
+        let done=false,off=()=>{};
+        const timer=setTimeout(()=>finish(null),25000);
+        const finish=(lease:import('./sharedRtcCall').SharedRtcCallLease|null)=>{
+          if(done){lease?.release();return;}done=true;clearTimeout(timer);off();
+          if(lease)resolve(lease);else reject(Error('Shared peer connection unavailable'));
+        };
+        const attempt=()=>{
+          if(disposed||!current()){finish(null);return;}
+          const lease=rtc?.borrowCall(account,device,id);if(lease){finish(lease);return;}
+          if(network.attachmentStreamPeer(account)?.device===device){
+            if(streamRequests.has(account)||streamRequests.size<5)streamRequests.set(account,{device,until:d.now()+30000});
+            d.onWorkChanged?.();
+          }
+        };
+        off=network.subscribeTopology(attempt);attempt();
+      });
+    },
     subscribeConnected:network.subscribeConnected,profileOfferPeers:network.profileOfferPeers,
     custodyRequest: network.custodyRequest,groupCustodians:network.groupCustodians,
     attachmentStreams:{available:(account:string,device:string)=>rtc?.canStream(account,device)??false,
+      unavailableReason(account:string,device:string){
+        const state=network.snapshot();
+        if(disposed||state.state!=='active'||!state.account)return 'inactive-account';
+        if(!rtc||!d.rtc?.streamCredit)return 'native-unavailable';
+        if(network.attachmentStreamPeer(account)?.device!==device)return 'peer-stream-unsupported';
+        return 'route-not-ready';
+      },
       request(account:string,device:string){
         const state=network.snapshot();
         if(disposed||!rtc||!d.rtc?.streamCredit||state.state!=='active'||!state.account
-          ||d.internet?.peers.some(seed=>seed.account===account)
           ||network.attachmentStreamPeer(account)?.device!==device)return false;
         for(const [peer,wanted] of streamRequests)if(wanted.until<=d.now())streamRequests.delete(peer);
         if(!streamRequests.has(account)&&streamRequests.size>=5)return false;
@@ -158,9 +197,10 @@ export function createLanIdentityRuntime(d: Dependencies) {
       },
       open:(account:string,device:string)=>{if(!rtc)throw Error('RTC unavailable');return rtc.openStream(account,device);},
       listen:(handler:Parameters<NonNullable<typeof rtc>['listenStreams']>[0])=>rtc?.listenStreams(handler)??(()=>{})},
+    supportsWssBinary:network.supportsWssBinary,sendWssBinary:network.sendWssBinary,wssStreamPeer:network.wssStreamPeer,sendWssStream:network.sendWssStream,
     subscribeTopology:network.subscribeTopology,eventCallPeers:network.eventCallPeers,
     profilePeers:network.profilePeers,timestampPeers:network.timestampPeers,sharedAttachmentPeers:network.sharedAttachmentPeers,attachmentPeers:network.attachmentPeers,attachmentRequest:network.attachmentRequest,
-    attachmentBulkPeers:network.attachmentBulkPeers,attachmentBulkRequest:network.attachmentBulkRequest,
+    attachmentBlockStreamPeers:network.attachmentBlockStreamPeers,attachmentBulkPeers:network.attachmentBulkPeers,attachmentBulkRequest:network.attachmentBulkRequest,
     attachmentUploadBatchPeers:network.attachmentUploadBatchPeers,
     attachmentBatchChunks:network.attachmentBatchChunks,
     attachmentBatchWindow:network.attachmentBatchWindow,

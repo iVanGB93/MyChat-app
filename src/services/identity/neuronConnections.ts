@@ -89,7 +89,7 @@ export function createNeuronConnections(d: {
     }
     if (occupied() >= limit) return false;
     const slot: Slot = { candidate: { ...candidate }, controller: new AbortController(),
-      deadline: d.now() + 10_000, state: 'authenticating', failed: false, promotion: !!previous };
+      deadline: d.now() + (candidate.endpoint.startsWith('rtc:') ? 25_000 : 10_000), state: 'authenticating', failed: false, promotion: !!previous };
     // Keep the working link until the preferred route authenticates. The extra
     // handshake consumes a real pool slot; no connection limit is exceeded.
     const owner = previous ? upgrades : slots;

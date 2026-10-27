@@ -1,8 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript');
 const compile=p=>ts.transpileModule(fs.readFileSync(p,'utf8'),{compilerOptions:{module:1,target:9}}).outputText;
-function fixture(){
- let now=0,seq=0,fileListener,writeListener,accountListener,appListener,locked=false,failSave=false,blockRead;
- const timers=new Map(),disk=new Map(),links=new Map();const counts={snapshots:0,available:0,saves:0};
+function fixture(shared=false){
+ let now=0,seq=0,fileListener,writeListener,accountListener,appListener,locked=false,failSave=false,failAdopt=false,blockRead;
+ const timers=new Map(),disk=new Map(),links=new Map();const counts={snapshots:0,available:0,saves:0,resolves:0,adopts:0};
  const state={contacts:[{account:'peer',accepted:true}],messages:[]},AppState={currentState:'active',addEventListener:(_,f)=>{appListener=f;return {remove(){}};}};
  const exports_={},pump={},exporter={};
  new Function('exports','setTimeout','clearTimeout',compile('src/services/workPump.ts'))(pump,(fn,delay)=>{timers.set(++seq,{fn,at:now+delay});return seq;},id=>timers.delete(id));
@@ -15,14 +15,16 @@ function fixture(){
   './localAccount':{localAccount:{status:()=>({account:'owner',state:locked?'locked':'unlocked'}),subscribe:f=>{accountListener=f;return()=>{};}}},
   './localRootChat':{localRootChat:()=>({snapshot:async()=>{counts.snapshots++;if(blockRead)await blockRead;return state;}})},
   './rootChatActions':{rootChatView:(_,s)=>s},
-  './rootAttachmentFiles':{rootAttachmentFile:()=>({exists:true,uri:'file://synthetic'}),rootAttachmentExportLink:(_,d)=>links.get(d),linkRootAttachmentExport:(_,d,u)=>links.set(d,u)},
+  './rootAttachmentFiles':{rootAttachmentFile:()=>{counts.resolves++;return shared?new deps['./sharedMediaFile'].SharedMediaFile('content://1'):{exists:true,uri:'file://synthetic'};},rootAttachmentExportLink:(_,d)=>links.get(d),linkRootAttachmentExport:(_,d,u)=>links.set(d,u)},
   './receivedMediaExport':exporter,'../workPump':pump,'../../modules/storage/chatStore':{subscribeOwnChatWrites:f=>{writeListener=f;return()=>{};}},
  };
+ deps['./sharedMediaFile']={SharedMediaFile:class {constructor(uri){this.uri=uri;}get exists(){return true;}},isSharedMediaUri:uri=>uri.startsWith('content://media/')};
+ deps['./rootAttachmentFiles'].adoptRootAttachmentExport=async(_,d,u)=>{counts.adopts++;if(failAdopt)throw Error('adoption failed');links.set(d,u);};
  new Function('exports','require','Date',compile('src/services/identity/rootMediaExport.ts'))(exports_,n=>deps[n]??{},{now:()=>now});
  const runtime=exports_.startRootMediaExport();
  async function advance(ms){const end=now+ms;for(;;){const next=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];if(!next||next[1].at>end)break;now=next[1].at;timers.delete(next[0]);next[1].fn();for(let n=0;n<200;n++)await Promise.resolve();}now=end;}
  function add(id){state.messages.push({id,peer:'peer',direction:'incoming',status:'delivered',attachment:{name:'synthetic.jpg',mime:'image/jpeg',manifest:{id}}});}
- return {runtime,advance,counts,add,state,file:()=>fileListener(),write:()=>writeListener('owner'),otherWrite:()=>writeListener('other'),exports_,fail:v=>failSave=v,
+ return {runtime,advance,counts,add,state,file:()=>fileListener(),write:()=>writeListener('owner'),otherWrite:()=>writeListener('other'),exports_,fail:v=>failSave=v,failAdopt:v=>failAdopt=v,
   lock(v){locked=v;accountListener();},foreground(v){AppState.currentState=v?'active':'background';appListener(AppState.currentState);},block(p){blockRead=p;}};
 }
 test('quiet exporter performs one initial snapshot and then sleeps',async t=>{
@@ -47,4 +49,18 @@ test('background and locked accounts do not export; rapid relock invalidates in-
  let release;f.block(new Promise(r=>release=r));f.lock(false);await f.advance(0);f.lock(true);f.lock(false);release();
  for(let n=0;n<30;n++)await Promise.resolve();assert.equal(f.counts.saves,0,'stale generation cannot export');
  f.block(null);await f.advance(0);assert.equal(f.counts.saves,1);
+});
+
+test('shared-media maintenance is remembered before resolving paths again and expires safely',async t=>{
+ const f=fixture(true);t.after(()=>f.runtime.stop());f.add('a');await f.advance(0);
+ assert.equal(f.counts.adopts,1);const resolves=f.counts.resolves;
+ for(let i=0;i<20;i++){f.write();await f.advance(0);}
+ assert.equal(f.counts.adopts,1);assert.equal(f.counts.resolves,resolves,'cached maintenance does no file/path IO');
+ await f.advance(300001);f.write();await f.advance(0);assert.equal(f.counts.adopts,2);
+ f.lock(true);f.lock(false);await f.advance(0);assert.equal(f.counts.adopts,3,'new account generation rechecks maintenance');
+});
+test('failed shared-media adoption is not remembered as completed maintenance',async t=>{
+ const f=fixture(true);t.after(()=>f.runtime.stop());f.add('a');f.failAdopt(true);await f.advance(0);assert.equal(f.counts.adopts,1);
+ f.failAdopt(false);f.write();await f.advance(0);const adopts=f.counts.adopts;assert.equal(adopts,2);
+ f.write();await f.advance(0);assert.equal(f.counts.adopts,adopts);
 });

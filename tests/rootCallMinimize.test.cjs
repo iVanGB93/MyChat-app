@@ -10,7 +10,8 @@ function fixture(status='ready'){
  const rtc={remoteStream:{toURL:()=> 'remote'},localStream:{toURL:()=> 'local'},callQuality:{level:'unknown'}};
  const imports={'../../services/call-screen-capture':{callScreenCaptureAvailable:true},'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
   '../../modules/identity':{shortIdentity:()=> 'Peer'},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},
-  '../../modules/messaging':{localAccountCalls:()=>({end:()=>{ended++;return Promise.resolve();}})},
+  '../../modules/ui/liveState':{useCallState:()=>call},'../../modules/ui/useChatSnapshot':{useChatContacts:()=>({contacts:[]})},
+  '../../modules/calls':{localAccountCalls:()=>({end:()=>{ended++;return Promise.resolve();}})},
   './CallStage':{CallLayout:'CallLayout',EndButton:'EndButton'},'./CallAppearance':{makeStyles:()=>({}),ActionButton:'ActionButton'},
   'expo-keep-awake':{useKeepAwake:()=>{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,right:0,bottom:0,left:0})},
   '../../hooks/useWebRTCCore':{default:()=>rtc},
@@ -20,7 +21,7 @@ function fixture(status='ready'){
  let permission=async()=>true;
  imports['../../hooks/useScreenShareOverlay']={hasScreenShareOverlay:()=>false,allowScreenShareOverlay:()=>permission(),useScreenShareOverlay:()=>{}};
  const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>imports[n]??{});
- function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;if(type===out.default&&!current.length)current[0]=call;return type(props);}
+ function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;return type(props);}
  const screen=()=>render(out.default);
  return {call,rtc,render,screen,setPermission:fn=>permission=fn,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
 }

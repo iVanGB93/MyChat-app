@@ -1,5 +1,11 @@
 # Android received-media storage
 
+Current implementation: [single-copy media](single-copy-media-2026-10-23.txt).
+That update supersedes the permanent private-copy requirement below. Completed
+verified media can use its canonical MediaStore/original URI; temporary staging
+is separate. The following October 9 account is retained as historical evidence,
+not instructions to reintroduce duplicate playback files.
+
 ## Active root-identity app (October 9, 2026)
 
 The old media exporter was disconnected during the identity migration. The active app now uses `receivedMediaExport.ts` and `rootMediaExport.ts` with the existing Android `AxonicMediaStore` native module.

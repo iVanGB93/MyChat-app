@@ -1,0 +1,73 @@
+APP COORDINATION AND SHARED STATE
+Purpose: assemble domain services, own account-scoped lifetime, foreground/headless
+leases, wake recovery and startup/maintenance. Does not own every domain decision.
+
+File: index.ts
+File: src/composition/neuronRuntime.ts
+File: src/composition/appMaintenance.ts
+File: src/services/identity/rootBackgroundEntry.ts
+File: src/services/identity/rootMessageRecovery.ts
+File: src/services/identity/rootMessageWake.ts
+File: src/services/identity/messageWakeLease.ts
+File: src/services/identity/sharedState.ts
+File: src/services/identity/eventDeadlineTask.ts
+File: src/services/workPump.ts
+File: src/modules/ui/liveState.ts
+File: src/modules/ui/chatState.ts
+File: src/modules/ui/transferState.ts
+AoN: src/index.ts
+AoN: src/deadlineTask.ts
+
+Contract: one composed runtime shared by foreground/background consumers, bounded
+leases and work, invalidation on lock/account switch, deterministic cleanup.
+Wake hints request recovery; they do not prove delivery. Distinct hints can share
+a pump while retaining separate completion observations. Deadlines bound work.
+Process CPU covers all threads and overlapping intervals must not be added.
+
+State authority: services/ledger own domain state. Zustand stores project it for
+UI through subscriptions/selectors, not a parallel authoritative database.
+No native tracks, private keys, long-lived socket objects or approval overrides
+in UI stores. Cache epochs and stale-read handling matter more than store branding.
+
+Test: tests/rootMessageRecovery.test.cjs
+Test: tests/globalStateLifecycle.test.cjs
+Test: tests/sharedState.test.cjs
+Test: tests/chatStoreRevision.test.cjs
+Test: tests/workPump.test.cjs
+
+Shared attachment scheduling (October 25)
+  Phone and AoN now use canonical createWorkPump: single flight, coalesced events,
+  immediate yielding progress, explicit idle deadlines, five-second error retry.
+  The hosted adapter injects Node unref timers; phone uses its own timer/lifecycle.
+  Both use attachmentWorkDelay and createAttachmentReconcileGate. Empty queues
+  have no timer; blocked or unusable routes wait for an event or expiry. Productive
+  bursts do not repeatedly enqueue every unchanged descriptor. Recovery's 30-second
+  reconciliation bound is checked on work, not driven by a new polling timer.
+  Phone topology/capability changes now explicitly wake attachments, in addition
+  to connection, chat-write, selection, owner and resume events. Hosted network
+  onChanged and committed chat writes already flow through rootChat.changed.
+  Global UI state subscribes to these authorities; it is not used as authorization
+  or transfer readiness. This avoids requiring an active screen/store subscriber.
+
+Retained platform behavior
+  Phone preparation is a separate single flight, with a 15-second pending-selection
+  retry. Mobile worker bursts allow 32 steps/50ms; hosted uses 8 steps/50ms.
+  OS background leases, account locking, Gallery export and native sockets stay
+  mobile-specific. Node upload endpoints, filesystem/SQLite and unref stay hosted.
+  Expiry, protocol backoff, missing remote receipts and storage errors still need
+  deadlines. A UI state change cannot replace those timers. Other messaging/call
+  tasks keep eventDeadlineTask; do not merge different domain completion rules.
+Guide: SCHEDULING-COMPARISON.txt
+Next extraction: extract named construction helpers for network/custody/media/calls
+from composition without changing creation order, leases or cancellation. Avoid
+cross-module global service locators or duplicate foreground/headless instances.
+Guide: network.txt
+Guide: diagnostics-ai.txt
+
+Internal extraction follow-up (October 25)
+File: src/services/identity/custodyMaintenance.ts
+Test: tests/custodyMaintenance.test.cjs
+Shared maintenance replaces separate phone/host setInterval ownership. Expiration
+still runs each minute while active; a locked phone has no maintenance timer.
+Account events wake it, but repeated events before the deadline do not rescan.
+Storage failure retries at 5s; Node injects unref timers. No data format change.

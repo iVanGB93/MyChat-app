@@ -1,8 +1,8 @@
 import React from 'react';
-import {rootVoiceRecordingActive} from '../../modules/messaging';
+import {rootVoiceRecordingActive} from '../../modules/media';
 import {useTheme} from '../../contexts/ThemeContext';
 import {localAccount} from '../../modules/identity';
-import {localAccountCalls} from '../../modules/messaging';
+import {localAccountCalls} from '../../modules/calls';
 import VoiceMessageBubble from '../VoiceMessageBubble';
 export default function RootAudioPlayer({uri,onError,messageFooter}:{uri:string;onError(error:string):void;messageFooter?:React.ReactNode}){
  const {colors}=useTheme(),owner=localAccount.status().account;

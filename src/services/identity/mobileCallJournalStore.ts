@@ -12,12 +12,13 @@ function serial<T>(work:()=>Promise<T>):Promise<T> {
 }
 function db() {
   return opening ??= SQLite.openDatabaseAsync('axonic_call_control_v1.db', { useNewConnection: true }).then(async database => {
-    await database.execAsync(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
+    try{await database.execAsync(`PRAGMA busy_timeout=2500; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS call_journal(owner TEXT NOT NULL, call_id TEXT NOT NULL,
       data TEXT NOT NULL, PRIMARY KEY(owner,call_id));
       CREATE TABLE IF NOT EXISTS call_history(owner TEXT NOT NULL, call_id TEXT NOT NULL,
       data TEXT NOT NULL, archived_at INTEGER NOT NULL, PRIMARY KEY(owner,call_id));`);
     return database;
+    }catch(error){await database.closeAsync().catch(()=>{});throw error;}
   }).catch(error => { opening = undefined; throw error; });
 }
 function key(owner: string, callId: string) {
@@ -80,7 +81,12 @@ export function createMobileCallJournalStore(): CallJournalStore {
       key(owner, callId);
       if (after.length > 800000) throw Error('Oversized call journal');
       let saved = false;
-      await (await db()).withExclusiveTransactionAsync(async tx => {
+      // All journal access is serialized above. Keep the read/CAS on that same
+      // connection and reserve the writer before reading, avoiding a deferred
+      // read transaction that cannot upgrade after another connection writes.
+      const tx=await db();
+      await tx.execAsync('BEGIN IMMEDIATE');
+      try { await (async()=>{
         const row = await tx.getFirstAsync<{ data: string }>('SELECT data FROM call_journal WHERE owner=? AND call_id=?', owner, callId);
         if ((row?.data ?? null) !== before) return;
         if (!row) {
@@ -99,7 +105,8 @@ export function createMobileCallJournalStore(): CallJournalStore {
           await tx.runAsync('INSERT INTO call_journal(owner,call_id,data) VALUES(?,?,?)', owner, callId, after);
         } else await tx.runAsync('UPDATE call_journal SET data=? WHERE owner=? AND call_id=?', after, owner, callId);
         saved = true;
-      });
+      })();await tx.execAsync('COMMIT');
+      }catch(error){await tx.execAsync('ROLLBACK').catch(()=>{});throw error;}
       // Clock observations preserve rollback protection, but are not new signaling.
       // Emitting for them makes coordinator.snapshot -> write -> tick loop forever.
       let changed=before!==after;

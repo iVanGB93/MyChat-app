@@ -121,6 +121,7 @@ class AxonicNearbyModule : Module() {
     Function("axonEnableMediaLane") { id: String -> axons.enableMediaLane(id) }
     Function("axonEnableBulkAttachments") { id: String -> axons.enableBulkAttachments(id) }
     Function("axonEnableWssBulkAttachments") { id: String -> axons.enableWssBulkAttachments(id) }
+    Function("axonEnableBlockStreams") { id: String -> axons.enableBlockStreams(id) }
     Function("axonEnableAttachments") { id: String -> axons.enableAttachments(id) }
     // Experimental identity frames only. Restrict dialing to the current Wi-Fi subnet.
     AsyncFunction("axonConnect") { host: String, port: Int, promise: Promise ->
@@ -179,9 +180,19 @@ class AxonicNearbyModule : Module() {
       }
     }
     AsyncFunction("axonRead") { id: String, promise: Promise -> axonWork(promise) { axons.read(id) } }
+    AsyncFunction("axonReadPacket") { id: String, promise: Promise -> axonWork(promise) { axons.readPacket(id) } }
+    AsyncFunction("axonWriteBinary") { id: String, bytes: ByteArray, promise: Promise -> axonWork(promise) { axons.writeBinary(id, bytes); true } }
     AsyncFunction("axonWrite") { id: String, raw: String, promise: Promise -> axonWork(promise) { axons.write(id, raw); true } }
     Function("axonClose") { id: String -> axons.close(id) }
     Function("attachmentSha256") { value: String -> AttachmentHash.sha256(value) }
+    // Small bounded synchronous records avoid a per-record Promise/worker hop.
+    // Expo converts typed arrays to native copies; crypt clears those copies.
+    Function("attachmentStreamSeal") { key:ByteArray,nonce:ByteArray,aad:ByteArray,plain:ByteArray ->
+      AttachmentStreamCipher.crypt(true,key,nonce,aad,plain)
+    }
+    Function("attachmentStreamOpen") { key:ByteArray,nonce:ByteArray,aad:ByteArray,ciphertext:ByteArray ->
+      AttachmentStreamCipher.crypt(false,key,nonce,aad,ciphertext)
+    }
     // Synchronous rename only: no hash/copy loop and no yield between the JS
     // lease check and replacing the verified prefix.
     // java.nio atomic moves require API 26. On supported API 24/25 devices the
@@ -192,12 +203,25 @@ class AxonicNearbyModule : Module() {
         AttachmentStreamStage.stage(requireNotNull(appContext.reactContext).filesDir, owner, temporary, digest, bytes.toLong())
       }
     }
-    AsyncFunction("attachmentPrepareBatch") { owner:String,id:String,key:String,bytes:Double,start:Int,aads:List<String>,promise:Promise ->
+    AsyncFunction("attachmentDecryptBlock") { ciphertext:String,key:String,aad:String,promise:Promise ->
+      try { attachmentWorkers.execute {
+        try { promise.resolve(AttachmentBlockEncryption.decrypt(ciphertext,key,aad)) }
+        catch(error:Exception) { promise.reject("ATTACHMENT_DECRYPT","Attachment block verification failed",error) }
+      } } catch(error:Exception) { promise.reject("ATTACHMENT_DECRYPT","Attachment worker unavailable",error) }
+    }
+    AsyncFunction("attachmentEncryptBlock") { plain:ByteArray,key:String,hash:String,aad:String,promise:Promise ->
+      try { attachmentWorkers.execute {
+        try { promise.resolve(AttachmentBlockEncryption.encrypt(plain,key,hash,aad)) }
+        catch(error:Exception) { promise.reject("ATTACHMENT_PREPARE","Attachment block preparation failed",error) }
+        finally { plain.fill(0) }
+      } } catch(error:Exception) { plain.fill(0);promise.reject("ATTACHMENT_PREPARE","Attachment worker unavailable",error) }
+    }
+    AsyncFunction("attachmentPrepareStreamBlock") { owner:String,id:String,key:String,bytes:Double,start:Int,aads:List<String>,promise:Promise ->
       try {
         require(bytes.isFinite() && bytes==bytes.toLong().toDouble())
         val root=requireNotNull(appContext.reactContext).filesDir
         attachmentWorkers.execute {
-          try { promise.resolve(AttachmentPreparation.encrypt(root,owner,id,key,bytes.toLong(),start,aads)) }
+          try { promise.resolve(AttachmentPreparation.encrypt(root,owner,id,key,bytes.toLong(),start,aads,3_000_000)) }
           catch(error:Exception) { promise.reject("ATTACHMENT_PREPARE","Attachment preparation failed",error) }
         }
       } catch(error:Exception) { promise.reject("ATTACHMENT_PREPARE","Attachment preparation unavailable",error) }

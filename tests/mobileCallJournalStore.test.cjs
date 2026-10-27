@@ -4,13 +4,13 @@ const ts = require('typescript'), { DatabaseSync } = require('node:sqlite');
 test('mobile journal SQL preserves CAS, ownership and state across database reopen', async () => {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'axonic-call-sql-'));
   const filename = path.join(folder, 'calls.db');
-  let database, inventory, history, subscribe, tail=Promise.resolve(), transactionOpen=false, historyBytes=0;
+  let database, inventory, history, subscribe, tail=Promise.resolve(), transactionOpen=false, historyBytes=0, failWrite=false;
   const read=(s,...args)=>database.prepare(s).get(...args)??null;
   const sql = {
     execAsync: async s => { database.exec(s); },
     getFirstAsync: async (s,...args) => { if(transactionOpen)throw Error('database is locked');return read(s,...args); },
     getAllAsync:async(s,...args)=>{const rows=database.prepare(s).all(...args);if(s.includes('AS summary'))historyBytes+=Buffer.byteLength(JSON.stringify(rows));return rows;},
-    runAsync: async (s,...args) => database.prepare(s).run(...args),
+    runAsync: async (s,...args) => {if(failWrite){failWrite=false;throw Error('injected write failure');}return database.prepare(s).run(...args);},
     withExclusiveTransactionAsync(change) {
       const result=tail.then(async()=>{
         database.exec('BEGIN IMMEDIATE');
@@ -42,6 +42,15 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
     const results=await Promise.all([store.compareAndSet(owner,id,'initial','winner-a'),store.compareAndSet(owner,id,'initial','winner-b'),store.read(owner,id)]);
     assert.equal(results.slice(0,2).filter(Boolean).length,1);
     const saved=await store.read(owner,id);
+    failWrite=true;
+    await assert.rejects(store.compareAndSet(owner,id,saved,'failed-write'),/injected write failure/);
+    assert.equal(await store.read(owner,id),saved,'failed write rolls back without poisoning the queue');
+    const competitor=new DatabaseSync(filename);competitor.exec('PRAGMA busy_timeout=1; BEGIN IMMEDIATE');
+    database.exec('PRAGMA busy_timeout=1');
+    await assert.rejects(store.compareAndSet(owner,id,saved,'locked-write'),/locked/);
+    competitor.exec('ROLLBACK');competitor.close();
+    assert.equal(await store.compareAndSet(owner,id,saved,saved),true,'later calls recover after external writer releases lock');
+
     database.close(); store=openStore();
     assert.equal(await store.read(owner,id),saved);
     const first={record:{account:owner},callId:id,kind:'invite',expiresAt:10,issuedAt:1,caller:owner,callee:other,media:'voice'};

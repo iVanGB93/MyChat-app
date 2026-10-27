@@ -2,6 +2,12 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const {load}=require('./helpers/attachment.cjs'),{createProfileRecovery}=load('profileRecovery');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),c='axonic:1:'+'c'.repeat(64);
 const flush=async()=>{for(let i=0;i<30;i++)await new Promise(r=>setImmediate(r));};
+
+test('operator approval is rechecked immediately before sharing a profile',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let reads=0,sends=0;
+ const worker=createProfileRecovery({owner:()=>a,state:async()=>({version:1,messages:[],contacts:[{account:b,accepted:true,blocked:false}],approved:++reads===1}),peers:()=>[b],offerPeers:()=>[b],remember:async()=>{},known:async()=>null,request:async()=>{sends++;},send:async()=>{sends++;return true;},interactionAllowed:state=>state.approved});
+ t.after(()=>worker.stop());worker.changed();t.mock.timers.tick(0);await flush();assert.equal(reads,2);assert.equal(sends,0);
+});
 function fixture(t){t.mock.timers.enable({apis:['setTimeout']});let active=true,peers=[b,c],offers=[b,c],calls=[],knownCalls=0,success=true;const state={version:1,messages:[],contacts:[{account:b,accepted:true,blocked:false,alias:''}]};const worker=createProfileRecovery({owner:()=>active?a:null,state:async()=>state,peers:()=>peers,offerPeers:()=>offers,remember:async()=>{},known:async()=>{knownCalls++;return null;},request:async(peer)=>calls.push({peer,legacy:true}),send:async(peer,raw)=>{calls.push({peer,raw});return success;}});t.after(()=>worker.stop());return {worker,state,calls,knownCalls:()=>knownCalls,setSuccess:v=>success=v,setPeers:v=>peers=v,setOffers:v=>offers=v,lock:()=>active=false,step:async(ms=0)=>{t.mock.timers.tick(ms);await flush();}};}
 
 test('avatar sync runs only on events, skips unrelated routers, and compares again on reconnect',async t=>{
@@ -22,4 +28,12 @@ test('thrown transport failures cannot create an endless retry timer',async t=>{
  t.mock.timers.enable({apis:['setTimeout']});let calls=0;
  const worker=createProfileRecovery({owner:()=>a,state:async()=>({version:1,messages:[],contacts:[{account:b,accepted:true,blocked:false}]}),peers:()=>[b],offerPeers:()=>[b],remember:async()=>{},known:async()=>null,request:async()=>{},send:async()=>{calls++;throw Error('closed');}});t.after(()=>worker.stop());
  worker.changed();for(const ms of [0,2000,2000,3600000]){t.mock.timers.tick(ms);await flush();}assert.equal(calls,3);
+});
+
+test('known profile capabilities do not enqueue redundant history mutations on reconnect',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let writes=0;const state={version:1,messages:[],contacts:[],profilePeers:[b],profileOfferPeers:[b]};
+ const worker=createProfileRecovery({owner:()=>a,state:async()=>state,peers:()=>[b],offerPeers:()=>[b],remember:async()=>{writes++;state.profileOfferPeers=[b];},known:async()=>null,request:async()=>{},send:async()=>true});t.after(()=>worker.stop());
+ worker.changed();t.mock.timers.tick(0);await flush();worker.connected(b);t.mock.timers.tick(0);await flush();assert.equal(writes,0);
+ state.profileOfferPeers=[];worker.changed();t.mock.timers.tick(0);await flush();assert.equal(writes,1);
+ worker.changed();t.mock.timers.tick(0);await flush();assert.equal(writes,1);
 });

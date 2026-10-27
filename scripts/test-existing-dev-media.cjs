@@ -33,7 +33,7 @@ async function main(){
     const start=performance.now();
     const sent=await run(sender.t,`const m=(await ledger().snapshot()).messages.find(m=>m.id===${q(source.id)}&&m.peer===${q(receiver.owner)}&&m.direction===${q(source.direction)});if(!m?.attachment)throw Error('Source no longer available');
      const a=m.attachment,f=get('src/services/identity/rootAttachmentFiles.ts').rootAttachmentFile(account.status().account,get('src/services/identity/attachmentProtocol.ts').attachmentDigest(a.manifest));if(!f.exists||f.size!==a.manifest.bytes)throw Error('Source incomplete');
-     const id=await get('src/services/identity/rootAttachmentRuntime.ts').queueRootAttachmentSource(${q(receiver.owner)},f.uri,a.name,a.mime,account.status().account);return {id,checksum:a.checksum,bytes:a.manifest.bytes};`);
+     const id=await get('src/services/identity/rootAttachmentSelections.ts').queueRootAttachmentSource(${q(receiver.owner)},f.uri,a.name,a.mime,account.status().account);return {id,checksum:a.checksum,bytes:a.manifest.bytes};`);
     let received;
     while(performance.now()-start<120000){received=await state(receiver,sender.owner,sent.id,'incoming');if(received?.status==='delivered')break;await wait(350);}
     if(received?.status!=='delivered')throw Error('Real media delivery timed out; pending work preserved');

@@ -10,7 +10,7 @@ function pair(t,size=524287,options={}){
  const common={expected,live:()=>active,now:()=>clock,wait,close(){},discard(){discarded++;parts.length=0;}};
  a=createDirectAttachmentStream({...common,role:'send',hash:async()=>expected.checksum,
   reader:()=>({read:n=>{const v=new Uint8Array(source.subarray(pos,pos+n));pos+=n;return v;},close:()=>readClosed++}),
-  send:data=>deliver(b,data)});
+  send:data=>{options.onSend?.(data);deliver(b,data);}});
  b=createDirectAttachmentStream({...common,role:'receive',authorize:options.authorize,consumed:options.consumed,
   writer:()=>({write:v=>parts.push(Buffer.from(v)),close:()=>writeClosed++}),
   hash:async()=>options.hash?options.hash():hash(Buffer.concat(parts)),send:data=>deliver(a,data)});
@@ -25,6 +25,19 @@ for(const size of [1,16384,16385,524287,2097151])test(`direct stream verifies ${
 test('receiver checksum failure cannot complete and removes partial data',async t=>{
  const f=pair(t,17000,{hash:()=> '0'.repeat(64)});void f.start().catch(()=>{});
  await assert.rejects(f.b.done,/checksum/);assert.equal(f.stats().discarded,1);assert.equal(f.parts.length,0);
+});
+
+for(const size of [1_000_000,5_000_000,10_000_000])test(`DTLS payload is the original ${size} byte file, without application encryption or block envelopes`,async t=>{
+ let bytes=0,frames=0;const sent=crypto.createHash('sha256');
+ const f=pair(t,size,{onSend:data=>{
+  if(typeof data==='string')return;
+  assert(data instanceof Uint8Array);assert(data.length<=DIRECT_FRAME_BYTES);
+  bytes+=data.length;frames++;sent.update(data);
+ }});
+ await f.start();await f.b.done;
+ assert.equal(bytes,size);assert.equal(frames,Math.ceil(size/DIRECT_FRAME_BYTES));
+ assert.equal(sent.digest('hex'),hash(f.source));
+ assert.equal(hash(Buffer.concat(f.parts)),hash(f.source));assert.deepEqual(f.errors,[]);
 });
 test('account invalidation closes idle sessions without further network traffic',async t=>{
  const f=pair(t);void f.b.start();f.revoke();await assert.rejects(f.b.done,/revoked/);assert.equal(f.stats().discarded,1);

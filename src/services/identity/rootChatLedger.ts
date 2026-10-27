@@ -1,3 +1,5 @@
+import type {OwnHistoryStore} from './ownHistoryStore.ts';
+import {retiredAttachment} from './retiredAttachment.ts';
 import {validDeliveryEvidence,type DeliveryEvidence} from './deliveryEvidence.ts';
 import {rootMessageStatus} from './rootMessageStatus.ts';
 import {profileAudience,syncProfileAudience,validProfileStorage,pendingProfiles} from './rootProfileSharing.ts';
@@ -18,12 +20,16 @@ export const validRootReply=(r:unknown,owner:string,peer:string):r is RootChatRe
 const sameReply=(a?:RootChatReply,b?:RootChatReply)=>a?.id===b?.id&&a?.author===b?.author;
 const byteLength=(text:string)=>new TextEncoder().encode(text).length;
 /** Private own history. Peer identity comes exclusively from the authenticated transport. */
-export function createRootChatLedger(d:{owner:string;read():Promise<string|null>;write(raw:string):Promise<void>;current():boolean;now():number;
+export function createRootChatLedger(d:OwnHistoryStore&{owner:string;current():boolean;now():number;
+ /** Optional process-local counter incremented once per committed store write. */
+ revision?():number;
  queued?(peer:string,id:string):void;
  profileChanged?():void;
  receiveProfileOffer?(from:string,manifest:ProfileManifest):Promise<{known:string|null;needed:boolean}|null>;
  receiveProfile?(from:string,id:string,part:ProfilePart):Promise<boolean>;
  messageCommitted?(message:RootChatMessage,state:RootChatState):void;
+ /** Exact serialized state just durably written; observers cannot mutate ledger state. */
+ stateCommitted?(raw:string):void;
  signGroup?(group:RootGroupMembership):RootGroupBackup;
  verifyAttachment?(descriptor:AttachmentDescriptor,direction:RootChatMessage['direction']):Promise<boolean>;
  verifyAttachmentReceipt?(descriptor:AttachmentDescriptor,receipt:AttachmentReceipt):Promise<boolean>;
@@ -33,15 +39,32 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
  // Cache only successful validation of identical persisted bytes for this owner.
  // Every read still checks unlock state and returns a fresh mutable object.
  let validatedRaw:string|null=null;
+ let readCache:{revision:number;raw:string|null}|undefined;
  const messageKey=(m:RootChatMessage)=>m.direction+':'+m.peer+':'+m.id;
+ // Bounded aggregate timing only: no message IDs, peers, content or credentials.
+ const timing:Record<string,{calls:number;milliseconds:number;maximum:number}>={};
+ const clock=()=>performance.now();
+ const timed=(name:string,start:number)=>{const ms=Math.max(0,clock()-start),v=timing[name]??={calls:0,milliseconds:0,maximum:0};v.calls++;v.milliseconds+=ms;v.maximum=Math.max(v.maximum,ms);};
  let tail:Promise<unknown>=Promise.resolve();
- const run=<T>(work:()=>Promise<T>)=>{const p=tail.then(work);tail=p.catch(()=>{});return p;};
+ let snapshotFlight:Promise<string>|undefined;
+ const run=<T>(work:()=>Promise<T>,snapshot=false)=>{if(!snapshot)snapshotFlight=undefined;const queued=clock();const p=tail.then(()=>{timed(snapshot?'snapshotQueue':'mutationQueue',queued);return work();});tail=p.catch(()=>{});return p;};
  const check=()=>{if(!d.current())throw Error('Unlock your account first');};
  const validPeer=(peer:string)=>validAccountId(peer)&&peer!==d.owner;
  const validChat=(key:string)=>typeof key==='string'&&(key.startsWith('group:')?idValid(key.slice(6)):validPeer(key));
  async function read():Promise<RootChatState>{
-  check();const raw=await d.read();check();if(raw===null){knownMessages.clear();return {version:1,messages:[],contacts:[]};}
+  check();const revision=d.revision?.();let raw:string|null;
+  if(revision!==undefined&&readCache?.revision===revision)raw=readCache.raw;
+  else{const started=clock();try{raw=await d.read();}finally{timed('storageRead',started);}check();if(revision!==undefined&&d.revision?.()===revision)readCache={revision,raw};}
+  check();if(raw===null){knownMessages.clear();return {version:1,messages:[],contacts:[]};}
   const s=JSON.parse(raw) as RootChatState;
+  // Keep old metadata locally, but never decode, open or retransmit it. Apply on
+  // every read (including validated-byte cache hits); no read-time disk writes.
+  if(Array.isArray(s.messages))for(const m of s.messages){
+   if(retiredAttachment(m?.attachment)){
+    m.retiredAttachment=m.attachment;delete m.attachment;
+    m.text='Attachment from an earlier version · Please ask the sender to resend it.';
+   }
+  }
   if(raw!==validatedRaw){
   if(s.networkResetAt!==undefined&&!validCreationTime(s.networkResetAt)||s.cancelledNetworkWork!==undefined&&(!Array.isArray(s.cancelledNetworkWork)||s.cancelledNetworkWork.length>50000||s.cancelledNetworkWork.some(m=>!validPeer(m.peer)||!idValid(m.id))))throw Error('Invalid network reset history');
   if(s.groupCustodyPeers!==undefined&&(!Array.isArray(s.groupCustodyPeers)||s.groupCustodyPeers.length>500||s.groupCustodyPeers.some(p=>!validPeer(p)))||!validProfileStorage(s,d.owner)||s.timestampPeers!==undefined&&(!Array.isArray(s.timestampPeers)||s.timestampPeers.length>500||s.timestampPeers.some(p=>!validPeer(p)))||s.version!==1||!Array.isArray(s.messages)||!Array.isArray(s.contacts)||s.messages.length>5000||s.contacts.length>500
@@ -67,7 +90,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   if(d.messageCommitted)knownMessages=new Set(s.messages.map(messageKey));
   return s;
  }
- async function save(s:RootChatState){check();const previousProfilePeers=new Set(s.profileDeliveries?.map(p=>p.peer)??[]);syncProfileAudience(s,d.owner);await d.write(JSON.stringify(s));check();const profileKey=JSON.stringify([s.ownProfile?.manifest??null,profileAudience(s,d.owner),s.profilePeers??[],s.profileOfferPeers??[]]);if(profileKey!==profileState){profileState=profileKey;d.profileChanged?.();}if(s.profileDeliveries?.some(p=>!previousProfilePeers.has(p.peer)))for(const p of pendingProfiles(s,d.owner))if(!previousProfilePeers.has(p.peer))d.queued?.(p.peer,p.id);if(d.messageCommitted)for(const m of s.messages){const key=messageKey(m);if(knownMessages.has(key))continue;knownMessages.add(key);try{d.messageCommitted(m,s);}catch{/* Feedback cannot invalidate durable delivery. */}}}
+ async function save(s:RootChatState){check();const previousProfilePeers=new Set(s.profileDeliveries?.map(p=>p.peer)??[]);syncProfileAudience(s,d.owner);const committedRaw=JSON.stringify(s),beforeWrite=d.revision?.();readCache=undefined;await d.write(committedRaw);check();if(beforeWrite!==undefined&&d.revision?.()===beforeWrite+1)readCache={revision:beforeWrite+1,raw:committedRaw};else readCache=undefined;const profileKey=JSON.stringify([s.ownProfile?.manifest??null,profileAudience(s,d.owner),s.profilePeers??[],s.profileOfferPeers??[]]);if(profileKey!==profileState){profileState=profileKey;d.profileChanged?.();}if(s.profileDeliveries?.some(p=>!previousProfilePeers.has(p.peer)))for(const p of pendingProfiles(s,d.owner))if(!previousProfilePeers.has(p.peer))d.queued?.(p.peer,p.id);if(d.messageCommitted)for(const m of s.messages){const key=messageKey(m);if(knownMessages.has(key))continue;knownMessages.add(key);try{d.messageCommitted(m,s);}catch{/* Feedback cannot invalidate durable delivery. */}}try{if(beforeWrite===undefined||d.revision?.()===beforeWrite+1)d.stateCommitted?.(committedRaw);}catch{/* Observers cannot fail a durable commit. */}}
  function signGroups(s:RootChatState,id:string){
   if(!d.signGroup)return;
   for(const g of s.groups??[])if(g.admin===d.owner&&!g.blocked&&!g.recoveryPending&&(!g.backup||g.backup.group.revision!==g.revision)){
@@ -122,6 +145,8 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
   if(notices.length){await save(s);for(const {peer,id} of notices)d.queued?.(peer,id);}
  }
  return {
+  invalidateReadCache(){readCache=undefined;},
+  diagnostics:()=>{check();return Object.fromEntries(Object.entries(timing).map(([key,v])=>[key,{...v}]));},
   cancelNetworkWork:(at:number)=>run(async()=>{
    if(!validCreationTime(at))throw Error('Invalid reset time');const s=await read();
    // Record cancellation, never a fabricated delivered/read acknowledgment.
@@ -134,7 +159,32 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
    for(const m of s.messages)if(m.status==='pending')m.networkCancelledAt??=at;
    await save(s);
   }),
-  snapshot:()=>run(read),
+  snapshot:()=>{
+   // UI and background consumers often request the same queued read together.
+   // Share only that in-flight read, never a snapshot across a queued mutation.
+   // Each caller receives its own mutable copy and rechecks the account lock.
+   const flight=snapshotFlight??=run(async()=>JSON.stringify(await read()),true);
+   void flight.finally(()=>{if(snapshotFlight===flight)snapshotFlight=undefined;}).catch(()=>{});
+   return flight.then(raw=>{check();return JSON.parse(raw) as RootChatState;});
+  },
+  /** Stamp inside the serialized read, after preceding writes, not before
+   * waiting in the ledger queue. External writes still invalidate the result. */
+  revisionSnapshot:(revision:()=>number)=>run(async()=>{
+   check();const before=revision(),state=await read();check();
+   return revision()===before?{state,revision:before}:null;
+  },true),
+  // One topology observation is one ledger transaction, rather than four full
+  // history reads/writes ahead of incoming message admission.
+  rememberPeerCapabilities:(input:{profilePeers?:string[];profileOfferPeers?:string[];timestampPeers?:string[];groupCustodyPeers?:string[]})=>run(async()=>{
+   const fields=['profilePeers','profileOfferPeers','timestampPeers','groupCustodyPeers'] as const;
+   if(!fields.some(key=>input[key]?.length))return;
+   const s=await read();let changed=false;
+   for(const key of fields){const known=new Set(s[key]??[]),before=known.size;
+    for(const peer of input[key]??[])if(validPeer(peer)&&known.size<500)known.add(peer);
+    if(known.size!==before){s[key]=[...known];changed=true;}
+   }
+   if(changed)await save(s);
+  }),
   rememberProfilePeers:(peers:string[])=>run(async()=>{if(!peers.length)return;const s=await read(),before=(s.profilePeers??[]).length,known=new Set(s.profilePeers??[]);for(const p of peers)if(validPeer(p)&&known.size<500)known.add(p);if(known.size!==before){s.profilePeers=[...known];await save(s);}}),
   rememberProfileOfferPeers:(peers:string[])=>run(async()=>{const s=await read(),known=new Set(s.profileOfferPeers??[]),before=known.size;for(const p of peers)if(validPeer(p)&&known.size<500)known.add(p);if(before!==known.size){s.profileOfferPeers=[...known];await save(s);}}),
   publishProfile:(profile:OwnProfile)=>run(async()=>{if(!validOwnProfile(profile,d.owner))throw Error('Invalid signed avatar');const s=await read();if(s.ownProfile&&profile.manifest.revision<=s.ownProfile.manifest.revision)throw Error('Avatar version must increase');s.ownProfile=profile;s.profileDeliveries=[];await save(s);for(const p of pendingProfiles(s,d.owner))d.queued?.(p.peer,p.id);}),
@@ -246,9 +296,9 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
     return true;
    }
    if(prior.removedMessages?.some(m=>m.peer===from&&m.id===id&&m.direction==='incoming'))return true;
-   if(a[0]==='axonic-root-group-action-v1'){const s=await read();if(!receiveGroupAction(s,d.owner,from,id,a[3],d.now()))return false;await save(s);return true;}
+   if(a[0]==='axonic-root-group-action-v1'){const s=(check(),prior);if(!receiveGroupAction(s,d.owner,from,id,a[3],d.now()))return false;await save(s);return true;}
    if(a[0]==='axonic-group-members-v1'||a[0]==='axonic-group-leave-v1'||a[0]==='axonic-group-recover-v1'||a[0]==='axonic-group-backup-v1'||a[0]==='axonic-group-recovery-offer-v1'){
-    const s=await read(),old=s.groupSeen?.find(v=>v.peer===from&&v.id===id);if(old)return old.raw===raw;
+    const s=(check(),prior),old=s.groupSeen?.find(v=>v.peer===from&&v.id===id);if(old)return old.raw===raw;
     if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
     if((s.groupSeen?.length??0)>=ROOT_GROUP_MAX_CONTROL_HISTORY||(s.groupSeen??[]).reduce((n,p)=>n+byteLength(p.raw),byteLength(raw))>ROOT_GROUP_MAX_CONTROL_BYTES||s.messages.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming')||s.actions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
     if(!receiveRootGroupControl(s,d.owner,from,id,a[0],a[3]))return false;
@@ -259,7 +309,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
     const body=a[3],isAttachment=a[0]==='axonic-root-group-attachment-v1';
     if(!body||!(isAttachment?['descriptor,group','descriptor,group,reply'].includes(Object.keys(body).sort().join(',')):['group,text','group,reply,text'].includes(Object.keys(body).sort().join(',')))||!validGroupContext(body.group))return false;
     if(body.reply!==undefined&&!validGroupReply(body.reply))return false;groupReply=body.reply?{...body.reply}:undefined;
-    const s=await read();if(!rootGroupAllowed(s,d.owner,from,body.group))return false;
+    const s=(check(),prior);if(!rootGroupAllowed(s,d.owner,from,body.group))return false;
     if(!isAttachment&&rootGroupDeliveryId(body.group.messageId,d.owner)!==id||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.direction==='incoming'&&m.peer===from&&m.group?.id===body.group.id&&m.group?.messageId===body.group.messageId&&m.id!==id))return false;
     group={...body.group};a[0]=isAttachment?'axonic-root-attachment-v1':'axonic-root-text-v1';a[3]=isAttachment?body.descriptor:body.text;
    }
@@ -268,7 +318,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
     const body=a[3];if(!body||Object.keys(body).sort().join(',')!=='kind,revision,target,text')return false;
     const event:RootChatAction={...body,id,peer:from,direction:'incoming',at:d.now(),status:'delivered'};
     if(!validRootAction(event,d.owner,from))return false;
-    const s=await read(),c=contact(s,from);if(c.blocked)return false;
+    const s=(check(),prior),c=contact(s,from);if(c.blocked)return false;
     if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming')||s.messages.some(m=>[m.networkStoredUntil,m.attachmentStoredUntil].some(v=>v!==undefined&&(!Number.isSafeInteger(v)||v<0))||m.peer===from&&m.direction==='incoming'&&m.id===id))return false;
     const old=s.actions?.find(a=>a.peer===from&&a.direction==='incoming'&&a.id===id);
     if(old)return sameAction(old,event);
@@ -292,7 +342,7 @@ export function createRootChatLedger(d:{owner:string;read():Promise<string|null>
     const body=a[3];if(!body||Object.keys(body).length!==2||typeof body.text!=='string'||!body.text.trim()||byteLength(body.text)>1600||!validRootReply(body.reply,d.owner,from))return false;
     text=body.text;reply={...body.reply};
    }else{if(a[0]!=='axonic-root-text-v1'||typeof a[3]!=='string'||!a[3].trim()||byteLength(a[3])>1600)return false;text=a[3];}
-   const s=await read(),c=group?(s.contacts.find(c=>c.account===from)??{blocked:false}):contact(s,from);if(c.blocked)return false;
+   const s=(check(),prior),c=group?(s.contacts.find(c=>c.account===from)??{blocked:false}):contact(s,from);if(c.blocked)return false;
    if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
    if(s.groupSeen?.some(v=>v.peer===from&&v.id===id)||s.actions?.some(a=>a.peer===from&&a.direction==='incoming'&&a.id===id))return false;
    const old=s.messages.find(m=>m.id===id&&m.peer===from&&m.direction==='incoming');if(old)return old.createdAt===createdAt&&JSON.stringify(old.group)===JSON.stringify(group)&&old.text===text&&sameReply(old.reply,reply)&&(!old.attachment&&!attachment||!!old.attachment&&!!attachment&&attachmentDescriptorFingerprint(old.attachment)===attachmentDescriptorFingerprint(attachment));
@@ -327,7 +377,7 @@ export const encodeRootMessage=(m:RootChatMessage)=>{const raw=m.group?encodeRoo
 
 export const pendingRootChat=(s:RootChatState,owner?:string)=>{const cancelled=new Set(s.cancelledNetworkWork?.map(m=>m.peer+':'+m.id));return [
  ...(s.groupPackets??[]).filter(p=>p.status==='pending').map(p=>({peer:p.peer,id:p.id,raw:p.raw})),
- ...s.messages.filter(m=>m.direction==='outgoing'&&m.status==='pending'&&!(m.attachment&&m.descriptorDelivered)&&(!m.group||!!owner&&rootGroupAllowed(s,owner,m.peer,m.group)&&s.groups?.find(g=>g.id===m.group!.id)?.accepted)).map(m=>({peer:m.peer,id:m.id,raw:encodeRootMessage(m)})),
+ ...s.messages.filter(m=>!m.retiredAttachment&&m.direction==='outgoing'&&m.status==='pending'&&!(m.attachment&&m.descriptorDelivered)&&(!m.group||!!owner&&rootGroupAllowed(s,owner,m.peer,m.group)&&s.groups?.find(g=>g.id===m.group!.id)?.accepted)).map(m=>({peer:m.peer,id:m.id,raw:encodeRootMessage(m)})),
  ...(s.groupActions??[]).filter(a=>a.direction==='outgoing'&&a.status==='pending'&&!!owner&&rootGroupAllowed(s,owner,a.peer,a.group)&&s.groups?.find(g=>g.id===a.group.id)?.accepted).map(a=>({peer:a.peer,id:a.id,raw:encodeGroupAction(a)})),
  ...(s.actions??[]).filter(a=>a.direction==='outgoing'&&a.status==='pending').map(a=>({peer:a.peer,id:a.id,raw:encodeRootAction(a)}))
  ,...(owner?pendingProfiles(s,owner):[])

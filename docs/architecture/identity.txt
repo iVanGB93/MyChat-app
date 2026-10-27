@@ -1,0 +1,35 @@
+IDENTITY AND PERMISSIONS
+Purpose: account/device identity, local unlock, record verification and authorization.
+Names/nicknames are display labels; canonical identity and verified policy authorize.
+
+File: src/modules/identity/index.ts
+File: src/services/identity/localAccount.ts
+File: src/services/identity/localAccountSession.ts
+File: src/services/identity/localIdentityController.ts
+File: src/services/identity/identityProtocol.ts
+File: src/services/identity/identityAdmission.ts
+File: src/services/identity/identityVault.ts
+AoN: src/hostedIdentity.ts
+AoN: src/operatorMemory.ts
+AoN: src/operatorApprovals.ts
+AoN: src/operatorApprovalWorker.ts
+
+Contract: verify signed records/device membership and current account lifetime;
+recheck authorization after asynchronous work. Local biometric/unlock adapters are
+phone-specific; hosted credentials/tokens are not a second identity protocol.
+Protected owner binding, editable operational notes, and contact/group permissions
+are separate concepts. Notes and AI-generated text cannot grant permission.
+Do not infer live enforcement settings from local code or from a saved nickname.
+
+State authority: account controller/vault, verified identity records, durable
+approval decisions. UI state and AI memory may describe them but cannot override.
+Failures: locked account, expired/revoked device, mismatched owner binding, stale
+approval evidence, blocked peer. Do not flatten all of these into offline.
+
+Test: tests/identityProtocol.test.cjs
+Test: tests/localAccount.test.cjs
+AoN: tests/operatorMemory.test.mjs
+AoN: tests/operatorApprovals.test.mjs
+Next extraction: separate network discovery consumers from identity policy ports;
+keep cryptographic validation shared and platform secrets behind adapters.
+Guide: diagnostics-ai.txt

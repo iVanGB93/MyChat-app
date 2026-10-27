@@ -2,8 +2,9 @@ import {rootChatView} from './rootChatActions';
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
 import {localRootChat} from './localRootChat';
-import {queueRootAttachmentSource,rootGroupAttachmentAudience,queueRootGroupAttachmentSource} from './rootAttachmentRuntime';
+import {queueRootAttachmentSource,rootGroupAttachmentAudience,queueRootGroupAttachmentSource} from './rootAttachmentSelections';
 import {rootAttachmentFile} from './rootAttachmentFiles';
+import {withRootSharedFile} from './rootMediaExport';
 import {attachmentDigest} from './attachmentProtocol';
 import {validAccountId} from './identityProtocol';
 import type {RootChatMessage} from './rootChatLedger';
@@ -28,6 +29,8 @@ export async function forwardRootMessage(source:Pick<RootChatMessage,'peer'|'id'
  // Stage our own bytes offline; the attachment worker verifies the recipient
  // before preparing a fresh encrypted descriptor for this destination.
  check();
- if(group){await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(group),file.uri,message.attachment.name,message.attachment.mime,message.attachment.caption);return;}
- await queueRootAttachmentSource(recipient,file.uri,message.attachment.name,message.attachment.mime,owner!,undefined,message.attachment.caption);
+ await withRootSharedFile(owner!,file.uri,async uri=>{
+  if(group){await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(group),uri,message.attachment!.name,message.attachment!.mime,message.attachment!.caption);return;}
+  await queueRootAttachmentSource(recipient,uri,message.attachment!.name,message.attachment!.mime,owner!,undefined,message.attachment!.caption);
+ });
 }

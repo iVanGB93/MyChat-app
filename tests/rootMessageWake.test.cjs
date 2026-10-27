@@ -8,12 +8,12 @@ async function fixture(t,options={}){
  let senderAvailable=!options.unknownSender;
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
  const storage=new Map(),displayed=new Map(),shown=[],cancelled=[],toasts=[],channels=[],database=new DatabaseSync(':memory:');t.after(()=>database.close());
- let channel=null;let owner={account:recipient.account,device:recipientDevice.id},blocked=false,fail=false,locked=false,visible=false;
+ let historyReads=0;let channel=null;let owner={account:recipient.account,device:recipientDevice.id},blocked=false,fail=false,locked=false,visible=false;
  const app={currentState:'background'};let onDisplay=()=>{};
  const db={execAsync:async sql=>database.exec(sql),runAsync:async(sql,...args)=>database.prepare(sql).run(...args),
  getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
  withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(db);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
- const imports={'../../modules/storage/chatStore':{ownChatStore:owner=>({read:async()=>storage.get('@axonic_root_chat_v1:'+owner)??null})},
+ const imports={'../../modules/storage/chatStore':{ownChatStore:owner=>({read:async()=>{historyReads++;return storage.get('@axonic_root_chat_v1:'+owner)??null;}})},
  '../mobileDeliveryDiagnostics':{deliveryDiagnosticEvent:()=>{}},
  '../../../modules/axonic-nearby':{default:{notificationReadActionInShade:async()=>true,...options.native}},
  './rootMessageToast':{publishRootMessageToast:preview=>{toasts.push(preview);return true;}},
@@ -22,6 +22,7 @@ async function fixture(t,options={}){
  '../diagnosticJournal':{diagnosticJournal:{record:()=>{}}},
  '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null}},
  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:app},
+ './rootNotificationAvatar':{rootNotificationAvatar:async()=>options.avatar?{uri:'file:///test-avatar.jpg',remove(){}}:null},
  '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);options.onChannel?.();},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);onDisplay();},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},
  './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>senderAvailable&&id===sender.account?sender:null})},
  './rootCallWake':{rootWakeContext:async()=>owner,rootWakeBlocked:async()=>blocked}};
@@ -31,7 +32,7 @@ async function fixture(t,options={}){
  const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:options.silent?JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]):'private text',now,random:async n=>new Uint8Array(n).fill(12)});
  const data=c.createCustodyWake(envelope,sender);
  const legacyGeneric=()=>{const id=notifications.rootMessageNotificationId(recipient.account,sender.account);const n={id,title:'Axonic',body:'Legacy generic',data:{type:'root_neuron_message',account:recipient.account,sender:sender.account,messageId:envelope.id}};shown.push(n);displayed.set(id,n);};
- return {legacyGeneric,database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,learnSender:()=>senderAvailable=true,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>blocked=true,changeOwner:()=>owner=null,fail:v=>fail=v,
+ return {legacyGeneric,database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,learnSender:()=>senderAvailable=true,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>{blocked=true;storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,messages:[],contacts:[{account:sender.account,blocked:true}]}));},historyReads:()=>historyReads,changeOwner:()=>owner=null,fail:v=>fail=v,
  onDisplay:fn=>onDisplay=fn,delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
 }
 test('unknown sender lookup is followed by normal signature validation and recovery',async t=>{
@@ -119,6 +120,16 @@ test('foreground conversations elsewhere notify; current conversation, read, mut
   const f=await fixture(t);f.app.currentState='active';prepare(f);await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,preview);assert.equal(f.shown.length,0);
  }
  const read=await fixture(t);await read.mod.finishRootMessageWake(read.recipient.account,read.sender.account,read.envelope.id,{...preview,read:true});assert.equal(read.shown.length,0);
+});
+
+test('notification presentation reads contact policy once; silent and read events avoid history entirely',async t=>{
+ const preview={name:'Friend',text:'Private',at:Date.now()};
+ const f=await fixture(t);await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,preview);
+ assert.equal(f.historyReads(),1);assert.equal(f.shown.length,1);
+ for(const p of [undefined,{...preview,read:true}]){
+  const quiet=await fixture(t);await quiet.mod.finishRootMessageWake(quiet.recipient.account,quiet.sender.account,quiet.envelope.id,p);
+  assert.equal(quiet.historyReads(),0);assert.equal(quiet.shown.length,0);
+ }
 });
 test('only verified signed wakes may request inbox recovery',async t=>{
  const f=await fixture(t);let recovered=0;const recover=async(account,sender,id)=>{assert.equal(account,f.recipient.account);assert.equal(sender,f.sender.account);assert.equal(id,f.envelope.id);recovered++;};
@@ -325,4 +336,9 @@ test('signed silent read wake recovers but never alerts while account remains lo
  const e=JSON.parse(f.data.event);assert.equal(e.wakeMode,'silent');delete e.wakeMode;
  await f.mod.receiveRootMessageWake({...f.data,event:JSON.stringify(e)},async()=>{recovered++;});
  assert.equal(recovered,2,'stripping silent intent invalidates wake signature');assert.equal(f.shown.length,0);
+});
+
+test('saved avatar decorates the sender without being placed in notification metadata',async t=>{
+ const f=await fixture(t,{avatar:true});await f.mod.finishRootMessageWake(f.recipient.account,f.sender.account,f.envelope.id,{name:'Peer',text:'Avatar test',at:Date.now()});
+ const n=f.shown.at(-1);assert.equal(n.android.largeIcon,'file:///test-avatar.jpg');assert.equal(n.android.style.messages.at(-1).person.icon,'file:///test-avatar.jpg');assert(!JSON.stringify(n.data).includes('test-avatar'));
 });

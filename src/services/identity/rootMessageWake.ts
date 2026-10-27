@@ -1,3 +1,4 @@
+import {rootNotificationAvatar} from './rootNotificationAvatar';
 import {verifyGroupCustodyPayload,matchesGroupGrant,type GroupCustodyPayload} from './groupCustodyProtocol';
 import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
 import {diagnosticJournal} from '../diagnosticJournal';
@@ -25,10 +26,11 @@ function serial<T>(work:()=>Promise<T>){const result=tail.then(work);tail=result
 function db(){return opening??=SQLite.openDatabaseAsync('axonic_root_message_wakes_v1.db',{useNewConnection:true}).then(async value=>{
  await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires);');return value;
 }).catch(error=>{opening=undefined;throw error;});}
-async function muted(owner:string,sender:string,group?:string){
- const raw=await ownChatStore(owner).read();if(!raw)return false;
+async function messagePolicy(owner:string,sender:string,group?:string){
+ const raw=await ownChatStore(owner).read();if(!raw)return {blocked:false,muted:false};
  const state=JSON.parse(raw);if(state.version!==1||!Array.isArray(state.contacts))throw Error('Contact policy unavailable');
- return !!group&&state.groups?.some((g:{id:string;muted?:boolean})=>g.id===group&&g.muted===true)||state.contacts.some((c:{account:string;muted?:boolean})=>c.account===sender&&c.muted===true);
+ return {blocked:state.contacts.some((c:{account:string;blocked?:boolean})=>c.account===sender&&c.blocked),
+  muted:state.contacts.some((c:{account:string;muted?:boolean})=>c.account===sender&&c.muted===true)||!!group&&state.groups?.some((g:{id:string;muted?:boolean})=>g.id===group&&g.muted===true)};
 }
 async function messageChannel(sound:boolean){
  // Android channel sound is immutable. The old channel was created without one.
@@ -127,8 +129,11 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   const [database,current]=await Promise.all([db(),rootWakeContext()]);
   const key=rootMessageNotificationId(owner,sender,preview?.group);
   if(current?.account!==owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
-  const [preferences,blocked,isMuted]=await Promise.all([readRootNotificationPreferences(owner),rootWakeBlocked(owner,sender),muted(owner,sender,preview?.group)]);
-  const quiet=!preferences.messages||!preview||preview.read||blocked||isMuted||(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group));
+  // Suppressed/control/read events cannot expose content. They do not need to
+  // load the full history and preferences before taking the silent path.
+  const suppressed=!preview||preview.read||(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group));
+  const [preferences,policy]=suppressed?[null,null]:await Promise.all([readRootNotificationPreferences(owner),messagePolicy(owner,sender,preview.group)]);
+  const quiet=suppressed||!preferences?.messages||policy?.blocked||policy?.muted;
   if(quiet){if(preview?.group)await cancelRootMessageNotification(owner,sender,id);
    // Direct delivery can finish before the first wake creates a notice row.
    // Remember consumed control/read/muted packets too, so a delayed hint cannot
@@ -142,7 +147,7 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
    await cancelRootMessageNotification(owner,sender,id,preview?.group);setStage('preview');
    await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);return;
   }
-  const channelId=await messageChannel(preferences.sound);
+  const channelId=await messageChannel(preferences!.sound);
   console.info('[Axonic notification timing] policy-channel-ms',Date.now()-began);
   // An unlock may end while the OS channel is being created.
   if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)return;
@@ -152,9 +157,12 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   // Preserve the last preview when updating a notice created by the previous client.
   const previous=existing?.data?.messagePreviews??(existing?.body&&existing.data?.messageId&&existing.data.sender&&Number.isFinite(Number(existing.data.messageAt))?JSON.stringify([{id:existing.data.messageId,sender:existing.data.sender,name:existing.title||preview.name,text:existing.body,at:Number(existing.data.messageAt)}]):undefined);
   const messages=notificationMessages(previous,{id,...(preview.orderId?{orderId:preview.orderId}:{}),sender,name:preview.senderName||preview.name,text:preview.text,at:preview.at}),latest=messages[messages.length-1];
-  await notifee.displayNotification({id:key,title:preview.name,body:latest.text,data:{type:'root_neuron_message',account:owner,sender:latest.sender,messageId:latest.id,messageAt:String(latest.at),messagePreviews:JSON.stringify(messages),...(preview.group?{group:preview.group}:{})},
-   android:{channelId,onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
-    pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender}}))}}});
+  const avatar=await rootNotificationAvatar(owner,latest.sender);
+  if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner){avatar?.remove();return;}
+  const notification={id:key,title:preview.name,body:latest.text,data:{type:'root_neuron_message',account:owner,sender:latest.sender,messageId:latest.id,messageAt:String(latest.at),messagePreviews:JSON.stringify(messages),...(preview.group?{group:preview.group}:{})},
+   android:{channelId,...(avatar?{largeIcon:avatar.uri}:{}),onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
+    pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING as const,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender,...(avatar&&m.sender===latest.sender?{icon:avatar.uri}:{})}}))}}};
+  try{try{await notifee.displayNotification(notification);}catch(error){if(!avatar)throw error;delete notification.android.largeIcon;for(const m of notification.android.style.messages)delete m.person.icon;await notifee.displayNotification(notification);}}finally{avatar?.remove();}
   console.info('[Axonic notification timing] displayed-ms',Date.now()-began);
   if(localAccount.status().state==='unlocked'&&localAccount.status().account===owner)diagnosticJournal.record('notification_preview_posted',{milliseconds:Date.now()-began});
   await Native?.notificationReadActionInShade?.(key);

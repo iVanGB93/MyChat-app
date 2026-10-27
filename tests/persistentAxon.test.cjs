@@ -31,7 +31,8 @@ function wires(media = [false,false], latency = 0) {
   const listeners = [], closed = [], history = [[], []];
   const wire = i => ({
     mediaLane:!!media[i],
-    bulkAttachments:media[i]==='bulk',
+    bulkAttachments:['bulk','relay'].includes(media[i]),
+    blockStreams:media[i]==='relay',wss:media[i]==='relay',
     smallAttachmentBatches:['small','small4'].includes(media[i]),
     smallAttachmentWindow:media[i]==='small4'?4:undefined,
     listen(message, close) { listeners[i] = message; closed[i] = close; return () => { listeners[i] = null; closed[i] = null; }; },
@@ -54,6 +55,88 @@ async function settle(predicate) {
   assert.fail('condition did not settle');
 }
 
+test('negotiated relay streams upload/download without giant wire frames or early custody acknowledgement',async t=>{
+ const data=Buffer.alloc(3_000_080,17).toString('base64'),digest='a'.repeat(64);let stored=false,release;
+ const gate=new Promise(r=>release=r);
+ const handler=Object.assign(async raw=>{const q=JSON.parse(raw);if(q.operation==='put-batch'){
+  assert.equal(q.data,data);await gate;stored=true;return JSON.stringify({status:'held',index:0,count:1,received:1});
+ }return JSON.stringify({status:'ok',index:0,count:1,data});},{uploadBatch:true});
+ const f=pair(t,{0:{onAttachment:handler},1:{onAttachment:handler}},['relay','relay']);
+ await Promise.all(f.sessions.map(s=>s.ready));
+ let completed=false;const put=f.sessions[0].attachmentBulkRequest(JSON.stringify({version:1,operation:'put-batch',digest,index:0,count:1,data})).then(v=>{completed=true;return JSON.parse(v);});
+ await new Promise(r=>setTimeout(r,50));assert.equal(stored,false);assert.equal(completed,false);
+ release();assert.equal((await put).status,'held');assert.equal(stored,true);
+ const got=JSON.parse(await f.sessions[0].attachmentBulkRequest(JSON.stringify({version:1,operation:'get-batch',digest,index:0,count:1})));
+ assert.equal(got.data,data);assert.deepEqual(f.closed,[0,0]);
+ assert.ok(f.transport.history.flat().every(raw=>raw.length<AXON_FRAME_BYTES));
+ assert.ok(f.sessions[0].snapshot().traffic['relay-block-stream']>100);
+});
+
+test('RTC endpoint capability distinguishes relay-only hosts from mobile endpoints after authentication',async t=>{
+ const f=pair(t,{0:{onSignal:async()=>true},1:{onSignal:async()=>true,rtcEndpoint:false}});
+ assert.equal(f.sessions[0].supportsRtcEndpoint(),undefined);
+ await Promise.all(f.sessions.map(s=>s.ready));
+ assert.equal(f.sessions[0].supportsRtcEndpoint(),false);assert.equal(f.sessions[1].supportsRtcEndpoint(),true);
+ assert.equal(f.sessions[0].sendSignal('relay-still-supported'),true);
+ assert.equal(JSON.parse(f.transport.history[1][0]).rtcEndpoint,0);
+ f.sessions[0].stop();assert.equal(f.sessions[0].supportsRtcEndpoint(),undefined);
+});
+
+test('authenticated RTC signaling queues overlapping identity work without disconnecting the transport',async t=>{
+ let release;const received=[];
+ const f=pair(t,{0:{onSignal:async()=>true},1:{onSignal:async raw=>{received.push(raw);if(raw==='first')await new Promise(r=>release=r);return true;}}});
+ await Promise.all(f.sessions.map(s=>s.ready));
+ assert.equal(f.sessions[0].sendSignal('first'),true);await settle(()=>!!release);
+ assert.equal(f.sessions[0].sendSignal('second'),true);
+ await new Promise(r=>setImmediate(r));assert.deepEqual(received,['first']);
+ assert.equal(f.sessions[1].snapshot().state,'connected');
+ release();await settle(()=>received.length===2);
+ assert.deepEqual(received,['first','second']);assert.equal(f.sessions[1].snapshot().state,'connected');
+});
+
+test('unknown authenticated application operation returns unsupported without closing the peer',async t=>{
+ const f=pair(t);await Promise.all(f.sessions.map(s=>s.ready));
+ // Intercept the response: it has no pending caller in this injected fixture.
+ f.transport.pause();f.transport.inject(1,{version:1,kind:'request',id:777,operation:'future-feature',body:'{}'});
+ await settle(()=>f.transport.history[1].some(raw=>JSON.parse(raw).id===777));
+ const response=JSON.parse(f.transport.history[1].find(raw=>JSON.parse(raw).id===777));
+ assert.equal(JSON.parse(response.body).status,'unsupported');
+ assert.equal(f.sessions[1].snapshot().state,'connected');
+});
+
+test('bounded unknown frame from an authenticated peer is counted and does not break normal traffic',async t=>{
+ const hooks={onCustody:async()=> 'ok'};const f=pair(t,{0:hooks,1:hooks});
+ await Promise.all(f.sessions.map(s=>s.ready));
+ f.transport.inject(1,{version:1,kind:'future-event',body:'{}'});
+ await new Promise(r=>setImmediate(r));
+ assert.equal(f.sessions[1].snapshot().traffic.other,1);
+ assert.equal(await f.sessions[0].custodyRequest('poll'),'ok');
+ assert.equal(f.sessions[1].snapshot().state,'connected');
+ f.transport.inject(1,{version:1,kind:'future-event',body:'x'.repeat(AXON_FRAME_BYTES+1)});
+ assert.equal(f.sessions[1].snapshot().state,'closed');
+});
+
+test('RTC introduction route uses local ranking, ignores stale sources and fails over when the source disconnects',()=>{
+ const {rankedRtcIntroductions}=load('lanIdentityRuntime');
+ const peers=[{account:'target',via:'slow',expiresAt:now+1000},{account:'target',via:'fast',expiresAt:now+1000},{account:'target',via:'slow',expiresAt:now+2000},
+ {account:'expired',via:'fast',expiresAt:now},{account:'orphan',via:'gone',expiresAt:now+1000}];
+ const connections=[{account:'fast',state:'connected'},{account:'slow',state:'connected'}];
+ for(const list of [peers,[...peers].reverse()])assert.deepEqual(rankedRtcIntroductions(list,connections,now),[peers[1]]);
+ assert.deepEqual(rankedRtcIntroductions(peers,[{account:'fast',state:'closing'},connections[1]],now),[peers[2]]);
+ assert.deepEqual(rankedRtcIntroductions(peers,[],now),[]);
+});
+
+test('slow durable custody reply does not tear down an authenticated LAN axon at four seconds',async t=>{
+ let release;
+ const hooks={onCustody:()=>new Promise(r=>{release=r;})};
+ const f=pair(t,{0:hooks,1:hooks});await Promise.all(f.sessions.map(s=>s.ready));
+ const request=f.sessions[0].custodyRequest('poll');await settle(()=>!!release);
+ f.advance(6000);f.sessions[0].tick();
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+ release('ok');assert.equal(await request,'ok');
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+});
+
 test('stream promotion capability is mutually negotiated and only exposed after authentication',async t=>{
  const handler=Object.assign(async()=>'{"status":"unavailable"}',{streams:true});
  const f=pair(t,{0:{onAttachment:handler,onSignal:async()=>true},1:{onAttachment:handler,onSignal:async()=>true}});
@@ -68,6 +151,12 @@ for(const legacy of ['no-stream','no-signaling'])test(`stream promotion stays un
  await Promise.all(f.sessions.map(s=>s.ready));assert.equal(f.sessions[0].attachmentStreamPeer(),null);assert.equal(f.sessions[1].attachmentStreamPeer(),null);
  assert.equal(JSON.parse(f.transport.history[1][0]).attachmentStreams,undefined);
 });
+test('explicit non-RTC endpoint cannot authorize stream promotion even with a stream flag',async t=>{
+ const handler=Object.assign(async()=>'{"status":"unavailable"}',{streams:true});
+ const f=pair(t,{0:{onAttachment:handler,onSignal:async()=>true},1:{onAttachment:handler,onSignal:async()=>true,rtcEndpoint:false}});
+ await Promise.all(f.sessions.map(s=>s.ready));assert.equal(f.sessions[0].attachmentStreamPeer(),null);
+});
+
 test('a push client can register with a gateway without advertising itself as a gateway',async t=>{
  const f=pair(t,{0:{onPush:Object.assign(async()=>'{"status":"unsupported"}',{gateway:false})},1:{onPush:async()=>'{"status":"registered"}'}});
  await Promise.all(f.sessions.map(s=>s.ready));
@@ -283,7 +372,7 @@ test('custody waits for a busy request slot, bounds queued work and cancels when
     const first=f.sessions[0].custodyRequest('{"operation":"poll"}');
     await settle(()=>!!release);
     const second=f.sessions[0].custodyRequest('{"operation":"poll"}');
-    assert.equal(await f.sessions[0].custodyRequest('{"operation":"poll"}'),null);
+    assert.deepEqual(JSON.parse(await f.sessions[0].custodyRequest('{"operation":"poll"}')),{status:'retry',retryAfterMs:1000});
     assert.equal(received,1);
     if(lock){f.lock();f.sessions[0].tick();}
     release();
@@ -405,6 +494,26 @@ test('unconfirmed test messages are bounded to one pending send and cancel on lo
   const pending=f.sessions[0].sendTestMessage('unconfirmed');
   assert.equal(await f.sessions[0].sendTestMessage('second pending'),false);
   await settle(()=>f.inbox[1].length===1);f.ids[0].lock();assert.equal(await pending,false);
+});
+
+test('late authenticated normal-chat ACK preserves the connection without confirming a newer retry',async t=>{
+ const held=[];
+ const f=await testMessagePair(t,raw=>{
+  const frame=JSON.parse(raw);
+  if(frame.kind==='chat-message'&&JSON.parse(frame.body).kind==='ack'){held.push(raw);return null;}
+  return raw;
+ },undefined,undefined,true);
+ const id='ab'.repeat(32);
+ assert.equal(await f.sessions[0].sendChatMessage('late receipt',id),false);
+ assert.equal(held.length,1);
+ let settled=false;
+ const retry=f.sessions[0].sendChatMessage('late receipt',id).then(ok=>{settled=true;return ok;});
+ await settle(()=>held.length===2);
+ f.bus.inject(0,held[0]);await new Promise(r=>setTimeout(r,50));
+ assert.equal(settled,false);
+ assert.equal(f.sessions[0].snapshot().state,'connected');
+ f.bus.inject(0,held[1]);assert.equal(await retry,true);
+ assert.equal(f.sessions[0].snapshot().state,'connected');
 });
 
 test('old peers without test capability cannot receive test payloads',async t=>{
@@ -707,7 +816,7 @@ test('signed signaling binds sender, target, session, SDP and expiry; relay only
 });
 test('signaling cannot queue for offline peers, survive locks, accept oversized SDP or establish a third hop', async () => {
   const a = identity(), b = identity(), relay = identity(), session = Buffer.from(random(32)).toString('hex');
-  assert.throws(() => signAxonSignal(a.record,a.signingSeed,[],b.record.account,session,'offer','v=0\r\n'+'x'.repeat(7000),now));
+  assert.throws(() => signAxonSignal(a.record,a.signingSeed,[],b.record.account,session,'offer','v=0\r\n'+'x'.repeat(9000),now));
   const raw = signAxonSignal(a.record,a.signingSeed,[],b.record.account,session,'offer','v=0\r\n',now);
   const via = { account:a.record.account,device:a.record.devices[0].id,expiresAt:now+60000,instance:'00'.repeat(32) };
   for (const active of [true,false]) {
@@ -717,14 +826,29 @@ test('signaling cannot queue for offline peers, survive locks, accept oversized 
   }
 });
 
+for(const cancel of [false,true])test(`RTC relay bounds concurrent identity reads and preserves queued offers (clear=${cancel})`,async()=>{
+ const a=identity(),b=identity(),relay=identity(),db=store(),reads=[],forwarded=[];
+ const router=createAxonSignaling({account:relay.record.account,now:()=>now,current:()=>true,
+  store:{...db,read:async id=>{await new Promise(r=>reads.push(r));return db.read(id);}},
+  connected:()=>true,send:(_id,raw)=>{forwarded.push(raw);return true;},receive:()=>assert.fail('relay consumed offer')});
+ const via={account:a.record.account,device:a.record.devices[0].id,instance:'00'.repeat(32),expiresAt:now+60000};
+ const packets=Array.from({length:7},(_,i)=>signAxonSignal(a.record,a.signingSeed,[],b.record.account,(i+1).toString(16).padStart(64,'0'),'offer','v=0\r\n',now));
+ const tasks=packets.map(raw=>router.receive(raw,via));
+ assert.equal(reads.length,2);assert.equal(await tasks[6],false,'two active plus four queued only');
+ if(cancel){router.clear();reads.splice(0).forEach(r=>r());assert.deepEqual(await Promise.all(tasks),Array(7).fill(false));assert.equal(forwarded.length,0);return;}
+ for(let i=0;i<20&&forwarded.length<6;i++){reads.splice(0).forEach(r=>r());await new Promise(r=>setImmediate(r));}
+ assert.deepEqual(await Promise.all(tasks),[true,true,true,true,true,true,false]);
+ assert.deepEqual(forwarded,packets.slice(0,6));
+});
+
 const { createRtcAxonTransport, validAxonSdp } = load('rtcAxonTransport');
 test('RTC stream is pinned to authenticated device and closes independently of chat',async t=>{
  const {PC}=rtcFixture(),ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
- const transports=[],sessions=[];let receivedLane,observed;
+ const transports=[],sessions=[],pcs=[];let receivedLane,observed;
  const attach=(i,wire)=>{sessions[i]=createPersistentAxon({...ids[i],store:store(),instance:random(32),random:async n=>random(n),now:()=>now,current:()=>true,
   expectedAccount:ids[1-i].record.account,wire,onAttachment:async()=>null,onClosed(){}});};
  for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,random:async()=>Buffer.from(random(32)).toString('hex'),
-  authenticated:()=>{},streamCredit:async()=>true,createConnection:()=>new PC(),
+  authenticated:()=>{},streamCredit:async()=>true,createConnection:()=>pcs[i]=new PC(),
   sign:(target,session,kind,sdp)=>JSON.stringify({target,session,kind,sdp,device:ids[i].record.devices[0].id,record:ids[i].record,expiresAt:now+30000}),
   send:(_via,raw)=>{queueMicrotask(()=>transports[1-i].receive(JSON.parse(raw),'relay'));return true;},accept:(_candidate,wire)=>{attach(i,wire);return true;}});
  t.after(()=>transports.forEach(x=>x.stop()));
@@ -738,6 +862,22 @@ test('RTC stream is pinned to authenticated device and closes independently of c
  lane.send(new Uint8Array([1,2,3]));await settle(()=>observed);assert.deepEqual(observed,new Uint8Array([1,2,3]));
  lane.close();assert.equal(receivedLane.live(),false);assert(sessions.every(s=>s.snapshot().state==='connected'));
  assert.equal(transports[0].canStream(ids[1].record.account,ids[1].record.devices[0].id),true);
+ pcs[0].connectionState='disconnected';
+ assert.equal(transports[0].canStream(ids[1].record.account,ids[1].record.devices[0].id),false);
+ assert.throws(()=>transports[0].openStream(ids[1].record.account,ids[1].record.devices[0].id),/unavailable/);
+ assert(sessions.every(s=>s.snapshot().state==='connected'),'recovering identity session is preserved');
+ pcs[0].connectionState='connected';
+ assert.equal(transports[0].canStream(ids[1].record.account,ids[1].record.devices[0].id),true);
+ const peer=ids[1].record.account,device=ids[1].record.devices[0].id;
+ assert.equal(transports[0].borrowCall(peer,'wrong-device','ab'.repeat(32)),null);
+ const lease=transports[0].borrowCall(peer,device,'ab'.repeat(32));assert.ok(lease);assert.equal(lease.connection,pcs[0]);
+ assert.equal(transports[0].borrowCall(peer,device,'cd'.repeat(32)),null);
+ const sdp=pcs[1].localDescription.sdp+'m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n';
+ assert.equal(lease.validateRemote(sdp),true);assert.equal(lease.validateRemote(sdp.replace(/AB:/g,'CD:')),false);
+ let rejected=0;pcs[0].emit('datachannel',{channel:{label:lease.channelLabel,close(){rejected++;}}});assert.equal(rejected,0);
+ lease.release();assert.equal(lease.current(),false);assert.equal(lease.validateRemote(sdp),false);
+ assert(sessions.every(s=>s.snapshot().state==='connected'));
+ pcs[0].emit('datachannel',{channel:{label:lease.channelLabel,close(){rejected++;}}});assert.equal(rejected,1);
 });
 test('RTC path diagnostics expose only selected route metrics, never addresses or IDs',()=>{
  const {rtcPathSummary}=load('rtcAxonTransport');
@@ -783,6 +923,7 @@ function rtcFixture() {
       this.other=pcs.get(Number(/a=x-test:(\d+)/.exec(d.sdp)[1]));
       if(d.type==='offer') {if(!this.channel){this.channel=new Channel();this.channel.protocol='';this.emit('datachannel',{channel:this.channel});}}
       else {this.channel.other=this.other.channel;this.other.channel.other=this.channel;
+        this.connectionState=this.other.connectionState='connected';
         this.channel.readyState=this.other.channel.readyState='open';this.channel.emit('open');this.other.channel.emit('open');}
     }
     close(){this.connectionState='closed';this.channel?.close();}
@@ -848,14 +989,26 @@ test('RTC rejects oversized, binary and empty frames and bounds the pre-listener
   assert.equal(received,0);assert.equal(closed,1);
   assert.equal(validAxonSdp('v=0\r\n'+'x'.repeat(7000)),false);
 });
-test('RTC data channels carry independent mutual identity authentication and close together on lock', async t => {
+test('RTC refuses extra channels before authentication', async t => {
+  const ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+  const {PC}=rtcFixture();let pc;
+  const transport=createRtcAxonTransport({account:()=>ids[0].record.account,now:()=>now,
+    random:async()=> 'ab'.repeat(32),createConnection:()=>pc=new PC(),sign:()=>'',send:()=>true,accept:()=>false});
+  t.after(()=>transport.stop());
+  const wire=await transport.connect({account:ids[1].record.account,endpoint:'rtc:relay'}, {signal:new AbortController().signal,onClosed(){}});
+  let closed=0,rejected=0;wire.listen(()=>{},()=>closed++);
+  pc.emit('datachannel',{channel:{label:'unknown',close(){rejected++;}}});
+  assert.equal(rejected,1);assert.equal(closed,1);assert.deepEqual(transport.snapshot(),[]);
+});
+
+test('RTC data channels isolate extras after mutual identity authentication and close together on lock', async t => {
   const { PC } = rtcFixture(), ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
-  const transports=[],sessions=[], wires=[], admitted=[0,0];
+  const transports=[],sessions=[], wires=[], pcs=[], admitted=[0,0];
   const attach=(i,wire)=>{wires[i]=wire;sessions[i]=createPersistentAxon({...ids[i],store:store(),instance:random(32),random:async n=>random(n),
-    now:()=>now,current:()=>true,expectedAccount:ids[1-i].record.account,wire,onAttachment:async()=>null,onClosed(){}});};
+    now:()=>now,current:()=>true,expectedAccount:ids[1-i].record.account,wire,onAttachment:async()=>null,onCustody:async raw=>'reply:'+raw,onClosed(){}});};
   for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,random:async()=>Buffer.from(random(32)).toString('hex'),
     mediaLane:true,authenticated:()=>{assert.equal(sessions[i].snapshot().state,'connected');admitted[i]++;},
-    createConnection:()=>new PC(),sign:(target,session,kind,sdp)=>JSON.stringify({target,session,kind,sdp,record:ids[i].record,expiresAt:now+30000}),
+    createConnection:()=>{const pc=new PC();pcs[i]=pc;return pc;},sign:(target,session,kind,sdp)=>JSON.stringify({target,session,kind,sdp,record:ids[i].record,expiresAt:now+30000}),
     send:(_via,raw)=>{queueMicrotask(()=>transports[1-i].receive(JSON.parse(raw),'relay'));return true;},
     accept:(_candidate,wire)=>{attach(i,wire);return true;}});
   t.after(()=>transports.forEach(x=>x.stop()));
@@ -864,10 +1017,21 @@ test('RTC data channels carry independent mutual identity authentication and clo
   assert.ok(sessions.every(s=>s.snapshot().state==='connected'));
   assert.deepEqual(admitted,[1,1]);
   assert(sessions.every(s=>s.supportsAttachmentBulk()&&s.attachmentBatchChunks()===3&&s.attachmentBatchWindow()===2));
+  for(const pc of pcs)for(const label of ['unknown-future-channel','axonic-identity-v1']){
+    let rejected=0;
+    pc.emit('datachannel',{channel:{label,close(){rejected++;}}});
+    assert.equal(rejected,1);
+    assert.ok(sessions.every(s=>s.snapshot().state==='connected'));
+  }
+  // Rejection also remains isolated if the native channel close throws.
+  pcs[0].emit('datachannel',{channel:{label:'unknown',close(){throw Error('native close');}}});
+  assert.ok(sessions.every(s=>s.snapshot().state==='connected'));
+  assert.equal(await sessions[0].custodyRequest('still-connected'),'reply:still-connected');
+  assert.equal(await sessions[1].custodyRequest('reverse'),'reply:reverse');
   transports[0].stop();assert.ok(sessions.every(s=>s.snapshot().state==='closed'));
   assert.deepEqual(transports.map(t=>t.snapshot()),[[],[]]);
 });
-test('RTC recovery binds fresh signed negotiation to the existing device, session and certificate',async t=>{
+for(const failureState of ['disconnected','failed','post-call'])test(`RTC recovery from ${failureState} binds fresh signed negotiation to the existing device, session and certificate`,async t=>{
  const {PC}=rtcFixture(),ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
  const transports=[],pcs=[],wires=[],packets=[];let automatic=true;
  for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,
@@ -879,7 +1043,14 @@ test('RTC recovery binds fresh signed negotiation to the existing device, sessio
  wires[0]=await transports[0].connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
  await settle(()=>packets.length===2&&pcs[0].channel.readyState==='open');wires.forEach(w=>w.enableAttachments());
  const original=packets[0].signal.session,channels=pcs.map(p=>p.channel);automatic=false;
- pcs[0].connectionState='disconnected';pcs[0].emit('connectionstatechange');
+ if(failureState==='post-call')for(let i=0;i<2;i++){
+  const lease=transports[i].borrowCall(ids[1-i].record.account,ids[1-i].record.devices[0].id,'ab'.repeat(32));assert.ok(lease);lease.release();
+  for(const name of ['createOffer','createAnswer']){const original=pcs[i][name].bind(pcs[i]);pcs[i][name]=async(...args)=>{const description=await original(...args);return {...description,sdp:description.sdp+'m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n'};};}
+ }
+
+ pcs[1].connectionState=failureState==='post-call'?'failed':failureState;pcs[1].emit('connectionstatechange');
+ pcs[0].connectionState=failureState==='post-call'?'failed':failureState;pcs[0].emit('connectionstatechange');
+ pcs[0].emit('connectionstatechange'); // repeated failure cannot cancel an in-flight restart
  await settle(()=>packets.length===3);const offer=packets[2].signal;
  assert.notEqual(offer.session,original);assert.match(offer.sdp,new RegExp('a=x-axonic-restart:'+original));
  assert.deepEqual(pcs[0].offerOptions,{iceRestart:true});
@@ -895,6 +1066,26 @@ test('RTC recovery binds fresh signed negotiation to the existing device, sessio
  const received=[];wires[1].listen(raw=>received.push(raw),()=>{});wires[0].send('after restart');await new Promise(r=>setImmediate(r));assert.deepEqual(received,['after restart']);
  pcs[0].connectionState='connected';pcs[0].emit('connectionstatechange');pcs[0].connectionState='disconnected';pcs[0].emit('connectionstatechange');
  transports[1].receive({...offer,session:'ee'.repeat(32)},'relay');await new Promise(r=>setImmediate(r));assert.equal(packets.length,4);
+});
+
+test('RTC accepts a delayed answer within its bounded setup window and closes unanswered attempts',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const {PC}=rtcFixture(),ids=[identity(),identity()].sort((a,b)=>a.record.account.localeCompare(b.record.account));
+ const transports=[],packets=[],wires=[];
+ for(let i=0;i<2;i++)transports[i]=createRtcAxonTransport({account:()=>ids[i].record.account,now:()=>now,
+  random:async()=>Buffer.from(random(32)).toString('hex'),createConnection:()=>new PC(),
+  sign:(...args)=>signAxonSignal(ids[i].record,ids[i].signingSeed,[],...args,now),
+  send:(_via,raw)=>{packets.push(verifyAxonSignal(raw,now));return true;},accept:(_c,w)=>{wires[1]=w;return true;}});
+ t.after(()=>transports.forEach(x=>x.stop()));
+ wires[0]=await transports[0].connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
+ await new Promise(r=>setImmediate(r));assert.equal(packets.length,1);
+ transports[1].receive(packets[0],'relay');await new Promise(r=>setImmediate(r));assert.equal(packets.length,2);
+ t.mock.timers.tick(12000);assert.equal(transports[0].snapshot().length,1);
+ transports[0].receive(packets[1],'relay');await new Promise(r=>setImmediate(r));
+ assert.ok(transports.every(x=>x.snapshot()[0].open));assert.equal(wires[0].setupTimeoutMs,25000);
+ transports.forEach(x=>x.stop());
+ await transports[0].connect({account:ids[1].record.account,endpoint:'rtc:relay'},{signal:new AbortController().signal,onClosed(){}});
+ t.mock.timers.tick(20000);assert.deepEqual(transports[0].snapshot(),[]);
 });
 
 test('RTC restart cannot outlive closure or extend the existing disconnect deadline',async t=>{
@@ -1165,7 +1356,7 @@ test('waiting push registration prevents new poll reservations from starving it'
  const f=pair(t,{0:{onPush:async()=>null,onCustody:async()=>null},1:{onPush:async()=> 'registered',onCustody:async()=>{entered++;await gate;return 'ok';}}});
  await Promise.all(f.sessions.map(s=>s.ready));const first=f.sessions[0].custodyRequest('poll-one'),second=f.sessions[0].custodyRequest('poll-two');
  await settle(()=>entered===1);const push=f.sessions[0].pushRequest('register');
- assert.equal(await f.sessions[0].custodyRequest('new-poll'),null);release();
+ assert.deepEqual(JSON.parse(await f.sessions[0].custodyRequest('new-poll')),{status:'retry',retryAfterMs:1000});release();
  assert.equal(await push,'registered');await Promise.all([first,second]);assert(f.sessions[0].supportsPush());
 });
 
@@ -1221,8 +1412,8 @@ test('native ticks expire unanswered exchanges when background JS timers are sus
  try{
   f.transport.blackhole();let done=false;
   const request=f.sessions[0].custodyRequest('poll').then(r=>{assert.equal(r,null);done=true;});
-  assert(f.sessions[0].nextDeadline()<=now+4000,'native coordinator must schedule the exchange timeout');
-  f.advance(4001);f.sessions[0].tick();await new Promise(r=>setImmediate(r));
+  assert(f.sessions[0].nextDeadline()<=now+15000,'native coordinator must schedule the exchange timeout');
+  f.advance(15001);f.sessions[0].tick();await new Promise(r=>setImmediate(r));
   assert.equal(done,true);assert.equal(f.sessions[0].snapshot().closeReason,'exchange-timeout:custody');await request;
  }finally{global.setTimeout=original;}
 });
@@ -1255,7 +1446,7 @@ test('small batches reject oversized requests before serving and retain the 20KB
 });
 
 test('relay upload capability admits bounded large requests only at an opted-in endpoint',async t=>{
- const body=JSON.stringify({version:1,operation:'put-batch',digest:'ab'.repeat(32),index:0,count:32,data:'A'.repeat(180000)});
+ const body=JSON.stringify({version:1,operation:'put-batch',digest:'ab'.repeat(32),index:0,count:1,data:'A'.repeat(180000)});
  let handled=0;const receiver={onAttachment:Object.assign(async raw=>{handled++;assert.equal(raw,body);return '{"status":"held"}';},{uploadBatch:true}),onCustody:async()=> 'control'};
  const sender={onAttachment:async()=> '{}',onCustody:async()=> 'control'};
  const f=pair(t,{0:sender,1:receiver},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
@@ -1269,7 +1460,7 @@ test('relay upload capability admits bounded large requests only at an opted-in 
 for(const mode of ['not-opted-in','wrong-operation','unknown-field','over-limit'])test('bulk upload cannot enlarge unrelated/invalid request admission: '+mode,async t=>{
  let handled=0;const hooks={onAttachment:Object.assign(async()=>{handled++;return '{}';},{uploadBatch:mode!=='not-opted-in'})};
  const f=pair(t,{0:hooks,1:hooks},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
- const body={version:1,operation:mode==='wrong-operation'?'offer':'put-batch',digest:'ab'.repeat(32),index:0,count:32,data:'A'.repeat(mode==='over-limit'?850000:180000),...(mode==='unknown-field'?{ignored:'no'}:{})};
+ const body={version:1,operation:mode==='wrong-operation'?'offer':'put-batch',digest:'ab'.repeat(32),index:0,count:1,data:'A'.repeat(mode==='over-limit'?4_010_000:180000),...(mode==='unknown-field'?{ignored:'no'}:{})};
  f.transport.inject(0,{version:1,kind:'bulk-request',id:987,body:JSON.stringify(body)});await settle(()=>f.sessions[0].snapshot().state==='closed');assert.equal(handled,0);
 });
 
@@ -1336,6 +1527,21 @@ test('media lane pipelines replies out of order while control completes independ
  assert(f.sessions.every(s=>s.snapshot().state==='connected'));
  assert(f.transport.history[0].some(raw=>JSON.parse(raw).kind==='media-request'));
 });
+for(const bulk of [false,true])test(`attachment waits wake on control completion even when mobile timers are delayed: bulk=${bulk}`,async t=>{
+ const code=ts.transpileModule(fs.readFileSync('src/services/identity/persistentAxon.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText,out={};
+ new Function('require','exports','setTimeout',code)(n=>n.startsWith('./')?load(n.slice(2).replace(/\.(js|ts)$/,'')):require(n),out,(fn,ms,...args)=>setTimeout(fn,ms===5?1000:ms,...args));
+ let release,entered=false;
+ const hooks={onCustody:async()=>{entered=true;return new Promise(r=>release=r);},onAttachment:async raw=>raw};
+ const f=pair(t,{0:hooks,1:hooks},bulk?['bulk','bulk']:[true,true],0,out.createPersistentAxon);
+ await Promise.all(f.sessions.map(s=>s.ready));
+ const control=f.sessions[0].custodyRequest('{}');await settle(()=>entered);
+ const transfer=bulk?f.sessions[0].attachmentBulkRequest('{}'):f.sessions[0].attachmentRequest('{}');
+ await new Promise(setImmediate);release('ok');await control;
+ let timer;
+ try{assert.equal(await Promise.race([transfer,new Promise(resolve=>timer=setTimeout(()=>resolve('timer-stalled'),250))]),'{}');}
+ finally{clearTimeout(timer);}
+});
+
 test('new media peer falls back to serialized attachments with an old adapter',async t=>{
  const hooks={onAttachment:async raw=>raw};const f=pair(t,{0:hooks,1:hooks},[true,false]);
  await Promise.all(f.sessions.map(s=>s.ready));assert.equal(await f.sessions[0].attachmentRequest('old'),'old');
@@ -1458,7 +1664,7 @@ test('quality observes existing exchanges without adding wire frames or advertis
  let f;f=pair(t,{0:{onCustody:async()=> 'ok'},1:{onCustody:async()=>{f.advance(75);return 'ok';}}});await Promise.all(f.sessions.map(s=>s.ready));
  const before=f.transport.history.map(h=>h.length);assert.equal(await f.sessions[0].custodyRequest('poll'),'ok');const q=f.sessions[0].snapshot().quality;assert.equal(q.samples,1);assert.equal(q.responseMs,75);assert.equal(f.sessions[0].snapshot().requestTimings['roundTrip:custody'].meanMs,75);assert.equal(f.sessions[1].snapshot().requestTimings['handler:custody'].meanMs,75);
  assert.deepEqual(f.transport.history.map((h,i)=>h.length-before[i]),[1,1]);assert.ok(f.transport.history.flat().every(raw=>!raw.includes('quality')&&!raw.includes('responseMs')));
- f.transport.blackhole();const work=f.sessions[0].custodyRequest('poll');await new Promise(r=>setImmediate(r));f.advance(4001);f.sessions[0].tick();await work;assert.equal(f.sessions[0].snapshot().quality.failures,1);
+ f.transport.blackhole();const work=f.sessions[0].custodyRequest('poll');await new Promise(r=>setImmediate(r));f.advance(15001);f.sessions[0].tick();await work;assert.equal(f.sessions[0].snapshot().quality.failures,1);
 });
 
 test('bidirectional normal chat queues an ACK while durable receive is busy without closing',async t=>{
@@ -1468,12 +1674,25 @@ test('bidirectional normal chat queues an ACK while durable receive is busy with
  await new Promise(r=>setTimeout(r,20));assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
  release();assert.deepEqual(await Promise.all([a,b]),[true,true]);assert.deepEqual(seen.sort(),['one','two']);assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
 });
-test('normal chat receive queue remains bounded while storage is blocked',async t=>{
- let release;const f=await testMessagePair(t,undefined,undefined,async()=>{await new Promise(r=>release=r);return true;},true);
+test('normal chat retransmissions coalesce while storage is blocked without closing',async t=>{
+ let release,inserts=0;const f=await testMessagePair(t,undefined,undefined,async()=>{inserts++;await new Promise(r=>release=r);return true;},true);
  const pending=f.sessions[0].sendChatMessage('bounded','c3'.repeat(32));await settle(()=>!!release);
  const frame=JSON.parse(f.bus.history[0].find(raw=>JSON.parse(raw).kind==='chat-message'));
  for(let i=0;i<4;i++)f.bus.inject(1,frame);
- await settle(()=>f.sessions[1].snapshot().state==='closed');assert.equal(f.sessions[1].snapshot().closeReason,'chat-receive-queue-full');release();assert.equal(await pending,false);
+ await new Promise(setImmediate);assert.equal(f.sessions[1].snapshot().state,'connected');
+ assert.equal(inserts,1);release();assert.equal(await pending,true);
+ await new Promise(setImmediate);assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+ assert.equal(f.bus.history[1].filter(raw=>JSON.parse(raw).kind==='chat-message').length,1);
+});
+
+test('normal chat overflow stays bounded and sends no false receipt',async t=>{
+ let release;const f=await testMessagePair(t,undefined,undefined,async()=>{await new Promise(r=>release=r);return true;},true);
+ const pending=f.sessions[0].sendChatMessage('blocked storage','c4'.repeat(32));await settle(()=>!!release);
+ for(let i=0;i<8;i++)f.bus.inject(1,{version:1,kind:'chat-message',body:'not-yet-processed-'+i});
+ await new Promise(setImmediate);
+ assert.equal(f.sessions[1].snapshot().state,'connected');
+ assert.equal(f.bus.history[1].filter(raw=>JSON.parse(raw).kind==='chat-message').length,0);
+ f.sessions[1].stop();release();assert.equal(await pending,false);
 });
 
 test('bounded custody recovery has its own budget and leaves control exchanges usable',async t=>{
@@ -1516,4 +1735,21 @@ test('queued custody hands off on reply without waiting for the polling timer',a
  for(let i=0;i<30;i++)await Promise.resolve();
  assert.deepEqual(seen,['first','second']);assert.deepEqual(await Promise.all([first,second]),['ok','ok']);
  assert.ok(f.sessions.every(s=>s.snapshot().state==='connected'));
+});
+
+test('only post-call restart admission permits retained bounded audio/video sections',()=>{
+ const {sdp}=rtcFixture();const media=sdp(1)+'m=audio 9 UDP/TLS/RTP/SAVPF 111\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\n';
+ assert.equal(validAxonSdp(media),false);
+ assert.equal(validAxonSdp(media,true),true);
+ assert.equal(validAxonSdp(media+'m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n',true),false);
+ assert.equal(validAxonSdp(media+'x'.repeat(9000),true),false);
+ assert.equal(validAxonSdp(media.replace('m=application','m=unknown'),true),false);
+});
+
+test('exhausted local custody wait returns retry without disconnecting the healthy peer',async t=>{
+ let release;const f=pair(t,{1:{onCustody:async raw=>{if(raw==='held')await new Promise(r=>release=r);return 'ok';}}});
+ await Promise.all(f.sessions.map(s=>s.ready));const first=f.sessions[0].custodyRequest('held');await settle(()=>!!release);
+ const queued=await f.sessions[0].custodyRequest('queued');assert.deepEqual(JSON.parse(queued),{status:'retry',retryAfterMs:1000});
+ assert.equal(f.sessions[0].snapshot().state,'connected');release();assert.equal(await first,'ok');
+ assert.equal(await f.sessions[0].custodyRequest('next'),'ok');
 });

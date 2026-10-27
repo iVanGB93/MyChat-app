@@ -7,6 +7,17 @@ let rows=[],time=now,fail=false,wakes=0;const store={async transaction(fn){const
 const create=()=>s.createGroupCustodyService({owner:ids[3].record.account,store,records,now:()=>time,current:()=>true,stored:async()=>{wakes++;}});let service=create();const request=async(i,q)=>JSON.parse(await service.receive(ids[i].record.account,JSON.stringify(q)));const deposit=async()=>{assert.equal((await request(0,{operation:'group-begin',payload:job.payload})).status,'staged');for(const packet of job.grants)assert.equal((await request(0,{operation:'group-grant',id:job.payload.id,packet})).status,'staged');return request(0,{operation:'group-commit',sender:job.payload.sender,id:job.payload.id,digest:g.groupCustodyDigest(job.payload)});};
 return {service:()=>service,ids,records,job,request,deposit,rows:()=>rows,fail:v=>fail=v,wakes:()=>wakes,expire:()=>time+=c.CUSTODY_TTL,restart:()=>service=create()};}
 
+test('group receipt survives overlapping wake until invalidation, with a fresh relay drain',async()=>{
+ const f=await fixture(),recipient=f.ids[1],packet=f.job.grants[0];await f.deposit();
+ const courier=load('groupCustodyCourier').createGroupCustodyCourier({owner:()=>recipient.record.account,now:()=>now,records:f.records,allowed:()=>true,compatible:async()=>true,relays:()=>[f.ids[3].record.account],own:{},store:{},seal:async()=>{throw Error('unexpected send');},held:async()=>{},confirm:async()=>false,
+ request:async(_peer,raw)=>JSON.stringify(await f.request(1,JSON.parse(raw))),receive:async p=>c.signCustodyReceipt(p,recipient.signingSeed,recipient.encryptionSeed)});
+ await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),true);
+ courier.resume();assert.equal(courier.recoveryComplete(packet.sender,packet.id),false);
+ await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),true);
+ assert.equal(courier.recoveryComplete(packet.sender,'ff'.repeat(32)),false);
+ courier.invalidate();await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),false);courier.stop();
+});
+
 test('shared group ciphertext opens only with each intended device grant',async()=>{const f=await fixture();assert(await g.verifyGroupCustodyJob(f.job,f.records,now));
 for(let i=0;i<2;i++){const identity=f.ids[i+1],e=f.job.grants[i],grant=c.openCustody(e,identity.record.account,identity.signingSeed,identity.encryptionSeed);assert.deepEqual(g.openGroupCustody(f.job.payload,e,grant),{text:'one encrypted group message',metadata:JSON.stringify({slot:i})});assert.throws(()=>c.openCustody(e,f.ids[4].record.account,f.ids[4].signingSeed,f.ids[4].encryptionSeed),/Wrong/);}
 });

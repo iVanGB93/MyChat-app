@@ -1,0 +1,59 @@
+UI AND PRESENTATION
+Purpose: screens/navigation, rendering, user input, permission prompts and derived
+read models. UI sends commands; it must not impersonate inbound network admission.
+
+File: src/screens/LocalAccountApp.tsx
+File: src/navigation/RootAccountNavigator.tsx
+File: src/components/chat/ChatListRow.tsx
+File: src/components/chat/ChatConnectionBar.tsx
+File: src/modules/ui/chatReadModel.ts
+File: src/modules/ui/useChatSnapshot.ts
+File: src/modules/ui/useChatActivity.ts
+File: src/modules/ui/avatarSnapshotCache.ts
+File: src/contexts/ThemeContext.tsx
+AoN: src/dashboardShell.ts
+AoN: src/rootChatDashboard.ts
+AoN: src/rootGroupDashboard.ts
+AoN: src/chatPresentation.ts
+
+Contract: stable selectors/references, scoped subscriptions, targeted progress and
+avatar invalidation. Avoid rebuilding every conversation on each packet/progress
+event. React state is for local UI interaction; shared projections reuse service
+subscriptions. Neither cache nor UI label defines account trust or delivery.
+Mobile and web should use comparable user concepts/status wording; their rendering
+implementations remain platform-specific. Shared concepts do not require shared JSX.
+
+Tests and checks
+Test: tests/messageListRendering.test.cjs
+Test: tests/avatarSnapshotCache.test.cjs
+Test: tests/globalStateLifecycle.test.cjs
+File: scripts/check-module-boundaries.cjs
+The boundary checker discovers every TS/TSX file under screens, components and
+navigation, including newly added files. The network facade is
+restricted in those screens to lifecycle/network settings, not chat transport.
+Measure storage/derivation/render separately; history-read delay is not all FPS.
+
+Next extraction: split navigation/read-model responsibilities behind existing
+facades before physical folder moves. Preserve call overlays and familiar styles.
+Guide: messaging.txt
+Guide: coordination.txt
+
+October 25 public API / preparation follow-up
+Boundary coverage now scans all screens/components/navigation TS and TSX,
+including relay inventory, diagnostics, previews and native keyboard consumers.
+Read-only network presentation and network settings are explicit allowed entries;
+chat payload routing remains outside those presentation components.
+
+Internal extraction follow-up (October 25)
+Navigation now owns routes, notification/deep-link handling and screen lifecycle.
+Eight screen implementations moved to their owning chat/contact/call directories,
+with shared presentation helpers and route prop types. No duplicate screen bodies.
+File: src/screens/rootScreenSupport.ts
+File: src/screens/chat/RootPrivateChatScreen.tsx
+File: src/screens/chat/RootChatListScreen.tsx
+File: src/screens/chat/RootMessageInfoScreen.tsx
+File: src/screens/contacts/RootContactScreen.tsx
+File: src/screens/contacts/RootNewChatScreen.tsx
+File: src/screens/contacts/RootBlockedUsersScreen.tsx
+File: src/screens/calls/RootCallHistoryScreen.tsx
+File: src/screens/calls/RootOutgoingCallScreen.tsx

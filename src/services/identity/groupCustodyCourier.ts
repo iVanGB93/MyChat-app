@@ -121,6 +121,6 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
    }catch{/* This peer's failure cannot abort another relay's pass. */}finally{passSchedule.finish({...outcome,settled:drained.has(relay)});}
    }));
   },
-  resume(peer?:string){polls.resume(peer);acknowledged.clear();drained.clear();},invalidate(){epoch++;rejected.clear();acknowledged.clear();drained.clear();polls.resume();},stop(){stopped=true;epoch++;rejected.clear();}
+  resume(peer?:string){polls.resume(peer);drained.clear();},invalidate(){epoch++;rejected.clear();acknowledged.clear();drained.clear();polls.resume();},stop(){stopped=true;epoch++;rejected.clear();acknowledged.clear();drained.clear();}
  };
 }

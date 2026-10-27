@@ -1,12 +1,17 @@
 import { requireOptionalNativeModule } from 'expo';
 interface NearbyModule {
+  attachmentStreamSeal?(key:Uint8Array,nonce:Uint8Array,aad:Uint8Array,plain:Uint8Array):Uint8Array;
+  attachmentStreamOpen?(key:Uint8Array,nonce:Uint8Array,aad:Uint8Array,ciphertext:Uint8Array):Uint8Array;
   notificationCallStyle?(id:string,name:string,video:boolean):Promise<boolean>;
   notificationReadActionInShade?(id:string):Promise<boolean>;
+  attachmentDecryptBlock?(ciphertext:string,key:string,aad:string):Promise<Uint8Array>;
+  attachmentEncryptBlock?(plain:Uint8Array,key:string,hash:string,aad:string):Promise<Uint8Array>;
   attachmentSha256?(value:string):string;
   attachmentFileSha256?(owner:string,digest:string,completed:boolean,bytes:number):Promise<string>;
   attachmentStageStream?(owner:string,temporary:string,digest:string,bytes:number):boolean;
   attachmentStagedFileSha256?(owner:string,id:string,bytes:number):Promise<string>;
-  attachmentPrepareBatch?(owner:string,id:string,key:string,bytes:number,start:number,aads:string[]):Promise<string[]>;
+  attachmentPrepareStreamBlock?(owner:string,id:string,key:string,bytes:number,start:number,aads:string[]):Promise<string[]>;
+  axonEnableBlockStreams?(id:string):void;
   axonMessageWake?(milliseconds:number):void;
   axonClockSnapshot?():{elapsedMs:number;uptimeMs:number;processCpuMs:number};
   axonMessageWait?(milliseconds:number):Promise<void>;
@@ -27,6 +32,8 @@ interface NearbyModule {
   axonConnect?(host: string, port: number): Promise<string>;
   axonWssConnect?(host: string, account: string): Promise<string>;
   axonRead?(id: string): Promise<string>;
+  axonReadPacket?(id:string):Promise<string|Uint8Array>;
+  axonWriteBinary?(id:string,bytes:Uint8Array):Promise<boolean>;
   axonWrite?(id: string, raw: string): Promise<boolean>;
   axonClose?(id: string): void;
   closeForDeviceRemoval?(): boolean;

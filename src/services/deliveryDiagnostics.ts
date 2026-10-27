@@ -1,4 +1,4 @@
-export type DeliveryStage='pending'|'stored'|'delivered'|'read'|'cancelled';
+export type DeliveryStage='pending'|'stored'|'delivered'|'read'|'cancelled'|'unavailable';
 export type DiagnosticEvent=DeliveryStage|'wake_verified'|'notification_requested'|'recovery_started'|'recovery_finished';
 type Row={trace:string;at:number;event:DiagnosticEvent;direction:'incoming'|'outgoing';initialObservation:boolean;foreground:boolean|null};
 /** Bounded, volatile, content-free observations. Raw correlation keys never leave this instance. */

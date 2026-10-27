@@ -42,7 +42,7 @@ test('invalid wake signatures stay in custody without redundant gateway requests
  f.advance(1000);await worker.tick();assert.equal(worker.diagnostics().outcomes.local_wake_verification_failed,1);
 });
 
-test('background completion requires receipt acceptance and a drained relay, and resets on resume',async t=>{
+test('overlapping wakes retain accepted receipts but require a fresh drain and respect invalidation',async t=>{
  const f=fixture(t),e=await f.seal(),receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
  let accept=false,empty=false;
  const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>e.recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['relay'],seal:async()=>e,receive:async()=>receipt,
@@ -51,7 +51,9 @@ test('background completion requires receipt acceptance and a drained relay, and
  accept=true;f.advance(5000);await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),true);
  assert.equal(courier.recoveryComplete('another-sender',e.id),false);
  courier.resume();assert.equal(courier.recoveryComplete(e.sender,e.id),false);
- empty=true;await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'empty inbox is not target receipt evidence');courier.stop();
+ empty=true;await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),true,'accepted receipt survives overlapping wake');
+ assert.equal(courier.recoveryComplete(e.sender,'ff'.repeat(32)),false,'empty inbox cannot prove an unrelated delivery');
+ courier.invalidate();await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'account invalidation discards evidence');courier.stop();
 });
 
 test('local wake flag mismatches are diagnosed without forwarding, repair, deletion or acceptance',async t=>{
@@ -616,7 +618,7 @@ test('validated custody rows reuse exact bytes but mutations and tighter limits 
  const row={sender:e.sender,recipient:e.recipient,id:e.id,recipientDevice:e.recipientDevice,expires:e.expires,digest:f.protocol.custodyDigest(e),packet:e};
  let parses=0;const original=f.protocol.parseCustody;f.protocol.parseCustody=(...args)=>{parses++;return original(...args);};
  validate([row]);const before=parses;for(let i=0;i<20;i++)validate([structuredClone(row)]);assert.equal(parses,before);
- const changed=structuredClone(row);changed.packet.ciphertext='ff'+changed.packet.ciphertext.slice(2);assert.throws(()=>validate([changed]));assert.ok(parses>before);
+ const changed=structuredClone(row);changed.packet.ciphertext=(parseInt(changed.packet.ciphertext.slice(0,2),16)^1).toString(16).padStart(2,'0')+changed.packet.ciphertext.slice(2);assert.throws(()=>validate([changed]));assert.ok(parses>before);
  assert.throws(()=>validate([row,row]));assert.throws(()=>validate([row],{rows:0,bytes:1,live:0,perSender:0,perRecipient:0}));
 });
 
@@ -765,4 +767,14 @@ test('wake deadlines sleep on empty custody, then track the actual failed-job re
  const f=fixture(t);await f.store.transaction(()=>{});let calls=0;
  const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({eventDriven:true,store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],request:async()=>{calls++;return '{"status":"retry"}';}});
  await worker.tick();assert.equal(worker.nextDeadline(),Infinity);const e=await f.seal();await f.request(f.service(),0,'deposit',e);worker.changed();await worker.tick();assert.equal(calls,1);assert.equal(worker.nextDeadline(),f.now()+30000);worker.stop();assert.equal(worker.nextDeadline(),Infinity);
+});
+
+test('busy custody defers briefly without blacklisting a healthy relay or marking delivery',async t=>{
+ const f=fixture(t),e=await f.seal();let requests=0,held=0;
+ const q=f.load('custodyCourier').createCustodyCourier({owner:()=>f.ids[0].record.account,allowed:()=>true,now:f.now,records:f.records,
+ own:{get:async()=>({envelope:e}),held:async()=>{held++;}},relays:()=>[f.ids[1].record.account],seal:async()=>{throw Error('unused');},receive:async()=>null,
+ request:async()=>{requests++;return JSON.stringify(requests===1?{status:'retry',retryAfterMs:1000}:{status:'held'});}});
+ t.after(()=>q.stop());await q.deposit(e.recipient,'test',e.id);assert.equal(held,0);
+ await q.deposit(e.recipient,'test',e.id);assert.equal(requests,1);
+ f.advance(1001);assert.equal(await q.deposit(e.recipient,'test',e.id),true);assert.equal(requests,2);assert.equal(held,1);
 });

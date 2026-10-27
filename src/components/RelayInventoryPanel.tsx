@@ -5,7 +5,7 @@ import {useIsFocused} from '@react-navigation/native';
 import {useTheme} from '../contexts/ThemeContext';
 import {useForegroundEvents} from '../hooks/useForegroundEvents';
 import {localAccountRelayInventory,subscribeRelayInventoryAccess,localAccountWakeDiagnostics,resetLocalNetworkWork} from '../modules/network';
-import {relayPacketDetails,relayCategories,relayPacketCategory,type RelayCategory,type RelayInventory} from '../services/identity/relayInventory';
+import {relayPacketDetails,relayCategories,relayPacketCategory,type RelayCategory,type RelayInventory} from '../modules/network';
 
 export default function RelayInventoryPanel(){
  const {colors}=useTheme(),focused=useIsFocused();

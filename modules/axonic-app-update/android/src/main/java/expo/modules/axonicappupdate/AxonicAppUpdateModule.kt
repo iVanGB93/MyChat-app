@@ -32,7 +32,7 @@ class AxonicAppUpdateModule : Module() {
   private var flowPending = false
   private var observedUpdateManager: AppUpdateManager? = null
   private val installListener = InstallStateUpdatedListener { state ->
-    sendEvent("onInstallState", bundleOf("installStatus" to state.installStatus()))
+    sendEvent("onInstallState", bundleOf("installStatus" to state.installStatus(), "bytesDownloaded" to state.bytesDownloaded(), "totalBytesToDownload" to state.totalBytesToDownload()))
   }
   private var previousAudioMode: Int? = null
   private var previousSpeaker = false

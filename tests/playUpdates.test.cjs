@@ -36,3 +36,15 @@ test('backgrounding during a check clears checking and allows a fresh foreground
  const api=mod.createPlayUpdates({now:Date.now,foreground:()=>foreground,safeToRestart:async()=>true,info:async()=>{queries++;if(queries===1)foreground=false;return {availability:'not_available',availableVersionCode:100};},start:async()=>{throw Error('should not prompt');},complete:async()=>{},read:async()=>null,write:async()=>{}});
  await api.check();assert.equal(api.snapshot().status,'idle');foreground=true;await api.check();assert.equal(queries,2);assert.equal(api.snapshot().status,'current');
 });
+
+test('download bytes become progress and ready events do not install automatically',async()=>{
+ const f=fixture();f.info({availability:'available',availableVersionCode:100,installStatus:2,bytesDownloaded:25,totalBytesToDownload:100});await f.api.check();assert.equal(f.api.snapshot().progress,25);
+ f.api.installState({installStatus:2,bytesDownloaded:999,totalBytesToDownload:100});assert.equal(f.api.snapshot().progress,100);
+ f.api.installState({installStatus:2,bytesDownloaded:NaN,totalBytesToDownload:0});assert.equal(f.api.snapshot().progress,undefined);
+ f.api.installState({installStatus:11});assert.equal(f.api.snapshot().status,'ready');assert.equal(f.completed(),0);
+ f.safe(false);assert.equal(await f.api.install(),false);assert.equal(f.api.snapshot().status,'ready');
+});
+test('native ready event wins over an older pending query',async()=>{
+ let release;const api=mod.createPlayUpdates({now:Date.now,foreground:()=>true,safeToRestart:async()=>true,info:()=>new Promise(r=>release=r),start:async()=>{throw Error('unexpected');},complete:async()=>{},read:async()=>null,write:async()=>{}});
+ const pending=api.check();api.installState({installStatus:11});release({availability:'available',availableVersionCode:100,installStatus:2});await pending;assert.equal(api.snapshot().status,'ready');
+});

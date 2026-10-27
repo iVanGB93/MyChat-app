@@ -12,11 +12,14 @@ function fixture(){
 test('received media exports once with stable identity and MIME extension',async()=>{
  const f=fixture();await f.worker.run();await f.worker.run();assert.equal(f.saved.length,1);assert.deepEqual(f.saved[0],['file://private/content','AXN_'+'a'.repeat(64)+'__Photo.jpg','image/jpeg','image']);
 });
-test('pending, sent, deleted, sticker and unaccepted media never exports',async()=>{
- for(const change of [{status:'pending'},{direction:'outgoing'},{deleted:true},{attachment:{name:'sticker',mime:'image/png',manifest:{id:'b'}}}]){
+test('pending, deleted, sticker and unaccepted media never exports',async()=>{
+ for(const change of [{status:'pending'},{deleted:true},{attachment:{name:'sticker',mime:'image/png',manifest:{id:'b'}}}]){
   const f=fixture();Object.assign(f.photo,change);await f.worker.run();assert.equal(f.saved.length,0);
  }
  const f=fixture();f.state.contacts[0].accepted=false;await f.worker.run();assert.equal(f.saved.length,0);
+});
+test('completed outgoing media is published too, rather than retained privately',async()=>{
+ const f=fixture();f.photo.direction='outgoing';await f.worker.run();await f.worker.run();assert.equal(f.saved.length,1);
 });
 test('export failure retries separately, preference and locked account suppress exports',async()=>{
  const f=fixture();f.fail(true);await f.worker.run();assert.equal(f.worker.nextDelay(),15000);f.fail(false);await f.worker.run();assert.equal(f.saved.length,1);assert.equal(f.worker.nextDelay(),Infinity);

@@ -6,7 +6,8 @@ import {Ionicons} from '@expo/vector-icons';
 import ConversationRecipientPicker from './ConversationRecipientPicker';
 import {useShareIntent} from 'expo-share-intent';
 import {localAccount,shortIdentity} from '../../modules/identity';
-import {conversations,messaging,queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,type RootChatState} from '../../modules/messaging';
+import {conversations,messaging,type RootChatState} from '../../modules/messaging';
+import {queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience} from '../../modules/media';
 import {sharedItems,sharedBatch} from '../../modules/ui/sharedContent';
 import {useTheme} from '../../contexts/ThemeContext';
 

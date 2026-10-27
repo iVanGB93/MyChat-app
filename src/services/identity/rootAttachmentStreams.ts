@@ -1,17 +1,10 @@
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
-import {rootAttachmentFile,createRootStreamTemporary,sweepRootStreamTemporaries} from './rootAttachmentFiles';
+import {rootAttachmentFile,createRootStreamTemporary,sweepRootStreamTemporaries,hashRootAttachmentFile} from './rootAttachmentFiles';
 import {createDirectAttachmentStream} from './directAttachmentStream';
 import type {AttachmentJob} from './attachmentTransfer';
-import type {RtcAttachmentLane} from './rtcAxonTransport';
-
-export interface AttachmentStreams {
- available(account:string,device:string):boolean;
- /** Request a bounded authenticated route upgrade; false for unsupported peers. */
- request?(account:string,device:string):boolean;
- open(account:string,device:string):RtcAttachmentLane;
- listen(handler:(account:string,device:string,lane:RtcAttachmentLane)=>boolean):()=>void;
-}
+import type {AttachmentLane as RtcAttachmentLane,AttachmentStreams} from './attachmentConnections';
+export type {AttachmentStreams} from './attachmentConnections';
 /** One incoming and one outgoing transfer at most. Runtime owns cancellation;
  * the worker remains the only publisher and signer of attachment receipts. */
 export function createRootAttachmentStreams(network:AttachmentStreams,request:(peer:string,raw:string)=>Promise<string|null>){
@@ -20,7 +13,7 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
  let sweptAt=0;
  const active=(a:Attempt)=>!stopped&&localAccount.status().state==='unlocked'&&localAccount.status().account===a.job.owner;
  async function run(a:Attempt,lane:RtcAttachmentLane,role:'send'|'receive'){
-  a.lane=lane;let valid=true,created=false;const started=Date.now();
+  a.lane=lane;let valid=true,created=false;let temporary:ReturnType<typeof createRootStreamTemporary>|undefined;const started=Date.now();
   const file=rootAttachmentFile(a.job.owner,role==='send'?a.job.digest:a.temporary);
   const live=()=>valid&&active(a)&&lane.live()&&a.job.descriptor.manifest.expires>Date.now();
   const validate=async()=>{valid=active(a)&&await a.live();if(!valid)throw Error('Attachment stream revoked');};
@@ -39,10 +32,10 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
    authorize:async()=>{await validate();await lane.credit(a.job.descriptor.manifest.bytes,true);await validate();},
    consumed:async offset=>{await validate();await lane.credit(offset,false);},
    reader:()=>{if(!live())throw Error('Stream closed');const handle=file.open();return {read:(n:number)=>handle.readBytes(n),close:()=>handle.close()};},
-   writer:()=>{if(!live())throw Error('Stream closed');createRootStreamTemporary(a.job.owner,a.temporary);created=true;
-    const handle=file.open();return {write:(bytes:Uint8Array)=>handle.writeBytes(bytes),close:()=>handle.close()};},
-   hash:async()=>{await validate();const hash=await Native!.attachmentFileSha256!(a.job.owner,role==='send'?a.job.digest:a.temporary,true,a.job.descriptor.manifest.bytes);await validate();return hash;},
-   discard:()=>{if(created&&file.parentDirectory.exists)file.parentDirectory.delete();created=false;},
+   writer:()=>{if(!live())throw Error('Stream closed');temporary=createRootStreamTemporary(a.job.owner,a.temporary);created=true;
+    const handle=temporary.open();return {write:(bytes:Uint8Array)=>handle.writeBytes(bytes),close:()=>handle.close()};},
+   hash:async()=>{await validate();const hash=await hashRootAttachmentFile(a.job.owner,role==='send'?a.job.digest:a.temporary,a.job.descriptor.manifest.bytes);await validate();return hash;},
+   discard:()=>{if(created&&temporary?.parentDirectory.exists)temporary.parentDirectory.delete();created=false;},
   });
   lane.listen(data=>{void stream.receive(data).catch(()=>{}).finally(signal);},()=>{stream.abort('RTC stream closed');signal();});
   try{await lane.ready();if(role==='send')await validate();await stream.start();await validate();
@@ -51,12 +44,12 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
     // without this primitive continue with chunks instead of unsafe replacement.
     if(!Native!.attachmentStageStream!(a.job.owner,a.temporary,a.job.digest,a.job.descriptor.manifest.bytes))throw Error('Stream staging unavailable');
    }
-   console.info('[Axonic direct attachment]',JSON.stringify({direction:role,bytes:a.job.descriptor.manifest.bytes,result:'verified',...(role==='receive'?{previousVerifiedChunks:a.job.cursor}:{})}));
+   console.info('[Axonic direct attachment]',JSON.stringify({direction:role,bytes:a.job.descriptor.manifest.bytes,result:'verified',elapsedMs:Date.now()-started,...(role==='receive'?{previousVerifiedChunks:a.job.cursor}:{})}));
   }catch(error){stream.abort(error);
    const reason=error instanceof Error?error.message.toLowerCase():'';
    console.info('[Axonic direct attachment]',JSON.stringify({direction:role,bytes:a.job.descriptor.manifest.bytes,result:'fallback',
     reason:['revoked','timeout','admission','closed','checksum','unavailable','collision'].find(value=>reason.includes(value))??'transfer-error',elapsedMs:Date.now()-started}));throw error;}
-  finally{signal();if(created){const temp=rootAttachmentFile(a.job.owner,a.temporary).parentDirectory;if(temp.exists)temp.delete();}lane.close();}
+  finally{signal();if(created&&temporary?.parentDirectory.exists)temporary.parentDirectory.delete();lane.close();}
  }
  const unlisten=network.listen((account,device,lane)=>{
   const a=incoming,m=a?.job.descriptor.manifest;
@@ -77,11 +70,29 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
    }
    // The normal request also wakes the sender's route preference, whichever
    // account owns the dialing role. Chunks keep moving while RTC negotiates.
-   if(!network.available(m.sender,m.senderDevice)&&!network.request?.(m.sender,m.senderDevice))return 'unavailable' as const;
+   const upgrading=!network.available(m.sender,m.senderDevice);
+   if(upgrading&&!network.request?.(m.sender,m.senderDevice)){
+    const reason=network.unavailableReason?.(m.sender,m.senderDevice);
+    console.info('[Axonic direct attachment]',JSON.stringify({direction:'receive',result:'skipped',reason:
+     ['inactive-account','native-unavailable','peer-stream-unsupported','route-not-ready'].includes(reason??'')?reason:'upgrade-not-admitted'}));
+    return 'unavailable' as const;
+   }
    const a=await attempt(job,live);if(stopped||incoming||!await live())return 'unavailable' as const;incoming=a;let timer:ReturnType<typeof setTimeout>|undefined;
    const completed=new Promise<boolean>(resolve=>{a.finish=resolve;timer=setTimeout(()=>{a.cancel();resolve(false);},10*60*1000);});
    try{
-    const response=await request(m.sender,JSON.stringify({version:1,operation:'direct-stream',digest:job.digest}));
+    const raw=JSON.stringify({version:1,operation:'direct-stream',digest:job.digest});
+    let response=await request(m.sender,raw);
+    // Both endpoints have been asked to promote this authenticated route.
+    // Bound the head start before expensive relay-block materialization.
+    // Unsupported peers and opened lanes never enter this wait.
+    if(upgrading&&!a.lane&&response&&JSON.parse(response).status==='unavailable'){
+     const deadline=Date.now()+1500;
+     while(!stopped&&!a.lane&&!network.available(m.sender,m.senderDevice)&&Date.now()<deadline){
+      await new Promise<void>(resolve=>setTimeout(resolve,100));
+      if(!active(a)||!await live())return 'unavailable' as const;
+     }
+     if(!stopped&&!a.lane&&active(a)&&network.available(m.sender,m.senderDevice)&&await live())response=await request(m.sender,raw);
+    }
     if(!response||JSON.parse(response).status!=='streaming')return a.lane?false:'unavailable' as const;
     // A successful request that never opens a channel must not hold the worker.
     const arrival=setTimeout(()=>{if(!a.lane){a.cancel();a.finish?.(false);}},5000);

@@ -1,0 +1,87 @@
+TRANSPORT AND TRANSFERS
+Purpose: transfer bytes using established authenticated sessions; schedule bounded
+work, backpressure, retries and completion. Does not discover peers or own Gallery.
+
+File: src/services/identity/attachmentTransfer.ts
+File: src/services/identity/attachmentSchedule.ts
+File: src/services/identity/attachmentProtocol.ts
+File: src/services/identity/directAttachmentStream.ts
+File: src/services/identity/wssAttachmentStreams.ts
+File: src/services/identity/wssStreamCipher.ts
+File: src/services/identity/relayBlockStream.ts
+File: src/services/identity/rootAttachmentStreams.ts
+File: src/services/identity/streamWake.ts
+AoN: src/hostedRootAttachments.ts
+AoN: src/hostedIncomingFile.ts
+AoN: src/nativeAttachmentEncoding.ts
+
+Current contracts, not a new universal stream API
+  Direct stream and relay-block delivery share authentication/receipt rules, not
+  identical scheduling. Existing WSS can carry direct streams and relay blocks.
+  v4 attachment relay block size is 3,000,000 bytes. A file through that size fits
+  one relay block; larger files have multiple blocks. Direct streams use framing
+  and flow control: network frames are not persisted attachment blocks.
+  Do not describe all paths as unencrypted. WebRTC supplies DTLS; WSS direct stream
+  code also has an ephemeral authenticated-record cipher. Relay content remains
+  end-to-end encrypted and custodians must not decrypt/re-encrypt it for forwarding.
+  Limits/expiry come from protocol constants; documentation is not an override.
+
+State authority: durable attachment jobs plus protocol receipts. The transfer UI
+is a projection. Source read, preparation, transport, verification, file publication
+and receipt confirmation are separate phases; measure each instead of one speed.
+Never publish a partial/unverified file or turn timeout into success. Cancellation,
+lock and ownership changes must stop late work; retry reuses the persisted identity.
+An unknown/unapproved sender can deliberately hold attachment processing.
+
+Test: tests/attachmentTransfer.test.cjs
+Test: tests/directAttachmentStream.test.cjs
+Test: tests/wssAttachmentStreams.test.cjs
+Test: tests/relayBlockStream.test.cjs
+Test: tests/streamWake.test.cjs
+These cover integrity/lifecycle/flow, not real network throughput. Dev measurements
+must identify selected transport, preparation time, bytes, checksum and both ends.
+
+Implemented shared connection/transfer boundary (October 25)
+  AttachmentRequests exposes requests and current peer capability observations.
+  AttachmentLane / AttachmentStreams expose authenticated session lanes, credit,
+  readiness and lifetime. WssStreamNetwork pins sends to an existing session.
+  AttachmentTransferConnections groups worker-facing requests and stream callbacks;
+  storage.jobs and storage.files are separate dependencies. Policy, receipt signing
+  and completion remain worker/application responsibilities. A stream finishing
+  does not bypass commitFile verification or authorize a delivery receipt.
+  Phone and hosted composition supply the same grouped contracts; no legacy flat
+  production factory fallback exists. Public type aliases retain old import paths.
+File: src/services/identity/attachmentConnections.ts
+File: src/services/identity/attachmentTransferPorts.ts
+File: src/services/identity/attachmentTypes.ts
+Test: tests/storageTransferPorts.test.cjs
+
+Implemented selection vs scheduling (October 25)
+  attachmentRouteSelection consumes transient capability snapshots, job facts and
+  retry deadlines. It ranks candidates, retains/upgrades routes, prefers sibling
+  custodians, chooses receipt peers and checks stream/block eligibility. It neither
+  persists jobs nor sets timers, opens sockets, or sends requests.
+  attachmentTransfer owns the retry maps, fairness, authorization/live checks,
+  durable route/cursor changes and bounded work. A selected route is not permission
+  to send. Capabilities are read afresh at subsequent transfer decisions.
+  attachmentSchedule calculates wake delays from jobs and a supplied readiness
+  predicate; it does not import selection or the transfer worker implementation.
+  Both hosted and phone workers consume this same selector through shared core.
+  Platform event loops and RTC/WSS adapter execution remain platform composition.
+File: src/services/identity/attachmentRouteSelection.ts
+Test: tests/attachmentRouteSelection.test.cjs
+The extraction preserves policy; it does not claim a throughput improvement or
+unify every platform scheduler. Attachment pump/readiness/reconciliation rules are
+now shared; see the scheduling comparison for retained platform behavior.
+Guide: SCHEDULING-COMPARISON.txt
+Guide: storage.txt
+Guide: media.txt
+
+October 25 live follow-up: waiting outgoing receipt probes receive one turn per three active transfer turns. Direct-status only gates initial custody and a failed probe skips the grace retry. See dev-turn-relay-2026-10-25.txt for measurements and limitations.
+
+October 25 public API / preparation follow-up
+Optional outgoing direct readiness now has a 750 ms scheduling budget.
+Pending probes are coalesced and bounded (32), with waiters released on stop.
+Late responses cannot mutate a job; the authenticated transport owns request
+cleanup. A timeout is unknown readiness, not proof of disconnection or delivery.
+Recipient-initiated direct upgrades and signed receipt checks remain unchanged.

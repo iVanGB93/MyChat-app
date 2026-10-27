@@ -1,27 +1,16 @@
-import {subscribeOwnChatWrites} from '../../modules/storage';
-import React, {useState} from 'react';
-import {useForegroundEvents} from '../../hooks/useForegroundEvents';
+import React from 'react';
 import {Text, View} from 'react-native';
-import {useIsFocused} from '@react-navigation/native';
 import {useTheme} from '../../contexts/ThemeContext';
-import {localAccount, shortIdentity} from '../../modules/identity';
-import {conversations, rootChatView} from '../../modules/messaging';
+import {shortIdentity} from '../../modules/identity';
 import Avatar from '../../components/ui/Avatar';
+import {useChatContacts} from '../../modules/ui/useChatSnapshot';
 
 export default function ConnectedAxons({connections}: {
   connections: readonly {account: string; route: string; rank?:number; quality?:string; responseMs?:number|null}[];
 }) {
   const {colors} = useTheme();
-  const [names, setNames] = useState<Record<string, string>>({});
-  const focused=useIsFocused();
-  useForegroundEvents(async current=>{
-    const owner=localAccount.status().account;
-    if(!owner){if(current())setNames({});return;}
-    const state=rootChatView(owner,await conversations().snapshot());
-    if(current()&&localAccount.status().account===owner)setNames(Object.fromEntries(state.contacts
-      .filter(contact=>!state.hiddenChats?.includes(contact.account)&&contact.alias.trim())
-      .map(contact=>[contact.account,contact.alias])));
-  },subscribeOwnChatWrites,focused);
+  const {contacts,hiddenChats}=useChatContacts();
+  const names=React.useMemo(()=>Object.fromEntries(contacts.filter(c=>!hiddenChats?.includes(c.account)&&c.alias.trim()).map(c=>[c.account,c.alias])),[contacts,hiddenChats]);
   if (!connections.length) return null;
   return <View style={{marginTop: 12}}>
     {connections.map((connection, index) => {

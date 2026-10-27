@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 test('peer introductions cannot replace a configured Internet endpoint with an RTC route',()=>{
  const id=n=>'axonic:1:'+n.toString(16).padStart(64,'0'),offers=[],source={};
  const bootstrap={account:id(2),endpoint:'wss://bootstrap.test/v2/axon'};
- const network={snapshot:()=>({state:'active',account:id(1),introductions:[{account:id(2),via:id(3),expiresAt:60000},{account:id(4),via:id(3),expiresAt:60000}]}),offer:c=>offers.push(c),tick(){},stop(){}};
+ const network={snapshot:()=>({state:'active',account:id(1),pool:{connections:[{account:id(3),state:'connected'}]},introductions:[{account:id(2),via:id(3),expiresAt:60000},{account:id(4),via:id(3),expiresAt:60000}]}),offer:c=>offers.push(c),tick(){},stop(){}};
  const deps={
   './identityNetwork':{createIdentityNetwork:()=>network},
   './nativeAxonTransport':{createNativeAxonConnector:()=>()=>{}},
@@ -19,7 +19,7 @@ test('peer introductions cannot replace a configured Internet endpoint with an R
 function streamFixture(options={}){
  const id=n=>'axonic:1:'+n.toString(16).padStart(64,'0'),device='ab'.repeat(32),offers=[],source={};let now=1000,state='active';
  const own=id(options.higher?9:1),peer=id(4),seed=id(2),capable=options.capable!==false;
- const network={snapshot:()=>({state,account:state==='active'?own:null,introductions:[{account:peer,via:seed,expiresAt:now+60000}]}),
+ const network={snapshot:()=>({state,account:state==='active'?own:null,pool:{connections:[{account:seed,state:'connected'}]},introductions:[{account:peer,via:seed,expiresAt:now+60000}]}),
   attachmentStreamPeer:p=>capable?{account:p,device}:null,offer:c=>{offers.push(c);return true;},tick(){},stop(){}};
  const deps={'./identityNetwork':{createIdentityNetwork:()=>network},'./nativeAxonTransport':{createNativeAxonConnector:()=>()=>{}},'./rtcAxonTransport':{createRtcAxonTransport:()=>({stop(){},canStream:()=>false})}};
  new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/lanIdentityRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(source,n=>deps[n]);
@@ -35,13 +35,21 @@ test('LAN stream promotion is requested on demand over its authenticated peer, n
   f.offers.length=0;f.advance(30001);f.runtime.tick();assert(!f.offers.some(c=>c.account===f.peer));
  }finally{f.runtime.stop();}
 });
-test('upgrade demand rejects wrong devices, legacy peers, missing native guard and configured AoNs',()=>{
+test('upgrade demand rejects wrong devices, legacy peers and missing native guard',()=>{
  for(const options of [{},{capable:false},{noGuard:true}]){
-  const f=streamFixture(options);try{assert.equal(f.runtime.attachmentStreams.request(f.peer,'wrong'),false);assert.equal(f.runtime.attachmentStreams.request(f.seed,f.device),false);
+  const f=streamFixture(options);try{assert.equal(f.runtime.attachmentStreams.request(f.peer,'wrong'),false);
+   assert.equal(f.runtime.attachmentStreams.request(f.seed,f.device),options.capable!==false&&!options.noGuard);
    if(options.capable===false||options.noGuard)assert.equal(f.runtime.attachmentStreams.request(f.peer,f.device),false);
    f.lock();assert.equal(f.runtime.attachmentStreams.request(f.peer,f.device),false);
   }finally{f.runtime.stop();}
  }
+});
+
+test('explicit stream-capable bootstrap peer can upgrade on demand, never from an introduction alone',()=>{
+ const f=streamFixture();try{
+  assert(f.runtime.attachmentStreams.request(f.seed,f.device));f.runtime.tick();
+  assert(f.offers.some(c=>c.account===f.seed&&c.endpoint==='rtc:'+f.seed));
+ }finally{f.runtime.stop();}
 });
 test('stream demand is bounded, respects dialing tie break, and is cleared on lock/stop',()=>{
  const f=streamFixture({higher:true});try{

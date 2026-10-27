@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function fixture(options={}){
- const hooks={},seen={ticks:0,relay:0,retry:0,drains:[]};let release;
+ const hooks={},seen={ticks:0,relay:0,retry:0,drains:[],flushes:[]};let release;
  const stalled=new Promise(r=>{release=r;});
  const coordinator={ready:async()=>{},tick:async()=>{seen.ticks++;},stop(){},diagnostics(){}};
  const exports={};
@@ -8,7 +8,7 @@ function fixture(options={}){
   './neuronCallCoordinator':{createNeuronCallCoordinator:d=>(hooks.coordinator=d,coordinator)},
   './callControlRuntime':{createCallControlRuntime:()=>({submit:async()=>options.saved!==false,drain:async(event,peer)=>{seen.drains.push({event,peer});return stalled;},stop(){}})},
   './callRetryScheduler':{createCallRetryScheduler:d=>(hooks.retry=d,{tick:()=>{seen.retry++;return stalled;},stop(){}})},
-  './callRelayPump':{createCallRelayPump:d=>(hooks.relay=d,{tick:async()=>{seen.relay++;},stop(){},diagnostics(){}})},
+  './callRelayPump':{createCallRelayPump:d=>(hooks.relay=d,{flushPending:async e=>{seen.flushes.push(e);},tick:async()=>{seen.relay++;},stop(){},diagnostics(){}})},
   './callControlRelay':{createCallControlRelay:()=>({stop(){}}),createCallRelayEndpoint:()=>async()=>null},
   './callMediaRelay':{createCallMediaRelay:()=>async()=>false},
   './identityProtocol':{validAccountId:()=>true},'./neuronIceConfig':{},'./callControlProtocol':{},'./durableCallControl':{},
@@ -16,7 +16,7 @@ function fixture(options={}){
  const code=ts.transpileModule(fs.readFileSync('src/services/identity/rootAccountCalls.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText;
  new Function('require','exports',code)(name=>{if(!(name in modules))throw Error(name);return modules[name];},exports);
  const historical=[{callId:'old'},{callId:'new'}],pending=[historical[1]];
- const app=exports.createRootAccountCalls({identity:{status:()=>({account:'owner'}),callDevice:()=> 'device'},network:()=>({callPeers:()=>[{account:'remote',device:'remote-device',expiresAt:200},{account:'other',expiresAt:200},{account:'remote',expiresAt:99}]}),records:{},store:{},list:async()=>historical,listPending:async()=>pending,current:()=>true,now:()=>100,contacts:options.contacts??(async()=>[]),contactsRevision:options.contactsRevision,changed(){}});
+ const app=exports.createRootAccountCalls({identity:{status:()=>({account:'owner'}),callDevice:()=> 'device'},network:()=>({callPeers:()=>options.noDirect?[]:[{account:'remote',device:'remote-device',expiresAt:200},{account:'other',expiresAt:200},{account:'remote',expiresAt:99}]}),records:{},store:{},list:async()=>historical,listPending:async()=>pending,current:()=>true,now:()=>100,contacts:options.contacts??(async()=>[]),contactsRevision:options.contactsRevision,changed(){}});
  return {app,hooks,seen,release,historical,pending};
 }
 test('call recovery retains history while direct and relay retries use only pending journals',async()=>{
@@ -64,3 +64,5 @@ test('contact change during a policy read cannot install the obsolete result',as
  let revision=0,reads=0;const f=fixture({contactsRevision:()=>revision,contacts:async()=>{reads++;if(reads===1)revision++;return [];}});
  try{await f.app.receiveRelay('{}',{});assert.equal(reads,2);await f.app.receiveRelay('{}',{});assert.equal(reads,2);}finally{f.app.stop();f.release();}
 });
+
+test('a saved call with no direct peer submits immediately to the relay',async()=>{const f=fixture({noDirect:true});const event={kind:'invite',callId:'new',caller:'owner',callee:'remote'};await f.hooks.coordinator.submit(JSON.stringify(event));assert.deepEqual(f.seen.flushes,[event]);f.app.stop();f.release();});

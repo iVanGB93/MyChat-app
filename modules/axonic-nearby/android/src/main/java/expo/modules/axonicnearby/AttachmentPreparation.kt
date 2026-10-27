@@ -13,23 +13,25 @@ internal object AttachmentPreparation {
     val alphabet="0123456789abcdef"
     return buildString(bytes.size*2) { for(b in bytes) { val n=b.toInt() and 255;append(alphabet[n ushr 4]);append(alphabet[n and 15]) } }
   }
-  @Synchronized fun encrypt(rootDir:File,owner:String,id:String,keyHex:String,total:Long,start:Int,aads:List<String>):List<String> {
+  @Synchronized fun encrypt(rootDir:File,owner:String,id:String,keyHex:String,total:Long,start:Int,aads:List<String>,block:Int=3_000_000):List<String> {
     require(owner.matches(Regex("axonic:1:[0-9a-f]{64}")) && id.matches(Regex("[0-9a-f]{64}")))
     require(keyHex.matches(Regex("[0-9a-f]{64}")) && total in 1..250L*1024*1024)
-    require(start>=0 && aads.size in 1..128 && start.toLong()+aads.size<=(total+4095)/4096)
+    require(block==3_000_000)
+    require(start>=0 && aads.size==1 && start.toLong()+aads.size<=(total+block-1)/block)
     require(aads.all { it.length in 1..1024 && it.all { c -> c.code<128 } })
+    require(aads.all { it.startsWith("[\"axonic-attachment-block-v3\",") || it.startsWith("[\"axonic-attachment-shared-block-v3\",") })
     val dir=File(rootDir.canonicalFile,"axonic-own-attachments-v1/${owner.substring(9)}/staging/$id")
     val content=File(dir,"content");val output=File(dir,"ciphertext")
     require(content.canonicalFile==content.absoluteFile && output.canonicalFile==output.absoluteFile)
-    require(content.isFile && content.length()==total && output.isFile && output.length()==start.toLong()*4112)
+    require(content.isFile && content.length()==total && output.isFile && output.length()==start.toLong()*(block+16))
     val key=ByteArray(32) { keyHex.substring(it*2,it*2+2).toInt(16).toByte() }
-    val plain=ByteArray(4096);val encrypted=ByteArray(4112);val leaves=ArrayList<String>(aads.size)
+    val plain=ByteArray(block);val encrypted=ByteArray(block+16);val leaves=ArrayList<String>(aads.size)
     try {
       RandomAccessFile(content,"r").use { input -> RandomAccessFile(output,"rw").use { out ->
-        input.seek(start.toLong()*4096);out.seek(start.toLong()*4112)
+        input.seek(start.toLong()*block);out.seek(start.toLong()*(block+16))
         for((offset,canonical) in aads.withIndex()) {
           check(!Thread.currentThread().isInterrupted) { "Attachment preparation cancelled" }
-          val index=start+offset;val length=minOf(4096L,total-index.toLong()*4096).toInt()
+          val index=start+offset;val length=minOf(block.toLong(),total-index.toLong()*block).toInt()
           input.readFully(plain,0,length)
           val aad=canonical.toByteArray(Charsets.US_ASCII)
           val nonce=MessageDigest.getInstance("SHA-256").digest(aad).copyOf(24)

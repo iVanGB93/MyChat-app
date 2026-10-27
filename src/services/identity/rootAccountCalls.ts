@@ -63,15 +63,19 @@ export function createRootAccountCalls(d:{
    // delivery and rechecks the journal, device, policy and signed receipt.
    const event=JSON.parse(raw) as CallControl,remote=event.caller===account?event.callee:event.caller;
    const peers=d.network().callPeers().filter(p=>p.account===remote&&p.expiresAt>d.now()).slice(0,10);
+   if(!peers.length)void pump.flushPending(event).catch(()=>{});
    for(const peer of peers)
     void control.drain(event,peer).then(acknowledged=>{
      // A receipt can satisfy selection confirmation without any new inbound
      // event. Advance the call immediately rather than waiting for the clock.
-     if(acknowledged&&current())return coordinator.tick();
+     if(!current())return;
+     if(acknowledged)return coordinator.tick();
+     return pump.flushPending(event);
     }).catch(()=>{});
    return true;
   },
   signMedia:input=>d.identity.signCallMedia(input),contexts:()=>d.network().mediaContexts(),
+  acquirePeer:(peer,device,id,usable)=>d.network().acquireCallPeer(peer,device,id,()=>current()&&usable()),
   sendMedia:(peer,remoteDevice,raw)=>d.network().callMediaRequest(peer,remoteDevice,raw),
   callRoute:(peer,remoteDevice)=>{
    const routes=[...d.network().callPeers().filter(p=>p.account===peer&&(!remoteDevice||p.device===remoteDevice)),...d.network().mediaRelayPeers()];
@@ -97,7 +101,7 @@ export function createRootAccountCalls(d:{
   request:(...args)=>d.network().callRelayRequest(...args),
   receive:async(raw,peer)=>{await refresh();await coordinator.ready();const receipt=await control.receiveRelayed(raw,peer);
    if(receipt)await coordinator.observe(JSON.parse(raw));return receipt;}});
- const retry=createCallRetryScheduler({account,current,now:d.now,list:d.listPending??d.list,peers:()=>d.network().callPeers(),drain:control.drain});
+ const retry=createCallRetryScheduler({account,current,now:d.now,list:d.listPending??d.list,peers:()=>d.network().callPeers(),drain:control.drain,pending:control.pending});
  let ticking:Promise<void>|null=null;
  async function drainWakes(){
   if(!d.wakes)return;await coordinator.ready();

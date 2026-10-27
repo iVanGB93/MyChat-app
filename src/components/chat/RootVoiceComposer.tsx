@@ -7,9 +7,9 @@ import {File} from 'expo-file-system';
 import {Ionicons} from '@expo/vector-icons';
 import {useTheme} from '../../contexts/ThemeContext';
 import {localAccount} from '../../modules/identity';
-import {localAccountCalls} from '../../modules/messaging';
-import {queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience} from '../../modules/messaging';
-import {createRootVoiceRecorder} from '../../modules/messaging';
+import {localAccountCalls} from '../../modules/calls';
+import {queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience} from '../../modules/media';
+import {createRootVoiceRecorder} from '../../modules/media';
 import {chatRoomStyles as styles} from './chat-room-styles';
 import {createVoiceRecordingGesture} from '../../utils/voice-recording-gesture';
 

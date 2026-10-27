@@ -4,8 +4,8 @@ function setup(){
  const calls=[],queued=[];
  const picker={requestCameraPermissionsAsync:async()=>{calls.push('permission');return {granted:permission};},launchCameraAsync:async options=>{calls.push(['camera',options]);return result;},launchImageLibraryAsync:async options=>{calls.push(['library',options]);return result;}};
  const output={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/modules/ui/mediaPicker.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>({
-  'expo-image-picker':picker,'../identity':{localAccount:{status:()=>status},validAccountId:x=>['owner','peer','other'].includes(x)},'../../services/identity/attachmentProtocol':{ATTACHMENT_MAX_BYTES:250*1024*1024},'../messaging':{queueRootAttachmentBatch:async input=>{for(const a of input.items)queued.push([input.peer,a.uri,a.name,a.mime,input.owner,input.reply,a.caption]);return 'selection';}}
- }[name]),output);
+  'expo-image-picker':picker,'../identity':{localAccount:{status:()=>status},validAccountId:x=>['owner','peer','other'].includes(x)},'../../services/identity/attachmentProtocol':{ATTACHMENT_MAX_BYTES:250*1024*1024},'../media':{queueRootAttachmentBatch:async input=>{for(const a of input.items)queued.push([input.peer,a.uri,a.name,a.mime,input.owner,input.reply,a.caption]);return 'selection';}}
+ }[name]??(name==='../storage'?{pickRootSharedMedia:()=>undefined,withRootPickedMedia:async(items,work)=>work(items)}:undefined)),output);
  return {output,picker,calls,queued,status,setResult:v=>result=v,setPermission:v=>permission=v};
 }
 test('camera queues typed media under the initiating owner',async()=>{const f=setup();assert.equal(await f.output.pickRootMedia('peer','camera'),'selection');assert.equal(f.calls[0],'permission');assert.deepEqual(f.queued[0],['peer','file://photo','picture.jpg','image/jpeg','owner',undefined,undefined]);});

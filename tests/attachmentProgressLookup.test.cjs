@@ -16,9 +16,9 @@ test('empty snapshots do not hash, updates replace progress and changed manifest
  const updated={digest:'b',cursor:3};assert.equal(createAttachmentProgressLookup([updated],digest)(m),updated);
  assert.equal(createAttachmentProgressLookup([],digest)(m),undefined);
 });
-test('private and group v1/v2 manifests match the prior search with one hash per row',()=>{
+test('private and group v3 manifests match the prior search with one hash per row',()=>{
  const {load,fixture}=require('./helpers/attachment.cjs'),{attachmentDigest}=load('attachmentProtocol');
- const f=fixture(4097),v1=f.manifest,v2={...v1,version:2,shared:{id:'ab'.repeat(32),count:2,slot:0}};
+ const f=fixture(4097),v1=f.manifest,v2={...v1,version:4,shared:{id:'ab'.repeat(32),count:2,slot:0}};
  const manifests=[v1,v2,{...v2,shared:{...v2.shared,slot:1}},{...v1,id:'cd'.repeat(32)}];
  const jobs=Array.from({length:100},(_,i)=>({digest:String(i),cursor:i}));
  jobs.push(...manifests.slice(0,3).map(m=>({digest:attachmentDigest(m),cursor:200})));

@@ -22,6 +22,10 @@ export function createAxonTestMessages(d: {
   let stopped = false, sending = false, receiving = false;
   let rejection='none';
   const seen = new Set<string>();
+  // A timeout releases the sender, but a durable receiver can still acknowledge
+  // that exact encrypted packet later. Never let it acknowledge a newer retry.
+  const expiredAcks = new Map<string, number>();
+  const pruneAcks = () => { for (const [digest, until] of expiredAcks) if (until <= d.now()) expiredAcks.delete(digest); };
   let pending: { id: string; digest: string; done(ok: boolean): void; timer: ReturnType<typeof setTimeout> } | null = null;
   const alive = () => !stopped && d.current();
   const finish = (ok: boolean) => { const p = pending; pending = null; if (p) { clearTimeout(p.timer); p.done(ok); } };
@@ -61,7 +65,14 @@ export function createAxonTestMessages(d: {
         if (!alive()) return false;
         return await new Promise<boolean>(resolve => {
           pending = { id, digest: bytesToHex(sha256(utf8ToBytes(JSON.stringify(packet)))), done: resolve,
-            timer: setTimeout(() => finish(false), 5000) };
+            timer: setTimeout(() => {
+              if (purpose === 'normal' && pending) {
+                pruneAcks();
+                if (expiredAcks.size >= 64) expiredAcks.delete(expiredAcks.keys().next().value!);
+                expiredAcks.set(pending.id + ':' + pending.digest, d.now() + 60000);
+              }
+              finish(false);
+            }, 5000) };
           try { d.send(JSON.stringify(packet)); } catch { finish(false); }
         });
       } catch { return false; }
@@ -82,6 +93,8 @@ export function createAxonTestMessages(d: {
         const text = new TextDecoder().decode(plaintext);
         if (bytesToHex(utf8ToBytes(text)) !== bytesToHex(plaintext) || !alive()) return false;
         if (p.kind === 'ack') {
+          pruneAcks();
+          if (purpose === 'normal' && expiredAcks.delete(p.id + ':' + text)) return true;
           if (!pending || pending.id !== p.id || text !== pending.digest) {rejection='unexpected-ack';return false;}
           finish(true); return true;
         }
@@ -98,7 +111,7 @@ export function createAxonTestMessages(d: {
       } catch { return false; }
       finally { key?.fill(0); plaintext?.fill(0); receiving = false; }
     },
-    stop() { stopped = true; seen.clear(); finish(false); },
+    stop() { stopped = true; seen.clear(); expiredAcks.clear(); finish(false); },
   };
 }
 

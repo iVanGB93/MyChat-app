@@ -3,7 +3,7 @@ import { callControlDigest, verifyCallControl, type CallControl } from './callCo
 import { createDurableCallerCallControl, createDurableRecipientCallControl, type CallJournalStore } from './durableCallControl.ts';
 import type { IdentityRecordStore } from './identityAdmission.ts';
 import type { IdentityPeer } from './identityClient.ts';
-import type { IdentityRecord } from './identityProtocol.ts';
+import {verifyRecord,type IdentityRecord} from './identityProtocol.ts';
 
 /** One unlocked device's direct-call runtime. Never creates a Django fallback call. */
 export function createCallControlRuntime(d: {
@@ -30,6 +30,15 @@ export function createCallControlRuntime(d: {
     stop(){stopped=true;},
     receive:delivery.receive,
     receiveRelayed:delivery.receiveRelayed,
+    /** Positive absence only after reading the durable, device-scoped outbox.
+     * Missing identity data is unknown, not proof of completed delivery. */
+    async pending(invitation:CallControl,peer:IdentityPeer):Promise<boolean|undefined>{
+      const remote=invitation.caller===d.account?invitation.callee:invitation.caller;
+      if(!current()||d.blocked(remote)||peer.account!==remote||peer.expiresAt<=d.now())return false;
+      const local=await d.records.read(d.account);if(!local||!verifyRecord(local,d.now()))return undefined;
+      if(!current()||d.blocked(remote))return false;
+      return (await state(invitation).pendingEvents(local,peer.device,d.now())).length>0;
+    },
     async submit(raw:string):Promise<boolean>{
       if(!current())return false;
       const local=await d.records.read(d.account);

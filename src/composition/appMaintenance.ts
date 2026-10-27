@@ -2,11 +2,11 @@ import {startMessageSounds} from './messageSounds';
 import {startRingerModeListener,stopRingerModeListener} from '../services/ringerService';
 import {AppState,Platform,Linking} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import {getPlayUpdateInfoAsync,startPlayUpdateAsync,completePlayUpdateAsync,observePlayInstallStatus} from '../../modules/axonic-app-update';
+import {getPlayUpdateInfoAsync,startPlayUpdateAsync,completePlayUpdateAsync,observePlayInstallState} from '../../modules/axonic-app-update';
 import {createPlayUpdates} from '../services/playUpdates';
 import {localAccountCalls} from './neuronRuntime';
 import {rootVoiceRecordingActive} from '../services/identity/rootVoiceRecorder';
-import {rootAttachmentProgress} from '../services/identity/rootAttachmentRuntime';
+import {rootAttachmentProgress} from '../services/identity/rootAttachmentSelections';
 import {queueIdentityLink} from '../services/identity/identityLinks';
 let owners=0,stopSounds:(()=>void)|undefined;
 const KEY='@axonic_play_prompt_v1';
@@ -19,8 +19,8 @@ export function startAppMaintenance(){
  if(owners===1){startRingerModeListener();stopSounds=startMessageSounds();}
  let active=true,sawLink=false;const links=Linking.addEventListener('url',e=>{sawLink=true;queueIdentityLink(e.url);});void Linking.getInitialURL().then(url=>{if(active&&!sawLink)queueIdentityLink(url);}).catch(()=>{});
  const check=()=>{void appUpdates.check();};check();
- const lifecycle=AppState.addEventListener('change',next=>{if(next==='active')void appUpdates.check(['downloading','available'].includes(appUpdates.snapshot().status));});
- const install=observePlayInstallStatus(()=>{void appUpdates.check(true);});
+ const lifecycle=AppState.addEventListener('change',next=>{if(next==='active')void appUpdates.check(['downloading','installing','available','ready'].includes(appUpdates.snapshot().status));});
+ const install=observePlayInstallState(state=>{if(!__DEV__)appUpdates.installState(state);});
  // Native install events are primary. A bounded fallback exists only while an
  // update or retry is pending; idle/current/background states have no timer.
  let timer:ReturnType<typeof setTimeout>|undefined;
@@ -28,7 +28,7 @@ export function startAppMaintenance(){
   if(timer!==undefined)clearTimeout(timer);timer=undefined;
   if(!active||AppState.currentState!=='active')return;
   const status=appUpdates.snapshot().status;
-  const delay=status==='downloading'?10000:['available','error'].includes(status)?60000:0;
+  const delay=['downloading','installing'].includes(status)?10000:['available','error'].includes(status)?60000:0;
   if(delay)timer=setTimeout(()=>{timer=undefined;void appUpdates.check(true).finally(schedule);},delay);
  };
  const offUpdates=appUpdates.subscribe(schedule),clockLifecycle=AppState.addEventListener('change',schedule);schedule();

@@ -1,4 +1,5 @@
 import {deliveryEvidence} from '../../services/identity/deliveryEvidence';
+import {messageRetryDeadline} from '../../services/identity/messageRetryDeadline';
 import {pendingRootChat} from '../../services/identity/rootChatLedger';
 import type {createRootChatLedger} from '../../services/identity/rootChatLedger';
 
@@ -35,15 +36,16 @@ export function createMessageDelivery(d: {
     if(d.stableSnapshots)cached=view;return view;
   }
   // Keep unresolved transports bounded even after their caller falls back.
-  // A late completion cannot acknowledge a timed-out delivery attempt.
+  // Timeout starts fallback; a late authenticated ACK may still settle the same live intent.
   const directFlights=new Map<string,Promise<boolean>>();
-  async function sendDirect(peer:string,raw:string,id:string,current:()=>boolean){
+  async function sendDirect(peer:string,raw:string,id:string,current:()=>boolean,lateAck:()=>Promise<void>){
     if(directFlights.has(peer)||directFlights.size>=2)return false;
     const flight=Promise.resolve().then(()=>current()?d.send(peer,raw,id):false).catch(()=>false);
     directFlights.set(peer,flight);
     void flight.then(()=>{if(directFlights.get(peer)===flight)directFlights.delete(peer);});
-    let timer:ReturnType<typeof setTimeout>|undefined;
-    try{return await Promise.race([flight,new Promise<boolean>(resolve=>{timer=setTimeout(()=>{directTimeouts++;resolve(false);},d.directTimeoutMs??6000);})]);}
+    let timer:ReturnType<typeof setTimeout>|undefined,timedOut=false;
+    void flight.then(async accepted=>{if(accepted&&timedOut&&current())await lateAck();}).catch(()=>{});
+    try{return await Promise.race([flight,new Promise<boolean>(resolve=>{timer=setTimeout(()=>{timedOut=true;directTimeouts++;resolve(false);},d.directTimeoutMs??6000);})]);}
     finally{clearTimeout(timer);}
   }
   let selecting = false, collecting = false, cursor = 0, stopped = false, generation = 0;
@@ -93,7 +95,13 @@ export function createMessageDelivery(d: {
         let direct=false;
         // The route decision is a local session lookup, never a discovery wait.
         if(available.has(message.peer)){
-          attempt.phase='send';direct=await sendDirect(message.peer,message.raw,message.id,current);
+          attempt.phase='send';direct=await sendDirect(message.peer,message.raw,message.id,current,async()=>{
+            if(!current())return;const latest=await ledger.snapshot();if(!current())return;
+            // Keep the original intent and current policy authoritative after fallback.
+            if(latest.contacts.some(c=>c.account===message.peer&&c.blocked)||!pendingView(latest,owner).rows.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
+            await ledger.delivered(message.peer,message.id,deliveryEvidence('receipt',now()));
+            if(current()){retries.delete(message.peer+':'+message.id);d.changed?.();}
+          });
         }
         lastOutcome=direct?'direct-ack':'direct-unavailable';
         if(direct){if(current()){await ledger.delivered(message.peer,message.id,deliveryEvidence('receipt',now()));delivered=true;}}
@@ -124,7 +132,7 @@ export function createMessageDelivery(d: {
       if(stopped||!d.owner()||selecting||active.size>=2)return Infinity;
       if(dispatchAfter>now())return dispatchAfter;
       if(!cached)return now();
-      return Math.min(Infinity,...cached.rows.filter(m=>!active.has(m.peer)).map(m=>retries.get(m.peer+':'+m.id)?.after??now()));
+      return messageRetryDeadline(cached.rows,now(),0,new Set(active.keys()),(peer,id)=>retries.get(peer+':'+id)?.after);
     },
     topologyChanged(){connected.clear();dispatchAfter=0;},
     snapshot:()=>({phase:selecting?'storage':active.values().next().value?.phase??'idle',busy:selecting||active.size>0,collecting,queuedHints:urgent.length,attempts,pendingDerivations,lastTraffic,lastOutcome,directTimeouts,directInFlight:directFlights.size,oldestAttemptMs:Math.max(0,...[...active.values()].map(a=>now()-a.started))}),

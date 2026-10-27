@@ -95,11 +95,14 @@ function runtimePair(f) {
 test('runtime retries a lost acknowledgment after restart then remembers it durably',async()=>{
   const f=fixture(),x=runtimePair(f),invite=JSON.parse(f.invite);
   assert.equal(await x.runtimes[0].submit(f.invite),true);
+  assert.equal(await x.runtimes[0].pending(invite,x.peers[1]),true);
   x.drop(true);
   assert.equal(await x.runtimes[0].drain(invite,x.peers[1]),0);
+  assert.equal(await x.runtimes[0].pending(invite,x.peers[1]),true,'lost receipt remains pending');
   x.reopen(0);x.reopen(1);x.drop(false);
   assert.equal(await x.runtimes[0].drain(invite,x.peers[1]),1);
   x.reopen(0);
+  assert.equal(await x.runtimes[0].pending(invite,x.peers[1]),false,'verified receipt survives restart');
   assert.equal(await x.runtimes[0].drain(invite,x.peers[1]),0);
   assert.deepEqual(x.sent[0],['invite','invite']);
   assert.equal((await recipient(f,x.stores[1]).snapshot(now+10)).status,'ringing');
@@ -532,4 +535,22 @@ test('history retirement waits for terminal state and every signed delivery dead
  const bad=JSON.parse(raw);bad.entries[0].raw=bad.entries[0].raw.replace('voice','video');
  assert.equal(durable.canArchiveCallJournal(JSON.stringify(bad),now+60001),false);
  assert.equal(durable.canArchiveCallJournal(raw,now-1),false);
+});
+
+test('new call invitation bypasses an unrelated stalled relay inbox poll',async()=>{
+ const f=fixture(),x=courierFixture(f),store=memoryStore(),call=session(f,store);await call.begin(f.invite,f.caller,now);
+ let release;const puts=[];
+ const pump=pumpModule.createCallRelayPump({account:f.caller.account,device:f.a.id,store,records:x.d.records,current:()=>true,now:()=>now,blocked:()=>false,peers:()=>[x.peer],direct:()=>[],list:async()=>[],receive:async()=>null,request:async(peer,raw)=>{const input=JSON.parse(raw);if(input.operation==='poll')return new Promise(r=>release=r);puts.push(input);return '{"accepted":true}';}});
+ const polling=pump.tick();await new Promise(r=>setImmediate(r));
+ try{await pump.flushPending(JSON.parse(f.invite));assert.equal(puts.length,f.callee.devices.length);assert.ok(puts.every(p=>p.raw===f.invite));assert.deepEqual(await call.pendingEvents(f.caller,f.b.id,now),[f.invite]);}
+ finally{release('{}');await polling;pump.stop();}
+});
+
+test('cancellation can bypass an invitation deposit already in flight',async()=>{
+ const f=fixture(),x=courierFixture(f),store=memoryStore(),call=session(f,store);await call.begin(f.invite,f.caller,now);
+ let release;const puts=[];
+ const pump=pumpModule.createCallRelayPump({account:f.caller.account,device:f.a.id,store,records:x.d.records,current:()=>true,now:()=>now+2,blocked:()=>false,peers:()=>[x.peer],direct:()=>[],list:async()=>[],receive:async()=>null,request:async(peer,raw)=>{const input=JSON.parse(raw);puts.push(input);if(JSON.parse(input.raw).kind==='invite')return new Promise(r=>release=r);return '{"accepted":true}';}});
+ const first=pump.flushPending(JSON.parse(f.invite));await new Promise(r=>setImmediate(r));
+ const cancel=f.event('cancel',{sequence:1});await call.receive(cancel,f.caller,now+2);
+ try{await pump.flushTerminal(JSON.parse(f.invite));assert.ok(puts.some(p=>p.raw===cancel));}finally{pump.stop();release('{\"accepted\":true}');await first;}
 });

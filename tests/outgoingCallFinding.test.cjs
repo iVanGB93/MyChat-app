@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function fixture(startStatus='finding'){
- const source=fs.readFileSync('src/navigation/RootAccountNavigator.tsx','utf8'),start=source.indexOf('function OutgoingCall('),end=source.indexOf('export default function RootAccountNavigator',start);
+ const source=fs.readFileSync('src/screens/calls/RootOutgoingCallScreen.tsx','utf8'),start=source.indexOf('function OutgoingCall('),end=source.length;
  const slots=[],effects=[],deps=[];let index=0,current=null,listener,beforeRemove,backs=0,starts=0,ended=[];
  const hooks={useState:initial=>{const i=index++;if(!(i in slots))slots[i]=initial;return [slots[i],value=>slots[i]=typeof value==='function'?value(slots[i]):value];},useRef:initial=>{const i=index++;return slots[i]??={current:initial};},useCallback:fn=>fn,useEffect:(fn,next)=>{const i=index++;if(!deps[i]||next.some((value,n)=>value!==deps[i][n])){deps[i]=next;effects.push(fn);}}};
  const emit=status=>{current={id:'one',status,outgoing:true,reason:status==='ended'?'Peer unavailable':undefined};listener?.(current);};

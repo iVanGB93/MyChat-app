@@ -1,3 +1,5 @@
+import {createCustodyMaintenance} from '../services/identity/custodyMaintenance';
+import {createMobileCallSession} from './mobileCallSession';
 import {createChangeSignal} from '../services/identity/changeSignal';
 const networkChanges=createChangeSignal(500);
 const relayChanges=createChangeSignal(2000);
@@ -50,11 +52,10 @@ import type { AxonPeerConnection } from '../services/identity/rtcAxonTransport';
 import { createCustodyCourier } from '../services/identity/custodyCourier';
 import { createOwnCustodyStore } from '../services/identity/ownCustodyStore';
 import {createRootAccountCalls} from '../services/identity/rootAccountCalls';
-import {createMobileCallJournalStore,listMobileCallJournals,subscribeCallJournalWrites} from '../services/identity/mobileCallJournalStore';
-import {hexToBytes} from '@noble/hashes/utils.js';
+import {subscribeCallJournalWrites} from '../services/identity/mobileCallJournalStore';
 import type {NeuronCallView} from '../services/identity/neuronCallCoordinator';
 import {startRootPushRegistration} from '../services/identity/rootPushRegistration';
-import {registerRootCallWakeOwner,subscribeRootCallWakes,pendingRootCallWakes,finishRootCallWake,syncRootCallNotification} from '../services/identity/rootCallWake';
+import {subscribeRootCallWakes} from '../services/identity/rootCallWake';
 import {finishRootMessageWake} from '../services/identity/rootMessageWake';
 import {createAttachmentCustody} from '../services/identity/attachmentCustody';
 import {createMobileAttachmentStore} from '../services/identity/mobileAttachmentStore';
@@ -115,36 +116,23 @@ function createLocalAccountNetwork() {
   let push:ReturnType<typeof startRootPushRegistration>|null=null;
   let calls: {account:string;runtime:ReturnType<typeof createRootAccountCalls>}|null=null;
   let stopCallNotice:(()=>void)|null=null;
-  function stopCalls(){Native?.axonCallSetupWindow?.(0);stopCallNotice?.();stopCallNotice=null;push?.stop();push=null;inspectPush=null;if(!calls)return;const previous=calls;calls=null;if(activeCalls===previous.runtime)activeCalls=null;previous.runtime.stop();}
+  function stopCalls(){Native?.axonCallSetupWindow?.(0);stopCallNotice?.();stopCallNotice=null;push=null;inspectPush=null;if(!calls)return;const previous=calls;calls=null;if(activeCalls===previous.runtime)activeCalls=null;}
   function callService(){
     const account=owner();if(!account){stopCalls();return null;}
     if(calls?.account!==account){stopCalls();
-      const callRuntime=createRootAccountCalls({identity:localAccount,network:()=>runtime,records:operationalRecords,
-        store:createMobileCallJournalStore(),list:()=>listMobileCallJournals(account),
-        listPending:()=>listMobileCallJournals(account,Date.now()),current:()=>owner()===account,
-        now:Date.now,random:async()=>hexToBytes(await Native!.identityRandomBytes!(32)),
-        contacts:async()=>(await chatReads.read()).contacts,
-        contactsRevision:()=>ownChatRevision(account),eventCallPeer:peer=>runtime.eventCallPeers().includes(peer),inboxChanged:peer=>callEvents.changed(peer),
-        wakes:{pending:()=>pendingRootCallWakes(account),finish:id=>{
-          const view=calls?.runtime.coordinator.snapshot();
-          return finishRootCallWake(account,id,AppState.currentState!=='active'&&view?.id===id&&!view.outgoing&&view.status==='ringing');
-        }},
-        changed:view=>{Native?.axonCallSetupWindow?.(view&&view.status!=='ready'&&view.status!=='ended'?Math.max(0,Math.min(65000,(view.expiresAt??Date.now())-Date.now())):view?.status==='ended'?5000:0);callClockWork.changed();callWork.changed();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&calls?.account===account)return calls.runtime.coordinator.confirmRinging(view.id);}).catch(()=>{});for(const listener of callListeners)listener(view);}});
-      calls={account,runtime:callRuntime};activeCalls=callRuntime;
-      const noticeLifecycle=AppState.addEventListener('change',()=>{callClockWork.changed();callWork.changed();const view=callRuntime.coordinator.snapshot();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view)return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});});
-      stopCallNotice=()=>noticeLifecycle.remove();
-      const device=localAccount.callDevice()!;
-      push=startRootPushRegistration(()=>owner()===account,(peer,raw)=>runtime.pushRequest(peer,raw));
-      inspectPush=push.snapshot;
-      void registerRootCallWakeOwner(account,device).catch(()=>{});
-    }return calls.runtime;
+      const session=createMobileCallSession(account,{owner,network:()=>runtime,records:operationalRecords,chat:chatReads.read,
+        inboxChanged:peer=>callEvents.changed(peer),wake:()=>{callClockWork.changed();callWork.changed();},
+        activate:callRuntime=>{calls={account,runtime:callRuntime};activeCalls=callRuntime;},
+        changed:view=>{for(const listener of callListeners)listener(view);}});
+      push=session.push;inspectPush=push.snapshot;stopCallNotice=session.stop;
+    }return calls?.runtime??null;
   }
   let custody: { owner: string; group:ReturnType<typeof createGroupCustodyService>;groupWake:ReturnType<typeof createCustodyWakeForwarder>;service: ReturnType<typeof createCustodyService>; wake: ReturnType<typeof createCustodyWakeForwarder> } | null = null;
   let attachments:{owner:string;service:ReturnType<typeof createAttachmentCustody>}|null=null;
   let ownAttachments:ReturnType<typeof startRootAttachmentRuntime>|null=null;
   const owner = () => !stopped && !localAccount.status().busy && localAccount.status().state === 'unlocked' ? localAccount.status().account : null;
   const chatReads=createRuntimeChatReads({owner,revision:ownChatRevision,read:()=>localRootChat().snapshot()});
-  const capabilities=createPeerCapabilityWriter({owner,write:async(p,t,g)=>{const ledger=localRootChat();await ledger.rememberProfileOfferPeers(runtime.profileOfferPeers());await ledger.rememberProfilePeers(p);await ledger.rememberTimestampPeers(t);await ledger.rememberGroupCustodyPeers(g);}});
+  const capabilities=createPeerCapabilityWriter({owner,write:async(p,t,g)=>{const ledger=localRootChat();await ledger.rememberPeerCapabilities({profileOfferPeers:runtime.profileOfferPeers(),profilePeers:p,timestampPeers:t,groupCustodyPeers:g});}});
   function service() {
     const account = owner(); if (!account) return null;
     if (custody?.owner !== account) {
@@ -170,11 +158,11 @@ function createLocalAccountNetwork() {
   const native = Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> };
   async function receiveMessage(message:{from:string;id:string;text:string},relay?:string){
     const account=owner();if(!account)return false;
-    const ledger=localRootChat(),before=await ledger.snapshot();
+    const ledger=localRootChat(),before=await chatReads.read();
     const seen=[...before.messages,...(before.actions??[]),...(before.groupActions??[]),].some(m=>m.id===message.id&&m.peer===message.from&&m.direction==='incoming')||before.groupSeen?.some(m=>m.id===message.id&&m.peer===message.from)===true;
     const accepted=await ledger.receive(message.from,message.id,message.text,deliveryEvidence('payload',Date.now(),relay));
     if(accepted&&!seen){
-      const state=rootChatView(account,await localRootChat().snapshot()),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
+      const state=rootChatView(account,await chatReads.read()),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
       const contact=state.contacts.find(c=>c.account===message.from),group=m?.group&&state.groups?.find(g=>g.id===m.group!.id);
       const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),senderName:contact?.alias||shortIdentity(message.from),text:rootNotificationPreviewText(m),at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id,orderId:m.group.messageId}:{})}:undefined;
       await finishRootMessageWake(account,message.from,message.id,preview).catch(()=>{});
@@ -193,7 +181,7 @@ function createLocalAccountNetwork() {
     identity: localAccount, native, store: records, now: Date.now, limit: allowedAxons(),
     // Advertise the registration protocol as a client; ordinary phones do not mint FCM leases.
     onPush:Object.assign(async()=>JSON.stringify({status:'unsupported'}),{gateway:false}),
-    onAttachment:Object.assign(async(raw:string,peer:IdentityPeer)=>{try{return (await ownAttachments?.receive(raw,peer))??await attachmentService()?.receive(raw,peer)??'{"status":"rejected"}';}finally{relayChanges.changed();}},{uploadBatch:true,streams:Platform.OS==='android'&&!!Native?.attachmentStageStream&&NativeModules.WebRTCModule?.axonicIdentityGuardVersion?.()===1&&NativeModules.WebRTCModule?.axonicStreamGuardVersion?.()===1}),
+    onAttachment:Object.assign(async(raw:string,peer:IdentityPeer)=>{try{return (await ownAttachments?.receive(raw,peer))??await attachmentService()?.receive(raw,peer)??'{"status":"rejected"}';}finally{relayChanges.changed();}},{wssBinary:(raw:Uint8Array,peer:IdentityPeer)=>ownAttachments?.receiveWssBinary(raw,peer)??false,wssStream:(raw:string,peer:IdentityPeer)=>ownAttachments?.receiveWss(raw,peer)??false,uploadBatch:true,streams:Platform.OS==='android'&&!!Native?.attachmentStageStream&&NativeModules.WebRTCModule?.axonicIdentityGuardVersion?.()===1&&NativeModules.WebRTCModule?.axonicStreamGuardVersion?.()===1}),
     onCallControl:async(raw,peer)=>{try{return await callService()?.receive(raw,peer)??null;}catch{return null;}},
     onCallRelay:async(raw,peer)=>{try{return await callService()?.receiveRelay(raw,peer)??'{}';}catch{return '{}';}},
     onCallMediaRelay:async(raw,peer)=>{try{return await callService()?.relayMedia(raw,peer)??false;}catch{return false;}},
@@ -251,7 +239,7 @@ function createLocalAccountNetwork() {
   const unqueue=subscribeRootChatQueued((account,peer,id)=>{if(owner()===account){delivery.wake(peer,id);deliveryWork.changed();}});
   const groupRecovery=createGroupRecovery({owner,now:Date.now,peers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),random:()=>Native!.identityRandomBytes!(32),recover:(peer,id)=>localRootChat().recoverGroupsForPeer(peer,id)});
   const profileRecovery=createProfileRecovery({owner,state:chatReads.read,peers:runtime.profilePeers,offerPeers:runtime.profileOfferPeers,
-    remember:async(peers,offers)=>{const ledger=localRootChat();await ledger.rememberProfileOfferPeers(offers);await ledger.rememberProfilePeers(peers);},
+    remember:async(peers,offers)=>{const ledger=localRootChat();await ledger.rememberPeerCapabilities({profileOfferPeers:offers,profilePeers:peers});},
     send:runtime.sendChatMessage,known:peer=>sharedAvatarHash(owner()!,peer),request:(peer,id,known)=>localRootChat().requestProfile(peer,id,known)});
   // State-only jobs no longer run on the transport clock. Events are coalesced,
   // and a failed operation keeps its own retry instead of waiting for polling.
@@ -263,7 +251,7 @@ function createLocalAccountNetwork() {
   const stateWork=createEventDeadlineTask({now:Date.now,run:async()=>{
     service();callService();capabilityWork.changed();groupWork.changed();directoryWork.changed();await loadRemembered();wakeWorkers();
   }});
-  const untopology=runtime.subscribeTopology(()=>{networkChanges.changed();capabilityWork.changed();groupWork.changed();directoryWork.changed();push?.connected();delivery.topologyChanged();calls?.runtime.changed();wakeWorkers();});
+  const untopology=runtime.subscribeTopology(()=>{ownAttachments?.wake();networkChanges.changed();capabilityWork.changed();groupWork.changed();directoryWork.changed();push?.connected();delivery.topologyChanged();calls?.runtime.changed();wakeWorkers();});
   stateWork.changed();
   const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>{profileRecovery.connected(peer);groupRecovery.connected(peer);groupWork.changed();courier.resume(peer);groupCourier.resume(peer);custody?.wake.connected(peer);custody?.groupWake.connected(peer);ownAttachments?.wake();wakeWorkers();});
   profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});
@@ -289,17 +277,16 @@ function createLocalAccountNetwork() {
   const unjournal=subscribeCallJournalWrites(account=>{if(owner()===account){calls?.runtime.changed();callClockWork.changed();callWork.changed();}});
   // Native background wake clocks may run overdue deadlines while JS timers slept.
   // They must not turn an idle worker back into a once-per-second scan.
-  const pump=()=>{for(const work of workers)work.runDue();};
-  let sweeping = false;
-  const sweep = setInterval(() => { if (sweeping) return; const current = service(); if (!current) return;
-    sweeping = true; void Promise.all([current.sweep(),custody?.group.sweep(),attachmentService()?.sweep()]).catch(() => {}).finally(() => { sweeping = false;relayChanges.changed(); }); }, 60_000);
+  const pump=()=>{for(const work of workers)work.runDue();ownAttachments?.runDue();};
+  const maintenance=createCustodyMaintenance({owner,now:Date.now,sweep:async()=>{const current=service();if(current)await Promise.all([current.sweep(),custody?.group.sweep(),attachmentService()?.sweep()]);},changed:relayChanges.changed});
+  const offMaintenance=localAccount.subscribe(maintenance.changed);maintenance.changed();
   runtime.tick(); inspectDirectory = directory.snapshot; activeLookup = directory.lookup; activeSnapshot = runtime.snapshot;networkChanges.changed();
   inspectWake=()=>({private:custody?.wake.diagnostics()??null,group:custody?.groupWake.diagnostics()??null});
   const pollDiagnostics=()=>({events:inboxEvents.diagnostics(),private:courier.diagnostics(),group:groupCourier.diagnostics(),pendingDerivations:delivery.snapshot().pendingDerivations});
   inspectPolling=pollDiagnostics;
   activePeerResolver=peerResolver.resolve;
-  const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,bulkPeers:runtime.attachmentBulkPeers,uploadBatchPeers:runtime.attachmentUploadBatchPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
-  ownAttachments=startRootAttachmentRuntime({...attachmentApi,streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
+  const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,blockStreamPeers:runtime.attachmentBlockStreamPeers,bulkPeers:runtime.attachmentBulkPeers,uploadBatchPeers:runtime.attachmentUploadBatchPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
+  ownAttachments=startRootAttachmentRuntime({...attachmentApi,wss:{binary:runtime.supportsWssBinary,sendBinary:runtime.sendWssBinary,peer:runtime.wssStreamPeer,send:runtime.sendWssStream,request:runtime.attachmentRequest},streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
   const inlineReceipts=new Map<string,number>();
   return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot,
     receiveWakeEnvelope:async(envelope:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>{
@@ -315,15 +302,16 @@ function createLocalAccountNetwork() {
       }catch{}
       return receipt;
     },
+    attachmentRecoveryComplete:(sender:string,id:string)=>ownAttachments?.recoveryComplete(sender,id)??Promise.resolve(true),
     recoveryComplete:(sender:string,id:string)=>{if((inlineReceipts.get(owner()+':'+sender+':'+id)??0)>Date.now())return true;const status=delivery.snapshot();return !status.busy&&!status.collecting&&!status.queuedHints&&(courier.recoveryComplete(sender,id)||groupCourier.recoveryComplete(sender,id));},
-    resume() { stateWork.changed();runtime.resume();courier.resume();groupCourier.resume();ownAttachments?.wake();pump(); }, tick:pump, stop() { inspectCoordinator=null;unchat();unjournal();uncallwake();for(const work of workers)work.stop();stateWork.stop();capabilityWork.stop();groupWork.stop();directoryWork.stop();untopology();inboxEvents.stop();callEvents.stop();chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();unprofile();unconnected();profileRecovery.stop();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();groupCourier.stop();custody?.groupWake.stop();custody?.wake.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if(inspectPolling===pollDiagnostics)inspectPolling=null; if (activeSnapshot === runtime.snapshot) {activeSnapshot = null;inspectWake=null;networkChanges.changed();} stopped = true; custody = null; clearInterval(sweep); unsub(); unlimit(); runtime.stop(); } };
+    resume() { stateWork.changed();runtime.resume();courier.resume();groupCourier.resume();ownAttachments?.wake();pump(); }, tick:pump, stop() { inspectCoordinator=null;unchat();unjournal();uncallwake();for(const work of workers)work.stop();stateWork.stop();capabilityWork.stop();groupWork.stop();directoryWork.stop();untopology();inboxEvents.stop();callEvents.stop();chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();unprofile();unconnected();profileRecovery.stop();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();groupCourier.stop();custody?.groupWake.stop();custody?.wake.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if(inspectPolling===pollDiagnostics)inspectPolling=null; if (activeSnapshot === runtime.snapshot) {activeSnapshot = null;inspectWake=null;networkChanges.changed();} stopped = true; custody = null; offMaintenance();maintenance.stop(); unsub(); unlimit(); runtime.stop(); } };
 }
 
 // Foreground UI and a headless wake share one transport; each releases only its own lease.
 let sharedNetwork:{runtime:ReturnType<typeof createLocalAccountNetwork>;references:number}|null=null;
 export function startLocalAccountNetwork(){
  const shared=sharedNetwork??={runtime:createLocalAccountNetwork(),references:0};shared.references++;
- let released=false;return {receiveWakeEnvelope:shared.runtime.receiveWakeEnvelope,snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,recoveryComplete:shared.runtime.recoveryComplete,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
+ let released=false;return {receiveWakeEnvelope:shared.runtime.receiveWakeEnvelope,snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,recoveryComplete:shared.runtime.recoveryComplete,attachmentRecoveryComplete:shared.runtime.attachmentRecoveryComplete,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
 }
 
 

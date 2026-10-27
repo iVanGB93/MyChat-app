@@ -1,0 +1,74 @@
+Single-copy Android media storage — 2026-10-23
+
+Scope
+Mobile implementation only. No AoN deployment, mobile commit/push, official-app
+installation, data reset, or production build was performed for this change.
+The already-built Axonic-1.1.27-98.aab is unchanged and DOES NOT include this fix.
+SHA256: 6bfc384b28247ab9241c7bdc124c9152ab7467f1555e0f0a2b4d001063bce28c
+
+Finding
+The received-media exporter previously retained a private seekable content file
+after creating a MediaStore copy. It could also recreate that private copy from
+the gallery. Expo File handles cannot seek MediaStore content URIs, which was
+the reason for the replica, not a requirement of attachment v4.
+
+Implementation
+- Completed current-format media is published by default to Pictures/Axonic,
+  Movies/Axonic, or Download/Axonic. Existing auto-save preference is respected.
+- MediaStore/native content descriptors provide read-only seekable access.
+  Chat playback, native hash verification, direct streams, relay reads, sharing,
+  forwarding and sticker-editor staging can use the canonical file.
+- Publication checks the whole-file hash, atomically commits media.json, then
+  removes the private duplicate. Crash-leftover duplicates can be cleaned later.
+- A missing canonical file is unavailable; it is never restored from a private
+  replica. A revoked grant can also make a file unavailable, so the bubble does
+  not claim every unavailable file was deleted.
+- Own .block/.proof transport cache files are removed after canonical adoption.
+  Metadata/signing material remains; pending sibling grants can regenerate
+  required ciphertext from verified content. Other users' custody is untouched.
+- Group recipient grants resolve the same shared payload/media reference.
+- Completed outgoing media is handled as well as incoming media.
+- Android's native picker retains a persistable original-URI grant instead of
+  re-encoding the selected local photo. Source staging records that reference;
+  publication reuses the original only after exact hash verification.
+- Forwarding an existing shared file reuses it rather than publishing a second
+  permanent local copy. Camera captures/edits are new content, not that original.
+- Transfer, shared-import, picker, and editor staging can require temporary
+  private files. These are not permanent duplicate playback files.
+- Old-format history and unknown/unverifiable files are not bulk-purged. This
+  does not reintroduce legacy attachment wire decoders or recover old history.
+
+Verification
+- Local separate Dev APK assembled successfully (x86_64 emulator build).
+- Both emulator identities and all baseline message keys preserved; normal
+  com.axonic package version/update metadata unchanged.
+- Both emulators: canonical file reading/seeking/hash, removal of private copy,
+  simulated post-reference crash recovery, gallery deletion without resurrection,
+  scoped own transport-cache removal, unrelated metadata preservation.
+- 5,000,000-byte Dev-to-Dev transfer: hashes matched on both phones; both histories
+  referenced shared files. Forwarding reused the forwarder's original URI.
+- Real Android picker: selected generated 16x16 PNG; original and selected URI
+  hashes matched and React Native decoded the photo at 16x16.
+- Sending that selected photo Dev-to-Dev preserved the exact picker URI in the
+  sender's completed chat, rather than creating another gallery file.
+- Typecheck, module-boundary, service-cycle and consolidation checks passed.
+- Full regression: see builds/single-copy-regression-final.log.
+
+Evidence
+builds/single-copy-device-result.json
+builds/single-copy-transfer-result.json
+builds/single-copy-picker-result.json
+builds/single-copy-picked-send-result.json
+builds/single-copy-picker-dev-build.log
+builds/single-copy-dev-baseline*.json
+
+Test caveats
+The first hand-coded PNG test fixture was invalid; it was replaced with a
+CRC-valid generated PNG before the successful decoding/send checks. No real
+photo was used. Synthetic test messages/media remain in Dev histories.
+One second-emulator relaunch hit an onUserLeaveHint ReactActivityDelegate null
+pointer during Dev Launcher startup. Starting the launcher first and then
+opening Metro recovered it. Final media tests and preservation checks passed
+on both emulators. This unrelated lifecycle path was not modified here.
+Physical phone testing and older Android document-picker fallback remain
+unverified. This is not a production publication or physical-device approval.

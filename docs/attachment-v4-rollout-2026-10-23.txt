@@ -1,0 +1,60 @@
+Attachment v4 rollout and acceptance — 2026-10-23
+
+AoN source committed and pushed:
+1deca094f682fbac0c3e5ddcd5d18836f9bc1d0d
+Use direct-first attachment v4 with lazy signed relay blocks and safe retired history
+Branch codex/operator-foundations-20261022. Main dirty AoN worktree untouched.
+
+All three AoNs report package 0.2.0, source 1deca09, clean/runtime_bound,
+runtime SHA256 2d1207e337ba5c940dc26e6835eb7fd49afb512fd18360f941118ddebc31fcd5.
+FirstNeuron and ThirdNeuron authenticated status, chat, operator-memory and
+diagnostics passed; ownerStatus installed. SecondNeuron authenticated MCP status
+confirmed the release and live reporting. Identities and configuration unchanged.
+SecondNeuron deployment 4c12a990-3042-4488-89fb-4f26656e3ecd SUCCESS.
+The first deployment 6b57d5b4-34c1-4edd-934e-153026dea19d failed: Railway used
+the generic root Dockerfile instead of deploy/Dockerfile.railway, skipping the
+credential-file initializer. Corrected by placing the existing Railway Dockerfile
+at the packaging root; no credential values or server source were changed.
+First/Third runtime and data recovery copies: /var/backups/attachment-v4-1deca09.
+SecondNeuron persistent volume was preserved; existing recovery backups retained.
+
+Old attachment history
+Local v1-v3 attachment descriptors become neutral resend notices, with the
+original metadata retained in retiredAttachment. No read-time storage writes;
+later normal saves preserve the archived metadata. No old decoder restored.
+Retired attachment messages do not enter pendingRootChat; old own-transfer rows
+are retained but excluded from scheduling/capacity. Current malformed rows still
+fail validation. Retired relay records remain stored and do not block new offers.
+Mobile delivery status is unavailable rather than fabricated delivery or pending.
+No history, identity, contact, membership or media file was deleted.
+
+Validation
+- Broad mobile run: 1,424 passed, 3 optional skips (before two additional tests).
+- Focused final history/job/custody run: 36 passed, including both added tests.
+- Final AoN suite: 280 passed, zero failures. Typecheck and module checks passed.
+- Two existing isolated Dev emulator accounts preserved. Metro served the updated
+  JavaScript; no native API changed this turn. Normal com.axonic apps untouched.
+- Direct Dev-to-Dev 1/5/10 MB checksums and signed receipts passed, with zero
+  encrypted relay files created. Latest one-shot times 3.172/14.028/66.959 seconds.
+  These include debugger/poll overhead, not controlled performance benchmarks.
+  After fleet rollout, without concurrent tests, a final normal 10 MB direct
+  transfer passed in 7.674 seconds, checksum/receipt verified and zero relay files.
+  This does not establish the cause of the previous 66.959-second observation.
+- Each live AoN passed isolated 1/5/10 MB relay tests: reconnect after first upload
+  block, durable received prefix, sender fully disconnected during download,
+  unchanged ciphertext, AEAD/checksum verification and completed signed receipt.
+  These transport harnesses do not prove normal app UI fallback scheduling.
+- Android native relay tests: see builds/native-relay-v4-emulator-*.log. The first
+  run passed 1/5 MB then hit the test driver's 15-second debugger timeout in the
+  10 MB case. A diagnostic rerun on the second emulator passed all three sizes,
+  using a longer debugger timeout and phase timings;
+  this does not change any production network timeout or erase the failed test.
+  Both emulator probes were independently confirmed absent after completion.
+
+Rollout boundaries
+No official app installation, publication or production AAB build this turn.
+Physical-phone testing unavailable. Transfer performance remains inconsistent;
+do not claim production performance acceptance from functional tests alone.
+Mobile source remains uncommitted, preserving pre-existing work from other chats.
+Shared root chat/status files retain the pre-existing mobile-only cancellation
+differences; do not blindly overwrite hosted versions with sync-core.

@@ -1,0 +1,62 @@
+PHONE / AON SCHEDULING COMPARISON — OCTOBER 25, 2026
+Local implementation, not deployed or measured on physical devices.
+
+                         Phone before               AoN before
+Work pump                createWorkPump              createDeadlineTask
+Productive work          immediate yielding burst    immediate yielding burst
+Idle                     attachmentWorkDelay         attachmentWorkDelay
+Descriptor reconciliation revision or recovery bound every burst
+Timers                   mobile defaults             Node unref
+Burst budget             32 steps / 50 ms             8 steps / 50 ms
+Preparation              async mobile selection      hosted upload endpoint
+
+Now shared
+  Canonical services/workPump.ts is synchronized into the hosted core. Its contract
+  preserves each adapter's clock/timer lifetime. Hosted scheduling diagnostics keep
+  runs/events/failures/running/dirty/nextDeadline; mobile snapshot fields stay intact.
+  attachmentCanAdvance supplies route-aware readiness to both schedulers. A merely
+  connected, incapable peer no longer triggers 500ms idle transfer retries.
+  Local final verification/receipt completion can run without a network peer.
+  Receipt cleanup can use a connected custodian without payload capabilities.
+  createAttachmentReconcileGate shares revision/event-driven descriptor checks.
+  Failed/incomplete walks remain eligible; an event during a walk is not consumed.
+
+Event audit
+  Mobile: committed own-chat writes, queued selections, owner transitions, incoming
+  requests, preparation completion, resume and peer connections already wake work.
+  Added explicit attachment wake to topology events for capability changes on an
+  existing connection. Expiry remains the safety deadline when no route can run.
+  Hosted: index network.onChanged -> rootChat.changed -> attachments.changed;
+  committed ledger writes also take that path. Job saves wake the pump without
+  forcing descriptor reconciliation. Policy reads/authorization are not cached away.
+  Do not feed scheduling from Zustand UI projections: those observe the same source
+  events but may have no subscribers, and are not durable/authorization state.
+
+Kept separate
+  Phone selection preparation/retry, lifecycle/foreground/headless leases, native
+  streams and media export. Hosted upload preparation, filesystem/SQLite and unref.
+  Different burst budgets stay explicit. Other protocol recovery and call schedulers
+  retain their deadlines and completion semantics; no blanket removal of timers.
+
+Regression coverage
+  Clock-controlled test: incapable connection produces one initial run, zero extra
+  polls for five minutes; a capability event wakes immediately; completed work has
+  no timer. Existing tests cover coalescing, events during awaited work/deadline
+  calculation, error retry and stopping in flight. Added readiness/reconcile tests
+  cover local completion, receipt cleanup, failed walks and mid-walk events.
+File: src/services/workPump.ts
+File: src/services/identity/attachmentSchedule.ts
+File: src/services/identity/attachmentRouteSelection.ts
+Test: tests/workPump.test.cjs
+Test: tests/attachmentSchedule.test.cjs
+Test: tests/attachmentRouteSelection.test.cjs
+Test: tests/rootAttachmentScheduling.test.cjs
+AoN: src/hostedRootAttachments.ts
+AoN: src/hostedRootChat.ts
+
+Validation
+  Mobile npm run check: 1501 passed, 3 skipped, no failures; types, module/cycle,
+  consolidation and assets checks passed. The additional clock-controlled readiness
+  regression was then included in a focused 15-test pass (all passed).
+  Hosted npm test: 309 passed. check:core: source parity and hosted types passed.
+  Architecture references: 238 passed. No live device/AoN changes or speed claim.

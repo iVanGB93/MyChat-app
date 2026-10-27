@@ -1,5 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const mod={};new Function('exports',ts.transpileModule(fs.readFileSync('src/modules/ui/avatarSnapshotCache.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod);
+test('targeted invalidation retains other peers and rejects an old in-flight read',async()=>{
+ let resolve;let reads=0;const cache=mod.createAvatarSnapshotCache({current:()=>true,read:async(_,peer)=>{reads++;if(peer==='slow')return new Promise(r=>resolve=r);return peer;}});
+ await cache.read('a','one');await cache.read('a','two');const old=cache.read('a','slow');await Promise.resolve();cache.invalidate('a','slow');resolve('obsolete');assert.equal(await old,null);
+ cache.invalidate('a','one');assert.equal(await cache.read('a','two'),'two');assert.equal(reads,3);await cache.read('a','one');assert.equal(reads,4);
+});
 test('navigation shares avatar reads, including missing photos, with bounded eviction',async()=>{
  let reads=0;const cache=mod.createAvatarSnapshotCache({current:o=>o==='a',read:async(o,p)=>{reads++;return p==='missing'?null:p;}},2);
  assert.equal(cache.peek('a','one'),undefined);

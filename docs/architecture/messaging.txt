@@ -1,0 +1,54 @@
+MESSAGING
+Purpose: own private/group conversations, commands, membership and action semantics.
+Owns the meaning of pending/stored/delivered/read; does not own raw socket lifetime.
+
+File: src/modules/messaging/index.ts
+File: src/modules/messaging/commands.ts
+File: src/modules/messaging/delivery.ts
+File: src/services/identity/rootChatLedger.ts
+File: src/services/identity/rootChatActions.ts
+File: src/services/identity/rootGroupActions.ts
+File: src/services/identity/rootGroups.ts
+File: src/services/identity/custodyCourier.ts
+File: src/services/identity/groupCustodyCourier.ts
+File: src/services/identity/deliveryEvidence.ts
+AoN: src/hostedRootChat.ts
+AoN: src/hostedRootCustody.ts
+AoN: src/rootMessageValidation.ts
+
+Current API: messaging.sendText/act/markRead and group commands persist intent
+before delivery. conversations() exposes reads/preferences instead of raw inbound
+admission. Factories in commands.ts/delivery.ts accept injected dependencies;
+the public index.ts is mobile composition, not a portable import for hosted code.
+Hosted root-chat orchestration currently has its own scheduler around the shared
+ledger/protocol. Shared protocol does not mean identical phone/AoN orchestration.
+
+State authority: ledger and durable action/outbox records. Preserve logical group
+message IDs vs per-recipient wire IDs. Retries cannot invent new logical messages.
+Receipt acceptance, relay storage and user reading are different facts. Sending a
+reply or exporting history is not itself a read acknowledgment. Group deletes must
+resolve original author and logical target; never use local chat deletion instead.
+
+Courier receipt evidence may survive overlapping wake resumes; fresh relay drain
+is still needed, and account invalidation clears it. The local Oct25 fix is not
+proof that a particular deployed phone now has that behavior.
+
+Test: tests/appModules.test.cjs
+Test: tests/rootChatLedger.test.cjs
+Test: tests/custody.test.cjs
+Test: tests/groupCustody.test.cjs
+Next extraction: define a portable delivery-session port and compare mobile and
+hosted scheduling/approval semantics before attempting to merge their pumps.
+Guide: storage.txt
+Guide: coordination.txt
+Shared retry scheduling (October 25)
+  messageRetryDeadline is now used by phone and hosted outboxes for pending rows,
+  active peer lanes and existing retry deadlines. Platform minimum retry spacing
+  remains explicit (phone 0, hosted 2000ms); custody handoff deadlines stay intact.
+  Hosted policy-held work is filtered before computing outbox deadlines. It stays
+  durably pending and resumes on approval/change events, without a polling timer.
+  Authorization and send-time revocation checks remain outside the helper.
+File: src/services/identity/messageRetryDeadline.ts
+Test: tests/messageRetryDeadline.test.cjs
+AoN: tests/hostedRootChat.test.mjs
+

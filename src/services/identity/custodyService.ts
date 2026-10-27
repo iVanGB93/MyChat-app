@@ -1,14 +1,12 @@
+import type {CustodyRow,CustodyStore,CustodyLimits} from './relayStorage.ts';
+export type {CustodyRow,CustodyStore,CustodyLimits} from './relayStorage.ts';
 import { custodyDigest, parseCustody, verifyCustody, CUSTODY_TTL, type CustodyEnvelope, type CustodyReceipt } from './custodyProtocol.ts';
 import { validAccountId } from './identityProtocol.ts';
 import type { IdentityRecordStore } from './identityAdmission.ts';
-export interface CustodyRow { sender: string; recipient: string; id: string; recipientDevice: string;
-  expires: number; digest: string; packet: CustodyEnvelope | CustodyReceipt | null }
-/** Store must serialize transactions across ALL instances sharing the same owner. Commit or throw. */
-export interface CustodyStore { revision?():number|string; read?<T>(inspect:(rows:readonly CustodyRow[])=>T):Promise<T>; limits?: CustodyLimits; transaction<T>(change: (rows: CustodyRow[]) => T): Promise<T> }
 /** Optional immutable read path; mutation and acknowledgement still use transactions. */
 export function readCustodyStore<T>(store:CustodyStore,inspect:(rows:readonly CustodyRow[])=>T):Promise<T>{return store.read?store.read(inspect):store.transaction(inspect);}
 export const CUSTODY_LIMIT = 128;
-export interface CustodyLimits { live: number; rows: number; bytes: number; perSender: number; perRecipient: number }
+
 export const DEFAULT_CUSTODY_LIMITS: CustodyLimits = {live:128,rows:1024,bytes:1_024_000,perSender:16,perRecipient:16};
 // Exact normalized envelope bytes only. This saves repeated hashing of unchanged
 // stored ciphertext, not admission checks: parsing, row bindings, limits and

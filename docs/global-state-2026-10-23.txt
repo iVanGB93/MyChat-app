@@ -1,0 +1,78 @@
+GLOBAL STATE IMPLEMENTATION — 2026-10-23
+
+Scope
+Added Zustand 5.0.16 as a presentation/read-model layer over existing runtime
+and durable storage. No production build, commit, push, deployment, data wipe,
+or official-app installation. Existing unrelated work remains in place.
+
+Implemented
+- Shared account, foreground lifecycle, network/directory and live-peer views.
+  One underlying subscription per observed source; equal snapshots do not notify.
+  Connection expiry updates the shared live-peer view.
+- Shared revision-aware chat loading and derived message presentation, with
+  structural sharing and conversation indexes. Individual rooms subscribe to
+  their own messages. Contacts-only consumers avoid loading their own chat copy.
+- Account lock/switch clears private chat and transfer presentation; generation
+  guards reject late reads. Failed reads preserve the last good view with error.
+- Shared transfer progress: initial/foreground hydration, then committed job
+  checkpoint events. Progress updates target attachment rows rather than causing
+  parent chat screens to reread jobs and rebuild all progress lookups.
+- Shared call signaling and separately leased media metadata. Native tracks,
+  streams, encryption state and call controls remain owned by existing services.
+  A previous call's cleanup cannot clear the next call's metadata.
+- Shared notification preference presentation with coalesced reads and publish
+  after successful durable writes; old reads cannot undo a completed write.
+- Targeted avatar invalidation; an avatar change no longer clears every peer's
+  cached avatar. Invalidated in-flight reads cannot reinstall stale entries.
+
+Key entry points
+src/services/identity/sharedState.ts
+src/modules/ui/liveState.ts
+src/modules/ui/chatState.ts
+src/modules/ui/chatReadModel.ts
+src/modules/ui/transferState.ts
+src/services/identity/preferenceState.ts
+src/services/identity/callMediaState.ts
+
+Validation
+- Full Node suite: 1,453 tests; 1,450 passed, 3 skipped, 0 failed.
+  Log: builds/global-state-regression-final.log
+- TypeScript noEmit passed.
+- Service cycle check: 225 modules passed.
+- Module boundary check: 21 active UI files passed.
+- Consolidation check: 320 reachable modules passed.
+- Lifecycle tests cover shared reads, background/detach, lock/unlock late reads,
+  failed read retention, checkpoint updates without rereading the full job list,
+  reattach hydration, preference write races and stale call cleanup.
+- Dev emulator tests: messages delivered and indexed in both directions;
+  5,000,000-byte file received with matching checksum; existing history retained.
+  Evidence: builds/global-state-dev-result.json
+  Reproduce: node scripts/test-global-state-dev.cjs
+- Dev voice call: both peers ready over p2p; both media stores cleared after
+  hang-up. Initial attempt waited for missing RECORD_AUDIO permission. Granted
+  this permission only to com.axonic.dev on both emulators, then reran successfully.
+  Evidence: builds/global-state-call-result.json
+  Reproduce: node scripts/test-global-state-call-dev.cjs
+  These scripts create labeled test traffic/call history and preserve prior data.
+
+Projection microbenchmark (Hermes, both Dev emulators)
+1,000 in-memory messages, contact-only rename; 15 samples, first 3 discarded.
+Median old projection vs shared read model:
+  emulator A: 4.607530 ms -> 2.268928 ms
+  emulator B: 7.631600 ms -> 3.797900 ms
+New model preserved 1,000/1,000 message references (old projection: 0/1,000).
+This measures derivation only, NOT whole-app speed, transfer latency or FPS.
+
+Deliberate boundaries / follow-up
+- Global state is not a second database or a new network protocol authority.
+  Existing persistence, authorization, retry rules and runtime services remain
+  authoritative. Cached presentation must not decide security permissions.
+- Local compose text, gestures, scrolling, modal state and native media objects
+  stay local. External-file existence is not permanently cached because users
+  can delete shared media outside the app.
+- Full ledger serialization and remaining per-list summary calculations were
+  not replaced with an incremental database in this change.
+- Physical-phone frame/scroll profiling and screen-sharing regression remain
+  separate checks. Emulator correctness and projection savings do not establish
+  a measured production FPS improvement.
+- Existing production AAB predates these changes; no new AAB was built.

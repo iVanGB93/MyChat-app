@@ -1,9 +1,15 @@
-Axonic test inventory — reviewed 2026-10-13
+Axonic test inventory — reviewed 2026-10-23
+
+Module-specific entry points and regression selections:
+  ../docs/architecture/INDEX.txt
+Documentation references (read-only; no device tests or source synchronization):
+  node scripts/check-architecture-docs.cjs
+  node scripts/check-architecture-docs.cjs --aon-root <hosted-checkout>
 
 Maintained automated suite
   npm run check
 Runs TypeScript, tests/*.test.cjs, dependency-cycle checks, module boundaries,
-and source consolidation. Keep this flat test layout: the package command
+source consolidation and literal asset-reference validation. Keep this flat test layout: the package command
 discovers it explicitly. Helpers, native fixtures and support adapters are
 dependencies of these tests, not unused copies of the application.
 
@@ -34,6 +40,8 @@ Optional benchmarks (intentionally skipped in the ordinary suite)
 Set the variable in PowerShell before invoking node --test for that file, and
 remove it afterward. These are comparative benchmarks, not throughput promises.
   scripts/experiments/ — manual device-transfer experiments; retain dependencies.
+  phone-chunk-benchmark.cjs was removed after its companion runner was retired.
+  direct-stream-session.cjs remains covered by directStreamExperiment.test.cjs.
 
 AoN suite (D:\Proyects\Axonic-neuron)
   npm test

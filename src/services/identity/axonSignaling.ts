@@ -29,7 +29,7 @@ export function verifyAxonSignal(raw: string, now: number): AxonSignal | null {
     const s: AxonSignal = JSON.parse(raw);
     if (s.version !== 1 || !verifyRecord(s.record, now) || !validAccountId(s.target) || s.target === s.record.account
       || !/^[0-9a-f]{64}$/.test(s.session) || !['offer', 'answer'].includes(s.kind)
-      || typeof s.sdp !== 'string' || bytes(s.sdp) > 7000 || !s.sdp.startsWith('v=0\r\n')
+      || typeof s.sdp !== 'string' || bytes(s.sdp) > 9000 || !s.sdp.startsWith('v=0\r\n')
       || !Number.isSafeInteger(s.issuedAt) || s.issuedAt < 0 || s.issuedAt > now + 5000
       || !Number.isSafeInteger(s.expiresAt) || s.expiresAt <= now || s.expiresAt <= s.issuedAt
       || s.expiresAt - s.issuedAt > 30000 || s.expiresAt > s.record.expiresAt
@@ -46,12 +46,25 @@ export function createAxonSignaling(d: {
   receive(signal: AxonSignal, via: string): void;
 }) {
   const seen = new Map<string, number>();
-  let busy = 0;
+  let busy = 0, generation=0;
+  const waiting:Array<(admitted:boolean)=>void>=[];
+  function release(){
+    const next=waiting.shift();
+    if(next)next(true);else busy--;
+  }
   return {
     async receive(raw: string, via: IdentityPeer) {
-      if (!d.current() || busy >= 2 || via.expiresAt <= d.now() || !d.connected(via.account)) return false;
-      busy++;
+      if (!d.current() || typeof raw!=='string'||raw.length>14000||bytes(raw)>14000
+        || via.expiresAt <= d.now() || !d.connected(via.account)) return false;
+      const own=generation;
+      // Identity storage may overlap across authenticated axons. Keep bounded
+      // work queued instead of silently losing a valid offer/answer at slot 3.
+      if(busy>=2){
+        if(waiting.length>=4)return false;
+        if(!await new Promise<boolean>(resolve=>waiting.push(resolve)))return false;
+      }else busy++;
       try {
+        if(own!==generation||!d.current()||via.expiresAt<=d.now()||!d.connected(via.account))return false;
         const signal = verifyAxonSignal(raw, d.now());
         if (!signal || signal.record.account === d.account) return false;
         const local = signal.target === d.account;
@@ -62,14 +75,14 @@ export function createAxonSignaling(d: {
         if (seen.has(key) || seen.size >= 128) return false;
         seen.set(key, signal.expiresAt);
         const known = await d.store.read(signal.record.account);
-        if (!d.current() || compareRecord(signal.record, known, d.now(), signal.history) !== 'accept') return false;
+        if (own!==generation || !d.current() || compareRecord(signal.record, known, d.now(), signal.history) !== 'accept') return false;
         if (!await pinIdentityRecord(d.store, known, signal.record, signal.history)) return false;
-        if (!d.current() || signal.expiresAt <= d.now() || via.expiresAt <= d.now() || !d.connected(via.account)) return false;
+        if (own!==generation || !d.current() || signal.expiresAt <= d.now() || via.expiresAt <= d.now() || !d.connected(via.account)) return false;
         if (local) { d.receive(signal, via.account); return true; }
         return d.connected(signal.target) && d.send(signal.target, raw);
       } catch { return false; }
-      finally { busy--; }
+      finally { release(); }
     },
-    clear() { seen.clear(); },
+    clear() { generation++;seen.clear();for(const resolve of waiting.splice(0))resolve(false); },
   };
 }

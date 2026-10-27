@@ -1,17 +1,19 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function fixture(){
  const rows=new Map(),staged=new Map(),removed=[];let seq=0,fail=false;const groupMessages=[],feedback=[];const status={account:'owner',state:'unlocked'};
- const out={};new Function('require','exports','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>{
+ const out={},deps=name=>{
+  if(name==='./rootAttachmentSelections')return out;
   if(name.includes('async-storage'))return {default:{getItem:async k=>rows.get(k),setItem:async(k,v)=>rows.set(k,v)}};
   if(name.includes('axonic-nearby'))return {default:{identityRandomBytes:async()=>String(++seq).padStart(64,'0')}};
   if(name==='./attachmentChanges')return {attachmentChanged(){}};
   if(name==='./rootGroups')return {validGroupContext:()=>true};
   if(name==='./rootMessageFeedback')return {publishRootMessageFeedback:event=>feedback.push(event)};
-  if(name==='./localRootChat')return {localRootChat:()=>({snapshot:async()=>({messages:groupMessages})})};
+  if(name==='./localRootChat')return {subscribeRootChatCommitted:()=>()=>{},localRootChat:()=>({snapshot:async()=>({messages:groupMessages})})};
   if(name==='./rootGroupActions')return {validGroupReply:r=>!!r&&/^[a-f0-9]{64}$/.test(r.id)&&['owner','peer','other'].includes(r.author),groupReplyAvailable:(state,owner,group,reply)=>state.messages.some(m=>m.group?.id===group&&m.group.messageId===reply.id&&m.peer===reply.author)};
   if(name==='./localAccount')return {localAccount:{status:()=>status,subscribe:()=>()=>{}}};
   if(name==='./attachmentTiming')return {createAttachmentTiming:()=>({snapshot:()=>({})})};
   if(name==='./attachmentPolicy')return require('./helpers/attachment.cjs').load('attachmentPolicy');
+  if(name==='./attachmentSchedule')return require('./helpers/attachment.cjs').load('attachmentSchedule');
   if(name==='./identityRecordStore')return {createMobileIdentityRecordStore:()=>({})};
   if(name==='./mobileAttachmentJobs')return {createMobileAttachmentJobs:()=>({})};
   if(name==='./attachmentTransfer')return {createAttachmentTransfer:()=>({stop(){}})};
@@ -21,7 +23,8 @@ function fixture(){
   if(name==='./identityProtocol')return {validAccountId:p=>['owner','peer','other'].includes(p)};
   if(name==='./rootAttachmentFiles')return {stageRootAttachmentSource:(owner,id,uri,shared)=>{if(fail&&uri==='file://two')throw Error('Disk full');staged.set(shared??id,uri);},removeRootAttachmentSource:(owner,id)=>{removed.push(id);staged.delete(id);}};
   return {};
- },out,()=>0,()=>{});
+ };
+ for(const file of ['rootAttachmentSelections','rootAttachmentRuntime'])new Function('require','exports','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/'+file+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(deps,out,()=>0,()=>{});
  return {out,rows,staged,status,groupMessages,feedback,fail:()=>fail=true,items:[{uri:'file://one',name:'One',mime:'image/jpeg',caption:'First'},{uri:'file://two',name:'Two',mime:'image/png'}]};
 }
 test('reviewed batch commits all selections together and preserves captions',async()=>{

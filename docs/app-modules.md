@@ -1,16 +1,30 @@
 # Axonic app modules
 
-The active identity-based app uses five module boundaries. The original screens,
+Current responsibility map: [architecture/INDEX.txt](architecture/INDEX.txt).
+The ten areas there map existing implementations and proposed extractions; they
+are not ten new packages. This document retains the original facade design and
+dated validation below. Its historical hosted-integration and transfer-speed
+statements are not claims about the current deployed fleet.
+
+The active identity-based app uses explicit module boundaries. The original screens,
 styles, local schemas, cryptographic formats and network protocols are retained.
 This is a code-organization change, not an account migration or a new interface.
 
 | Module | Public entry | Owns |
 | --- | --- | --- |
 | UI | Existing `screens/`, `components/`, `navigation/`; native selectors in `modules/ui/` | Rendering, user input, camera/gallery/file selection, microphone recording, permission prompts |
-| Messaging and calls | `modules/messaging/index.ts`, `notifications.ts` | User commands, message IDs, group commands, call readiness, outbox scheduling, attachment staging and notification workflows |
+| Messaging | `modules/messaging/index.ts`, `notifications.ts` | Text/group commands, message IDs, history presentation and notification workflows |
+| Calls | `modules/calls/index.ts` | Call readiness, active-call controls and call lifetime |
+| Media | `modules/media/index.ts` | Attachment staging/progress and voice recording |
+| Diagnostics | `modules/diagnostics/index.ts` | Report preparation and authorized report commands |
 | Network | `modules/network/index.ts` | Participation lifecycle, connection settings, discovery inspection and network diagnostics |
 | Identity and security | `modules/identity/index.ts` | Creation/recovery, local unlock, biometric/session policy, identity presentation and backup confirmation |
 | Local storage | `modules/storage/index.ts`, `chatStore.ts` | Own chat persistence, call history, own downloaded files and local profile photos |
+
+The shared presentation layer is documented in `global-state-2026-10-23.txt`:
+`ui/liveState`, `ui/chatState`/`chatReadModel`, and `ui/transferState` reuse source
+subscriptions and stable selectors. Runtime services and durable storage remain
+authoritative; native media objects and security decisions are not UI cache data.
 
 `src/composition/neuronRuntime.ts` is the composition root: it wires the existing identity,
 transport, custody, directory, call and attachment implementations together. It

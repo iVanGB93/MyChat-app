@@ -1,5 +1,5 @@
 import {subscribeOwnChatWrites} from '../../modules/storage';
-import {subscribeAttachmentContentChanges} from '../../modules/messaging';
+import {subscribeAttachmentContentChanges} from '../../modules/media';
 const subscribeStorageChanges=(fn:()=>void)=>{const a=subscribeOwnChatWrites(fn),b=subscribeAttachmentContentChanges(fn);return()=>{a();b();};};
 import {useForegroundEvents} from '../../hooks/useForegroundEvents';
 import {useIsFocused} from '@react-navigation/native';
@@ -15,7 +15,7 @@ import type {RootChatState} from '../../modules/messaging';
 import type {RootAccountRoutes} from '../../navigation/rootAccountRoutes';
 import {shortIdentity} from '../../modules/identity';
 import {removeRootDownloadedMedia,rootAttachmentFile} from '../../modules/storage';
-import {attachmentDigest} from '../../modules/messaging';
+import {attachmentDigest} from '../../modules/media';
 import RootAttachmentBubble from '../../components/RootAttachmentBubble';
 import {ThemedAlert as Alert} from '../../components/ui/ThemedAlert';
 import {chatStorageStyles as styles} from './chat-storage-styles';

@@ -1,0 +1,49 @@
+NETWORK AND CONNECTIONS
+Purpose: find peers and maintain authenticated, usable sessions and route facts.
+Not responsible for chat history, media ownership, read receipts or UI rendering.
+
+Current entries
+File: src/modules/network/index.ts
+File: src/modules/network/chatConnection.ts
+File: src/services/identity/identityNetwork.ts
+File: src/services/identity/lanIdentityRuntime.ts
+File: src/services/identity/neuronConnections.ts
+File: src/services/identity/persistentAxon.ts
+File: src/services/identity/peerIdentityResolver.ts
+File: src/services/identity/identityDirectoryLookup.ts
+File: src/services/identity/rtcAxonTransport.ts
+File: src/services/identity/nativeAxonTransport.ts
+AoN: src/hostedNetwork.ts
+AoN: src/persistentAxonSocket.ts
+
+Contracts today
+  Public facade starts participation, exposes snapshots/subscriptions and network
+  settings. Screens do not send application payloads through it. Composition
+  supplies identity records, transports, workers and shared runtime leases.
+  Connection selection and persistent sessions are separate from file-transfer
+  route selection. Directory identity knowledge is not proof of reachability.
+  A connected peer is not proof of delivery; LAN/internet is not a read receipt.
+  Every late result must respect owner/session invalidation and shutdown.
+
+State authority: network runtime/pool and verified identity records. UI liveState
+is a projection. Native sockets and RTC objects stay in their adapters.
+Failures to inspect: discovery vs handshake vs connection loss vs route eligibility.
+Record route/peer/attempt correlation without message content or secrets.
+
+Test: tests/persistentAxon.test.cjs
+Test: tests/lanBootstrapRoute.test.cjs
+Test: tests/nativeAxonTransport.test.cjs
+Test: tests/webRtcTransport.test.cjs
+Run these with node --test; then check:cycles/check:modules. Protocol changes also
+require hosted parity and hosted socket tests. Physical network behavior needs Dev.
+
+The transfer session/request ports now live in attachmentConnections.ts. Providers
+own connection readiness, credit and lifetime; the transfer worker owns durable job
+transitions and receipt policy. Ports expose no peer-discovery or database mutation.
+File: src/services/identity/attachmentConnections.ts
+Keep one network instance per account lifetime; no screen or AI adapter may start
+a competing network pool. Attachment peer ranking and route eligibility now live in
+the shared attachmentRouteSelection module, separately from scheduling/checkpoints.
+File: src/services/identity/attachmentRouteSelection.ts
+Guide: transfers.txt
+Guide: coordination.txt

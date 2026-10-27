@@ -1,6 +1,9 @@
 import type { AxonSignal } from './axonSignaling.ts';
 import type { AxonWire } from './persistentAxon.ts';
 import type { ConnectionContext, NeuronCandidate } from './neuronConnections.ts';
+import type {SharedRtcCallLease} from './sharedRtcCall.ts';
+import type {AttachmentLane as RtcAttachmentLane} from './attachmentConnections.ts';
+export type {AttachmentLane as RtcAttachmentLane} from './attachmentConnections.ts';
 
 export interface Channel {
   _peerConnectionId?: number; _reactTag?: string;
@@ -8,12 +11,8 @@ export interface Channel {
   send(data: string|Uint8Array): void; close(): void;
   addEventListener(event: string, callback: (event: any) => void): void;
 }
-export interface RtcAttachmentLane {
- live():boolean;ready():Promise<void>;send(data:string|Uint8Array):void;close():void;
- credit(value:number,authorize:boolean):Promise<void>;
- listen(message:(data:unknown)=>void,closed:()=>void):void;
-}
 export interface AxonPeerConnection {
+  _pcId?:number;
   localDescription: { type: string; sdp: string } | null;
   iceGatheringState: string; connectionState: string;
   getStats?(): Promise<Map<string, any>>;
@@ -26,7 +25,7 @@ export interface AxonPeerConnection {
 const LABEL = 'axonic-identity-v1';
 let diagnosticSequence = 0;
 const restartParent = (sdp: string) => /^a=x-axonic-restart:([0-9a-f]{64})\r?$/m.exec(sdp)?.[1];
-const fingerprints = (sdp: string) => sdp.split(/\r?\n/).filter(l => l.startsWith('a=fingerprint:')).map(l => l.toUpperCase()).sort().join('\n');
+const fingerprints = (sdp: string) => [...new Set(sdp.split(/\r?\n/).filter(l => l.startsWith('a=fingerprint:')).map(l => l.toUpperCase()))].sort().join('\n');
 /** Deliberately omit addresses, candidate IDs, certificates and SDP. */
 export function rtcPathSummary(reports: Map<string, any>) {
   const values = [...reports.values()];
@@ -49,12 +48,14 @@ export function rtcPathSummary(reports: Map<string, any>) {
 // UTF-16 length is a cheap lower bound on UTF-8 size. Never allocate an
 // encoder buffer for an already-oversized string from an untrusted peer.
 const size = (raw: string) => raw.length > 20000 ? Infinity : new TextEncoder().encode(raw).length;
-/** Data-only SDP. ICE is gathered into one bounded signed offer/answer, with no TURN configuration. */
-export function validAxonSdp(sdp: string) {
-  if (typeof sdp !== 'string' || sdp.length > 7000) return false;
+/** Initial admission is data-only; an authenticated post-call restart may retain media sections. */
+export function validAxonSdp(sdp: string, retainedMedia=false) {
+  const limit=retainedMedia?9000:7000;
+  if (typeof sdp !== 'string' || sdp.length > limit) return false;
   const lines = sdp.split(/\r?\n/), media = lines.filter(l => l.startsWith('m='));
-  return size(sdp) <= 7000 && sdp.startsWith('v=0\r\n') && media.length === 1
-    && /^m=application \d+ UDP\/DTLS\/SCTP webrtc-datachannel$/.test(media[0])
+  return size(sdp) <= limit && sdp.startsWith('v=0\r\n')
+    && media.filter(l=>/^m=application \d+ UDP\/DTLS\/SCTP webrtc-datachannel$/.test(l)).length===1
+    && (retainedMedia?media.length<=3&&media.filter(l=>l.startsWith('m=audio ')).length<=1&&media.filter(l=>l.startsWith('m=video ')).length<=1&&media.every(l=>/^m=(?:application|audio|video) /.test(l)):media.length===1)
     && lines.some(l => /^a=fingerprint:sha-256 (?:[0-9A-F]{2}:){31}[0-9A-F]{2}$/i.test(l))
     && !lines.some(l => l.startsWith('a=candidate:') && / typ relay(?: |$)/.test(l));
 }
@@ -70,7 +71,7 @@ export function createRtcAxonTransport(d: {
   send(via: string, raw: string): boolean;
   accept(candidate: NeuronCandidate, wire: AxonWire): boolean;
 }) {
-  type Entry = { account: string; session: string; via: string; stop(): void; answer(s: AxonSignal): Promise<void>; restart(s: AxonSignal): Promise<void>; open(): boolean;canStream(device:string):boolean;stream(device:string):RtcAttachmentLane };
+  type Entry = { account: string; session: string; via: string; stop(): void; answer(s: AxonSignal): Promise<void>; restart(s: AxonSignal): Promise<void>; open(): boolean;diagnostics():{initiator:boolean;answered:boolean;state:string;call:boolean;nativeConnectionId?:number};borrow(device:string,id:string):SharedRtcCallLease|null;canStream(device:string):boolean;stream(device:string):RtcAttachmentLane };
   const entries = new Map<string, Entry>();
   let incomingStream:((account:string,device:string,lane:RtcAttachmentLane)=>boolean)|undefined;
   let epoch = 0;
@@ -80,9 +81,11 @@ export function createRtcAxonTransport(d: {
     const ownAccount=d.account();
     let streamLane:RtcAttachmentLane|null=null;
     const diagnosticId = ++diagnosticSequence;
-    const trace = (event: string, details: object = {}) => console.info('[Axonic RTC lifecycle]', JSON.stringify({connection:diagnosticId,event,initiator,...details}));
+    const trace = (event: string, details: object = {}) => console.info('[Axonic RTC lifecycle]', JSON.stringify({connection:diagnosticId,peer:account.slice(-8),via:via.slice(-8),event,initiator,...details}));
     const originalSession = session;
     let authenticated = false, restartUsed = false, restarting = false;
+    let callLease:SharedRtcCallLease|null=null;
+    let retainedMedia=false;
     let remoteDevice: string | undefined, remoteFingerprint = '';
     let restartDeadline: ReturnType<typeof setTimeout> | undefined;
     let mediaEnabled=false;
@@ -100,7 +103,7 @@ export function createRtcAxonTransport(d: {
       }).catch(() => { /* Diagnostics must never change connection behavior. */ })
         .finally(() => { statsPending = false; });
     }
-    const deadline = setTimeout(() => { if (!opened) stop('open-timeout'); }, 9000);
+    const deadline = setTimeout(() => { if (!opened) stop('open-timeout'); }, 20000);
     function stop(reason='local-close') {
       if (dead) return; dead = true; clearTimeout(deadline);
       if(disconnectTimer!==undefined)clearTimeout(disconnectTimer);
@@ -157,6 +160,14 @@ export function createRtcAxonTransport(d: {
       c.addEventListener('message',e=>{if(!lane.live()||!onMessage){lane.close();return;}onMessage(e.data);});opened();return lane;
     }
     pc.addEventListener('datachannel', e => {
+      if(callLease?.current()&&e.channel.label===callLease.channelLabel)return;
+      // A separate channel must not replace the authenticated identity wire or
+      // tear it down. Only the explicitly admitted attachment lane is supported.
+      if (authenticated && e.channel.label !== 'axonic-stream-v1') {
+        try { e.channel.close(); } catch { /* Keep the established wire alive. */ }
+        trace('extra-channel-rejected');
+        return;
+      }
       if(e.channel.label==='axonic-stream-v1'){
         try{const lane=adoptStream(e.channel);if(!incomingStream?.(account,remoteDevice!,lane))lane.close();}catch{e.channel.close();}return;
       }
@@ -165,17 +176,20 @@ export function createRtcAxonTransport(d: {
     pc.addEventListener('connectionstatechange', () => {
       if(dead)return;
       if (['connected', 'disconnected', 'failed'].includes(pc.connectionState)) samplePath();
-      if(pc.connectionState==='disconnected'){
-        // ICE disconnection can be transient. Keep the bounded channel queue
-        // and valid identity session while ICE gets a short chance to recover.
-        if(disconnectTimer===undefined)disconnectTimer=setTimeout(()=>stop('disconnect-timeout'),8000);
-        if(initiator && authenticated && answered && !restartUsed) void restart();
+      if(pc.connectionState==='disconnected' || pc.connectionState==='failed' && authenticated
+        && (callLease || restarting || !restartUsed && (!initiator || answered))){
+        // A network switch can go straight to failed without a disconnected
+        // event. Give an authenticated session the same bounded ICE restart
+        // in either case; the responder waits for the designated initiator.
+        if(disconnectTimer===undefined)disconnectTimer=setTimeout(()=>stop('disconnect-timeout'),callLease?30000:8000);
+        if(!callLease&&initiator && authenticated && answered && !restartUsed) void restart();
       }else{
         if(pc.connectionState==='connected'&&disconnectTimer!==undefined){clearTimeout(disconnectTimer);disconnectTimer=undefined;}
         if(['failed','closed'].includes(pc.connectionState))stop('connection-'+pc.connectionState);
       }
     });
     const wire: AxonWire = {
+      setupTimeoutMs:25000,
       mediaLane:!!d.authenticated&&d.mediaLane===true,
       smallAttachmentBatches:!!d.authenticated&&d.mediaLane===true,
       // Four-batch support is tested at the protocol layer, but is not advertised
@@ -210,7 +224,7 @@ export function createRtcAxonTransport(d: {
       let sdp = pc.localDescription?.sdp;
       // This binding is inside the existing signed SDP, so old relays need no changes.
       if(sdp && recovery)sdp += `${sdp.endsWith('\n')?'':'\r\n'}a=x-axonic-restart:${originalSession}\r\n`;
-      if (!sdp || !validAxonSdp(sdp)) { stop('invalid-local-sdp'); return; }
+      if (!sdp || !validAxonSdp(sdp,recovery&&retainedMedia)) { stop('invalid-local-sdp'); return; }
       if (!d.send(via, d.sign(account, session, kind, sdp))) { stop('signal-send-failed'); return; }
       trace('signal-sent',{kind,candidates:sdp.split(/\r?\n/).filter(line=>line.startsWith('a=candidate:')).length});
     }
@@ -234,10 +248,23 @@ export function createRtcAxonTransport(d: {
     }
     function finishRestart(){if(restarting)trace('restart-negotiated');restarting=false;if(restartDeadline!==undefined)clearTimeout(restartDeadline);}
     const entry: Entry = { account, session, via, stop, open: () => opened,
-      canStream:device=>!dead&&authenticated&&!!d.streamCredit&&remoteDevice===device&&!streamLane&&d.account()===ownAccount,
+      diagnostics:()=>({initiator,answered,state:pc.connectionState,call:!!callLease,nativeConnectionId:pc._pcId}),
+      borrow(device,id){
+        if(dead||!authenticated||!opened||restarting||callLease||remoteDevice!==device||pc.connectionState!=='connected'
+          ||!/^[0-9a-f]{64}$/.test(id)||d.account()!==ownAccount)return null;
+        const lease:SharedRtcCallLease={connection:pc,channelLabel:'axonic-call-v1:'+id,
+          current:()=>!dead&&callLease===lease&&d.account()===ownAccount,
+          validateRemote:sdp=>lease.current()&&typeof sdp==='string'&&sdp.length<=9000&&!!remoteFingerprint
+            &&fingerprints(sdp)===remoteFingerprint&&/^m=application /m.test(sdp),
+          release(){if(callLease===lease){callLease=null;trace('call-released');}},
+        };
+        retainedMedia=true;callLease=lease;trace('call-borrowed');return lease;
+      },
+      canStream:device=>!dead&&authenticated&&pc.connectionState==='connected'&&channel?.readyState==='open'
+        &&!!d.streamCredit&&remoteDevice===device&&!streamLane&&d.account()===ownAccount,
       stream(device){if(!entry.canStream(device))throw Error('RTC stream unavailable');return adoptStream(pc.createDataChannel('axonic-stream-v1',{ordered:true,protocol:'axonic-stream-v1'}));},
       async answer(signal) {
-        if (dead || !initiator || answered || !validAxonSdp(signal.sdp)) return;
+        if (dead || !initiator || answered || !validAxonSdp(signal.sdp,restarting&&retainedMedia)) return;
         if(restarting && (restartParent(signal.sdp)!==originalSession || !sameRemote(signal)))return;
         if(!restarting && restartParent(signal.sdp))return;
         answered = true;trace('answer-received');
@@ -245,8 +272,8 @@ export function createRtcAxonTransport(d: {
         try { await pc.setRemoteDescription({ type: 'answer', sdp: signal.sdp });if(!dead)finishRestart(); } catch { stop(); }
       },
       async restart(signal) {
-        if(dead || initiator || !authenticated || !opened || restartUsed || !sameRemote(signal)
-          || signal.session===originalSession || restartParent(signal.sdp)!==originalSession || !validAxonSdp(signal.sdp))return;
+        if(dead || callLease || initiator || !authenticated || !opened || restartUsed || !sameRemote(signal)
+          || signal.session===originalSession || restartParent(signal.sdp)!==originalSession || !validAxonSdp(signal.sdp,retainedMedia))return;
         beginRestart();session=signal.session;entry.session=session;
         try{
           await pc.setRemoteDescription({type:'offer',sdp:signal.sdp});
@@ -267,6 +294,7 @@ export function createRtcAxonTransport(d: {
     };
   }
   return {
+    borrowCall:(account:string,device:string,id:string)=>entries.get(account)?.borrow(device,id)??null,
     canStream:(account:string,device:string)=>entries.get(account)?.canStream(device)??false,
     openStream:(account:string,device:string)=>{const entry=entries.get(account);if(!entry)throw Error('RTC peer unavailable');return entry.stream(device);},
     listenStreams(handler:(account:string,device:string,lane:RtcAttachmentLane)=>boolean){incomingStream=handler;return ()=>{if(incomingStream===handler)incomingStream=undefined;};},
@@ -287,15 +315,16 @@ export function createRtcAxonTransport(d: {
         if (old && old.session === signal.session && old.via === via) void old.answer(signal);
         return;
       }
-      if (signal.record.account >= signal.target || !validAxonSdp(signal.sdp)) return;
+      if (signal.record.account >= signal.target) return;
       if(old){if(old.via===via)void old.restart(signal);return;}
+      if(!validAxonSdp(signal.sdp))return;
       if(restartParent(signal.sdp))return;
       let item: ReturnType<typeof make>;
       try { item = make(signal.record.account, signal.session, via, false); } catch { return; }
       if (!d.accept({ account: signal.record.account, endpoint: `rtc:${via}`, route: 'internet', expiresAt: signal.expiresAt }, item.wire)) { item.entry.stop(); return; }
       void item.start(signal);
     },
-    snapshot: () => [...entries.values()].map(e => ({ account: e.account, open: e.open() })),
+    snapshot: () => [...entries.values()].map(e => ({ account: e.account, via:e.via, open: e.open(),...e.diagnostics() })),
     stop() { epoch++; for (const entry of [...entries.values()]) entry.stop(); },
   };
 }

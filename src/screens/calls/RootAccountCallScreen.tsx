@@ -1,12 +1,13 @@
 import {subscribeRootCallNotificationAction,takeRootCallNotificationAction} from '../../modules/messaging/notifications';
-import {subscribeOwnChatWrites} from '../../modules/storage';
+import {useChatContacts} from '../../modules/ui/useChatSnapshot';
+import {useCallState,beginCallMediaState} from '../../modules/ui/liveState';
 import {callScreenCaptureAvailable} from '../../services/call-screen-capture';
 import {hasScreenShareOverlay,allowScreenShareOverlay,useScreenShareOverlay} from '../../hooks/useScreenShareOverlay';
 import {readSharedAvatar,subscribeSharedAvatars} from '../../modules/storage';
 import {readRootNotificationPreferences} from '../../modules/messaging/notifications';
 import {localAccount} from '../../modules/identity';
 import {shortIdentity} from '../../modules/identity';
-import {startRootCallLease,stopRootCallLease,markRootCallConnected} from '../../modules/messaging';
+import {startRootCallLease,stopRootCallLease,markRootCallConnected} from '../../modules/calls';
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import {AppState,Dimensions,Modal,Platform,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
@@ -15,15 +16,14 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {CallLayout,EndButton} from './CallStage';
 import DraggableCallPreview from './DraggableCallPreview';
 import IncomingCallAppearance from './IncomingCallAppearance';
-import {conversations} from '../../modules/messaging';
 import {playLooping,stopLooping} from '../../services/soundService';
 import type {VideoQualityMode} from '../../services/video-quality';
 import {RTCView} from 'react-native-webrtc';
 import {AudioModule} from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
 import {useKeepAwake} from 'expo-keep-awake';
-import {localAccountCalls,subscribeLocalAccountCalls} from '../../modules/messaging';
-import type {NeuronCallView} from '../../modules/messaging';
+import {localAccountCalls} from '../../modules/calls';
+import type {NeuronCallView} from '../../modules/calls';
 import useWebRTCCore from '../../hooks/useWebRTCCore';
 import useRingingCameraPreview from '../../hooks/useRingingCameraPreview';
 import {useTheme} from '../../contexts/ThemeContext';
@@ -35,12 +35,12 @@ export async function ensureRootCallPermissions(kind:'voice'|'video'){
  if(kind==='video'&&!(await ImagePicker.getCameraPermissionsAsync()).granted&&!(await ImagePicker.requestCameraPermissionsAsync()).granted)throw Error('Allow camera access for video calls.');
 }
 export default function RootAccountCallScreen(){
- const [call,setCall]=useState<NeuronCallView<string>|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const currentCall=useCallState(),[dismissed,setDismissed]=useState<string|null>(null),call=currentCall?.id===dismissed?null:currentCall,[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const confirmationCall=useRef<string|null>(null);
  const [avatarUri,setAvatarUri]=useState<string|null>(null);
  useEffect(()=>{let active=true;setAvatarUri(null);const owner=localAccount.status().account,peer=call?.peerUser;const refresh=async()=>{if(!owner||!peer)return;const uri=await readSharedAvatar(owner,peer);if(active)setAvatarUri(uri);};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[call?.peerUser]);
- const running=useRef(false),{colors}=useTheme(),[name,setName]=useState(''),[minimizedId,setMinimizedId]=useState<string|null>(null);
- useEffect(()=>{let alive=true,running=false,dirty=false;const peer=call?.peerUser;if(!peer)return;setName(shortIdentity(peer));const refresh=async()=>{dirty=true;if(running)return;running=true;try{do{dirty=false;try{const s=await conversations().snapshot();if(alive)setName(s.contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer));}catch{if(alive)setName(shortIdentity(peer));}}while(alive&&dirty);}finally{running=false;}};void refresh();const off=subscribeOwnChatWrites(()=>void refresh());return()=>{alive=false;off();};},[call?.peerUser]);
+ const running=useRef(false),{colors}=useTheme(),[minimizedId,setMinimizedId]=useState<string|null>(null);
+ const {contacts}=useChatContacts(!!call),name=call?contacts.find(c=>c.account===call.peerUser)?.alias||shortIdentity(call.peerUser):'';
  useEffect(()=>{
   if(call?.status!=='ringing')return;let active=true,generation=0;
   const sync=()=>{const own=++generation;void stopLooping();if(AppState.currentState!=='active'||(call.expiresAt??Infinity)<=Date.now())return;
@@ -49,7 +49,7 @@ export default function RootAccountCallScreen(){
   sync();const listener=AppState.addEventListener('change',sync);
   return()=>{active=false;generation++;listener.remove();void stopLooping();};
  },[call?.id,call?.status,call?.outgoing,call?.expiresAt]);
- useEffect(()=>subscribeLocalAccountCalls(v=>{if(v?.outgoing&&v.status==='finding')confirmationCall.current=v.id;else if(v?.status!=='ended')confirmationCall.current=null;setCall(v);setError('');}),[]);
+ useEffect(()=>{if(call?.outgoing&&call.status==='finding')confirmationCall.current=call.id;else if(call?.status!=='ended')confirmationCall.current=null;setError('');},[call]);
  useEffect(()=>{
   if(!call||call.outgoing||call.status!=='ringing')return;
   let confirmed=false,pending=false,active=true,timer:ReturnType<typeof setTimeout>|undefined;
@@ -59,7 +59,7 @@ export default function RootAccountCallScreen(){
  useEffect(()=>{
   if(call?.status!=='ended')return;
   const id=call.id;
-  const timer=setTimeout(()=>setCall(current=>current?.id===id&&current.status==='ended'?null:current),3000);
+  const timer=setTimeout(()=>setDismissed(id),3000);
   return()=>clearTimeout(timer);
  },[call?.id,call?.status]);
  const end=()=>{if(call)void localAccountCalls()?.end(call.id).catch(()=>setError('Call ended locally; peer notification is pending.'));};
@@ -88,11 +88,11 @@ export default function RootAccountCallScreen(){
  // Media owns its own presentation so closing the full-screen Modal never unmounts WebRTC.
  if(call.status==='ready'&&call.transport)return <RootMedia avatarUri={avatarUri} key={call.id} call={call} name={name} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
  if(minimized)return ended?null:<MinimizedCall name={name} status={status} video={call.media==='video'} restore={restore} end={end}/>;
- return <Modal visible animationType="slide" onRequestClose={()=>ended?setCall(null):minimize()}>
+ return <Modal visible animationType="slide" onRequestClose={()=>ended?setDismissed(call.id):minimize()}>
   <StatusBar style="light"/>
   {!call.outgoing&&call.status==='ringing'?<IncomingCallAppearance avatarUri={avatarUri} callerName={name} isVideo={call.media==='video'} localPreviewUrl={previewUrl} busy={busy} error={error} handleAccept={()=>void answer()} handleReject={end}/>:<CallLayout avatarUri={avatarUri} name={name} status={status} video={call.media==='video'} avatar={!previewUrl} background={previewUrl?<RTCView streamURL={previewUrl} objectFit="cover" mirror style={StyleSheet.absoluteFill} zOrder={0}/>:undefined}>
    {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
-   <View style={{alignItems:'center',padding:24}}><EndButton ended={ended} onPress={()=>ended?setCall(null):end()}/></View>
+   <View style={{alignItems:'center',padding:24}}><EndButton ended={ended} onPress={()=>ended?setDismissed(call.id):end()}/></View>
   </CallLayout>}
  </Modal>;
 }
@@ -123,6 +123,9 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  const onConnected=useCallback(()=>{connectedAt.current??=Date.now();setConnected(true);markRootCallConnected(call.id);},[call.id]);
  const endRef=useRef(end);endRef.current=end;const onDisconnected=useCallback(()=>endRef.current(),[]);
  const rtc=useWebRTCCore({callId:call.id,callType:call.media,peerUserId:call.peerUser,isOutgoing:call.outgoing,mediaTransport:call.transport,onConnected,onDisconnected});
+ const presentation=useRef<ReturnType<typeof beginCallMediaState>|null>(null);
+ useEffect(()=>{const lease=beginCallMediaState(call.id);presentation.current=lease;return()=>{lease.stop();if(presentation.current===lease)presentation.current=null;};},[call.id]);
+ useEffect(()=>{presentation.current?.update({connection:rtc.connectionType,recovering:rtc.recovering,muted:rtc.isMuted,cameraOff:rtc.isCameraOff,sharing:rtc.isScreenSharing,remoteSharing:rtc.remoteScreenSharing,sharingBusy:rtc.screenShareBusy,quality:rtc.callQuality.level});},[call.id,rtc.connectionType,rtc.recovering,rtc.isMuted,rtc.isCameraOff,rtc.isScreenSharing,rtc.remoteScreenSharing,rtc.screenShareBusy,rtc.callQuality.level]);
  const hangupPending=useRef(false);
  const hangup=()=>{if(hangupPending.current)return;hangupPending.current=true;void rtc.notifyCallEnded().finally(()=>endRef.current());};
  const [barFraction,setBarFraction]=useState(0),[excludedFraction,setExcludedFraction]=useState<number|null>(null);

@@ -1,0 +1,69 @@
+TIMER AND INTERNAL-ORGANIZATION REVIEW — OCTOBER 25, 2026
+
+Implemented
+- Navigation separated from eight screen implementations. Navigator retains route,
+  notification/deep-link and visible-conversation lifecycle only. Shared screen
+  helpers and typed route props avoid duplication. Boundary checks cover 90 UI files.
+- Mobile attachment selection persistence/commands separated from transfer runtime.
+  Storage keys, selection schema, validation, staged sources and IDs unchanged.
+- Mobile call-session composition separated from network composition. It owns
+  native setup windows, push registration and notification subscriptions. Teardown
+  is idempotent; late notification completions cannot confirm an obsolete call.
+- Call-quality measurement separated from React hook. It is platform-independent;
+  getStats remains supplied by the mobile adapter. One flight and lifecycle checks
+  prevent overlapping sampling and stale results. This is not a new wire protocol.
+- Shared custody maintenance used by mobile and hosted network, synchronized through
+  the shared-source manifest. Account lifecycle wakes it; locked phones sleep.
+  Active expiry cleanup retains its 60-second deadline; failures retry after 5s.
+- Hosted status/login presentation extracted from server entry into dashboardPage.
+- Hosted private/group visible-read polling replaced by coalesced render, scroll,
+  focus, resize, visibility and expand/collapse events. Empty/hidden pages sleep.
+  Failed or unfinished batches retain a 1.5-second retry. Authorization, receipt
+  semantics and fresh visibility checks remain in the existing receipt functions.
+
+Timers deliberately retained (not every timer is polling)
+1. Call quality (3s): WebRTC exposes no push event for bitrate/loss/RTT statistics.
+   Converted interval to serialized deadline; stop/change invalidates late stats.
+2. Call elapsed time (1s) and voice recording duration (250ms): visible elapsed time
+   and maximum recording duration need time even without app state changes.
+3. Playback authorization check (250ms while playing): playbackAllowed is a caller
+   predicate with no complete subscription contract. Removing it could leave revoked
+   media playing. Next change requires an explicit revocation subscription.
+4. Keyboard settle/height recovery (1s while visible): native/OEM layout events are
+   not proven complete. Existing native events remain primary; retain fallback.
+5. ICE gathering timeout, signaling backoff, call leases and retry deadlines: remote
+   silence must have a finite outcome. Connection events do not replace timeouts.
+6. Attachment preparation identity retry (15s only with pending selection), failed
+   jobs, missing receipts and protocol expiry: retain bounded retries; no idle loop.
+7. Custody expiry (60s): old data expires without new traffic. Shared single-flight
+   scheduler replaces duplicate interval ownership, not the retention deadline.
+8. Hosted call relay expiry (1s), signed identity renewal (1h), mailbox expiry (60s):
+   protocol expiry/renewal obligations. No safe traffic-only replacement.
+9. Hosted dashboard session/approval/heartbeat check (1s), dashboard reconcile (30s),
+   status refresh (10s), legacy chat (5s), relay inventory (10s): remote/external
+   writes, lease expiry and metadata aging have incomplete authoritative events.
+   Keep fallback until event coverage is established, rather than displaying stale
+   permissions or claiming complete event-driven behavior.
+10. Root/group browser chat fallback (3s) runs only when SSE is unavailable;
+    active call poll (1s) handles media signaling/lease renewal; both remain needed.
+
+Public interfaces are stable; internal ownership is now explicit for the audited
+hotspots. Domain engines such as the transfer worker and authenticated connection
+state machine remain coherent modules, not divided solely to reduce line counts.
+Server route registration and protocol engines can be further subdivided if a
+specific responsibility/test seam warrants it. No claim that all source lives in
+separate packages or all timing has been removed.
+
+Validation/evidence
+- Mobile full check: 1535 tests, 1532 passed, 3 optional skipped, 0 failures.
+  Types, cycles, consolidation/assets and module boundary checks pass.
+- Hosted suite and shared-source parity: see final report for final counts.
+- Tests added: custodyMaintenance, callQualityMonitor, mobileCallSession;
+  browser event-driven receipt idle/retry/pagehide behavior.
+- Existing batching/group quote/selection rollback, lock/account change and
+  shared/dedicated call transport tests migrated with their implementations.
+- Both Dev phones loaded updated modules after data-preserving Dev-only restarts.
+  Live bidirectional text appeared in shared UI index; 5MB attachment checksum passed.
+  Live video call both sides p2p, quality good; one-sided hangup cleared both states.
+- AoN changes are local and tested only. No commit, push or deployment in this pass.
+  Existing live fleet remains 658ecc2. No production build or normal app changes.

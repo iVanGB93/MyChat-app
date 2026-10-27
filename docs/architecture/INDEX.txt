@@ -1,0 +1,99 @@
+AXONIC ARCHITECTURE — CURRENT WORKING-TREE MAP
+Audited October 25, 2026. Start here for development; not a deployment record.
+
+Read only this index, the relevant module guide, its entry files and tests first.
+Expand to another guide when a change crosses its contract. Dated incident and
+release reports remain evidence, not standing instructions or current defaults.
+
+Guide: identity.txt
+Guide: network.txt
+Guide: transfers.txt
+Guide: storage.txt
+Guide: messaging.txt
+Guide: media.txt
+Guide: calls.txt
+Guide: coordination.txt
+Guide: ui.txt
+Guide: diagnostics-ai.txt
+Guide: AUDIT.txt
+Guide: SHARED-CORE.txt
+Guide: STORAGE-TRANSFER-EXTRACTION.txt
+
+These are ten responsibility areas, NOT ten newly extracted packages. Existing
+public facades live in src/modules; many implementations remain under
+src/services/identity. That folder name does not make every file identity code.
+Each guide separates today's entry points from the next extraction opportunity.
+The first implemented separation is storage roles and connection/transfer ports:
+both phone and AoN transfer composition now use the same grouped dependencies.
+See storage.txt and transfers.txt for the contracts and their regression checks.
+Attachment connection selection is also shared and separated from retry scheduling
+and durable transfer progress; its policy and limits are described in transfers.txt.
+
+Dependency direction (target contract)
+  UI or AI adapter -> application commands -> domain rules and storage ports
+  composition -> connects commands, network, transfer, storage and diagnostics
+  network -> authenticated peer sessions; transport -> moves bytes on sessions
+  custody -> durable encrypted relay work; messaging -> own message semantics
+  platform adapters -> native/Node APIs behind injected ports
+  presentation state <- published observations; never authority for permissions
+
+Existing cross-area imports are documented; this diagram is not a claim that all
+layers are already mechanically isolated. Do not create one all-powerful manager.
+Shared utilities (change signals, deadlines, read-ahead) are mechanisms, not new
+owners of message state. Domain owners decide policy; composition owns lifetime.
+
+Typical paths
+  Send text: UI/AI command -> ledger commit -> delivery scheduler -> direct peer
+    or encrypted custody -> verified recipient receipt -> ledger -> UI/events.
+  Receive: authenticated transport -> protocol validation -> own durable inbox
+    or relay custody (different stores) -> receipt only after required commit.
+  Media: select/reference file -> descriptor/job -> direct stream if eligible,
+    otherwise encrypted v4 relay blocks -> verified file -> signed receipt.
+  Wake: verified hint -> bounded runtime lease -> shared recovery pump -> receipt
+    and drain evidence or deadline -> release lease; hint alone is not delivery.
+
+Repository roles
+  Axonic-app: canonical shared TS services, mobile composition/UI/native adapters.
+  Axonic-neuron: hosted composition/storage/dashboard/AI adapters and generated
+    shared copies. Current integration worktree is locally under mobile builds/
+    aon-operator-20261022; do not hard-code that temporary layout into runtime.
+  Axonic (Django): website/update/legacy routes; not the current phone composition
+    root. Do not delete routes merely because the new phone entry bypasses them.
+
+Working procedure
+  1. Check git status in the actual checkout; preserve unrelated work.
+  2. Read one module guide. Identify state authority and cancellation owner.
+  3. Change canonical logic once; use adapters for platform differences.
+  4. Run module regressions, boundary checks and shared parity when relevant.
+  5. Update that guide if a contract/entry point changed. Put measured incident
+     evidence in dated reports, not duplicated across every module guide.
+  6. State local/tested/deployed separately. No guide authorizes release or wipes.
+
+Documentation reference check (read-only):
+  node scripts/check-architecture-docs.cjs
+  node scripts/check-architecture-docs.cjs --aon-root builds/aon-operator-20261022
+File:/Test: refer to the mobile root; AoN: to a supplied hosted checkout;
+Guide entries refer to this directory. The checker validates references, not runtime behavior.
+
+Public API organization (October 25 follow-up)
+  Calls and media no longer travel through the messaging barrel. All consumers
+  use the owning facade; no duplicate implementations or compatibility barrels.
+  All screens/components/navigation TS/TSX now participate in boundary checks.
+  Native keyboard layout is behind the UI adapter. Relay inventory presentation
+  is exposed through the network facade, without UI imports of protocol services.
+File: src/modules/calls/index.ts
+File: src/modules/media/index.ts
+File: src/modules/ui/keyboard.ts
+File: src/modules/diagnostics/index.ts
+File: scripts/check-module-boundaries.cjs
+
+Completion definition
+  Module map, public APIs, state authorities, shared protocol/storage/connection
+  contracts and enforced presentation boundaries are the organization baseline.
+  Large internal hooks and composition factories remain implementation refinement
+  opportunities, explicitly listed in each guide; this is not a claim that every
+  implementation has been physically moved or every deadline converted to events.
+  Local organization and live fleet rollout are separate acceptance gates.
+
+Guide: TIMER-REVIEW.txt
+Internal organization follow-up: screen implementations, selection persistence, mobile call-session resources and call-quality sampling now have dedicated owners. Hosted page construction is separate from server entry. Shared expiry maintenance and event-driven browser visibility checks are implemented; TIMER-REVIEW records retained timers and why.

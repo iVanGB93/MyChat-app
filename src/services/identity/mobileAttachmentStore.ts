@@ -1,6 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import type {RelayChunkMetadata} from './relayInventory';
-import type {AttachmentStore,AttachmentCustodyRow} from './attachmentCustody';
+import type {AttachmentStore,AttachmentCustodyRow} from './relayStorage';
 import type {AttachmentChunk} from './attachmentProtocol';
 import {validAccountId} from './identityProtocol';
 let opening:Promise<SQLite.SQLiteDatabase>|undefined,tail:Promise<unknown>=Promise.resolve();

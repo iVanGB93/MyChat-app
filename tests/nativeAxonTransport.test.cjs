@@ -4,7 +4,7 @@ const code = ts.transpileModule(fs.readFileSync('src/services/identity/nativeAxo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const api = {};
-new Function('require', 'exports', code)(() => ({ AXON_FRAME_BYTES: 20000,ATTACHMENT_BULK_FRAME_BYTES:850000 }), api);
+new Function('require', 'exports', code)(() => ({ AXON_FRAME_BYTES: 20000,ATTACHMENT_BULK_FRAME_BYTES:850000,ATTACHMENT_STREAM_FRAME_BYTES:4010000 }), api);
 const candidate = { account: 'axonic:1:' + 'ab'.repeat(32), endpoint: 'axon-lan://192.168.1.9:9000', route: 'lan', expiresAt: Date.now() + 60000 };
 function fixture(overrides = {}) {
   const calls = { reads: 0, closed: [], writes: [] }, controller = new AbortController();
@@ -13,6 +13,22 @@ function fixture(overrides = {}) {
   return { calls, controller, connect: c => api.createNativeAxonConnector(native)(c ?? candidate, { signal: controller.signal, onClosed() {} }) };
 }
 const flush = () => new Promise(r => setImmediate(r));
+
+test('binary WSS bridge preserves bytes and controls on one ordered native queue',async()=>{
+ const controller=new AbortController(),writes=[],incoming=[];let resolveRead;
+ const native={axonConnect:async()=>'',axonRead:async()=>{throw Error('legacy read');},axonReadPacket:()=>new Promise(r=>resolveRead=r),axonWrite:async(id,raw)=>{writes.push(raw);return true;},axonWriteBinary:async(id,raw)=>{writes.push(raw);return true;},axonClose(){},axonEnableWssBulkAttachments(){},axonEnableMediaLane(){}};
+ const wire=await api.openNativeWire(native,{signal:controller.signal,onClosed(){}},async()=>'socket');assert.equal(typeof wire.sendBinary,'function');wire.enableMediaLane();wire.enableBulkAttachments();wire.listenBinary(raw=>incoming.push(raw));wire.listen(raw=>incoming.push(raw),()=>{});
+ const bytes=new Uint8Array(32838).fill(255);wire.sendBinary(bytes);wire.send('control');await flush();assert.deepEqual(writes,[bytes,'control']);resolveRead(bytes);await flush();resolveRead('control');await flush();assert.deepEqual(incoming,[bytes,'control']);wire.close();
+});
+test('binary transport is never advertised on LAN or without the native reader and writer',async()=>{const f=fixture({axonReadPacket:async()=>new Uint8Array(71),axonWriteBinary:async()=>true});assert.equal((await f.connect()).sendBinary,undefined);f.controller.abort();const n={axonRead:()=>new Promise(()=>{}),axonWrite:async()=>true,axonClose(){},axonReadPacket:async()=>new Uint8Array(71)};const w=await api.openNativeWire(n,{signal:new AbortController().signal,onClosed(){}},async()=>'id');assert.equal(w.sendBinary,undefined);w.close();});
+test('3 MB stream envelopes require native support and authenticated enable; queued bytes stay bounded',async()=>{
+ let enabled=0,finish;
+ const f=fixture({axonEnableMediaLane(){},axonEnableBulkAttachments(){},axonEnableBlockStreams(){enabled++;},axonWrite:()=>new Promise(r=>finish=r)});
+ const wire=await f.connect();assert.equal(wire.blockStreams,true);wire.enableMediaLane();wire.enableBulkAttachments(true);assert.equal(enabled,1);
+ wire.send('x'.repeat(4_010_000));wire.send('x'.repeat(4_010_000));
+ assert.throws(()=>wire.send('x'.repeat(120001)),/capacity/);finish(true);await flush();
+ const old=await fixture().connect();assert.equal(old.blockStreams,false);old.close();
+});
 test('WSS advertises small batches only with native media support and keeps 20 KB frames',async()=>{
  const f=fixture({axonEnableMediaLane(){}});
  const wire=await api.openNativeWire({axonRead:()=>new Promise(()=>{}),axonWrite:async()=>true,axonClose(){},axonEnableMediaLane(){}},{signal:f.controller.signal,onClosed(){}},async()=>'wss');
@@ -90,4 +106,15 @@ test('updated native media lane keeps a bounded larger queue and old binaries do
  assert.equal(wire.mediaLane,true);wire.enableMediaLane();assert(enabled);
  for(let i=0;i<6;i++)wire.send('x'.repeat(20000));
  assert.throws(()=>wire.send('x'),/capacity/);finish(true);await flush();assert.equal(f.calls.closed.length,1);
+});
+
+test('negotiated block streams admit two 256 KB windows plus control headroom, still bounded',async()=>{
+ let finish;
+ const f=fixture({axonEnableMediaLane(){},axonEnableBulkAttachments(){},axonEnableBlockStreams(){},axonWrite:()=>new Promise(r=>finish=r)});
+ const wire=await f.connect();wire.enableMediaLane();wire.enableBulkAttachments(true);
+ for(let i=0;i<64;i++)wire.send('x'.repeat(8200));
+ for(let i=0;i<16;i++)wire.send('control');
+ assert.equal(f.calls.closed.length,0);
+ assert.throws(()=>wire.send('overflow'),/capacity/);finish(true);await flush();
+ assert.equal(f.calls.closed.length,1);
 });

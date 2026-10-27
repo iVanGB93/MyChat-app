@@ -1,6 +1,20 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {load}=require('./helpers/attachment.cjs');
 const empty={empty:true,item:false};
+test('historical call rows settle across bounded relay passes; changes and unknown records retain recovery',async()=>{
+ const f=require('./helpers/attachment.cjs').fixture(1),[owner,remote,relay]=f.ids;
+ let now=1800000000000,known=true,reads=0;
+ const peer={account:relay.record.account,device:relay.device.id,instance:'i',expiresAt:now+999999};
+ const rows=Array.from({length:9},(_,i)=>({callId:i.toString(16).padStart(64,'0'),caller:owner.record.account,callee:remote.record.account}));
+ const q=load('callRelayPump').createCallRelayPump({account:owner.record.account,device:owner.device.id,store:{read:async()=>{reads++;return null;}},
+ now:()=>now,current:()=>true,eventDriven:()=>true,blocked:()=>false,direct:()=>[],peers:()=>[peer],list:async()=>rows,
+ records:{read:async account=>known?f.ids.find(i=>i.record.account===account)?.record:null},request:async()=>'{"kind":"event","raw":null}'});
+ for(let i=0;i<4;i++){await q.tick();now+=3000;}
+ assert.equal(q.nextDeadline(),Infinity);assert.equal(reads,9);
+ known=false;q.changed();await q.tick();assert(Number.isFinite(q.nextDeadline()),'unknown record must retry');
+ known=true;q.changed();for(let i=0;i<4;i++){await q.tick();now+=3000;}assert.equal(q.nextDeadline(),Infinity);
+ peer.instance='reconnected';assert(Number.isFinite(q.nextDeadline()));q.stop();
+});
 test('empty polls back off to 15s; items restore 5s, errors are not empty inboxes',()=>{
  let now=0;const p=load('relayPollSchedule').createRelayPollSchedule(()=>now);
  p.begin('a').finish(empty);now=4999;assert.equal(p.begin('a'),null);now=5000;p.begin('a').finish(empty);

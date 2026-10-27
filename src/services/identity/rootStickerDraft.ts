@@ -3,6 +3,7 @@ import {Directory,File,Paths} from 'expo-file-system';
 import {localAccount} from './localAccount';
 import {validAccountId} from './identityProtocol';
 import {createStickerDraftStore,type StickerDraft} from '../sticker-draft-store';
+import {withRootSharedFile} from './rootMediaExport';
 
 let sequence=0;
 const stores=new Map<string,ReturnType<typeof createStickerDraftStore>>();
@@ -22,5 +23,6 @@ export function rootStickerDraft(owner:string){
    source.copy(target);return {id,uri:target.uri};},
   remove:draft=>{try{const source=file(draft.id);if(source.exists)source.delete();}catch{/* Only obsolete own draft copies; cleanup may retry later. */}},
  });
- stores.set(owner,store);return store;
+ const sharedAware={...store,replace:(uri:string,name?:string)=>withRootSharedFile(owner,uri,local=>store.replace(local,name))};
+ stores.set(owner,sharedAware);return sharedAware;
 }

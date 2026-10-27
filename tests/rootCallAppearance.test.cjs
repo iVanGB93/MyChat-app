@@ -1,8 +1,10 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function fixture(read,status='ended'){
  const effects=[],timers=[],timeouts=[],cleared=[],updates=[],call={id:'call',peerUser:'axonic:1:'+'a'.repeat(64),peerName:'peer',status,outgoing:true,media:'voice'};let count=0;
- const react={useState:initial=>[count++===0?call:initial,value=>updates.push(value)],useRef:value=>({current:value}),useEffect:effect=>effects.push(effect),useCallback:fn=>fn,createElement:()=>null};
- const imports={'../../services/identity/rootCallNotificationAction':{subscribeRootCallNotificationAction:()=>()=>{},takeRootCallNotificationAction:async()=>null},'../../hooks/useRingingCameraPreview':{default:()=>null},react:{default:react,...react},'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},'../../modules/messaging/notifications':{subscribeRootCallNotificationAction:()=>()=>{},takeRootCallNotificationAction:async()=>null},'../../services/soundService':{stopLooping:()=>{}},'./CallStage':{},'./IncomingCallAppearance':{},'../../modules/messaging':{conversations:()=>({snapshot:read}),subscribeLocalAccountCalls:()=>()=>{}},'../../modules/storage':{subscribeOwnChatWrites:fn=>{timers.push(fn);return ()=>{};},readSharedAvatar:async()=>null,subscribeSharedAvatars:()=>()=>{}},'../../modules/identity':{localAccount:{status:()=>({account:null})},shortIdentity:peer=>peer.replace('axonic:1:','axon')},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../services/identity/localAccountNetwork':{subscribeLocalAccountCalls:()=>()=>{}}};
+ const react={useState:initial=>{count++;return [initial,value=>updates.push(value)];},useRef:value=>({current:value}),useEffect:effect=>effects.push(effect),useCallback:fn=>fn,createElement:()=>null};
+ const imports={'../../services/identity/rootCallNotificationAction':{subscribeRootCallNotificationAction:()=>()=>{},takeRootCallNotificationAction:async()=>null},'../../hooks/useRingingCameraPreview':{default:()=>null},react:{default:react,...react},'react-native':{AppState:{currentState:'active',addEventListener:()=>({remove(){}})}},'../../modules/messaging/notifications':{subscribeRootCallNotificationAction:()=>()=>{},takeRootCallNotificationAction:async()=>null},'../../services/soundService':{stopLooping:()=>{}},'./CallStage':{},'./IncomingCallAppearance':{},'../../modules/calls':{subscribeLocalAccountCalls:()=>()=>{}},'../../modules/messaging':{conversations:()=>({snapshot:read}),subscribeLocalAccountCalls:()=>()=>{}},'../../modules/storage':{subscribeOwnChatWrites:fn=>{timers.push(fn);return ()=>{};},readSharedAvatar:async()=>null,subscribeSharedAvatars:()=>()=>{}},'../../modules/identity':{localAccount:{status:()=>({account:null})},shortIdentity:peer=>peer.replace('axonic:1:','axon')},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../services/identity/localAccountNetwork':{subscribeLocalAccountCalls:()=>()=>{}}};
+ imports['../../modules/ui/liveState']={useCallState:()=>call};
+ imports['../../modules/ui/useChatSnapshot']={useChatContacts:()=>({contacts:[]})};
  const out={};new Function('exports','require','setInterval','clearInterval','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,name=>imports[name]??{},fn=>{timers.push(fn);return timers.length;},()=>{},(fn,delay)=>{timeouts.push({fn,delay});return timeouts.length;},id=>cleared.push(id));
  out.default();return {effects,timers,timeouts,cleared,updates,call,imports};
 }
@@ -18,20 +20,19 @@ test('finding is silent; caller ringback starts only in confirmed ringing state'
 });
 test('visible incoming calls retry a transient confirmation failure and stop after confirmation',async()=>{
  const f=fixture(()=>Promise.resolve({contacts:[]}),'ringing');f.call.outgoing=false;let attempts=0;
- f.imports['../../modules/messaging'].localAccountCalls=()=>({confirmRinging:async()=>++attempts>1});
+ f.imports['../../modules/calls'].localAccountCalls=()=>({confirmRinging:async()=>++attempts>1});
  const cleanups=f.effects.map(fn=>fn());await new Promise(r=>setImmediate(r));assert.equal(attempts,1);
  f.timeouts.at(-1).fn();await new Promise(r=>setImmediate(r));assert.equal(attempts,2);
  f.timeouts.at(-1).fn();await new Promise(r=>setImmediate(r));assert.equal(attempts,2);
  for(const cleanup of cleanups)cleanup?.();
 });
-test('call nickname effect tolerates a synchronously locked inbox and a later lock',async()=>{
- let locked=true;const f=fixture(()=>{if(locked)throw Error('Unlock your account first');return Promise.resolve({contacts:[{account:'axonic:1:'+'a'.repeat(64),alias:'Test emulator'}]});});
- const cleanups=f.effects.map(effect=>effect());await new Promise(r=>setImmediate(r));assert(f.updates.includes('axon'+'a'.repeat(64)));
- locked=false;f.timers[0]();await new Promise(r=>setImmediate(r));assert(f.updates.includes('Test emulator'));
- locked=true;f.timers[0]();await new Promise(r=>setImmediate(r));for(const cleanup of cleanups)cleanup?.();
+test('call nickname uses the contact projection without reading a locked inbox',async()=>{
+ let reads=0;const f=fixture(()=>{reads++;throw Error('Unlock your account first');});
+ const cleanups=f.effects.map(effect=>effect());await new Promise(r=>setImmediate(r));assert.equal(reads,0);
+ for(const cleanup of cleanups)cleanup?.();
 });
-test('nickname resolution completing after unmount cannot change the call screen',async()=>{
- let resolve;const f=fixture(()=>new Promise(r=>resolve=r));const cleanups=f.effects.map(effect=>effect());for(const cleanup of cleanups)cleanup?.();const before=f.updates.length;resolve({contacts:[{account:f.call.peerUser,alias:'Late result'}]});await new Promise(r=>setImmediate(r));assert.equal(f.updates.length,before);
+test('call screen does not launch a separate asynchronous nickname read',async()=>{
+ let reads=0;const f=fixture(()=>{reads++;return new Promise(()=>{});});const cleanups=f.effects.map(effect=>effect());for(const cleanup of cleanups)cleanup?.();const before=f.updates.length;await new Promise(r=>setImmediate(r));assert.equal(f.updates.length,before);assert.equal(reads,0);
 });
 
 test('ended-call screen closes after three seconds without dismissing a newer call',()=>{
@@ -39,10 +40,8 @@ test('ended-call screen closes after three seconds without dismissing a newer ca
  const cleanups=f.effects.map(effect=>effect());
  assert.equal(f.timeouts.length,1);assert.equal(f.timeouts[0].delay,3000);
  f.timeouts[0].fn();const dismiss=f.updates.at(-1);
- assert.equal(dismiss(f.call),null);
- const next={...f.call,id:'next-call',status:'ringing'};
- assert.equal(dismiss(next),next);
- const ringing={...f.call,status:'ringing'};assert.equal(dismiss(ringing),ringing);
+ assert.equal(dismiss,f.call.id); // UI dismissal is an ID, never a mutation of shared call state.
+ assert.notEqual(dismiss,'next-call');assert.equal(f.call.status,'ended');
  for(const cleanup of cleanups)cleanup?.();assert.ok(f.cleared.includes(1));
 });
 

@@ -1,0 +1,54 @@
+ONE SHARED CORE, PLATFORM ADAPTERS
+
+Canonical source is Axonic-app/src/services. The hosted repository's
+scripts/sync-core.mjs explicitly selects source files into src/protocol and records
+normalized hashes in shared-source.json. The initial audit mapped 86 files; the
+October 25 storage/transfer port extraction added five files; the subsequent shared
+attachment route selector, shared work pump and message retry deadline helper add
+three more, totaling 94 mapped files.
+These are generated copies, not a separately designed AoN protocol implementation.
+Not all of src/services/identity is portable: mobile* files, local account/storage
+and native transport adapters remain mobile-specific. Do not sync that folder whole.
+
+Shared domains include identity validation, connection/session protocols, custody,
+groups, chat ledger/actions, attachment v4/stream protocols and call control.
+Platform responsibilities include Android/Node storage and sockets, permissions,
+push providers, foreground/background scheduling, UI, HTTP routes and AI clients.
+Hosted orchestration has its own adapters/scheduler; parity is not full feature
+equivalence and does not establish realtime AI voice/video support.
+
+AoN: scripts/sync-core.mjs
+AoN: shared-source.json
+AoN: docs/SHARED-SOURCE.txt
+File: scripts/consolidation-exceptions.json
+File: scripts/check-service-cycles.cjs
+File: scripts/check-module-boundaries.cjs
+
+Change procedure
+  1. Verify checkout/branch and existing edits. The current local integration
+     checkout is D:/Proyects/Axonic-app/builds/aon-operator-20261022.
+     D:/Proyects/Axonic-neuron is a separate working folder, not a safe overwrite
+     destination. Use the actual selected checkout, not a historical pathname.
+  2. Modify canonical shared files and regression tests in Axonic-app. Define
+     platform needs as injected ports; no React Native/Node-only imports in shared
+     protocol. Preserve authorization hooks and cancellation/current guards.
+  3. In the selected AoN checkout, npm run sync:core; inspect the complete diff.
+     For another directory layout set AXONIC_MOBILE_SERVICES to the canonical
+     absolute src/services path. Do not sync while merely reading documentation.
+  4. npm run check:core and npm test in AoN; npm run check in mobile. Integration
+     package tests are additional when their contracts change.
+  5. Compare wire formats, state transitions and platform outcomes. Local hashes
+     establish source parity, not installed versions or delivery performance.
+
+Future physical moves
+  First define/export a port and protect behavior with tests. Then move one
+  implementation, update all imports, sync mapping, tests/support imports and
+  consolidation roots in the SAME change. Require full parity/cycle/type checks.
+  Do not add a second fallback implementation to avoid updating a consumer.
+  A future shared package is an option, not implemented in this documentation pass.
+  Do not impose a build-system migration just to rename directories.
+
+Preserve source/docs/test distinctions: documentation describes contracts; dated
+reports hold measurements; runtime config holds settings; secrets stay outside all
+three. Commit, deploy, production builds and destructive actions require the user's
+authorization; successful local checks do not supply it.

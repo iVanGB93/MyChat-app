@@ -21,10 +21,10 @@ export async function storeProfileAvatar(account: string, source: string, previo
   await Files.deleteAsync(thumbnail.uri,{idempotent:true}).catch(()=>{});
   await AsyncStorage.setItem(key(account), JSON.stringify({version: 1, avatar: destination}));
   if (previous?.startsWith(directory)) await Files.deleteAsync(previous, {idempotent: true}).catch(() => {});
-  notifyAvatarChanged();return destination;
+  notifyAvatarChanged({owner:account,peer:account});return destination;
 }
 
 export async function clearProfileAvatar(account:string){
- const previous=await readProfileAvatar(account);await AsyncStorage.removeItem(key(account));notifyAvatarChanged();
+ const previous=await readProfileAvatar(account);await AsyncStorage.removeItem(key(account));notifyAvatarChanged({owner:account,peer:account});
  const directory=Files.documentDirectory+'root-profiles/';if(previous?.startsWith(directory))await Files.deleteAsync(previous,{idempotent:true}).catch(()=>{});
 }

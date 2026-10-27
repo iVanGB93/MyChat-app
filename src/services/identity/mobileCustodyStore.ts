@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import { validAccountId } from './identityProtocol';
-import { DEFAULT_CUSTODY_LIMITS, validateCustodyRows, type CustodyRow, type CustodyStore } from './custodyService';
+import { DEFAULT_CUSTODY_LIMITS, validateCustodyRows } from './custodyService';
+import type {CustodyRow,CustodyStore} from './relayStorage';
 // Keep the native handle alive across store factories and identity lock/unlock cycles.
 let opening: Promise<SQLite.SQLiteDatabase> | undefined;
 let tail: Promise<unknown> = Promise.resolve();

@@ -11,22 +11,29 @@ import type { NeuronLink } from './neuronConnections.ts';
 import { verifyCallControl } from './callControlProtocol.ts';
 import { verifyCallControlReceipt } from './callControlDelivery.ts';
 import { verifyCallMediaSignal, CALL_MEDIA_MAX_BYTES } from './callMediaProtocol.ts';
-import {ATTACHMENT_BULK_FRAME_BYTES,isAttachmentUploadBatchRequest} from './attachmentBatch.ts';
+import {ATTACHMENT_BULK_FRAME_BYTES,ATTACHMENT_STREAM_FRAME_BYTES,isAttachmentUploadBatchRequest} from './attachmentBatch.ts';
+import {createRelayBlockStream,RelayBlockStreamTimeout} from './relayBlockStream.ts';
 
 export const AXON_FRAME_BYTES = 20_000;
 // Bidirectional call polling (40/min), custody polling (24/min), renewal
 // (12/min), and introductions (8/min) already exceed the handshake budget.
 export const AXON_CONTROL_FRAMES_PER_MINUTE = 256;
 export interface AxonWire {
+  /** Local transport allowance, never a peer-advertised timeout. */
+  setupTimeoutMs?: number;
   attachments?: boolean;
   mediaLane?: boolean;
   bulkAttachments?: boolean;
+  blockStreams?:boolean;
+  wss?:boolean;
   preferredAttachmentBatchChunks?:32;
   smallAttachmentBatches?: boolean;
   smallAttachmentWindow?: 4;
-  enableBulkAttachments?():void;
+  enableBulkAttachments?(blockStreams?:boolean):void;
   enableMediaLane?(): void;
   enableAttachments?(): void;
+  sendBinary?(raw:Uint8Array):void;
+  listenBinary?(message:(raw:Uint8Array)=>void):()=>void;
   send(raw: string): void;
   close(reason?: string): void;
   listen(message: (raw: string) => void, closed: () => void): () => void;
@@ -38,7 +45,7 @@ export interface AxonWire {
  */
 export function createPersistentAxon(d: {
   record: IdentityRecord; history?: IdentityRecord[]; signingSeed: Uint8Array; instance: Uint8Array; store: IdentityRecordStore;
-  onAttachment?:((raw:string,peer:IdentityPeer)=>Promise<string>) & {uploadBatch?:boolean;streams?:boolean};
+  onAttachment?:((raw:string,peer:IdentityPeer)=>Promise<string>) & {uploadBatch?:boolean;streams?:boolean;wssBinary?:(raw:Uint8Array,peer:IdentityPeer)=>boolean;wssStream?:(raw:string,peer:IdentityPeer)=>boolean};
   onPush?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {gateway?:boolean};
   onCallMediaRelay?(raw: string, peer: IdentityPeer): Promise<boolean>;
   onRelayedCallMedia?(raw: string, peer: IdentityPeer): Promise<boolean>;
@@ -48,6 +55,8 @@ export function createPersistentAxon(d: {
   onDirectory?(raw: string, peer: IdentityPeer): Promise<string>;
   onCustody?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {groupCustody?:boolean;custodyEvents?:boolean;callInboxEvents?:boolean};
   onSignal?(raw: string, peer: IdentityPeer): Promise<boolean>;
+  /** A signaling relay need not implement a local RTC endpoint. */
+  rtcEndpoint?: boolean;
   testMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
   chatMessages?: { encryptionSeed: Uint8Array; received: TestMessageHandler };
   expectedAccount?: string; introductions?: IntroductionHooks; wire: AxonWire; now(): number; current(): boolean;
@@ -57,17 +66,20 @@ export function createPersistentAxon(d: {
   let deferredFrames: string[] = [], deferredBytes = 0;
   let peerMessageTimestamps=false,peerProfileUpdates=false,peerProfileOffers=false;
   let peerSharedAttachments=false,peerAttachments=false,peerAttachmentStreams=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
+  let peerWssStreams=false,wssFrames=0,wssWindow=0;
+  let peerRelayStreams=false,relayStreamFrames=0,relayStreamWindow=0;
   let mediaInbound=0,mediaWaiting=0,mediaWindow=1,mediaSuccesses=0;
   let lastMediaAt=-Infinity;
-  let peerBulk=false,peerUploadBatch=false,bulkInbound=0,bulkFrames=0,bulkBytes=0;
+  let peerBulk=false,peerBlockStreams=false,peerUploadBatch=false,bulkInbound=0,bulkFrames=0,bulkBytes=0;
   let smallBatches=false,smallWindow=2;
-  const bulkFrameLimit=()=>smallBatches?AXON_FRAME_BYTES:ATTACHMENT_BULK_FRAME_BYTES;
+  const bulkFrameLimit=()=>smallBatches?AXON_FRAME_BYTES:peerBlockStreams?ATTACHMENT_STREAM_FRAME_BYTES:ATTACHMENT_BULK_FRAME_BYTES;
   const smallRequest=(raw:string)=>{try{const r=JSON.parse(raw);return r.operation==='direct-get-batch'&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=3;}catch{return false;}};
   let bulkWaiting=0,bulkNext=0;
   // Small RTC batches fit the negotiated two/four-request inbound limit. Start them together
   // instead of forcing the second slot through a mobile timer; keep 200/sec.
   let smallBatchCredits=2,smallBatchCreditAt=d.now();
   function bulkRateReady(){
+    if(peerBlockStreams)return true; // Authenticated AoNs use bounded outstanding requests and socket backpressure, not a speed cap.
     if(!smallBatches)return d.now()>=bulkNext;
     const now=d.now();
     if(now>smallBatchCreditAt){smallBatchCredits=Math.min(smallWindow,smallBatchCredits+(now-smallBatchCreditAt)/5);smallBatchCreditAt=now;}
@@ -113,7 +125,9 @@ export function createPersistentAxon(d: {
     current: () => !stopped && peerTests && d.current(), received: d.testMessages.received,
     send: body => send({ version: 1, kind: 'test-message', body }),
   }) : null;
-  let peerSignals = false, signalBusy = false, signalWindow = d.now(), signalCount = 0;
+  let peerSignals = false, signalQueued = 0, signalWindow = d.now(), signalCount = 0;
+  let peerRtcEndpoint:boolean|undefined;
+  let signalTail:Promise<unknown>=Promise.resolve();
   let peerIntroductions = false, introducing = false, introduceAt = d.now() + 5000;
   const scheduleListeners=new Set<()=>void>();
   const qualityListeners=new Set<()=>void>();
@@ -129,6 +143,7 @@ export function createPersistentAxon(d: {
   let windowAt = d.now(), frames = 0, custodyFrames=0;
   const traffic: Record<string, number> = {};
   let chatReceiveTail:Promise<unknown>=Promise.resolve(),chatQueued=0;
+  const queuedChatBodies=new Set<string>();
   const started = d.now();
   // Local observations only: never serialized onto the wire.
   const quality={samples:0,responseMs:0,mediaSamples:0,mediaResponseMs:0,mediaBytesPerSecond:0,failures:0,updatedAt:0};
@@ -155,24 +170,35 @@ export function createPersistentAxon(d: {
     current: () => !stopped && d.current(), list: d.introductions.list }) : null;
   // tick() is also driven by the native background wake clock on mobile.
   const sleepers=new Set<{until:number;ready?:()=>boolean;finish():void}>();
-  // Only wake eligible control waiters; rate-limited media retains its timer.
+  // Wake only eligible waiters; predicates retain rate limits and priority.
   function notifyWaiters(){for(const entry of [...sleepers])if(entry.ready?.())entry.finish();}
   function wait(ms:number,ready?:()=>boolean){return new Promise<void>(resolve=>{
     const entry={until:d.now()+ms,ready,finish(){clearTimeout(timer);sleepers.delete(entry);resolve();}};
     const timer=setTimeout(entry.finish,ms);sleepers.add(entry);
   });}
-  let unsubscribe = () => {};
+  let unsubscribe = () => {};let unsubscribeBinary=()=>{};let peerWssBinary=false;
+  const relayStreams=createRelayBlockStream({
+    current:()=>!stopped&&d.current()&&peerRelayStreams&&!!peer&&peer.expiresAt>d.now(),
+    admit:(direction,id)=>direction==='bulk-response'?mediaPending.get(id)?.bulk===true||!!timedOutMedia.get(id)?.bulk&&timedOutMedia.get(id)!.until>d.now():!!d.onAttachment?.uploadBatch&&mediaInbound<4&&bulkInbound<2,
+    send,deliver:frame=>receive(JSON.stringify(frame)),
+  });
+  async function sendBulk(frame:{version:number;kind:string;id:number;body:string}){
+    if(peerRelayStreams&&await relayStreams.transmit(frame))return;
+    send(frame);
+  }
   function stop(reason = 'session-stopped') {
     if (stopped) return;
     closeReason = reason;
     if(reason.startsWith('exchange-timeout:')){quality.failures++;quality.updatedAt=d.now();}
     stopped = true;
+    relayStreams.stop();
     deferredFrames=[];deferredBytes=0;
     for(const sleeper of [...sleepers])sleeper.finish();
     for(const task of mediaPending.values()){clearTimeout(task.timer);task.reject(Error('Axon closed'));}mediaPending.clear();
     timedOutMedia.clear();
     tests?.stop();
     chat?.stop();
+    try { unsubscribeBinary(); } catch {}
     try { unsubscribe(); } catch { /* Cleanup must continue even if an adapter fails. */ }
     if (pending) { clearTimeout(pending.timer); pending.reject(Error('Axon closed')); pending = null; }
     rejectReady(Error('Axon closed'));
@@ -181,6 +207,8 @@ export function createPersistentAxon(d: {
   }
   function send(frame: unknown) {
     if (stopped || !d.current()) throw Error('Axon unavailable');
+    if((frame as {kind?:string}).kind==='hello'&&d.wire.wss&&d.onAttachment?.wssStream)Object.assign(frame as object,{wssStream:1,...(d.wire.sendBinary&&d.wire.listenBinary&&d.onAttachment.wssBinary?{wssBinary:2}:{})});
+    if((frame as {kind?:string}).kind==='hello'&&d.wire.wss&&d.wire.blockStreams&&d.wire.bulkAttachments&&d.onAttachment)Object.assign(frame as object,{relayBlockStream:1});
     const raw = JSON.stringify(frame);
     const kind=(frame as {kind?:string}).kind;
     const bulk=kind==='bulk-response'||kind==='bulk-request'&&peerUploadBatch&&!smallBatches;
@@ -196,7 +224,9 @@ export function createPersistentAxon(d: {
       // for mobile/SCTP stalls. Discovery can begin just before a transfer, so
       // it needs the same bounded grace even before the first media frame.
       // Never extend the proof or initial handshake.
-      const grace=peer&&(operation==='describe'||operation==='authenticate'||operation==='introductions'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
+      // Custody may wait for durable storage on a busy phone. A four-second
+      // disk delay must not restart an otherwise usable LAN/media connection.
+      const grace=peer&&(operation==='custody'||operation==='describe'||operation==='authenticate'||operation==='introductions'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
       const timeout=grace?Math.max(1,Math.min(15000,peer!.expiresAt-d.now())):
         operation === 'call-control' || operation === 'call-media' || operation === 'call-relay' || operation === 'call-media-relay' || operation === 'call-media-forward' ? 15000 : 4000;
       pending = { started:d.now(), operation, id, resolve, reject, until:d.now()+timeout, timer:setTimeout(() => stop('exchange-timeout:' + operation),timeout) };scheduleChanged();
@@ -219,7 +249,7 @@ export function createPersistentAxon(d: {
         // layer still enforces negotiated attachment support and both budgets.
         d.wire.enableAttachments?.();
         if(peerMediaLane)d.wire.enableMediaLane?.();
-        if(peerBulk)d.wire.enableBulkAttachments?.();
+        if(peerBulk)d.wire.enableBulkAttachments?.(peerBlockStreams);
         resolveReady({ peer, close: stop });
       }
       renewalAt = d.now() + 20_000;
@@ -258,6 +288,19 @@ export function createPersistentAxon(d: {
       const rawBytes=new TextEncoder().encode(raw).length;if(rawBytes>maxBytes){stop();return;}
       if (d.now() - windowAt >= 60_000) { windowAt = d.now(); frames = 0; custodyFrames=0; attachmentFrames=0;bulkFrames=0;bulkBytes=0; }
       const f = JSON.parse(raw);
+      if(f.kind==='relay-block-stream'){
+        if(d.now()-relayStreamWindow>=60000){relayStreamWindow=d.now();relayStreamFrames=0;}
+        if(!peerRelayStreams||!peer||peer.expiresAt<=d.now()||rawBytes>12000||++relayStreamFrames>100000||!await relayStreams.receive(f))stop('invalid-relay-block-stream');
+        else {traffic['relay-block-stream']=(traffic['relay-block-stream']??0)+1;lastMediaAt=d.now();}
+        return;
+      }
+      if(f.kind==='wss-stream'){
+        if(d.now()-wssWindow>=60000){wssWindow=d.now();wssFrames=0;}
+        if(f.version!==1||Object.keys(f).sort().join(',')!=='body,kind,version'||!peerWssStreams||!peer||peer.expiresAt<=d.now()
+          ||rawBytes>15000||typeof f.body!=='string'||++wssFrames>100000||!d.onAttachment?.wssStream?.(f.body,peer))stop('invalid-wss-stream');
+        else {traffic['wss-stream']=(traffic['wss-stream']??0)+1;lastMediaAt=d.now();}
+        return;
+      }
       // The other side can finish its independent authentication while our
       // final durable identity read is still pending. Bound early application
       // traffic and process it only after our own verification succeeds.
@@ -270,7 +313,7 @@ export function createPersistentAxon(d: {
       const bulk=f.kind==='bulk-request'||f.kind==='bulk-response';
       const upload=f.kind==='bulk-request'&&peerBulk&&!smallBatches&&d.onAttachment?.uploadBatch===true&&typeof f.body==='string'&&isAttachmentUploadBatchRequest(f.body);
       if(rawBytes>AXON_FRAME_BYTES&&f.kind!=='bulk-response'&&!upload){stop('oversized-control');return;}
-      if(bulk&&(!peerBulk||!peer||peer.expiresAt<=d.now()||++bulkFrames>(smallBatches?28000:2048)||!smallBatches&&(bulkBytes+=rawBytes)>256*ATTACHMENT_BULK_FRAME_BYTES)){stop('invalid-bulk-frame');return;}
+      if(bulk&&(!peerBulk||!peer||peer.expiresAt<=d.now()||!peerBlockStreams&&(++bulkFrames>(smallBatches?28000:2048)||!smallBatches&&(bulkBytes+=rawBytes)>256*ATTACHMENT_BULK_FRAME_BYTES))){stop('invalid-bulk-frame');return;}
       // Fixed labels only: never retain payloads, identifiers, or untrusted keys.
       const operations = ['describe','authenticate','introductions','custody','directory','push','attachment','call-control','call-media','call-relay','call-media-relay','call-media-forward'];
       const operation = f.kind === 'response' ? pending?.operation : f.operation;
@@ -287,14 +330,24 @@ export function createPersistentAxon(d: {
       // exchanges. Keep its finite budget separate from calls and discovery.
       if(attachment?++attachmentFrames>(peerMediaLane?28000:3600):custody?++custodyFrames>4096:++frames>controlLimit){stop(attachment?'attachment-rate-limit':custody?'custody-rate-limit':'control-rate-limit');return;}
       if (f.version !== 1) { stop('invalid-version'); return; }
+      // An authenticated peer may support a newer application frame. Ignore
+      // bounded unknown kinds after accounting for traffic; do not reset every
+      // other operation on the socket. Malformed/oversized frames still fail.
+      if(peer&&peer.expiresAt>d.now()&&typeof f.kind==='string'&&f.kind.length>0&&f.kind.length<=64
+        &&!['hello','signal','chat-message','test-message','request','response','media-request','media-response','bulk-request','bulk-response'].includes(f.kind))return;
       if (f.kind === 'hello') {
         if (remote || !validAccountId(f.account) || f.account === d.record.account || (d.expectedAccount && f.account !== d.expectedAccount)) { stop('invalid-hello'); return; }
         peerAttachments=f.attachments===1&&d.wire.attachments!==false;
+        peerRtcEndpoint=f.rtcEndpoint===0?false:f.rtcEndpoint===1?true:undefined;
         peerAttachmentStreams=peerAttachments&&f.attachmentStreams===1;
+        peerWssStreams=peerAttachments&&f.wssStream===1&&d.wire.wss===true&&!!d.onAttachment?.wssStream;
+        peerWssBinary=peerWssStreams&&f.wssBinary===2&&!!d.wire.sendBinary&&!!d.wire.listenBinary&&!!d.onAttachment?.wssBinary;
         peerMessageTimestamps=f.messageTimestamps===1;peerProfileUpdates=f.profileUpdates===1;peerProfileOffers=f.profileOffers===1;
         peerSharedAttachments=peerAttachments&&f.sharedAttachments===2;
         peerMediaLane=peerAttachments&&f.mediaLane===1&&d.wire.mediaLane===true;
         peerBulk=peerMediaLane&&f.bulkAttachments===1&&d.wire.bulkAttachments===true;
+        peerBlockStreams=peerBulk&&f.blockStreams===4&&d.wire.blockStreams===true;
+        peerRelayStreams=peerBlockStreams&&d.wire.wss===true&&f.relayBlockStream===1;
         smallBatches=!peerBulk&&peerMediaLane&&f.smallAttachmentBatches===1&&d.wire.smallAttachmentBatches===true;
         peerBulk ||= smallBatches;
         peerUploadBatch=peerBulk&&!smallBatches&&f.attachmentUploadBatch===1;
@@ -314,11 +367,16 @@ export function createPersistentAxon(d: {
         remote = f.account; void authenticate(); return;
       }
       if (f.kind === 'signal') {
-        if (!peer || peer.expiresAt <= d.now() || !peerSignals || !d.onSignal || signalBusy || typeof f.body !== 'string') { stop(signalBusy?'overlapping-signal':'invalid-signal'); return; }
+        if (!peer || peer.expiresAt <= d.now() || !peerSignals || !d.onSignal || typeof f.body !== 'string') { stop('invalid-signal'); return; }
         if (d.now() - signalWindow >= 60000) { signalWindow = d.now(); signalCount = 0; }
         if (++signalCount > 16) { stop('signal-rate-limit'); return; }
-        signalBusy = true;
-        try { await d.onSignal(f.body, peer); } finally { signalBusy = false; }
+        // Independent offers/answers can arrive while a previous signed signal
+        // waits for identity storage. That is normal traffic, not a broken wire.
+        if(signalQueued>=4){stop('signal-queue-limit');return;}
+        const source=peer;signalQueued++;
+        const task=signalTail.then(()=>!stopped&&d.current()&&source.expiresAt>d.now()?d.onSignal!(f.body,source):false);
+        signalTail=task.catch(()=>{});
+        try { await task; } finally { signalQueued--; }
         return;
       }
       if (f.kind === 'test-message') {
@@ -329,12 +387,16 @@ export function createPersistentAxon(d: {
         if(!chat||!peerChat||!peer||peer.expiresAt<=d.now()||typeof f.body!=='string'||f.body.length>5000){stop('chat-message-unavailable');return;}
         // Socket callbacks overlap while durable insertion/key lookup awaits I/O.
         // Serialize normal encrypted messages and ACKs; keep admission bounded.
-        if(chatQueued>=4){stop('chat-receive-queue-full');return;}
-        chatQueued++;
+        // Duplicate retransmissions share the original durable receipt. Excess
+        // work receives no ACK and can retry/fall back; storage pressure must
+        // not destroy an otherwise authenticated connection. Global traffic
+        // budgets still apply before this bounded admission check.
+        if(queuedChatBodies.has(f.body)||chatQueued>=4)return;
+        chatQueued++;queuedChatBodies.add(f.body);
         const task=chatReceiveTail.then(()=>!stopped&&d.current()?chat.receive(f.body):false);
         chatReceiveTail=task.catch(()=>{});
         try{if(!await task&&!stopped)stop('chat-message-rejected:'+chat.rejection());}
-        finally{chatQueued--;}
+        finally{chatQueued--;queuedChatBodies.delete(f.body);}
         return;
       }
       if (!remote || !Number.isSafeInteger(f.id) || f.id < 1 || typeof f.body !== 'string' || f.body.length > (f.kind==='bulk-response'||upload?bulkFrameLimit()-(smallBatches?128:1024):16000)) { stop('invalid-envelope'); return; }
@@ -349,22 +411,25 @@ export function createPersistentAxon(d: {
         // Grow only as replies arrive; slow storage/links reduce the in-flight window.
         if(d.now()-task.started>1000){mediaWindow=Math.max(1,Math.floor(mediaWindow/2));mediaSuccesses=0;}
         else if(++mediaSuccesses>=mediaWindow){mediaWindow=Math.min(4,mediaWindow+1);mediaSuccesses=0;}
-        task.resolve(f.body);return;
+        task.resolve(f.body);notifyWaiters();return;
       }
       if(f.kind==='media-request'||f.kind==='bulk-request'){
         if(bulk&&smallBatches&&!smallRequest(f.body)){stop('invalid-small-batch');return;}
-        if(!media||mediaInbound>=4||bulk&&bulkInbound>=(smallBatches?smallWindow:2)||f.body.length>(upload?ATTACHMENT_BULK_FRAME_BYTES-1024:13000)){stop('invalid-media-request');return;}
+        if(!media||mediaInbound>=4||bulk&&bulkInbound>=(smallBatches?smallWindow:2)||f.body.length>(upload?bulkFrameLimit()-1024:13000)){stop('invalid-media-request');return;}
         mediaInbound++;
         if(bulk)bulkInbound++;
         try{
           const source=peer!,response=await d.onAttachment!(f.body,source);
-          if(!stopped&&d.current()&&source.expiresAt>d.now())send({version:1,kind:bulk?'bulk-response':'media-response',id:f.id,body:response});
+          if(!stopped&&d.current()&&source.expiresAt>d.now())try{await sendBulk({version:1,kind:bulk?'bulk-response':'media-response',id:f.id,body:response});}catch(e){if(!(e instanceof RelayBlockStreamTimeout))throw e;}
         }finally{mediaInbound--;if(bulk)bulkInbound--;}
         return;
       }
       if (f.kind === 'response') {
         if (!pending || pending.id !== f.id) { stop('unexpected-response'); return; }
         const task = pending; pending = null; clearTimeout(task.timer); observeRequest('roundTrip:'+task.operation,task.started); if(task.operation!=='describe'&&task.operation!=='authenticate')observeResponse(task.started,task.operation==='attachment',f.body.length); task.resolve(f.body); notifyWaiters(); return;
+      }
+      if(peer&&peer.expiresAt>d.now()&&f.kind==='request'&&typeof f.operation==='string'&&!operations.includes(f.operation)){
+        send({version:1,kind:'response',id:f.id,body:JSON.stringify({status:'unsupported'})});return;
       }
       if (f.kind !== 'request' || inboundBusy) { stop(inboundBusy ? 'overlapping-request' : 'invalid-request'); return; }
       inboundBusy = true;
@@ -403,14 +468,23 @@ export function createPersistentAxon(d: {
     } catch { stop('receive-error'); }
   }
   try {
+    unsubscribeBinary=d.wire.listenBinary?.(raw=>{
+      if(stopped)return;
+      if(d.now()-wssWindow>=60000){wssWindow=d.now();wssFrames=0;}
+      if(!d.current()||!peerWssBinary||!peer||peer.expiresAt<=d.now()||raw.length>32838||++wssFrames>100000||!d.onAttachment?.wssBinary?.(raw,peer)){stop('invalid-wss-binary');return;}
+      traffic['wss-binary']=(traffic['wss-binary']??0)+1;lastMediaAt=d.now();
+    })??(()=>{});
     unsubscribe = d.wire.listen(raw => { void receive(raw); }, () => stop('transport-closed'));
     // An adapter may report an already-closed wire while registering callbacks.
-    if (stopped) { try { unsubscribe(); } catch { /* Best-effort cleanup. */ } }
+    if (stopped) { try { unsubscribeBinary(); } catch {}
+    try { unsubscribe(); } catch { /* Best-effort cleanup. */ } }
   } catch { stop(); }
-  const deadline = setTimeout(() => { if (!peer) stop(); }, 10_000);
+  const setupTimeout=Math.max(10000,Math.min(25000,Number.isFinite(d.wire.setupTimeoutMs)?d.wire.setupTimeoutMs!:10000));
+  const deadline = setTimeout(() => { if (!peer) stop('handshake-timeout'); }, setupTimeout);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.onAttachment?.streams===true&&d.onSignal&&d.wire.attachments!==false?{attachmentStreams:1}:{}), ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}),...(d.onCustody?.custodyEvents?{custodyEvents:1}:{}),...(d.onCustody?.callInboxEvents?{callInboxEvents:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1,...(d.onAttachment.uploadBatch?{attachmentUploadBatch:1}:{})}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.wire.blockStreams&&d.onAttachment?{blockStreams:4}:{}), ...(d.onSignal?{rtcEndpoint:d.rtcEndpoint===false?0:1}:{}), ...(d.onAttachment?.streams===true&&d.onSignal&&d.wire.attachments!==false?{attachmentStreams:1}:{}), ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}),...(d.onCustody?.custodyEvents?{custodyEvents:1}:{}),...(d.onCustody?.callInboxEvents?{callInboxEvents:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1,...(d.onAttachment.uploadBatch?{attachmentUploadBatch:1}:{})}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
+    supportsRtcEndpoint:()=>peer&&peer.expiresAt>d.now()&&!stopped?peerRtcEndpoint:undefined,
     ready, stop,
     subscribeSchedule(listener:()=>void){scheduleListeners.add(listener);return()=>{scheduleListeners.delete(listener);};},
     subscribeQuality(listener:()=>void){qualityListeners.add(listener);return()=>{qualityListeners.delete(listener);};},
@@ -514,20 +588,31 @@ export function createPersistentAxon(d: {
     supportsProfileUpdates:()=>peerProfileUpdates&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsMessageTimestamps:()=>peerMessageTimestamps&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsSharedAttachments:()=>peerSharedAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
-    attachmentStreamPeer:()=>d.onAttachment?.streams===true&&!!d.onSignal&&peerSignals&&peerAttachmentStreams&&peer&&!stopped&&d.current()&&peer.expiresAt>d.now()?{...peer}:null,
+    wssStreamPeer:()=>peerWssStreams&&peer&&!stopped&&d.current()&&peer.expiresAt>d.now()?{...peer}:null,
+    supportsWssBinary:()=>peerWssBinary&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
+    sendWssBinary(raw:Uint8Array,instance:string){
+      if(!peerWssBinary||!peer||peer.instance!==instance||peer.expiresAt<=d.now()||raw.length<71||raw.length>32838||stopped||!d.current())return false;
+      try{d.wire.sendBinary!(raw);return true;}catch{stop('wss-binary-send-failed');return false;}
+    },
+    sendWssStream(raw:string,instance:string){
+      if(!peerWssStreams||!peer||peer.instance!==instance||peer.expiresAt<=d.now()||typeof raw!=='string'||raw.length>14000||stopped||!d.current())return false;
+      send({version:1,kind:'wss-stream',body:raw});return true;
+    },
+    attachmentStreamPeer:()=>d.onAttachment?.streams===true&&!!d.onSignal&&peerSignals&&peerRtcEndpoint!==false&&peerAttachmentStreams&&peer&&!stopped&&d.current()&&peer.expiresAt>d.now()?{...peer}:null,
     supportsAttachments:()=>peerAttachments&&!!d.onAttachment&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachmentBulk:()=>peerBulk&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
+    supportsAttachmentBlockStreams:()=>peerBlockStreams&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     supportsAttachmentUploadBatch:()=>peerUploadBatch&&!smallBatches&&!!peer&&!stopped&&d.current()&&peer.expiresAt>d.now(),
     attachmentBatchChunks:()=>smallBatches?3:d.wire.preferredAttachmentBatchChunks??128,
     attachmentBatchWindow:()=>smallBatches?smallWindow:2,
     async attachmentBulkRequest(raw:string):Promise<string|null>{
       const permitted=()=>peerBulk&&!!peer&&peer.expiresAt>d.now()&&!stopped&&d.current();
-      if(raw.length>ATTACHMENT_BULK_FRAME_BYTES-1024)return null;
+      if(raw.length>bulkFrameLimit()-1024)return null;
       const upload=isAttachmentUploadBatchRequest(raw);
-      if(!permitted()||upload&&(!peerUploadBatch||smallBatches)||raw.length>(upload?ATTACHMENT_BULK_FRAME_BYTES-1024:13000)||bulkWaiting>=(smallBatches?smallWindow:2)||smallBatches&&!smallRequest(raw))return null;
+      if(!permitted()||upload&&(!peerUploadBatch||smallBatches)||raw.length>(upload?bulkFrameLimit()-1024:13000)||bulkWaiting>=(smallBatches?smallWindow:2)||smallBatches&&!smallRequest(raw))return null;
       bulkWaiting++;
       try{
-        for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5);
+        for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5,()=>!authenticating&&!custodyWaiting&&!pushWaiting&&!callWaiting&&mediaPending.size<4&&bulkRateReady());
         if(!permitted()||authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())return null;
         if(smallBatches)smallBatchCredits--;else {
           // Pace by requested bytes, retaining the existing 2 MiB/s ceiling.
@@ -537,7 +622,7 @@ export function createPersistentAxon(d: {
         }
         return await new Promise<string>((resolve,reject)=>{
           const id=++sequence;mediaPending.set(id,{bulk:true,until:d.now()+15000,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),15000)});scheduleChanged();
-          try{send({version:1,kind:'bulk-request',id,body:raw});}catch{stop('bulk-send-failed');}
+          void sendBulk({version:1,kind:'bulk-request',id,body:raw}).catch(()=>expireMedia(id));
         }).then(value=>permitted()?value:null);
       }catch{return null;}finally{bulkWaiting--;}
     },
@@ -549,7 +634,7 @@ export function createPersistentAxon(d: {
         try{
           // A separate request-ID lane leaves authentication, messages and calls free.
           // Bound the window, total queue and start rate, even on zero-latency links.
-          for(let waits=0;permitted()&&(mediaPending.size>=mediaWindow||authenticating||custodyWaiting>0||pushWaiting>0||callWaiting>0||!mediaRateReady())&&waits<400;waits++)await wait(5);
+          for(let waits=0;permitted()&&(mediaPending.size>=mediaWindow||authenticating||custodyWaiting>0||pushWaiting>0||callWaiting>0||!mediaRateReady())&&waits<400;waits++)await wait(5,()=>mediaPending.size<mediaWindow&&!authenticating&&!custodyWaiting&&!pushWaiting&&!callWaiting&&mediaRateReady());
           if(!permitted()||mediaPending.size>=mediaWindow||authenticating||custodyWaiting>0||pushWaiting>0||callWaiting>0||!mediaRateReady())return null;
           mediaCredits--;
           return await new Promise<string>((resolve,reject)=>{
@@ -578,14 +663,17 @@ export function createPersistentAxon(d: {
     supportsCustody: () => peerCustody && !!peer && !stopped && d.current() && peer.expiresAt > d.now(),
     async custodyRequest(raw: string): Promise<string | null> {
       const permitted = () => !!peer && peer.expiresAt > d.now() && peerCustody && !stopped && d.current();
-      if (!permitted() || raw.length > (peerGroupCustody?16000:8000) || (custodyWaiting >= 2 || pushWaiting > 0)) return null;
+      if (!permitted() || raw.length > (peerGroupCustody?16000:8000)) return null;
+      const busyReply=()=>JSON.stringify({status:'retry',retryAfterMs:1000});
+      if(custodyWaiting>=2||pushWaiting>0)return busyReply();
       custodyWaiting++;
       try {
         // Bounded local contention must not immediately mark a healthy relay unavailable.
         // Use a bounded number of waits so clock changes cannot prolong the queue.
         for (let waits = 0; permitted() && (authenticating || introducing || pending || callPriority()) && waits < 80; waits++)
           await wait(25,()=>!authenticating&&!introducing&&!pending&&!callPriority());
-        if (!permitted() || authenticating || introducing || pending || callPriority()) return null;
+        if (!permitted()) return null;
+        if(authenticating||introducing||pending||callPriority())return busyReply();
         let operation:string|undefined;try{operation=JSON.parse(raw)?.operation;}catch{/* Handler validates opaque payloads. */}
         if(operation==='poll'||operation==='group-poll'){
           const retryAfterMs=reserveRecoveryPoll(d.record.account,peer!.account,d.now());
@@ -604,7 +692,7 @@ export function createPersistentAxon(d: {
     },
     nextDeadline(){
       if(stopped)return Infinity;
-      return Math.min(pending?.until??Infinity,...[...mediaPending.values()].map(task=>task.until),peer?peer.expiresAt:started+10000,peer&&!authenticating?Math.max(d.now()+1000,renewalAt):Infinity,peer&&peerIntroductions&&d.introductions&&!introducing&&!authenticating?Math.max(d.now()+1000,introduceAt):Infinity);
+      return Math.min(pending?.until??Infinity,...[...mediaPending.values()].map(task=>task.until),peer?peer.expiresAt:started+setupTimeout,peer&&!authenticating?Math.max(d.now()+1000,renewalAt):Infinity,peer&&peerIntroductions&&d.introductions&&!introducing&&!authenticating?Math.max(d.now()+1000,introduceAt):Infinity);
     },
     tick() {
       if (stopped) return;

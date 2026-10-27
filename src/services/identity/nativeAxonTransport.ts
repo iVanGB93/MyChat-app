@@ -1,12 +1,15 @@
 import { AXON_FRAME_BYTES, type AxonWire } from './persistentAxon';
-import {ATTACHMENT_BULK_FRAME_BYTES} from './attachmentBatch';
+import {ATTACHMENT_BULK_FRAME_BYTES,ATTACHMENT_STREAM_FRAME_BYTES} from './attachmentBatch';
 import type { NeuronCandidate, ConnectionContext } from './neuronConnections';
 
 export interface NativeAxonTransport {
   axonConnect(host: string, port: number): Promise<string>;
   axonRead(id: string): Promise<string>;
+  axonReadPacket?(id:string):Promise<string|Uint8Array>;
+  axonWriteBinary?(id:string,bytes:Uint8Array):Promise<boolean>;
   axonWrite(id: string, raw: string): Promise<boolean>;
   axonClose(id: string): void;
+  axonEnableBlockStreams?(id:string):void;
   axonEnableAttachments?(id:string):void;
   axonEnableMediaLane?(id:string):void;
   axonEnableBulkAttachments?(id:string):void;
@@ -37,16 +40,19 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
   dial: () => Promise<string>, firstFrame?: string, lan=false): Promise<AxonWire> {
     let id: string | undefined, closed = false, listening = false, writing = false, queuedBytes = 0;
     let mediaEnabled=false;
-    let bulkEnabled=false;
+    let bulkEnabled=false,blockStreamsEnabled=false;
+    const frameLimit=()=>blockStreamsEnabled?ATTACHMENT_STREAM_FRAME_BYTES:bulkEnabled?ATTACHMENT_BULK_FRAME_BYTES:AXON_FRAME_BYTES;
     let receive: ((raw: string) => void) | undefined, notify: (() => void) | undefined;
-    const queue: { raw: string; bytes: number }[] = [];
+    let receiveBinary:((raw:Uint8Array)=>void)|undefined;
+    const binary=!lan&&typeof native.axonReadPacket==='function'&&typeof native.axonWriteBinary==='function';
+    const queue: { raw: string|Uint8Array; bytes: number }[] = [];
     const disposeNative = (key: string) => { try { native.axonClose(key); } catch { /* Best-effort native cleanup. */ } };
     function close() {
       if (closed) return;
       closed = true; context.signal.removeEventListener('abort', close);
       queue.length = 0; queuedBytes = 0;
       if (id) disposeNative(id);
-      const callback = notify; receive = undefined; notify = undefined;
+      const callback = notify; receive = undefined; receiveBinary=undefined; notify = undefined;
       try { callback?.(); } catch { /* Observer failures cannot preserve the socket. */ }
     }
     context.signal.addEventListener('abort', close, { once: true });
@@ -58,9 +64,10 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
       try {
         if (!closed && firstFrame !== undefined) { const initial = firstFrame; firstFrame = undefined; receive?.(initial); }
         while (!closed && receive) {
-          const raw = await native.axonRead(id!);
+          const raw = binary?await native.axonReadPacket!(id!):await native.axonRead(id!);
           if (closed) return;
-          const limit=bulkEnabled?ATTACHMENT_BULK_FRAME_BYTES:AXON_FRAME_BYTES;
+          if(raw instanceof Uint8Array){if(!bulkEnabled||!receiveBinary||raw.length<71||raw.length>32838)throw Error('Invalid binary native axon frame');receiveBinary(raw);continue;}
+          const limit=frameLimit();
           if (typeof raw !== 'string' || raw.length>limit || new TextEncoder().encode(raw).length > limit) throw Error('Invalid native axon frame');
           receive?.(raw);
         }
@@ -72,7 +79,7 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
       try {
         while (!closed && queue.length) {
           const frame = queue[0];
-          if (!await native.axonWrite(id!, frame.raw)) throw Error('Axon write failed');
+          if (!(typeof frame.raw==='string'?await native.axonWrite(id!,frame.raw):await native.axonWriteBinary!(id!,frame.raw))) throw Error('Axon write failed');
           if (!closed) { queue.shift(); queuedBytes -= frame.bytes; }
         }
       } catch { close(); }
@@ -80,20 +87,26 @@ export async function openNativeWire(native: NativeAxonTransport, context: Conne
     }
     return {
       close,
+      wss:!lan,
       mediaLane:typeof native.axonEnableMediaLane==='function',
       // Reuse the negotiated RTC-sized batch on WSS without raising native frame limits.
       smallAttachmentBatches:typeof native.axonEnableMediaLane==='function',
       smallAttachmentWindow:4,
+      blockStreams:typeof native.axonEnableBlockStreams==='function',
       bulkAttachments:typeof (lan?native.axonEnableBulkAttachments:native.axonEnableWssBulkAttachments)==='function',
       ...(!lan?{preferredAttachmentBatchChunks:32 as const}:{}),
-      enableBulkAttachments(){const enable=lan?native.axonEnableBulkAttachments:native.axonEnableWssBulkAttachments;if(!closed&&id&&enable){enable.call(native,id);bulkEnabled=true;}},
+      enableBulkAttachments(blockStreams){const enable=lan?native.axonEnableBulkAttachments:native.axonEnableWssBulkAttachments;if(!closed&&id&&enable){enable.call(native,id);bulkEnabled=true;if(blockStreams&&native.axonEnableBlockStreams){native.axonEnableBlockStreams(id);blockStreamsEnabled=true;}}},
       enableMediaLane(){if(!closed&&id){native.axonEnableMediaLane?.(id);mediaEnabled=true;}},
       attachments:typeof native.axonEnableAttachments==='function',
       enableAttachments(){if(!closed&&id)native.axonEnableAttachments?.(id);},
+      ...(binary?{
+        sendBinary(raw:Uint8Array){if(closed||!bulkEnabled||raw.length<71||raw.length>32838||queuedBytes+raw.length>1048576||queue.length>=64){close();throw Error('Binary axon capacity exceeded');}queue.push({raw,bytes:raw.length});queuedBytes+=raw.length;void flush();},
+        listenBinary(message:(raw:Uint8Array)=>void){receiveBinary=message;return ()=>{receiveBinary=undefined;};},
+      }:{}),
       send(raw) {
-        const limit=bulkEnabled?ATTACHMENT_BULK_FRAME_BYTES:AXON_FRAME_BYTES;
+        const limit=frameLimit();
         const bytes = raw.length>limit?Infinity:new TextEncoder().encode(raw).length;
-        if (closed || !bytes || bytes > limit || queuedBytes + bytes > (bulkEnabled?2*ATTACHMENT_BULK_FRAME_BYTES+120000:(mediaEnabled?6:2)*AXON_FRAME_BYTES) || queue.length >= (mediaEnabled?16:8)) {
+        if (closed || !bytes || bytes > limit || queuedBytes + bytes > (bulkEnabled?2*frameLimit()+120000:(mediaEnabled?6:2)*AXON_FRAME_BYTES) || queue.length >= (blockStreamsEnabled?80:mediaEnabled?16:8)) {
           close(); throw Error('Axon send capacity exceeded');
         }
         queue.push({ raw, bytes }); queuedBytes += bytes; void flush();

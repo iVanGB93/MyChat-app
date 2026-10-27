@@ -92,3 +92,10 @@ test('attachment batch publishes all recipients in one write and never exposes a
  fail=false;await ledger.enqueueAttachments([{input:f.descriptor},{input:second}]);assert.equal(writes,1);assert.deepEqual(notices,[2,2]);
  await ledger.enqueueAttachments([{input:f.descriptor},{input:second}]);assert.equal(writes,1,'retry is idempotent');
 });
+
+test('single-read attachment admission still checks account lock after asynchronous verification',async()=>{
+ const f=setup();let active=true,reads=0,writes=0;
+ const receiver=chat.createRootChatLedger({owner:f.manifest.recipient,now:()=>now,current:()=>active,read:async()=>{reads++;return null;},write:async()=>{writes++;},verifyAttachment:async()=>{active=false;return true;}});
+ await assert.rejects(receiver.receive(f.manifest.sender,f.manifest.id,f.wire),/Unlock/);
+ assert.equal(reads,1);assert.equal(writes,0);
+});

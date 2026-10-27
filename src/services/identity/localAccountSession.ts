@@ -39,6 +39,10 @@ export function createLocalAccountSession(d: {
         await serialize(d.removeCredential).catch(() => {}); return;
       }
       const account = d.identity.status().account;
+      // Repeated notification wakes still read lock policy, but an already
+      // unlocked session has no credential to resume. Avoid a keystore round
+      // trip (and its possible transient failure) on every incoming wake.
+      if (!account || d.identity.status().state !== 'locked') return;
       const raw = await d.readCredential();
       if (!raw || !account || own !== epoch || d.identity.status().state !== 'locked') return;
       let saved: {version:number;account:string;password:string;derivation?:unknown};

@@ -1,4 +1,5 @@
-import {attachmentDigest,rootGroupPhoto,type RootChatState} from '../../modules/messaging';
+import {rootGroupPhoto,type RootChatState} from '../../modules/messaging';
+import {attachmentDigest} from '../../modules/media';
 import {rootAttachmentFile} from '../../modules/storage';
 
 /** Reuse the authenticated chat file; cleanup must also remove the avatar. */

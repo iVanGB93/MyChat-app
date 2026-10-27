@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.1.25",
+  "version": "1.1.30",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -9,14 +9,15 @@
     "web": "expo start --web",
     "fix:gradle9": "node scripts/patch-react-native-gradle-plugin.cjs",
     "fix:rtc-identity": "node scripts/patch-webrtc-identity.cjs",
-    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && node scripts/patch-webrtc-screen-capture.cjs && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety && npm run fix:notification-jobs",
-    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && node scripts/patch-webrtc-screen-capture.cjs && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety && npm run fix:notification-jobs",
+    "postinstall": "npm run fix:gradle9 && npm run fix:rtc-identity && node scripts/patch-webrtc-screen-capture.cjs && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety && npm run fix:notification-jobs && node scripts/patch-sqlite-cleanup.cjs",
+    "eas-build-post-install": "npm run fix:gradle9 && npm run fix:rtc-identity && node scripts/patch-webrtc-screen-capture.cjs && npm run fix:audio-recorder && npm run fix:share-intent && npm run fix:activity-result && npm run fix:storage-safety && npm run fix:notification-jobs && node scripts/patch-sqlite-cleanup.cjs",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --test tests/*.test.cjs",
     "test:rtc-native": "node scripts/test-native-identity-guard.cjs",
     "test:notification-native": "node scripts/test-notification-completion.cjs",
     "check:cycles": "node scripts/check-service-cycles.cjs",
-    "check": "npm run typecheck && npm run test:unit && npm run check:cycles && npm run check:modules && npm run check:consolidation",
+    "check": "npm run typecheck && npm run test:unit && npm run check:cycles && npm run check:modules && npm run check:consolidation && npm run check:assets",
+    "check:assets": "node scripts/check-assets.cjs",
     "check:modules": "node scripts/check-module-boundaries.cjs",
     "fix:audio-recorder": "node scripts/patch-audio-recorder.cjs",
     "check:consolidation": "node scripts/check-consolidation.cjs",
@@ -40,6 +41,7 @@
     "@react-navigation/native-stack": "^7.13.0",
     "@scure/bip39": "2.4.0",
     "@sentry/react-native": "~7.11.0",
+    "base64-js": "1.5.1",
     "dayjs": "^1.11.19",
     "expo": "~55.0.31",
     "expo-asset": "~55.0.20",
@@ -72,12 +74,12 @@
     "react-native-svg": "15.15.3",
     "react-native-volume-manager": "^2.0.8",
     "react-native-webrtc": "^124.0.7",
-    "base64-js": "1.5.1"
+    "zustand": "^5.0.16"
   },
   "devDependencies": {
+    "@expo/image-utils": "0.8.17",
     "@types/react": "~19.2.10",
-    "typescript": "~5.9.2",
-    "@expo/image-utils": "0.8.17"
+    "typescript": "~5.9.2"
   },
   "expo": {
     "doctor": {

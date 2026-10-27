@@ -1,0 +1,43 @@
+Axonic 1.1.30 / Android versionCode 101 — BUILT AND VALIDATED LOCALLY
+
+Scope: owner-authorized local production AAB and GitHub source release after notification/stream performance work. No publication or device installation performed. The source release also includes the accumulated module organization, shared state, media storage and call fixes since the last GitHub release (1.1.25).
+
+Artifact verification
+- Output: builds/Axonic-1.1.30-101.aab (107,660,801 bytes).
+- SHA256: 4a93759fb2469ff26b090d26fe694d187eaff78aa089e4c8d1b9d1a3aba5d6f5.
+- Bundled JS source fingerprint: be761bb7531f7f5a91a96338e5386fb90a1b0e46ecb173c9ee97bea1d0eb2af7.
+- bundletool validation passed; com.axonic, version 1.1.30/code101, non-debuggable and no instrumentation.
+- Four Android ABIs present; required overlay and screen-capture permissions retained.
+- jarsigner verification passed; upload certificate matches 1.1.29. Previous release artifact unchanged.
+- Evidence: builds/local-aab-101-validation.json, manifest.xml and signature.txt; local-production-aab-101.log.
+- Git release scope: application source, native modules, build/test scripts, regression tests, referenced assets and selected architecture/release documentation. Unrelated AoN reports, local logs and earlier staged release notes preserved outside this commit. Signing credentials and binary build artifacts are not committed.
+
+Configuration
+- app.json, package.json, package-lock.json root and Android defaultConfig aligned to 1.1.30 / 101.
+- Production application ID remains com.axonic; Dev remains separate.
+- Previous 1.1.29/code100 AAB retained unchanged.
+- Local Gradle build: builds/build-local-production-101.cjs (explicit --approved-1.1.30 guard).
+- Production Gradle overrides: builds/local-production-101.gradle.
+- Post-build checks: builds/validate-production-101.cjs; bundletool structure, manifest/version, non-debuggable, four ABIs, Expo source fingerprint, signature parity and unchanged previous AAB.
+- Existing local keystore present; build script revalidates its match to the existing upload credentials in memory. No credentials printed or copied into source.
+- Build script clears development EXPO_PUBLIC overrides, uses NODE_ENV=production and disables dotenv loading. Sentry upload handling follows previous local build behavior.
+
+Checks
+- npm run check: PASS; 1,594 passed, 3 optional skips, typecheck, cycles, module boundaries, source consolidation and assets pass. builds/release-101-checks.log.
+- Native identity/stream guards: PASS. builds/release-101-native-guards.log.
+- Native notification completion: PASS, baseline leak reproduced and corrected lifecycle validated. builds/release-101-native-notification.log.
+- Recent real 5/10 MiB Dev background transfers verified checksums, delivered receipts and history/identity preservation. docs/wss-notification-recovery-20261026.md contains exact results and remaining variability; no uniform speed guarantee or fresh production/Doze certification.
+
+Requested Dev test-file cleanup
+- Inventoried 267 synthetic test attachment references, with no active jobs/selections.
+- Removed 136 present synthetic media files plus 54 synthetic cache files: 1,131,413,504 bytes (1.054 GiB).
+- No selected synthetic media/cache files remain; zero items required Android confirmation.
+- All original attachment message records preserved; 26 contacts and same identity preserved. Message count 373 before / 374 after due to ongoing incoming activity; no history deletion was requested or performed.
+- Real photos, voice messages, and Muse's integration packages excluded. Normal app untouched.
+- No staging/recovery test directories remained in the final pass.
+- Evidence: builds/dev-cleanup-20261026-{inventory,result,finish,verified}.json. These are metadata reports, not backups.
+
+Executed with explicit owner confirmation
+  node builds/build-local-production-101.cjs --approved-1.1.30
+  node builds/validate-production-101.cjs
+Validated output: builds/Axonic-1.1.30-101.aab. Do not publish or install without separate authorization.

@@ -21,9 +21,11 @@ class AttachmentHashTest {
       assertEquals(expected, AttachmentHash.sha256(input))
     }
   }
-  @Test fun experimentalLeafSizesAreNotEnabledInShippingCode() {
+  @Test fun streamLeafSizesMatchIndependentDigest() {
     for (length in listOf(32768, 131072, 524448)) {
-      assertThrows(IllegalArgumentException::class.java) { AttachmentHash.sha256("a".repeat(length)) }
+      val input="a".repeat(length)
+      val expected=MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.US_ASCII)).joinToString(""){"%02x".format(it.toInt() and 255)}
+      assertEquals(expected,AttachmentHash.sha256(input))
     }
   }
   @Test fun invalidBoundsAndNonAsciiStayRejected() {

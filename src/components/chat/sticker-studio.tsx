@@ -25,6 +25,7 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
   const [draftError,setDraftError]=useState('');
   const [preserveAnimation, setPreserveAnimation] = useState<boolean | null>(null);
   useEffect(() => {
+    if (loadingDraft) return;
     let active = true;
     setPreserveAnimation(null);
     if (draft) void new File(draft).bytes().then((bytes) => {
@@ -32,7 +33,7 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
       if (active) setPreserveAnimation(head.startsWith('GIF87a') || head.startsWith('GIF89a') || (head.startsWith('RIFF') && head.slice(8) === 'WEBP'));
     }).catch(() => { if (active) Alert.alert('Sticker unavailable', 'Could not read the selected image. Please choose it again.'); });
     return () => { active = false; };
-  }, [draft]);
+  }, [draft,loadingDraft]);
   const [pendingEdits, setPendingEdits] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [reset, setReset] = useState(0);

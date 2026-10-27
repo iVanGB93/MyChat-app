@@ -1,13 +1,9 @@
+import type {GroupCustodyRow,GroupCustodyStore} from './relayStorage.ts';
+export type {GroupCustodyRow,GroupCustodyStore} from './relayStorage.ts';
 import {custodyDigest,parseCustody,verifyCustody,type CustodyEnvelope,type CustodyReceipt} from './custodyProtocol.ts';
 import {groupCustodyDigest,matchesGroupGrant,validGroupCustodyPayload,verifyGroupCustodyPayload,type GroupCustodyPayload} from './groupCustodyProtocol.ts';
 import {validAccountId} from './identityProtocol.ts';
 import type {IdentityRecordStore} from './identityAdmission.ts';
-export interface GroupCustodyRow {
- sender:string;id:string;digest:string;expires:number;accepted:boolean;stagedUntil:number;source?:string;replicated?:string;
- payload:GroupCustodyPayload|null;
- recipients:{id:string;recipient:string;recipientDevice:string;digest:string;grant:CustodyEnvelope|null;receipt:CustodyReceipt|null;consumed:boolean}[];
-}
-export interface GroupCustodyStore {revision?():number|string;transaction<T>(change:(rows:GroupCustodyRow[])=>T):Promise<T>}
 export const GROUP_CUSTODY_LIMITS={jobs:128,perSender:16,perRecipient:64,bytes:4*1024*1024};
 /** Limits are charged before accepting responsibility. An incomplete staged job
  * is never reported held; recipient grants are committed as one delivery job. */

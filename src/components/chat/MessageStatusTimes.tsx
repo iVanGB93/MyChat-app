@@ -1,7 +1,7 @@
 import React from 'react';
 import {Text,View} from 'react-native';
 import type {RootChatMessage} from '../../modules/messaging';
-import {messageInfoTimeline,messageInfoRoutes} from '../../modules/messaging/messageInfoState';
+import {messageInfoTimeline,messageInfoRoutes} from '../../modules/messaging';
 import {useTheme} from '../../contexts/ThemeContext';
 
 export function MessageStatusTimes({message,now}:{message:RootChatMessage;now:number}){

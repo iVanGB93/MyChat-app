@@ -1,0 +1,43 @@
+STORAGE / CONNECTION / TRANSFER EXTRACTION — OCTOBER 25, 2026
+Local implementation record; not a deployment record.
+
+Implemented
+  OwnHistoryStore: bound-account history persistence, separate from ledger rules.
+  AttachmentJobStore: durable resumable jobs with revision compare-and-set.
+  AttachmentFileStore: byte reads/writes and final verified publication.
+  Relay storage: distinct private/group/attachment ciphertext custody contracts.
+  AttachmentRequests / AttachmentStreams / AttachmentLane / WssStreamNetwork:
+    current authenticated connections and capabilities, without storage/discovery.
+  createAttachmentTransfer now requires storage:{jobs,files} and connections.
+    Owner/policy/receipt/completion hooks remain explicit application dependencies.
+  Both phone rootAttachmentRuntime and hostedRootAttachments use these contracts.
+  Canonical ports are type-only; five files added to the shared-source map (91 total).
+
+Preserved
+  Existing cancellation/account guards, job revisions, file verification, receipt
+  sequencing, dynamic capability observations and Android/hosted adapter behavior.
+  Storage schemas and wire formats unchanged. Existing import paths may re-export
+  types; there is no duplicate implementation or flat production factory fallback.
+  Unrelated working-tree edits retained. No live data access, migration, deployment,
+  commit, push, app installation or production build performed for this extraction.
+
+Verification
+  npm run check: mobile types and full suite, 1492 passed / 3 skipped / 0 failed;
+    cycles (234), module boundaries, consolidation (329 + 8 support), assets passed.
+  AoN npm test: 309 passed / 0 failed. Temporary fixture tests run outside sandbox
+    because atomic rename can otherwise fail with EPERM; no live stores involved.
+  AoN npm run check:core: canonical/shared hashes and hosted TypeScript passed.
+  Architecture references: 222 local/hosted/guide references passed.
+  New compile-time regression rejects substituting relay/history/jobs/file stores,
+    database access via connections and the old flat production factory shape.
+  Existing transfer tests cover retry, cancellation, verification, receipt ordering,
+    worker recreation, direct streams, batches and relay integrity.
+  No phone/emulator run or new throughput measurement; no speed claim is made.
+
+Remaining scope
+  Many implementations still reside in services/identity. This is a responsibility
+  boundary extraction, not a wholesale directory move. Platform scheduling and route
+  selection can be extracted separately while preserving these shared contracts.
+Guide: storage.txt
+Guide: transfers.txt
+Guide: SHARED-CORE.txt

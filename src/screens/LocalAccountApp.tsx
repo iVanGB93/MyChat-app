@@ -1,6 +1,5 @@
-import {subscribeLocalNetworkChanges} from '../modules/network';
+import {useAccountState,useNetworkState} from '../modules/ui/liveState';
 import RenderBoundary from '../components/ui/RenderBoundary';
-import {useForegroundEvents} from '../hooks/useForegroundEvents';
 import {requestInitialNotificationPermission} from '../services/notificationPermission';
 import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
 import {startAppMaintenance} from '../modules/maintenance';
@@ -12,9 +11,9 @@ import RootProfileScreen from './profile/RootProfileScreen';
 import { backupWordPositions, checkBackupWords } from '../modules/identity';
 
 
-import {rootCallMayRunBackground} from '../modules/messaging';
+import {rootCallMayRunBackground} from '../modules/calls';
 
-import {subscribeLocalAccountCalls} from '../modules/messaging';
+import {subscribeLocalAccountCalls} from '../modules/calls';
 
 import RootAccountNavigator from '../navigation/RootAccountNavigator';
 
@@ -49,7 +48,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
-import { localAccountNetworkSnapshot, startLocalAccountNetwork } from '../modules/network';
+import { startLocalAccountNetwork } from '../modules/network';
 
 
 /** Application shell for local identities and the neuron network. */
@@ -71,7 +70,7 @@ function LocalAccountContent() {
 
   const {colors}=useTheme(),styles=makeLocalStyles(colors),{confirm}=useConfirm();
 
-  const [status, setStatus] = useState(localAccount.status());
+  const status=useAccountState();
 
   const [autoLock, setAutoLock] = useState(false), autoLockRef = useRef(false);
   const [positions, setPositions] = useState<[number, number]>([0, 1]);
@@ -97,8 +96,7 @@ function LocalAccountContent() {
 
   const [restoring, setRestoring] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
 
-  const [connections,setConnections]=useState(0);
-  useForegroundEvents(()=>setConnections(localAccountNetworkSnapshot()?.pool?.connections.filter(c=>c.state==='connected').length??0),subscribeLocalNetworkChanges);
+  const connections=useNetworkState(s=>s.liveConnections.length);
 
   const generation = useRef(0), actionRunning = useRef(false);
 
@@ -138,7 +136,6 @@ function LocalAccountContent() {
 
   useEffect(() => {
 
-    const stop = localAccount.subscribe(() => setStatus(localAccount.status()));
 
     const stopCallState=subscribeLocalAccountCalls(view=>{if(autoLockRef.current&&AppState.currentState==='background'&&(!view||view.status==='ended'))biometrics.lock();});
 
@@ -163,7 +160,7 @@ function LocalAccountContent() {
 
     });
 
-    return () => { generation.current++; state.remove(); stop(); stopCallState(); recovery.current?.stop(); recovery.current = null; runtime?.stop(); biometrics.lock(); };
+    return () => { generation.current++; state.remove(); stopCallState(); recovery.current?.stop(); recovery.current = null; runtime?.stop(); biometrics.lock(); };
 
   }, []);
 

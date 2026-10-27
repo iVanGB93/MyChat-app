@@ -1,6 +1,6 @@
 import React,{createContext,forwardRef,useCallback,useContext,useEffect,useRef,useState} from 'react';
 import {AppState,findNodeHandle,Keyboard,KeyboardAvoidingView,Platform,ScrollView,StyleSheet,TextInput,View,type ScrollViewProps,type TextInputProps,type ViewProps} from 'react-native';
-import {getKeyboardOverlap,supportsKeyboardOverlap,observeKeyboardLayout} from '../../../modules/axonic-app-update';
+import {getKeyboardOverlap,supportsKeyboardOverlap,observeKeyboardLayout} from '../../modules/ui/keyboard';
 import {keyboardScrollDelta} from '../../utils/keyboard-visibility';
 
 type FieldContext={focus(input:TextInput):void;blur(input:TextInput):void};

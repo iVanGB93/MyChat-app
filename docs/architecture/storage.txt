@@ -1,0 +1,63 @@
+STORAGE AND CUSTODY
+Purpose: durable reads/writes, own history and jobs, and encrypted packets held for
+other recipients. Own inbox, own pending work and third-party relay data are distinct.
+
+File: src/modules/storage/index.ts
+File: src/modules/storage/chatStore.ts
+File: src/modules/storage/storageReadSafety.ts
+File: src/services/identity/localRootChat.ts
+File: src/services/identity/mobileCustodyStore.ts
+File: src/services/identity/mobileGroupCustodyStore.ts
+File: src/services/identity/mobileAttachmentStore.ts
+File: src/services/identity/mobileAttachmentJobs.ts
+File: src/services/identity/custodyService.ts
+File: src/services/identity/groupCustodyService.ts
+File: src/services/identity/attachmentCustody.ts
+AoN: src/indexedStore.ts
+AoN: src/custodyStore.ts
+AoN: src/groupCustodyStore.ts
+AoN: src/hostedAttachmentStore.ts
+
+Contract
+  Accept validated transactions/read requests through storage adapters; publish
+  revisions after successful commits. Network opens no connections inside these
+  persistence operations. Custody services validate protocol admission against
+  store capacity/expiry; couriers, not storage adapters, schedule network delivery.
+  rootChatLedger belongs to messaging semantics even though it reads/writes here.
+  SQLite/file adapters differ across Android/Node. Do not duplicate domain rules.
+  A custody commit proves storage, not destination delivery. Delete-for-everyone
+  is a messaging action; clearing local history is a different operation.
+
+State authority: durable committed bytes. UI caches and in-flight snapshots cannot
+authorize actions, replace recovery evidence, or survive an owner change unchecked.
+Keep read failures distinguishable from empty stores; preserve transaction ordering
+and account boundaries. Never silently reset a malformed store to make UI fast.
+
+Test: tests/chatStoreRevision.test.cjs
+Test: tests/rootChatLedger.test.cjs
+Test: tests/custody.test.cjs
+Test: tests/groupCustody.test.cjs
+AoN: tests/callJournal.test.mjs
+AoN: tests/attachmentCustody.test.mjs
+Hosted filesystem tests may need permissions for temporary-file atomic rename;
+an EPERM sandbox failure is not evidence of a production storage defect.
+
+Implemented shared storage boundaries (October 25)
+  OwnHistoryStore reads/writes the bound account's serialized history. A null read
+  means absent history, not a failed read. Messaging owns ledger interpretation.
+  AttachmentJobStore owns resumable jobs and revision compare-and-set operations.
+  AttachmentFileStore owns file reads, durable writes and verified publication.
+  Relay custody ports hold encrypted packets for recipients; they cannot substitute
+  for own jobs/history. Protocol admission remains in custody services.
+  The transfer worker receives storage.jobs and storage.files explicitly. Android
+  and hosted adapters implement the same contracts without changing stored formats.
+File: src/services/identity/ownHistoryStore.ts
+File: src/services/identity/attachmentTransferPorts.ts
+File: src/services/identity/relayStorage.ts
+Test: tests/storageTransferPorts.test.cjs
+
+These are compile-time boundaries, not runtime permission sandboxes. Implementations
+remain in their existing locations; future physical moves should preserve imports,
+account guards and transaction semantics. Do not create a routing-aware StoreManager.
+Guide: messaging.txt
+Guide: transfers.txt

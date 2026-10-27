@@ -30,6 +30,9 @@ test('stream bridge has separate bounded admission and exact-slice copy',()=>{
  assert(result.includes('buffer.data.asReadOnlyBuffer().get(admitted)'));
  assert.throws(()=>patch(result.replace('axonicStream.receive','axonicStream.bypass'),'124.0.7'),/Partial|Unexpected/);
  const name='PeerConnectionObserver.java',source=fs.readFileSync('node_modules/react-native-webrtc/android/src/main/java/com/oney/WebRTCModule/'+name,'utf8');
- assert(patchPeer(source,name).includes('axonicStreamPeerAuthenticated && dataChannels.size() == 1'));
- assert.throws(()=>patchPeer(source.replace('dataChannels.size() == 1','dataChannels.size() < 99'),name),/Partial|Unexpected|anchor missing/);
+ const patched=patchPeer(source,name);
+ assert(patched.includes('axonicStreamPeerAuthenticated && dataChannels.size() < 3'));
+ assert(patched.includes('dataChannel.label().matches("axonic-call-v1:[0-9a-f]{64}")'));
+ assert.equal(patchPeer(patched,name),patched);
+ assert.throws(()=>patchPeer(source.replace('dataChannels.size() < 3','dataChannels.size() < 99'),name),/Partial|Unexpected|anchor missing/);
 });

@@ -1,0 +1,77 @@
+Direct-first attachment preparation — 2026-10-23
+
+Implemented locally, not committed/pushed/deployed
+
+Attachment v4 retains whole-file WebRTC streaming and 3,000,000-byte encrypted
+relay blocks. Direct traffic still requires authenticated recipient/device-bound
+DTLS, file checksum verification, current job/policy checks and a signed receipt.
+Normal chat envelope encryption is unchanged.
+
+Changed contract
+- Manifest root is now an independent per-file Ed25519 public verification key.
+  Its random signing seed stays in sender-private app storage; it is NOT derived
+  from the recipient's encryption key and is NOT included in chat descriptors.
+- Manifest checksum is SHA-256 over a domain-separated serialization containing
+  the random encryption key and plaintext checksum. This binds the file without
+  exposing a public plaintext hash to custodians. The private descriptor retains
+  the actual checksum and encryption key and must match that commitment.
+- The sender signs this manifest before producing any relay ciphertext.
+- On demand, XChaCha20-Poly1305 encrypts one 3 MB block (or the final tail). An
+  Ed25519 signature binds its ciphertext hash, index/AAD, time bounds and content
+  commitment. Custodians verify this before storing; receivers also verify AEAD
+  and the complete file checksum. Shared grants reuse the content context but
+  keep recipient-bound manifests and receipts.
+- Retry caches preserve exact ciphertext/signatures. A lazy first relay pass
+  verifies the source checksum and records local block hashes; later reads check
+  only the requested plaintext block. Altered uncached source bytes fail closed.
+- Public block-stream capability is now 4. Older blocks/manifests are rejected;
+  no legacy attachment decoder was restored. Smaller DTLS/SCTP frames remain
+  transport framing, not application-level encrypted file blocks.
+
+Security qualification
+This is a changed signed-manifest contract, not a byte-equivalent optimization
+or a formal security proof. Existing peer authentication, DTLS, AEAD, signature,
+private-storage and cryptographic-library assumptions remain. The attachment
+signer may authorize ciphertext lazily; the receiver's signed checksum commitment
+still fixes final content before delivery is acknowledged. Tests cover tampering,
+wrong bindings/keys, source/cache corruption, cancellations, retries, receipts,
+group grants, and independent Node/OpenSSL verification of block signatures.
+
+Validation
+- Mobile full suite: 1,425 total; 1,422 passed, 0 failed, 3 optional benchmarks
+  skipped. Log: builds/lazy-prep-mobile-final.log.
+- AoN full suite: 279 passed, 0 failed. Log: builds/lazy-prep-aon-final.log.
+- Mobile typecheck, cycles (216 modules), module boundaries (21 UI files),
+  consolidation (311 reachable modules), and AoN TypeScript build passed.
+- Local com.axonic.dev debug build succeeded for x86_64. Installed only on
+  emulator-5554 and emulator-5556, separately from their existing com.axonic apps.
+  Two fresh isolated Dev accounts were created; credentials remain in their
+  OS-backed session storage, not in repository scripts/logs. No identities,
+  messages, queues or other user data were wiped.
+- Live emulator transfer checks: 1 MB = 3,188 ms, 5 MB = 5,192 ms, 10 MB =
+  14,317 ms. Each checksum matched, both chat directions showed delivered, and
+  sender payload directories contained zero .block/.proof/relay-source files.
+  These single-run observations include test/polling overhead; not a controlled
+  before/after benchmark. 10 MB still had control waits. Its preparation timing
+  delta was 85 ms. Log: builds/lazy-prep-emulator-retry.log.
+- An earlier attempt timed out while Android/Expo first-run dialogs kept Dev
+  backgrounded. That queued test later delivered; no message was deleted.
+- Hosted 1/5/10 MB tests verify preparation without ciphertext, lazy generation,
+  byte-identical retries, encrypted relay delivery, durable prefix recovery,
+  signed receipts and sender-only signing authority.
+
+Source boundaries
+Shared attachmentProtocol, attachmentBatch, attachmentCustody,
+attachmentTransfer and groupCustodyMessages are copied from mobile to the
+isolated AoN worktree builds/aon-operator-20261022. persistentAxon received only
+the matching capability bump on each side: its pre-existing mobile-only setup
+timeout changes were NOT copied over or reverted. The AoN shared-source entry
+records its actual file hash; that existing difference remains explicit.
+Main Axonic-neuron worktree and unrelated staged/unstaged work were preserved.
+
+Rollout boundary
+No production build, phone installation, live AoN update, commit, push or reset.
+This version changes the attachment format and requires coordinated rollout.
+Do not install over populated v3 stores blindly: this work does not migrate or
+delete old attachment rows. Validate/plan unsupported-history handling before
+an official-app rollout; retained old files were not removed by this work.

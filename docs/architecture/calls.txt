@@ -1,0 +1,89 @@
+CALLS AND SCREEN SHARING
+Purpose: durable signaling, call state, audio/video sessions and screen sharing.
+Call control and the media path are distinct; signaling success is not video flow.
+
+File: src/modules/calls/commands.ts
+File: src/services/identity/neuronCallCoordinator.ts
+File: src/services/identity/durableCallControl.ts
+File: src/services/identity/callControlRuntime.ts
+File: src/services/identity/sharedRtcCall.ts
+File: src/services/identity/callMediaState.ts
+File: src/hooks/useWebRTCCore.ts
+File: src/hooks/useScreenShareOverlay.ts
+File: src/services/callScreenShare.ts
+File: src/screens/calls/RootAccountCallScreen.tsx
+AoN: src/hostedRootCalls.ts
+AoN: src/callJournalStore.ts
+
+Contract: calling.start owns initiation checks, using UI permission callbacks.
+Active-call controls and lifetime leases belong to the current session. Do not put
+native tracks/streams in persistent UI state. Metadata selectors can be shared;
+old-call cleanup must not clear a newer call. Stop sharing is not hang-up.
+Screen capture requires OS consent; overlays/native capture are phone adapters.
+Group messaging support does not imply an AI supports realtime voice/video.
+
+State authority: coordinator/durable journal for signaling, media session for
+tracks and capture, OS for permission. Inspect invitation/acceptance, selected
+device, connection route, frame counters and teardown separately.
+
+Test: tests/callControlProtocol.test.cjs
+Test: tests/callRetryScheduler.test.cjs
+File: src/services/identity/callRetryScheduler.ts
+File: src/services/identity/callControlRuntime.ts
+Direct retry scheduling now checks the durable per-device pending events, rather
+than treating historical journal rows as work. Bounded passes mark confirmed-empty
+call/session pairs idle; journal, connection and policy changes invalidate that
+observation. Missing/unverifiable identity and read failures remain retryable.
+Both phone and hosted adapters supply the same pending check. No timer is needed
+when no matching direct peer is connected. Call expiry/coordinator clocks remain.
+Hosted committed chat writes now wake call-policy handling, matching the phone's
+existing policy-event path. These events are hints; send-time checks stay in place.
+
+Remaining scheduling: relay pump fallback/receipt recovery, dashboard lease expiry,
+ring/selection deadlines, ICE negotiation and media timeouts are not removed here.
+Relay scheduling follow-up: the shared pump now tracks confirmed-empty journal
+outboxes per relay session after bounded scans. Historical rows no longer keep
+event-capable relays awake. New journal/topology/inbox events clear observations;
+unknown records, read errors and unacknowledged events keep retry deadlines.
+Peers without event support retain three-second incoming-call fallback polling.
+Browser idle call state now refreshes on dashboard SSE. Active calls keep their
+one-second lease/media-signaling heartbeat; SSE failure keeps fallback polling.
+The SSE connection itself follows panel/page lifecycle events rather than polling
+every second. Thirty-second reconciliation remains for status expiry/recovery.
+File: src/services/identity/callRelayPump.ts
+Test: tests/relayPollSchedule.test.cjs
+AoN: src/dashboardEvents.ts
+AoN: src/callDashboard.ts
+AoN: tests/dashboardUpdates.test.mjs
+Test: tests/rootCallScheduling.test.cjs
+Test: tests/rootCallAppearance.test.cjs
+Test: tests/rootCallMinimize.test.cjs
+Test: tests/callScreenShare.test.cjs
+Live Dev checks must cover TURN, changing screen content, stop-sharing and both
+ends' hang-up. Unit tests do not establish physical microphone/video quality.
+Next extraction: separate useWebRTCCore lifecycle/permissions from shared call
+policy in small steps; it is a large hook, not a license to rewrite signaling.
+Guide: coordination.txt
+
+October 25 follow-up: callPeerSelection prefers a shared lease with a 1.5-second grace, then uses configured call-only ICE when acquisition fails or times out. The signed SDP carries shared/dedicated mode; the answerer follows it, pins the remote certificate, and releases late borrowed leases. Cleanup closes only call-owned connections. Controlled two-phone tests verified actual relay/relay video, screen sharing, camera return, and hangup; shared voice remains direct. See dev-turn-relay-2026-10-25.txt.
+
+File: src/services/callPeerSelection.ts
+Test: tests/callPeerSelection.test.cjs
+Test: tests/webRtcTransport.test.cjs
+
+October 25 public API / preparation follow-up
+Public entry: src/modules/calls/index.ts. Pure call commands live beside it in
+commands.ts. Messaging no longer re-exports call controls; existing call lifecycle
+and shared signaling still use one runtime. Native media remains phone-specific.
+File: src/modules/calls/index.ts
+
+Internal extraction follow-up (October 25)
+File: src/composition/mobileCallSession.ts
+File: src/services/callQualityMonitor.ts
+Test: tests/mobileCallSession.test.cjs
+Test: tests/callQualityMonitor.test.cjs
+Mobile session owns Android notifications, registration and lifecycle unsubscribe;
+shared call coordinator/protocol remain portable. Stop is idempotent and rejects
+late ringing confirmations after stop/account change. Quality sampling uses a
+single-flight deadline; getStats has no push event, so the active 3s sampling
+interval is retained without overlapping requests or late publication.

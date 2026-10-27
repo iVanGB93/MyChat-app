@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript'),crypto=require('node:crypto');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol');
-function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHash,nativeFileHash,nativeBatch,bytes=2*65536+17}={}){
+function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHash,nativeFileHash,nativeBatch,nativeLeaf,nativeSourceHashes,nativeEncrypt,bytes=2*65536+17}={}){
  const f=fixture(bytes),data=new Map(),directories=new Set(),calls={read:0,write:0,open:0,close:0,copy:0},buffers=[];
  const path=args=>args.map(v=>typeof v==='string'?v:v.uri).join('/');
  class Directory{
@@ -20,37 +20,54 @@ function setup(t,{shortRead=false,failWrite=false,failCopy=false,nativeStagedHas
    close(){calls.close++;}};
   }
  }
- const identity=f.ids[0],localAccount={status:()=>({account:identity.record.account}),publicRecord:()=>identity.record,callDevice:()=>identity.device.id,
+ const identity=f.ids[0],localAccount={status:()=>({state:'unlocked',account:identity.record.account}),publicRecord:()=>identity.record,callDevice:()=>identity.device.id,
   signAttachment:fields=>a.signAttachmentManifest(fields,identity.signingSeed,identity.record,now)};
- const out={};new Function('require','exports','Date',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentFiles.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>name==='expo-file-system'?{File,Directory,Paths:{document:'own'}}:name.includes('axonic-nearby')?{default:{identityRandomBytes:async()=>Buffer.from(f.key).toString('hex'),...(nativeStagedHash?{attachmentStagedFileSha256:(...args)=>nativeStagedHash(...args,data)}:{}),...(nativeBatch?{attachmentPrepareBatch:(...args)=>nativeBatch(...args,data)}:{}),...(nativeFileHash?{attachmentFileSha256:(...args)=>nativeFileHash(...args,data)}:{})}}:name==='./localAccount'?{localAccount}:name.startsWith('./')?load(name.slice(2)):require(name),out,{now:()=>now});
+ const dependency=name=>name==='./sharedMediaFile'&&nativeSourceHashes?{...load('sharedMediaFile'),sharedMediaNative:{hashBlocks:(...args)=>nativeSourceHashes(...args,data)}}:load(name.slice(2));
+ let randomCalls=0;const out={};new Function('require','exports','Date',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentFiles.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>name==='expo-file-system'?{File,Directory,Paths:{document:'own'}}:name.includes('axonic-nearby')?{default:{...(nativeEncrypt?{attachmentEncryptBlock:nativeEncrypt}:{}),...(nativeLeaf?{attachmentSha256:nativeLeaf}:{}),identityRandomBytes:async()=>Buffer.from(randomCalls++%2===0?f.key:f.signer).toString('hex'),...(nativeStagedHash?{attachmentStagedFileSha256:(...args)=>nativeStagedHash(...args,data)}:{}),...(nativeBatch?{attachmentPrepareStreamBlock:(...args)=>nativeBatch(...args,data)}:{}),...(nativeFileHash?{attachmentFileSha256:(...args)=>nativeFileHash(...args,data)}:{})}}:name==='./localAccount'?{localAccount}:name.startsWith('./')?dependency(name):require(name),out,{now:()=>now});
  const input={id:f.manifest.id,name:'test.png',mime:'image/png',recipient:f.ids[1].record,current:()=>true};
  out.rootAttachmentSource(identity.record.account,input.id).write(f.plain);
- return {...f,out,input,data,calls,buffers};
+ return {...f,out,input,data,calls,buffers,localAccount};
 }
-test('batched preparation preserves each encrypted chunk, checksum and proof with bounded native calls',async t=>{
+for(const mode of ['ok','bad-count','bad-checksum','bad-size','locked'])test(`native source hashes preserve validation: ${mode}`,async t=>{
+ let calls=0;
+ const f=setup(t,{bytes:3_000_017,nativeSourceHashes:async(uri,bytes,data)=>{
+  calls++;const value=data.get(uri),hash=b=>crypto.createHash('sha256').update(b).digest('hex');
+  const result={bytes,checksum:hash(value),blocks:[hash(value.slice(0,3_000_000)),hash(value.slice(3_000_000))]};
+  if(mode==='bad-count')result.blocks.pop();if(mode==='bad-checksum')result.checksum='0'.repeat(64);if(mode==='bad-size')result.bytes--;if(mode==='locked')f.localAccount.status=()=>({state:'locked'});
+  return result;
+ }});
+ const d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,digest=a.attachmentDigest(d.manifest),job={owner,digest,descriptor:d};
+ const invoke=()=>f.out.readRootAttachmentChunks(job,0,1);
+ if(mode==='ok'){
+  const [chunk]=await invoke();assert(a.verifyAttachmentChunk(d.manifest,chunk));assert.deepEqual(Buffer.from(a.decryptAttachmentChunk(d.manifest,chunk,f.key)),Buffer.from(f.plain.slice(0,3_000_000)));
+ }else{await assert.rejects(invoke());assert(![...f.data.keys()].some(p=>p.endsWith('0.block')));}
+ assert.equal(calls,1);
+});
+
+test('preparation signs content without producing ciphertext; blocks are encrypted on first read',async t=>{
  const f=setup(t),d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,digest=a.attachmentDigest(d.manifest);
- assert.equal(f.calls.read,3);assert.equal(f.calls.write,3,'one encrypted write per 64 KiB batch; plaintext is copied natively');assert.equal(f.calls.open,f.calls.close);
+ assert.equal(d.manifest.version,4);assert.equal(f.calls.read,3);assert.equal(f.calls.write,0,'no ciphertext during preparation');assert(![...f.data.keys()].some(p=>p.endsWith('.block')));assert.equal(f.calls.open,f.calls.close);
  assert(f.buffers.every(b=>b.every(v=>v===0)),'temporary batch buffers are cleared');
  assert.equal(d.checksum,crypto.createHash('sha256').update(f.plain).digest('hex'));
  assert.deepEqual(Buffer.from(f.data.get(f.out.rootAttachmentFile(owner,digest).uri)),Buffer.from(f.plain));
- for(let i=0;i<Math.ceil(f.plain.length/4096);i++){
+ for(let i=0;i<Math.ceil(f.plain.length/3_000_000);i++){
   const chunk=await f.out.readRootAttachmentChunk({owner,digest,descriptor:d},i);
-  assert.equal(chunk.ciphertext,a.encryptAttachmentChunk(d.manifest,i,f.plain.slice(i*4096,(i+1)*4096),f.key));
+  assert.equal(chunk.ciphertext,a.encryptAttachmentChunk(d.manifest,i,f.plain.slice(i*3_000_000,(i+1)*3_000_000),f.key));
   assert.equal(a.verifyAttachmentChunk(d.manifest,chunk),true);
  }
 });
 
 test('batch reads use one file handle for 512 KiB and preserve tail, indexes and proofs',async t=>{
- const f=setup(t,{bytes:512*1024+17}),d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,digest=a.attachmentDigest(d.manifest),job={owner,digest,descriptor:d};
+ const f=setup(t,{bytes:3_000_017}),d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,digest=a.attachmentDigest(d.manifest),job={owner,digest,descriptor:d};
  const before={...f.calls};
- for(const [start,count] of [[0,128],[128,1],[7,3]]){
+ for(const [start,count] of [[0,1],[1,1],[0,1]]){
   const chunks=await f.out.readRootAttachmentChunks(job,start,count);assert.equal(chunks.length,count);
-  for(const c of chunks){assert(a.verifyAttachmentChunk(d.manifest,c));assert.deepEqual(a.decryptAttachmentChunk(d.manifest,c,f.key),f.plain.slice(c.index*4096,(c.index+1)*4096));}
+  for(const c of chunks){assert(a.verifyAttachmentChunk(d.manifest,c));assert.equal(crypto.createHash('sha256').update(a.decryptAttachmentChunk(d.manifest,c,f.key)).digest('hex'),crypto.createHash('sha256').update(f.plain.slice(c.index*3_000_000,(c.index+1)*3_000_000)).digest('hex'));}
  }
- assert.equal(f.calls.read-before.read,3);assert.equal(f.calls.open-before.open,3);assert.equal(f.calls.close-before.close,3);
- for(const [index,count] of [[-1,1],[0,129],[128,2],[0,0]])await assert.rejects(f.out.readRootAttachmentChunks(job,index,count),/range/);
- const file=[...f.data.keys()].find(p=>p.includes('/files/')&&p.endsWith('/ciphertext'));f.data.set(file,f.data.get(file).slice(0,-1));
- await assert.rejects(f.out.readRootAttachmentChunks(job,128,1),/truncated/);assert.equal(f.calls.open,f.calls.close);
+ assert.equal(f.calls.open,f.calls.close);
+ for(const [index,count] of [[-1,1],[0,2],[2,1],[0,0]])await assert.rejects(f.out.readRootAttachmentChunks(job,index,count),/range/);
+ const file=[...f.data.keys()].find(p=>p.includes('/files/')&&p.endsWith('1.block'));f.data.set(file,f.data.get(file).slice(0,-1));
+ await assert.rejects(f.out.readRootAttachmentChunks(job,1,1),/truncated/);assert.equal(f.calls.open,f.calls.close);
 });
 
 test('shared group preparation encrypts once and resumes independent recipient grants',async t=>{
@@ -69,15 +86,16 @@ test('shared group preparation encrypts once and resumes independent recipient g
  assert.deepEqual(await f.out.prepareRootAttachment(next),second);
  assert.equal(f.calls.copy,copies,'no per-recipient payload copies');assert.equal(f.out.rootAttachmentFile(owner,a.attachmentDigest(first.manifest)).uri,f.out.rootAttachmentFile(owner,a.attachmentDigest(second.manifest)).uri);
  assert.equal(hashes,1,'reuse the prepared checksum across recipient grants and retries');
- for(let i=0;i<Math.ceil(f.plain.length/4096);i++){
+ assert.equal(second.manifest.version,4);
+ for(let i=0;i<Math.ceil(f.plain.length/3_000_000);i++){
   const c=await f.out.readRootAttachmentChunk({owner,digest:a.attachmentDigest(second.manifest),descriptor:second},i);
-  assert.deepEqual(a.decryptAttachmentChunk(second.manifest,c,f.key),f.plain.slice(i*4096,(i+1)*4096));
+  assert.equal(crypto.createHash('sha256').update(a.decryptAttachmentChunk(second.manifest,c,f.key)).digest('hex'),crypto.createHash('sha256').update(f.plain.slice(i*3_000_000,(i+1)*3_000_000)).digest('hex'));
  }
  f.out.removeRootAttachmentContent(owner,a.attachmentDigest(first.manifest));assert(f.out.rootAttachmentFile(owner,a.attachmentDigest(second.manifest)).exists,'another recipient retains the payload');
  f.out.removeRootAttachmentSource(owner,shared.id);f.out.removeRootAttachmentContent(owner,a.attachmentDigest(second.manifest));assert(![...f.data.keys()].some(p=>p.includes('/shared/')),'last reference releases payload');
 });
 test('short source reads and write failures never publish prepared attachment files',async t=>{
- for(const options of [{shortRead:true},{failWrite:true},{failCopy:true}]){
+ for(const options of [{shortRead:true},{failCopy:true}]){
   const f=setup(t,options);await assert.rejects(f.out.prepareRootAttachment(f.input),/source changed|disk full|copy failed/);
   assert.equal(f.calls.open,f.calls.close);assert(f.buffers.every(b=>b.every(v=>v===0)));
   assert(![...f.data.keys()].some(p=>p.includes('/files/')||p.endsWith('/descriptor.json')));
@@ -148,15 +166,74 @@ test('shared file references reject traversal instead of reading another locatio
  assert.throws(()=>f.out.rootAttachmentFile(owner,digest),/Invalid shared/);
 });
 
-for(const mode of ['ok','malformed','error','locked'])test('native batch preparation '+mode,async t=>{
- let active=true,calls=0;const f=setup(t,{bytes:524289,
- nativeStagedHash:async(owner,id,bytes,data)=>crypto.createHash('sha256').update(data.get('own/axonic-own-attachments-v1/'+owner.slice(9)+'/staging/'+id+'/content')).digest('hex'),
- nativeBatch:async(owner,id,key,bytes,start,aads,data)=>{calls++;assert(aads.length<=128);if(mode==='error')throw Error('native batch failed');if(mode==='malformed')return ['bad'];if(mode==='locked')active=false;
- const prefix='own/axonic-own-attachments-v1/'+owner.slice(9)+'/staging/'+id+'/',source=data.get(prefix+'content'),output=data.get(prefix+'ciphertext'),chunks=[],leaves=[];
- const {xchacha20poly1305}=require('@noble/ciphers/chacha.js');
- for(let n=0;n<aads.length;n++){const index=start+n,aad=Buffer.from(aads[n]),nonce=crypto.createHash('sha256').update(aad).digest().subarray(0,24),chunk=xchacha20poly1305(Buffer.from(key,'hex'),nonce,aad).encrypt(source.subarray(index*4096,(index+1)*4096));chunks.push(Buffer.from(chunk));leaves.push(a.attachmentLeafBytes(index,chunk));}
- data.set(prefix+'ciphertext',Buffer.concat([output,...chunks]));return leaves;
- }});f.input.current=()=>active;
- if(mode==='ok'){const d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,digest=a.attachmentDigest(d.manifest);assert.equal(calls,2);assert.equal(f.calls.read,0);for(const index of [0,127,128]){const chunk=await f.out.readRootAttachmentChunk({owner,digest,descriptor:d},index);assert.equal(chunk.ciphertext,a.encryptAttachmentChunk(d.manifest,index,f.plain.slice(index*4096,(index+1)*4096),f.key));}}
- else{await assert.rejects(f.out.prepareRootAttachment(f.input));assert(![...f.data.keys()].some(p=>p.includes('/files/')||p.endsWith('/ciphertext')||p.endsWith('/descriptor.json')));assert(f.out.rootAttachmentSource(f.ids[0].record.account,f.input.id).exists);}
+test('native eager encryption is never invoked, including successful direct preparation',async t=>{
+ let calls=0;const f=setup(t,{nativeStagedHash:async(owner,id,bytes,data)=>crypto.createHash('sha256').update(data.get('own/axonic-own-attachments-v1/'+owner.slice(9)+'/staging/'+id+'/content')).digest('hex'),
+ nativeBatch:async()=>{calls++;throw Error('Eager encryption forbidden');}});
+ const d=await f.out.prepareRootAttachment(f.input);assert.equal(calls,0);assert.equal(f.calls.read,0);assert.equal(f.calls.write,0);
+ assert(a.verifyAttachmentManifest(d.manifest,f.ids[0].record,now));
+ assert(![...f.data.keys()].some(p=>p.endsWith('.block')||p.endsWith('/ciphertext')));
+});
+test('lazy block retry is byte identical, concurrent requests coalesce, and corrupted cache fails closed',async t=>{
+ const f=setup(t),d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,job={owner,digest:a.attachmentDigest(d.manifest),descriptor:d};
+ const [a1,a2]=await Promise.all([f.out.readRootAttachmentChunk(job,0),f.out.readRootAttachmentChunk(job,0)]);
+ assert.deepEqual(a1,a2);const reads=f.calls.read;
+ assert.deepEqual(await f.out.readRootAttachmentChunk(job,0),a1);assert.equal(f.calls.read,reads+1);
+ const block=[...f.data.keys()].find(p=>p.endsWith('0.block'));f.data.get(block)[0]^=1;
+ await assert.rejects(f.out.readRootAttachmentChunk(job,0),/cached block changed/);
+});
+test('native leaf hashing preserves exact signed blocks and rejects cache tampering',async t=>{
+ let hashes=0;
+ const f=setup(t,{nativeLeaf:value=>{hashes++;return crypto.createHash('sha256').update(value,'utf8').digest('hex');}});
+ const d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,job={owner,digest:a.attachmentDigest(d.manifest),descriptor:d};
+ const chunk=await f.out.readRootAttachmentChunk(job,0);
+ assert.equal(hashes,1);
+ assert.deepEqual(chunk,a.signAttachmentBlock(d.manifest,0,a.encryptAttachmentChunk(d.manifest,0,f.plain,f.key),f.signer));
+ assert.deepEqual(await f.out.readRootAttachmentChunk(job,0),chunk);assert.equal(hashes,2);
+ const block=[...f.data.keys()].find(p=>p.endsWith('0.block'));f.data.get(block)[0]^=1;
+ await assert.rejects(f.out.readRootAttachmentChunk(job,0),/cached block changed/);assert.equal(hashes,3);
+});
+
+test('invalid native leaf result never publishes a cached block',async t=>{
+ const f=setup(t,{nativeLeaf:()=> 'not-a-digest'}),d=await f.out.prepareRootAttachment(f.input);
+ await assert.rejects(f.out.readRootAttachmentChunk({owner:f.ids[0].record.account,digest:a.attachmentDigest(d.manifest),descriptor:d},0),/Invalid attachment hash/);
+ assert(![...f.data.keys()].some(p=>p.endsWith('.block')));
+});
+
+test('changed source never encrypts with the committed key',async t=>{
+ const f=setup(t),d=await f.out.prepareRootAttachment(f.input),owner=f.ids[0].record.account,job={owner,digest:a.attachmentDigest(d.manifest),descriptor:d};
+ f.data.get(f.out.rootAttachmentFile(owner,job.digest).uri)[0]^=1;
+ await assert.rejects(f.out.readRootAttachmentChunk(job,0),/source changed/);
+ assert(![...f.data.keys()].some(p=>p.endsWith('.block')));
+});
+
+for(const size of [1_000_000,5_000_000,10_000_000])test('mobile direct preparation creates no relay ciphertext for '+size+' bytes',async t=>{
+ const f=setup(t,{bytes:size,nativeStagedHash:async(owner,id,bytes,data)=>crypto.createHash('sha256').update(data.get('own/axonic-own-attachments-v1/'+owner.slice(9)+'/staging/'+id+'/content')).digest('hex'),
+ nativeBatch:async()=>{throw Error('Direct path must not prepare ciphertext');}});
+ const d=await f.out.prepareRootAttachment(f.input);
+ assert.equal(f.calls.read,0);assert.equal(f.calls.write,0);
+ assert(![...f.data.keys()].some(p=>p.endsWith('.block')||p.endsWith('.proof')||p.endsWith('/ciphertext')));
+ assert.equal(d.manifest.bytes,size);assert.equal(d.manifest.version,4);
+ assert(a.verifyAttachmentManifest(d.manifest,f.ids[0].record,now));
+ assert.equal(crypto.createHash('sha256').update(f.data.get(f.out.rootAttachmentFile(f.ids[0].record.account,a.attachmentDigest(d.manifest)).uri)).digest('hex'),d.checksum);
+});
+
+for(const mode of ['ok','bad-length','reject','locked'])test(`native block preparation preserves commit gates: ${mode}`,async t=>{
+ let calls=0,expected;
+ const f=setup(t,{nativeEncrypt:async(plain,key,hash,aad)=>{
+  calls++;assert.equal(hash,crypto.createHash('sha256').update(plain).digest('hex'));
+  assert.equal(aad,a.attachmentChunkAAD(expected.manifest,0));
+  if(mode==='reject')throw Error('native failed');
+  if(mode==='locked')f.localAccount.status=()=>({state:'locked'});
+  return mode==='bad-length'?new Uint8Array(1):a.encryptAttachmentChunkBytes(expected.manifest,0,plain,Buffer.from(key,'hex'));
+ }});
+ expected=await f.out.prepareRootAttachment(f.input);
+ const job={owner:expected.manifest.sender,digest:a.attachmentDigest(expected.manifest),descriptor:expected};
+ if(mode==='ok'){
+  const [chunk]=await f.out.readRootAttachmentChunks(job,0,1);
+  assert.deepEqual(Buffer.from(a.decryptAttachmentChunk(expected.manifest,chunk,Buffer.from(expected.key,'hex'))),Buffer.from(f.plain));
+ }else{
+  await assert.rejects(f.out.readRootAttachmentChunks(job,0,1));
+  assert.equal([...f.data.keys()].filter(k=>k.endsWith('/0.block')||k.endsWith('/0.proof')).length,0);
+ }
+ assert.equal(calls,1);
 });

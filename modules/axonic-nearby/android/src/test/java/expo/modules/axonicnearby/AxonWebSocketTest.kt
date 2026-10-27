@@ -5,6 +5,17 @@ import org.junit.Test
 import java.io.*
 
 class AxonWebSocketTest {
+  @Test fun binaryFramesRequireAdmissionAndStayBounded() {
+    fun frame(size:Int):ByteArray { val out=ByteArrayOutputStream();val d=DataOutputStream(out);d.writeByte(0x82);if(size<126)d.writeByte(size) else { d.writeByte(126);d.writeShort(size) };d.write(ByteArray(size){(it%251).toByte()});return out.toByteArray() }
+    for(size in listOf(71,32838)){val input=DataInputStream(ByteArrayInputStream(frame(size)));val got=AxonWebSocket.readPacket(input.read(),input,{AxonFrames.BULK_BYTES},{true}){_,_->};assertArrayEquals(ByteArray(size){(it%251).toByte()},got as ByteArray)}
+    for(size in listOf(70,32839)){val input=DataInputStream(ByteArrayInputStream(frame(size)));assertThrows(IllegalArgumentException::class.java){AxonWebSocket.readPacket(input.read(),input,{AxonFrames.BULK_BYTES},{true}){_,_->}}}
+    val input=DataInputStream(ByteArrayInputStream(frame(71)));assertThrows(IllegalArgumentException::class.java){AxonWebSocket.readPacket(input.read(),input,{AxonFrames.BULK_BYTES},{false}){_,_->}}
+  }
+  @Test fun binaryWriterMasksExactPayloadAndRejectsOversize() {
+    val bytes=ByteArray(32838){(it%251).toByte()};val out=ByteArrayOutputStream();AxonWebSocket.write(DataOutputStream(out),bytes,2,32838)
+    val input=DataInputStream(ByteArrayInputStream(out.toByteArray()));assertEquals(0x82,input.readUnsignedByte());assertEquals(0xfe,input.readUnsignedByte());assertEquals(bytes.size,input.readUnsignedShort());val mask=ByteArray(4);input.readFully(mask);assertArrayEquals(bytes,ByteArray(bytes.size){i->(input.readUnsignedByte() xor mask[i%4].toInt()).toByte()})
+    assertThrows(IllegalArgumentException::class.java){AxonWebSocket.write(DataOutputStream(out),ByteArray(32839),2,AxonFrames.BULK_BYTES)}
+  }
   @Test fun largeFramesAreCanonicalMaskedAndRequireAdmission() {
     for(size in listOf(20001,65535,65536,700000,850000)) {
       val bytes=ByteArray(size) { 65 }; val out=ByteArrayOutputStream()
@@ -111,3 +122,4 @@ class AxonWebSocketTest {
     } finally { transport.destroy() }
   }
 }
+

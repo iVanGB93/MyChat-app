@@ -1,6 +1,87 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const out=require('./helpers/attachment.cjs').load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),id='1'.repeat(64);
+
+test('revision cache reuses persisted bytes but not mutable snapshots or external updates',async()=>{
+ let raw=null,revision=0,reads=0,active=true;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,revision:()=>revision,read:async()=>{reads++;return raw;},write:async value=>{raw=value;revision++;}});
+ await ledger.configure(b,{accepted:true});assert.equal(reads,1);
+ const first=await ledger.snapshot();first.contacts[0].blocked=true;
+ assert.equal((await ledger.snapshot()).contacts[0].blocked,false);assert.equal(reads,1);
+ const state=JSON.parse(raw);state.contacts[0].blocked=true;raw=JSON.stringify(state);revision++;
+ assert.equal((await ledger.snapshot()).contacts[0].blocked,true);assert.equal(reads,2);
+ active=false;await assert.rejects(ledger.snapshot(),/Unlock/);
+ ledger.invalidateReadCache();active=true;await ledger.snapshot();assert.equal(reads,3);
+});
+
+test('an overlapping external write cannot label old committed bytes with the newer revision',async()=>{
+ let raw=null,revision=0,reads=0,handoffs=0;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,revision:()=>revision,stateCommitted:()=>handoffs++,read:async()=>{reads++;return raw;},write:async value=>{raw=value;revision++;const s=JSON.parse(raw);s.contacts[0].blocked=true;raw=JSON.stringify(s);revision++;}});
+ await ledger.configure(b,{accepted:true});assert.equal((await ledger.snapshot()).contacts[0].blocked,true);assert.equal(reads,2);assert.equal(handoffs,0);
+});
+
+test('uncertain writes invalidate cached history even when their revision did not advance',async()=>{
+ let raw=null,revision=0,reads=0,fail=false,handoffs=0;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,revision:()=>revision,stateCommitted:()=>handoffs++,read:async()=>{reads++;return raw;},write:async value=>{raw=value;if(fail)throw Error('uncertain write');revision++;}});
+ await ledger.configure(b,{accepted:true});await ledger.snapshot();assert.equal(reads,1);
+ fail=true;await assert.rejects(ledger.configure(b,{blocked:true}),/uncertain write/);
+ assert.equal(handoffs,1);assert.equal((await ledger.snapshot()).contacts[0].blocked,true);assert.equal(reads,2);
+});
+
+test('state handoff occurs only after durable success; observer failure cannot roll it back',async()=>{
+ let raw=null,fail=false,active=true,calls=0;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,read:async()=>raw,
+  write:async value=>{if(fail)throw Error('disk');raw=value;},stateCommitted:state=>{calls++;assert.equal(raw,state);throw Error('observer');}});
+ await ledger.configure(b,{accepted:true});assert.equal(calls,1);
+ fail=true;await assert.rejects(ledger.configure(b,{blocked:true}),/disk/);assert.equal(calls,1);
+ active=false;await assert.rejects(ledger.configure(b,{blocked:true}),/Unlock/);assert.equal(calls,1);
+});
+
+test('revision snapshot rejects external writes during storage read and account locking',async()=>{
+ for(const locking of [false,true]){
+  let revision=0,active=true,resolve;
+  const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,read:()=>new Promise(r=>resolve=r),write:async()=>{}});
+  const pending=ledger.revisionSnapshot(()=>revision);await new Promise(r=>setImmediate(r));
+  if(locking)active=false;else revision++;
+  resolve(null);if(locking)await assert.rejects(pending,/Unlock/);else assert.equal(await pending,null);
+ }
+});
+
+test('concurrent snapshots share one storage read but never mutable results or queued writes',async()=>{
+ let raw=null,reads=0;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>{reads++;return raw;},write:async v=>{raw=v;}});
+ const snapshots=await Promise.all(Array.from({length:20},()=>ledger.snapshot()));
+ assert.equal(reads,1);snapshots[0].contacts.push({peer:b});assert.equal(snapshots[1].contacts.length,0);
+ const before=ledger.snapshot(),write=ledger.configure(b,{alias:'Friend',accepted:true}),after=ledger.snapshot();
+ assert.equal((await before).contacts.length,0);await write;assert.equal((await after).contacts.length,1);
+ const previous=reads;await ledger.snapshot();assert.equal(reads,previous+1,'settled snapshots are not cached');
+});
+
+test('shared snapshot failures recover and account locking rejects every waiting reader',async()=>{
+ let fail=true,active=true,release;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,read:async()=>{if(fail)throw Error('disk unavailable');return null;},write:async()=>{}});
+ const failures=await Promise.allSettled([ledger.snapshot(),ledger.snapshot()]);assert(failures.every(r=>r.status==='rejected'));
+ fail=false;await ledger.snapshot();
+ const locked=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,read:()=>new Promise(r=>{release=r;}),write:async()=>{}});
+ const pending=[locked.snapshot(),locked.snapshot()];await new Promise(r=>setImmediate(r));active=false;release(null);
+ assert((await Promise.allSettled(pending)).every(r=>r.status==='rejected'));
+});
+test('retired local attachments become inert resend notices without rewriting storage on read',async()=>{
+ for(const version of [1,2,3]){
+  const attachment={manifest:{version,id},name:'old.jpg'},original=JSON.stringify({version:1,contacts:[],messages:[{id,peer:b,direction:'outgoing',text:'old.jpg',at:100,status:'pending',attachment}]});
+  let raw=original;
+  const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async v=>{raw=v;}});
+  for(let i=0;i<2;i++){const state=await ledger.snapshot();assert.match(state.messages[0].text,/earlier version/);assert.equal(state.messages[0].attachment,undefined);assert.deepEqual(state.messages[0].retiredAttachment,attachment);assert.deepEqual(out.pendingRootChat(state,a),[]);}
+  assert.equal(raw,original);
+  await ledger.configure(b,{alias:'Friend',accepted:true});
+  const reloaded=await ledger.snapshot();assert.deepEqual(reloaded.messages[0].retiredAttachment,attachment);assert.deepEqual(out.pendingRootChat(reloaded,a),[]);
+ }
+});
+test('malformed current attachment still fails validation rather than being hidden',async()=>{
+ const raw=JSON.stringify({version:1,contacts:[],messages:[{id,peer:b,direction:'outgoing',text:'new.jpg',at:100,status:'pending',attachment:{manifest:{version:4},name:'new.jpg'}}]});
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async()=>{throw Error('unexpected write');}});
+ await assert.rejects(ledger.snapshot(),/needs recovery/);
+});
 test('confirmed routes persist, stay local, and cannot be overwritten by retries',async()=>{
  const {deliveryEvidence}=require('./helpers/attachment.cjs').load('deliveryEvidence'),f=fixture();
  const receipt=deliveryEvidence('receipt',100,b);
@@ -181,4 +262,27 @@ test('message feedback only follows durable new admission, never history, receip
  await ledger.enqueue(b,id,'hello');await ledger.snapshot();await ledger.delivered(b,id);await ledger.enqueue(b,id,'hello');assert.deepEqual(events,[['outgoing',id]]);
  const incoming='f'.repeat(64),wire=out.encodeRootChat(a,incoming,'new');assert(await ledger.receive(b,incoming,wire));assert(await ledger.receive(b,incoming,wire));assert.equal(events.length,2);
  fail=true;await assert.rejects(ledger.enqueue(b,'e'.repeat(64),'failed'));assert.equal(events.length,2);
+});
+
+test('capability observation reads once, commits atomically and preserves unrelated history',async()=>{
+ let raw=JSON.stringify({version:1,messages:[],contacts:[]}),reads=0,writes=0,fail=false,current=true;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>1,current:()=>current,read:async()=>{reads++;return raw;},write:async value=>{writes++;if(fail)throw Error('disk');raw=value;}});
+ const input={profilePeers:[b,b,a,'invalid'],profileOfferPeers:[b],timestampPeers:[b],groupCustodyPeers:[b]};
+ await ledger.rememberPeerCapabilities(input);assert.equal(reads,1);assert.equal(writes,1);
+ for(const key of Object.keys(input))assert.deepEqual(JSON.parse(raw)[key],[b]);
+ await ledger.rememberPeerCapabilities(input);assert.equal(reads,2);assert.equal(writes,1);
+ await ledger.rememberPeerCapabilities({});assert.equal(reads,2);
+ const before=raw,c='axonic:1:'+'c'.repeat(64);fail=true;
+ await assert.rejects(ledger.rememberPeerCapabilities({timestampPeers:[c],groupCustodyPeers:[c]}),/disk/);assert.equal(raw,before);
+ fail=false;await ledger.rememberPeerCapabilities({timestampPeers:[c],groupCustodyPeers:[c]});assert.deepEqual(JSON.parse(raw).timestampPeers,[b,c]);
+ current=false;await assert.rejects(ledger.rememberPeerCapabilities(input),/Unlock/);
+});
+
+test('incoming admission uses one history read per serialized operation and keeps duplicate/conflict checks',async()=>{
+ let raw=null,reads=0,writes=0;
+ const ledger=out.createRootChatLedger({owner:a,current:()=>true,now:()=>1,read:async()=>{reads++;return raw;},write:async v=>{writes++;raw=v;}});
+ assert.equal(await ledger.receive(b,id,out.encodeRootChat(a,id,'hello')),true);assert.equal(reads,1);assert.equal(writes,1);
+ assert.equal(await ledger.receive(b,id,out.encodeRootChat(a,id,'hello')),true);assert.equal(reads,2);assert.equal(writes,1);
+ assert.equal(await ledger.receive(b,id,out.encodeRootChat(a,id,'conflict')),false);assert.equal(reads,3);assert.equal(writes,1);
+ assert.equal(JSON.parse(raw).messages[0].text,'hello');
 });

@@ -17,7 +17,7 @@ async function main(){
   report.receiverBackground=await run(b.t,`return find(/react-native[\\/]index\\.js$/).AppState.currentState!=='active';`);
   if(!report.receiverBackground)throw Error('Receiver is not backgrounded');
   const start=performance.now();
-  report.messageId=await run(a.t,`const m=(await ledger().snapshot()).messages.find(m=>m.peer===${q(b.owner)}&&m.attachment?.name===${q(photo)}&&!m.group);if(!m)throw Error('Existing photo missing');const f=get('src/services/identity/rootAttachmentFiles.ts').rootAttachmentFile(account.status().account,get('src/services/identity/attachmentProtocol.ts').attachmentDigest(m.attachment.manifest));return get('src/services/identity/rootAttachmentRuntime.ts').queueRootAttachmentSource(${q(b.owner)},f.uri,m.attachment.name,m.attachment.mime,account.status().account);`);
+  report.messageId=await run(a.t,`const m=(await ledger().snapshot()).messages.find(m=>m.peer===${q(b.owner)}&&m.attachment?.name===${q(photo)}&&!m.group);if(!m)throw Error('Existing photo missing');const f=get('src/services/identity/rootAttachmentFiles.ts').rootAttachmentFile(account.status().account,get('src/services/identity/attachmentProtocol.ts').attachmentDigest(m.attachment.manifest));return get('src/services/identity/rootAttachmentSelections.ts').queueRootAttachmentSource(${q(b.owner)},f.uri,m.attachment.name,m.attachment.mime,account.status().account);`);
   let shown;
   while(performance.now()-start<60000){const n=await notices();if(n.some(x=>x.messageId===report.messageId&&!x.generic)){shown=n;break;}await wait(600);}
   if(!shown)throw Error('Expected background preview not observed');

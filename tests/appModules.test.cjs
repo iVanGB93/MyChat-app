@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const {load}=require('./helpers/attachment.cjs');
-function moduleCode(name){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/modules/messaging/'+name+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>load(n.split('/').at(-1)));return out;}
+function moduleCode(name){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync((name==='callCommands'?'src/modules/calls/commands.ts':'src/modules/messaging/'+name+'.ts'),'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>load(n.split('/').at(-1)));return out;}
 const {createMessagingCommands}=moduleCode('commands'),{createMessageDelivery}=moduleCode('delivery'),{createCallCommands}=moduleCode('callCommands');
 const {createRootChatLedger}=load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),c='axonic:1:'+'c'.repeat(64);
@@ -57,13 +57,13 @@ test('group creation and group sending use the same durable ledger commands',asy
 test('editing through a command retains the original message and queues an action',async()=>{const f=setup(),id=await f.commands.sendText(b,'original');await f.commands.act(b,{id,author:a},'edit','changed');const s=await f.ledger.snapshot();assert.equal(s.messages[0].text,'original');assert.equal(s.actions[0].kind,'edit');});
 test('direct acknowledgement marks delivery without custody or key lookup',async()=>{const f=setup();await f.commands.sendText(b,'hello');const d=delivery(f,{send:async()=>true});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');assert.ok(!d.events.some(e=>e[0]==='resolve'||e[0]==='deposit'));});
 
-test('a stalled direct preparation falls back and late ACK cannot mark the message delivered',async()=>{
+test('a stalled direct preparation falls back and a late authenticated ACK settles the original message',async()=>{
  const f=setup(),id=await f.commands.sendText(b,'stalled');let finish,sends=0,now=10000;
  const d=delivery(f,{now:()=>now,directTimeoutMs:10,send:()=>{sends++;return new Promise(r=>finish=r);}});
  await d.worker.tick();assert.equal(d.worker.snapshot().busy,false);assert.equal(d.worker.snapshot().directTimeouts,1);
  assert.equal(d.events.filter(e=>e[0]==='deposit').length,1);
  now+=2000;await d.worker.tick();assert.equal(sends,1);assert.equal(d.events.filter(e=>e[0]==='deposit').length,2);
- finish(true);await new Promise(r=>setImmediate(r));assert.equal((await f.ledger.snapshot()).messages.find(m=>m.id===id).status,'pending');
+ finish(true);await until(async()=>(await f.ledger.snapshot()).messages.find(m=>m.id===id).status==='delivered');
  assert.equal(d.worker.snapshot().directInFlight,0);d.worker.stop();
 });
 test('two stalled direct routes cannot block a third recipient custody handoff',async()=>{
@@ -228,4 +228,16 @@ test('outbox exposes failed-job deadlines and returns to sleep after durable del
  await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),Infinity);
  await f.commands.sendText(b,'deadline fixture');revision++;await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),now+2000);
  now+=2000;success=true;await d.worker.dispatch();revision++;await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),Infinity);d.worker.stop();
+});
+
+test('late direct ACK cannot override stop, account switch, block or cancelled network work',async()=>{
+ for(const reason of ['stop','account','blocked','cancelled']){
+  const f=setup(),id=await f.commands.sendText(b,'late safety');let finish;
+  const d=delivery(f,{directTimeoutMs:5,send:()=>new Promise(r=>finish=r)});await d.worker.tick();
+  if(reason==='stop')d.worker.stop();if(reason==='account')f.setOwner(c);
+  if(reason==='blocked')await f.ledger.configure(b,{blocked:true});
+  if(reason==='cancelled')await f.ledger.cancelNetworkWork(1800000000001);
+  finish(true);await new Promise(r=>setTimeout(r,20));f.setOwner(a);
+  assert.equal((await f.ledger.snapshot()).messages.find(m=>m.id===id).status,'pending',reason);d.worker.stop();
+ }
 });

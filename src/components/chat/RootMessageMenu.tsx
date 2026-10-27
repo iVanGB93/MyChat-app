@@ -6,7 +6,7 @@ import {importSticker,isImportedStickerFavorite} from '../../services/imported-s
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import {ThemedAlert as Alert} from '../ui/ThemedAlert';
 import {localAccount} from '../../modules/identity';
-import {attachmentDigest} from '../../modules/messaging';
+import {attachmentDigest} from '../../modules/media';
 import {rootAttachmentFile,saveRootDownloadedMedia,removeRootDownloadedMedia} from '../../modules/storage';
 import React from 'react';
 import {Modal,Linking,ScrollView,Pressable,Text,TouchableOpacity,View,useWindowDimensions} from 'react-native';

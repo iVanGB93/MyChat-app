@@ -33,6 +33,15 @@ function fixture(overrides = {}) {
     readCredential: async () => storage.credential, writeCredential: async value => {storage.credential = value;}, removeCredential: async () => {storage.credential = null;}, ...overrides});
   return {session, identity, storage};
 }
+
+test('warm wake checks lock policy without reading the secure credential again',async()=>{
+ let policies=0,credentials=0;
+ const f=fixture({readPolicy:async()=>{policies++;return null;},readCredential:async()=>{credentials++;throw Error('Keystore unavailable');}});
+ await f.session.initialize();await f.session.initialize();
+ assert.equal(policies,2);assert.equal(credentials,0);assert.equal(f.identity.status().state,'unlocked');
+ f.identity.lock();await assert.rejects(f.session.initialize(),/Keystore unavailable/);
+ assert.equal(credentials,1);assert.equal(f.identity.status().state,'locked');
+});
 test('default device session resumes after cold start without weakening password verification', async () => {
   const f = fixture(); await f.session.initialize(); assert.equal(f.session.autoLock(), false);
   await f.session.remember(password); f.identity.lock(); await f.session.initialize(); assert.equal(f.identity.status().state, 'unlocked');

@@ -1,0 +1,172 @@
+ARCHITECTURE AUDIT — OCTOBER 25, 2026
+
+Scope/evidence
+  Inspected current mobile entry, composition, module facades, shared services,
+  presentation stores, boundary/cycle/reachability scripts and hosted entry,
+  adapters, shared-source mapping and AI adapter contracts. Source inventory:
+  329 TS/TSX files under mobile src;152 under services/identity;86 mapped hosted
+  shared files. Counts describe this working tree, not deployed versions. Native
+  adapters were traced by their TS entry/ownership, not exhaustively re-audited
+  for correctness. This is an architecture audit, not a new full security audit.
+
+What is already sound
+  - Public module facades keep migrated screens off protocol/native/storage internals.
+  - Injected messaging/call/delivery factories are distinct from mobile index wiring.
+  - One composition root leases runtime work across foreground/headless consumers.
+  - Shared UI read models and selectors avoid making screens own network state.
+  - An explicit sync manifest checks shared phone/AoN protocol bytes.
+  - Existing tests cover persistence, identity invalidation, delivery evidence and
+    transfer/call lifecycle. Keep them attached to behavior when code moves.
+
+Findings and priority
+  1. services/identity is a mixed implementation bucket (152 files): identity,
+     connections, custody, media, calls, notifications and mobile adapters. Folder
+     name obscures ownership. The new guides map these responsibilities now;
+     physical extraction should follow stable ports, one area at a time.
+  2. Messaging facade mixes text/groups, calls, media and diagnostic exports.
+     Network facade forwards composition operations. Useful UI protection already
+     exists, but these facades are not independent portable packages. Avoid moving
+     their index files into hosted code; extract small dependency-injected ports.
+  3. Mobile neuronRuntime (330 lines) and hosted index (479 lines) join many domains.
+     Some lines are dense, so line count understates responsibilities. Hosted entry
+     also mixes server routes/dashboard/auth/wiring. Extract constructors/routes
+     with lifecycle tests; do not spawn a new manager/runtime for every feature.
+  4. Phone delivery.ts and hostedRootChat.ts schedule shared ledger/protocol work
+     separately. This is an orchestration parity seam, not proof of duplicate
+     wire protocols or of a bug. Compare approval, concurrency, wake and retries
+     before deciding whether a shared scheduler is actually appropriate.
+  5. Connection selection, transfer route choice, own pending work and relay custody
+     span multiple layers. Keep separate ports and evidence: reachable != saved !=
+     delivered != read. The proposed store manager must not own all four.
+  6. Largest mobile hotspots include useWebRTCCore (731 lines), persistentAxon
+     (696), RootAccountNavigator (602), attachmentTransfer (457). Prioritize by
+     responsibility/test seam, not by line count alone. No performance improvement
+     is claimed from directory/documentation changes.
+  7. Boundary checker uses a curated screen list and specific factory/store checks.
+     It does not enforce a universal ten-module dependency graph. Cycle detection
+     and reachability supplement it. Broaden enforcement only after importing
+     actual dependencies into a reviewed allowlist; avoid broad exceptions.
+  8. Durable state, runtime state and presentation projections must stay distinct.
+     A global UI store is not the answer for authorization, sockets or file custody.
+  9. Documentation drift: START-HERE still described a pre-single-copy/state1.1.27
+     artifact; app-modules described five boundaries and historic FirstNeuron
+     integration status; hosted SHARED-SOURCE included an old uncommitted baseline.
+     Current entry pointers now lead here; dated historical evidence is preserved.
+ 10. Muse's live hook is external. MCP/OpenClaw source is inspectable here, but local
+     packages cannot certify all three live integrations or their current settings.
+
+Organization completed in this pass
+  Ten focused responsibility guides, shared-core workflow, this audit and one
+  architecture index. Each guide names current entry files, authority, contracts,
+  relevant tests and next extraction. Added a read-only path-reference checker.
+  Existing documentation receives small pointers/corrections, not wholesale rewrites.
+  No runtime file moves, duplicate implementations, dependency upgrades or format
+  changes. Existing uncommitted fixes and unrelated work remain intact.
+
+Next implementation sequence
+  A. Storage ports: distinguish own history/jobs, relay custody and media source.
+     Keep semantic validation in ledger/protocol, not a generic storage manager.
+  B. Network session port vs transfer route/flow control. Extract from composition
+     using identical cancellation and account-lifetime behavior.
+  C. Compare phone/AoN delivery orchestration with contract tests; share policy only
+     where semantics match, preserve OS/Node adapters and hosted approval gates.
+  D. Separate calls/media exports from messaging facade incrementally; migrate
+     consumers and boundary checks together, then move internal files if useful.
+  E. Extract hosted HTTP/dashboard wiring and publish stable AI command/event
+     contracts. Keep diagnostics passive and source/epoch-aware throughout.
+
+Acceptance for each extraction: focused regressions, existing boundary/cycle/
+reachability/type checks, shared source parity, hosted tests when affected, then
+Dev checks for changed platform behavior. No feature or data migration is implied.
+
+Validation of this documentation pass
+  Architecture reference checker:209 local/hosted/guide paths passed. Standalone
+  mobile mode checks166 and explicitly defers43 hosted references unless supplied
+  --aon-root. Module boundaries:21 active UI files passed. Cycle check:229 modules
+  passed. Consolidation:324 reachable modules plus8 documented support roots passed.
+  Hosted check:core (source/hash parity and TypeScript) passed. Whitespace checks
+  passed for edited tracked documentation. No new full runtime test run was needed
+  for documentation/reference-check changes; no phone/emulator tests performed.
+  No commit, push, deployment, production build, data or credential changes.
+
+Implementation follow-up: storage and transfer boundaries (October 25)
+  Steps A/B now have explicit shared ports: own history, own attachment jobs/files,
+  relay custody and authenticated connection/stream access. The worker receives
+  grouped storage and connections; phone and hosted composition both use them.
+  Five type-only canonical files extend the synchronized shared core to 91 files.
+  Boundary checks reject platform/runtime code in those contracts; compile-time
+  regressions reject storage-role substitution and the previous flat factory API.
+  This extracts responsibility contracts, not every implementation directory or
+  platform scheduler. Wire formats, schemas and live services remain unchanged.
+  See storage.txt and transfers.txt for implemented contracts and remaining work.
+
+Second implementation follow-up: attachment route selection (October 25)
+  Shared selector now owns peer ranking, stream/ciphertext capability eligibility,
+  current-route retention, direct-sender upgrade, sibling custodian preference and
+  receipt peer selection. Worker-owned retry deadlines are inputs, not selector state.
+  Scheduler imports job types only; no selector imports storage or worker code.
+  Shared-source map now contains 92 files. Platform event loops remain distinct.
+  Validation: npm run check passed (1499 tests passed, 3 skipped, no failures;
+  TypeScript, cycles, module boundaries, consolidation and assets passed).
+  Hosted npm test: 309 passed; check:core confirms hashes and hosted types.
+  Seven new selection regressions cover direct upgrades, capabilities, cooldowns,
+  route retention, sibling custodians, receipt routing and fresh observations.
+  Architecture references: 225 passed. No live/device testing or throughput claim.
+  No commit, deployment, build, stored-data format or live-state change.
+Messaging and call event follow-up (October 25)
+  Shared messageRetryDeadline replaces duplicate deadline arithmetic. Hosted
+  policy-held messages sleep until an event, retaining their durable payloads.
+  Direct call retry scheduler sleeps after positive per-device pending inspection,
+  or without a matching connection. Unknown identity/read failures still retry.
+  Both call adapters supply the canonical pending implementation. Hosted chat
+  changes additionally wake call-policy processing. Bounded scans, journal changes
+  during awaits, receipt verification and platform clocks remain protected.
+  This is not a rewrite of relay-call recovery, UI polling or media lease timers.
+  Local tests: full mobile check 1506 passed / 3 skipped; focused call/deadline suite
+  50 passed. Hosted full suite 309 passed; added policy-hold/resume regression in
+  a focused 27-test hosted pass. Shared-source/type checks passed. No deployment,
+  production build, live messages, stored-data migration or physical-call test.
+
+Browser and relay-call follow-up (October 25)
+  Shared callRelayPump now distinguishes historical journal rows from pending
+  per-device outboxes using revision/session-scoped empty observations. Unknown
+  records and failed reads retain retries; events/reconnects invalidate sleep.
+  Event-capable empty relay inboxes sleep after bounded inventory scans. Other
+  peers retain three-second fallback polling; deposits still do not prove delivery.
+  Browser SSE connection management now follows panel/page lifecycle events.
+  Idle call UI refreshes via SSE, while active-call leases/media signaling and
+  disconnected-SSE recovery retain the one-second heartbeat. Stale closed streams
+  cannot mark the new session live; pagehide cancels queued refresh work.
+  Kept thirty-second dashboard reconciliation, legacy chat polling, read-visibility
+  checks and relay inventory refresh: their complete event coverage is not proven
+  by this change. Browser adapters remain hosted; relay protocol stays shared.
+  Validation: mobile full check 1507 passed / 3 skipped; hosted 312 passed; final
+  browser lifecycle suite 7 passed after pagehide cleanup. Source/type parity,
+  boundary/cycle checks and 249 documentation references passed. No live device or
+  real-browser call session exercised, no deployment, publication or data changes.
+
+
+Current completion assessment (October 25, block-processing follow-up)
+  The module map, ownership documentation, shared storage/connection ports, route
+  selection and shared scheduling foundations are implemented. This is not a
+  claim that all physical extraction or event-driven conversion is finished.
+  Remaining: large call lifecycle/composition and UI read-model extractions;
+  complete event coverage for legacy chat/read visibility/relay inventory before
+  removing fallback polling; fleet rollout and live parity checks for this work.
+  Keep native file operations, media capture, browser lifecycle and hosted storage
+  in platform adapters. Do not duplicate the shared transfer worker to optimize
+  phone file processing. Latest local checks: types, module boundaries and 252
+  architecture references passed. Device evidence is in the dated transfer report.
+
+Latest organization implementation (October 25)
+  Calls and media have dedicated public application APIs; callers and tests moved
+  together. Removed their exports from messaging rather than adding forwarding
+  aliases. Call command implementation moved into its owning module. UI protocol
+  bypasses were removed and boundary discovery now includes every presentation
+  file. Native keyboard access has a UI adapter; network inventory and message
+  info formatting use their owning public facade. Single runtime ownership remains.
+  Internal hook/composition extraction and complete remote event coverage are still
+  refinement work; they are not represented as completed by this facade change.
+
+Internal follow-up completion (October 25)
+The named navigation, attachment-selection, mobile call-session and quality-sampling extractions are implemented. Hosted browser page assembly is extracted. Shared custody maintenance replaces duplicate platform intervals, and visible-read checks are event-driven. See TIMER-REVIEW.txt for current implementation scope, tests and justified remaining deadlines/fallbacks. This supersedes the earlier next-extraction entries for these hotspots; no all-event-driven or production-deployed claim is made.

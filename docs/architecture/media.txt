@@ -1,0 +1,54 @@
+MEDIA AND LOCAL FILES
+Purpose: selection, voice recording, source references, previews and user-visible
+file ownership. Transfer protocol and relay retention belong to other modules.
+
+File: src/modules/ui/mediaPicker.ts
+File: src/modules/ui/documentPicker.ts
+File: src/services/identity/rootAttachmentRuntime.ts
+File: src/services/identity/rootAttachmentFiles.ts
+File: src/services/identity/rootMediaExport.ts
+File: src/services/identity/receivedMediaExport.ts
+File: src/services/identity/sharedMediaFile.ts
+File: src/services/identity/rootVoiceRecorder.ts
+File: src/services/identity/rootMessageForward.ts
+File: modules/axonic-app-update/android/src/main/java/expo/modules/axonicappupdate/AxonicMediaStoreModule.kt
+AoN: src/hostedRootUploads.ts
+AoN: src/hostedRootAttachments.ts
+
+Contract: reference an existing selected file when possible; source access and
+durability must be verified before relying on that reference. Scoped-storage URI
+permission, inaccessible sources and picker cancellation are normal outcomes.
+Do not promise no temporary copies: preparation/transfer can require temporary
+bytes. Avoid an unnecessary permanent Gallery-plus-private duplicate. Cleanup
+must distinguish user-owned source, received file, temporary data and relay bytes.
+Message descriptor/history can remain even when the user deletes the local file.
+Retired formats show an inert resend notice; they must not crash or retransmit.
+
+State authority: durable file/job reference plus OS file availability. A cached
+thumbnail/URI is not proof that the full file exists or is safe to send.
+
+Test: tests/sharedMediaFile.test.cjs
+Test: tests/receivedMediaExport.test.cjs
+Test: tests/rootAttachmentFiles.test.cjs
+Test: tests/rootMediaPicker.test.cjs
+Test: tests/rootMessageForward.test.cjs
+Physical picker, Gallery, microphone and URI behavior need explicit Dev checks.
+Next extraction: a media-source/file-ownership port used by phone selection and
+hosted uploads; retain platform-specific file handling and shared transfer logic.
+Guide: transfers.txt
+Guide: storage.txt
+
+October 25 public API / preparation follow-up
+Public entry: src/modules/media/index.ts, separate from text/group messaging.
+The Android block primitive hashes the exact plaintext and encrypts off the JS
+thread. Canonical v4 AAD/nonce, signature, commit and account guards are unchanged.
+JS remains the portable implementation. No new block format or plaintext relay.
+File: src/modules/media/index.ts
+File: modules/axonic-nearby/android/src/main/java/expo/modules/axonicnearby/AttachmentBlockEncryption.kt
+
+Internal extraction follow-up (October 25)
+File: src/services/identity/rootAttachmentSelections.ts
+Durable picker selections, batch audience validation, retries/removal and selection
+progress live here. rootAttachmentRuntime owns preparing those selections and
+running the shared transfer worker. Public media API unchanged; all internal
+consumers moved to the correct owner. Stored keys/schema and source files unchanged.

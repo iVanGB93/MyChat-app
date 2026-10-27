@@ -9,7 +9,7 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 
-/** Minimal text-only RFC6455 client. TLS, deadlines and socket ownership live in AxonSockets.
+/** Minimal RFC6455 client with gated binary attachment records. TLS, deadlines and socket ownership live in AxonSockets.
  * No extensions, compression, redirects or cookies. Lengths are checked before allocation.
  */
 internal object AxonWebSocket {
@@ -42,8 +42,8 @@ internal object AxonWebSocket {
   }
 
   fun write(output: DataOutputStream, bytes: ByteArray, opcode: Int = 1, maximum: Int = AxonFrames.MAX_BYTES) {
-    require(maximum in AxonFrames.MAX_BYTES..AxonFrames.BULK_BYTES && bytes.size <= maximum)
-    require(opcode == 1 || opcode in 8..10 && bytes.size <= 125)
+    require(maximum in AxonFrames.MAX_BYTES..AxonFrames.STREAM_BYTES && bytes.size <= maximum)
+    require(opcode == 1 || opcode == 2 && maximum >= 32838 && bytes.size in 71..32838 || opcode in 8..10 && bytes.size <= 125)
     synchronized(output) {
       // SSLSocket writes are not buffered: separate header writes become tiny TLS
       // records. Assemble one bounded RFC6455 frame before touching the socket.
@@ -61,15 +61,18 @@ internal object AxonWebSocket {
   }
 
   fun read(first: Int, input: DataInputStream, maximum: () -> Int = { AxonFrames.MAX_BYTES }, control: (Int, ByteArray) -> Unit): String {
+    return readPacket(first, input, maximum, { false }, control) as String
+  }
+  fun readPacket(first: Int, input: DataInputStream, maximum: () -> Int = { AxonFrames.MAX_BYTES }, binaryAllowed: () -> Boolean = { false }, control: (Int, ByteArray) -> Unit): Any {
     val message = ByteArrayOutputStream()
-    var header = first; var started = false
+    var header = first; var started = false; var binary = false
     // Includes controls and empty fragments, so they cannot extend the deadline/work without bound.
     repeat(32) {
       require(header >= 0 && header and 0x70 == 0) { "Invalid WebSocket flags" }
       val final = header and 0x80 != 0; val opcode = header and 15
       val second = input.readUnsignedByte(); require(second and 0x80 == 0) { "Masked server frame" }
       val marker = second and 127
-      val limit = maximum(); require(limit in AxonFrames.MAX_BYTES..AxonFrames.BULK_BYTES)
+      val limit = maximum(); require(limit in AxonFrames.MAX_BYTES..AxonFrames.STREAM_BYTES)
       val length = when (marker) {
         127 -> { require(limit > 65535) { "Axon frame too large" }; val n = input.readLong(); require(n in 65536L..limit.toLong()) { "Invalid large frame size" }; n.toInt() }
         126 -> input.readUnsignedShort().also { require(it >= 126) }
@@ -81,11 +84,13 @@ internal object AxonWebSocket {
         if (opcode == 8) { control(8, byteArrayOf(3, -24)); error("Peer closed axon") }
         if (opcode == 9) control(10, payload)
       } else {
-        require((!started && opcode == 1) || (started && opcode == 0)) { "Only text axons supported" }
-        require(message.size() + length <= limit) { "Axon message too large" }
+        require((!started && (opcode == 1 || opcode == 2 && binaryAllowed())) || (started && opcode == 0)) { "Unadmitted axon frame" }
+        if (!started) binary = opcode == 2
+        require(message.size() + length <= if(binary) minOf(limit,32838) else limit) { "Axon message too large" }
         val payload = ByteArray(length); input.readFully(payload); message.write(payload); started = true
         if (final) {
           require(message.size() > 0)
+          if(binary){require(message.size() >= 71);return message.toByteArray()}
           return Charsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
             .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(message.toByteArray())).toString()
         }

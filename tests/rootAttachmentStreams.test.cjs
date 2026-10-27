@@ -28,7 +28,7 @@ function fixture(t,options={}){
      data.set(target,data.get(source));data.delete(source);return true;
     }})}};
    if(name==='./localAccount')return {localAccount:{status:()=>({state:'unlocked',account:i?recipient:owner})}};
-   if(name==='./rootAttachmentFiles')return {rootAttachmentFile:file,rootAttachmentPartial:(user,id)=>file(user,id,'partial'),sweepRootStreamTemporaries(){},createRootStreamTemporary(user,id){const f=file(user,id);f.parentDirectory.create();f.create();return f;}};
+   if(name==='./rootAttachmentFiles')return {hashRootAttachmentFile:async(user,id)=>checksum(data.get(user+'/'+id+'/content')),rootAttachmentFile:file,rootAttachmentPartial:(user,id)=>file(user,id,'partial'),sweepRootStreamTemporaries(){},createRootStreamTemporary(user,id){const f=file(user,id);f.parentDirectory.create();f.create();return f;}};
    if(name==='./directAttachmentStream')return load('directAttachmentStream');throw Error(name);
   },out);
   const network={available:()=>options.available!==false,...(options.requestUpgrade?{request:(...args)=>options.requestUpgrade(i,...args)}:{}),listen(h){handlers[i]=h;return ()=>handlers[i]=null;},open(){const pair=lanes();queueMicrotask(()=>{if(!handlers[1]?.(owner,options.wrongDevice?'wrong':'s',pair[1]))pair[1].close();});return pair[0];}};
@@ -85,6 +85,20 @@ test('eligible unavailable stream requests promotion on both endpoints then upgr
  assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),partial);
  options.available=true;assert.equal(await f.run(),true);assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
 });
+test('eligible cold route gets a bounded chance to become a direct stream',async t=>{
+ const options={available:false,requestUpgrade:()=>true},f=fixture(t,options);
+ const ready=setTimeout(()=>{options.available=true;},150);t.after(()=>clearTimeout(ready));
+ assert.equal(await f.run(),true);
+ assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+});
+
+test('revocation during route promotion stops before opening a stream',async t=>{
+ const f=fixture(t,{available:false,requestUpgrade:()=>true});
+ const revoke=setTimeout(()=>f.revoke(),50);t.after(()=>clearTimeout(revoke));
+ assert.equal(await f.run(),'unavailable');
+ assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
+});
+
 test('revoked transfer cannot request a connection upgrade',async t=>{
  let requests=0;const f=fixture(t,{available:false,requestUpgrade:()=>{requests++;return true;}});f.revoke();
  assert.equal(await f.run(),'unavailable');assert.equal(requests,0);
