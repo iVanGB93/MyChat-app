@@ -1,0 +1,44 @@
+Phone/FirstNeuron direct-stream investigation — 2026-10-23
+
+FirstNeuron live release:2a35d9557de6b4833492c6bce1acdab7bab2fcc1,
+runtime5138f5887a92. Read-only SSH confirmed deployed hostedNetwork.js explicitly
+sets rtcEndpoint:false. Matching clean integration worktree is
+builds/aon-operator-20261022, NOT the older dirty Axonic-neuron working folder.
+Its signaling receive callback does not implement an RTC endpoint; hosted own
+attachment worker has no directStream/serveStream adapter. No WebRTC dependency
+is installed in its package.json. Copying protocol source alone did not wire it.
+
+Therefore a directly connected WSS peer is not an authenticated WebRTC stream
+peer. Do not flip the capability flag until a real bounded implementation exists.
+Do not send plaintext on the LAN socket or bypass application peer authentication.
+
+Scoped mobile fixes:
+- Configured bootstrap peers may now promote on explicit authenticated stream
+  capability/device match and actual transfer demand. Introductions alone still
+  cannot replace their configured WSS route. Tie-break, bounded demand, expiry,
+  lock and connection-pool fallback behavior retained.
+- Explicit rtcEndpoint:false overrides a conflicting stream advertisement.
+- Rejected upgrades log a fixed reason (inactive account/native unavailable/
+  unsupported peer/route not ready), without message contents or peer identifiers.
+
+Validation:160 focused tests passed,2 optional skips; TypeScript and scoped diff
+checks passed. Regression cases include capable bootstrap upgrade, incapable
+peer, wrong device, explicit non-RTC flag and no introduction-only replacement.
+Live repeat evidence:builds/phone-firstneuron-stream-check-20261023.log and its
+reported transfer-scaling JSON. These remain fallback measurements, NOT proof of
+live RTC throughput. Existing data and normal phone app preserved. No AoN source
+changes, deployment, commit, push, production build or queue reset.
+
+Repeat completed:builds/transfer-scaling-1792787031239.json.
+Post-enqueue observation seconds, phone->First / First->phone:
+1MiB4.451/5.879;5MiB12.452/9.486;10MiB21.785/17.681.
+All six independent checksums and sender delivery confirmations passed.
+All53 baseline phone messages and18 FirstNeuron messages retained (59/24 after).
+Whole harness durations also include synthetic generation/checksum overhead;
+do not interpret them as pure network throughput. No speedup claimed.
+
+Remaining implementation: hosted RTC endpoint + authenticated signaling and
+session wiring, bounded data-channel admission/backpressure, own-file stream
+adapter with exact peer/device/job policy, cancellation and checksum/receipt
+contracts, lifecycle/reconnect tests, then live Dev acceptance. Obtain approval
+before publishing/deploying server changes. Do not claim a deploy-ready fix.

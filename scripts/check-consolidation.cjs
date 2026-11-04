@@ -29,7 +29,7 @@ walk(path.join(root, 'index.ts'));
 const runtime = new Set([...seen].map(relative));
 for (const file of runtime)
   if (file.startsWith('tests/') || file.startsWith('builds/')) failures.push('App imports test/build support: ' + file);
-for (const file of ['App.tsx', 'legacyEntry.ts', 'src/contexts/AuthContext.tsx', 'src/services/api.ts'])
+for (const file of ['App.tsx', 'legacyEntry.ts', 'src/contexts/AuthContext.tsx', 'src/services/api.ts', 'src/services/identity/normalChatProtocol.ts', 'src/services/transports/mailboxProtocol.ts', 'src/services/transports/neuronExchange.ts', 'src/services/transports/neuronSignaling.ts', 'src/services/identity/normalChatBoundary.ts', 'src/services/identity/normalChatOutbox.ts', 'src/services/identity/chatIdentityBinding.ts', 'src/services/identity/chatBindingTransport.ts'])
   if (fs.existsSync(path.join(root, file))) failures.push('Retired app path reintroduced: ' + file);
 for (const file of Object.keys(exceptions)) {
   if (!fs.existsSync(path.join(root, file))) failures.push('Stale consolidation exception: ' + file);

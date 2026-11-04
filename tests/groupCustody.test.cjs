@@ -8,14 +8,14 @@ const create=()=>s.createGroupCustodyService({owner:ids[3].record.account,store,
 return {service:()=>service,ids,records,job,request,deposit,rows:()=>rows,fail:v=>fail=v,wakes:()=>wakes,expire:()=>time+=c.CUSTODY_TTL,restart:()=>service=create()};}
 
 test('group receipt survives overlapping wake until invalidation, with a fresh relay drain',async()=>{
- const f=await fixture(),recipient=f.ids[1],packet=f.job.grants[0];await f.deposit();
- const courier=load('groupCustodyCourier').createGroupCustodyCourier({owner:()=>recipient.record.account,now:()=>now,records:f.records,allowed:()=>true,compatible:async()=>true,relays:()=>[f.ids[3].record.account],own:{},store:{},seal:async()=>{throw Error('unexpected send');},held:async()=>{},confirm:async()=>false,
+ const f=await fixture(),recipient=f.ids[1],packet=f.job.grants[0];await f.deposit();const acceptedEvents=[];
+ const courier=load('groupCustodyCourier').createGroupCustodyCourier({owner:()=>recipient.record.account,now:()=>now,records:f.records,allowed:()=>true,compatible:async()=>true,relays:()=>[f.ids[3].record.account],own:{},store:{},seal:async()=>{throw Error('unexpected send');},held:async()=>{},confirm:async()=>false,receiptAccepted:(sender,id)=>{acceptedEvents.push([sender,id]);throw Error('observer failure');},
  request:async(_peer,raw)=>JSON.stringify(await f.request(1,JSON.parse(raw))),receive:async p=>c.signCustodyReceipt(p,recipient.signingSeed,recipient.encryptionSeed)});
- await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),true);
- courier.resume();assert.equal(courier.recoveryComplete(packet.sender,packet.id),false);
+ await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),true);assert.deepEqual(acceptedEvents,[[packet.sender,packet.id]]);
+ courier.resume();assert.equal(courier.recoveryComplete(packet.sender,packet.id),false);assert.equal(courier.receiptAccepted(packet.sender,packet.id),true);assert.equal(courier.receiptAccepted(packet.sender,'ff'.repeat(32)),false);
  await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),true);
  assert.equal(courier.recoveryComplete(packet.sender,'ff'.repeat(32)),false);
- courier.invalidate();await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),false);courier.stop();
+ courier.invalidate();await courier.tick();assert.equal(courier.recoveryComplete(packet.sender,packet.id),false);assert.equal(courier.receiptAccepted(packet.sender,packet.id),false);courier.stop();
 });
 
 test('shared group ciphertext opens only with each intended device grant',async()=>{const f=await fixture();assert(await g.verifyGroupCustodyJob(f.job,f.records,now));
@@ -143,4 +143,25 @@ test('group event inbox isolates rejected peers and sleeps after an expired reje
  request:async(peer,raw)=>{calls[peer]++;const q=JSON.parse(raw);return JSON.stringify({status:'ok',packet:peer==='bad'&&present&&!q.exclude.includes(e.id)?e:null,payload:f.job.payload,job:f.job.payload.id});}});
  await courier.tick();time+=16000;present=false;await courier.tick();const baseline={...calls};
  for(let i=0;i<20;i++){time+=30000;await courier.tick();}assert.deepEqual(calls,baseline);assert.equal(calls.empty,1);courier.stop();
+});
+
+test('group relay accepts more than sixteen retained messages and retains idempotency after restart',async()=>{
+ const f=await fixture(),identity=f.ids[0];let first;
+ for(let n=0;n<20;n++){
+  const id=x=>x.toString(16).padStart(64,'0');
+  const job=await g.sealGroupCustody({...identity,id:id(100+n),text:'Capacity regression',recipients:f.ids.slice(1,3).map((r,i)=>({record:r.record,device:r.device.id,id:id(1000+n*2+i),metadata:'{}'})),now,random});first??=job;
+  assert.equal((await f.request(0,{operation:'group-begin',payload:job.payload})).status,'staged');
+  for(const packet of job.grants)assert.equal((await f.request(0,{operation:'group-grant',id:job.payload.id,packet})).status,'staged');
+  assert.equal((await f.request(0,{operation:'group-commit',sender:identity.record.account,id:job.payload.id,digest:g.groupCustodyDigest(job.payload)})).status,'held');
+ }
+ const before=structuredClone(f.rows());f.restart();
+ assert.equal((await f.request(0,{operation:'group-begin',payload:first.payload})).status,'held');
+ assert.deepEqual(f.rows(),before);assert.equal(f.rows().length,20);
+});
+
+test('group contribution counts commit and each verified receipt once, never staged or rolled back work',async()=>{
+ const f=await fixture();f.fail(true);assert.equal((await f.request(0,{operation:'group-begin',payload:f.job.payload})).status,'rejected');assert.equal(f.service().contribution().counts.groupsHeld,0);f.fail(false);await f.deposit();assert.equal(f.service().contribution().counts.groupsHeld,1);
+ await f.request(0,{operation:'group-commit',sender:f.job.payload.sender,id:f.job.payload.id,digest:g.groupCustodyDigest(f.job.payload)});assert.equal(f.service().contribution().counts.groupsHeld,1);
+ const packet=c.signCustodyReceipt(f.job.grants[0],f.ids[1].signingSeed,f.ids[1].encryptionSeed);
+ for(let i=0;i<3;i++)await f.request(1,{operation:'group-receipt',id:f.job.payload.id,packet});assert.equal(f.service().contribution().counts.recipientReceipts,1);
 });

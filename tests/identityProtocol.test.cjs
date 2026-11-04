@@ -21,18 +21,6 @@ const { createNeuronConnections } = load('neuronConnections');
 const { createIdentityConnectionOpener } = load('neuronIdentityConnection');
 const now = 1_800_000_000_000;
 const random = n => new Uint8Array(crypto.randomBytes(n));
-test('chat binding signatures stay inside the unlocked identity controller', async () => {
-  const c = createLocalIdentityController(localStorage(), async n => random(n), () => now,
-    async (password, salt) => new Uint8Array(crypto.createHash('sha256').update(password).update(salt).digest()));
-  const challenge = { version: 1, roomId: '22222222-2222-4222-8222-222222222222', requester: 14,
-    requesterAccount: 'axonic:1:' + 'a1'.repeat(32), peer: 18, nonce: 'ab'.repeat(32), expiresAt: now + 60000 };
-  assert.throws(() => c.signChatBinding(18, challenge), /Unlock/);
-  await c.confirmBackup(await c.beginCreate(), 'synthetic controller test password');
-  const proof = c.signChatBinding(18, challenge);
-  assert.equal(load('chatIdentityBinding').verifyChatBinding(proof, challenge, 18, now), true);
-  assert.throws(() => c.signChatBinding(99, challenge), /Invalid/);
-  c.lock(); assert.throws(() => c.signChatBinding(18, challenge), /Unlock/);
-});
 function account() {
   const root = random(32), signing = random(32), encryption = random(32);
   const device = p.publicDevice(signing, encryption);
@@ -397,4 +385,23 @@ test('public hash reuse stays byte-identical across copies, mutation, eviction a
   assert.equal(p.verifyRecord(r,r.expiresAt,true),true);
   const bad=structuredClone(r);bad.signature='00'.repeat(64);
   assert.equal(p.verifyRecord(bad,now),false);
+});
+
+test('cached descriptor verification still rejects expiry, nonce changes and tampering',()=>{
+ const a=account(),store={read:async()=>null,write:async()=>{}};
+ const exchange=createIdentityExchange({record:a.record,signingSeed:a.signing,instance:random(32),store,now:()=>now,current:()=>true});
+ const nonce=Buffer.from(random(32)).toString('hex'),raw=exchange.describe(nonce),verify=load('identityExchange').verifyIdentityDescriptor;
+ assert(raw);assert(verify(raw,a.record.account,nonce,null,now));assert(verify(raw,a.record.account,nonce,null,now));
+ assert.equal(verify(raw,a.record.account,nonce,null,now+60001),null);
+ assert.equal(verify(raw,a.record.account,'00'.repeat(32),null,now),null);
+ const changed=JSON.parse(raw);changed.instance='01'.repeat(32);assert.equal(verify(JSON.stringify(changed),a.record.account,nonce,null,now),null);
+});
+
+test('hot exact signatures survive cache churn; mutated signed bytes remain rejected',()=>{
+ const seed=random(32),key=ed25519.getPublicKey(seed),message=random(32),signature=ed25519.sign(message,seed);
+ let calls=0;const counted={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/identityProtocol.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(name=>name==='@noble/curves/ed25519.js'?{...require(name),ed25519:{...ed25519,verify:(...args)=>{calls++;return ed25519.verify(...args);}}}:require(name),counted);
+ {assert(counted.verifyPublicSignature(signature,message,key,{zip215:false}));
+ for(let i=0;i<260;i++){const m=new Uint8Array([i&255,i>>8]);assert(counted.verifyPublicSignature(ed25519.sign(m,seed),m,key,{zip215:false}));assert(counted.verifyPublicSignature(signature,message,key,{zip215:false}));}
+ assert.equal(calls,261);const modified=message.slice();modified[0]^=1;assert.equal(counted.verifyPublicSignature(signature,modified,key,{zip215:false}),false);
+ }
 });

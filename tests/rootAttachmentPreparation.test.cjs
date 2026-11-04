@@ -237,3 +237,13 @@ for(const mode of ['ok','bad-length','reject','locked'])test(`native block prepa
  }
  assert.equal(calls,1);
 });
+
+test('caption restaging preserves gallery origin and original pending bytes',t=>{
+ const f=setup(t),owner=f.ids[0].record.account,previous=f.input.id,next='ab'.repeat(32),shared='cd'.repeat(32);
+ const source=f.out.rootAttachmentSource(owner,previous).uri,origin=source.replace(/source$/,'origin.json');
+ f.data.set(origin,Buffer.from(JSON.stringify({uri:'content://media/external/images/media/42'})));
+ f.out.restageRootAttachmentSource(owner,next,previous,shared);
+ const newSource=f.out.rootAttachmentSource(owner,next).uri;
+ assert.deepEqual(f.data.get(newSource),f.data.get(source));assert(f.data.has(source));
+ assert.deepEqual(Buffer.from(f.data.get(newSource.replace(/source$/,'origin.json'))),Buffer.from(f.data.get(origin)));
+});

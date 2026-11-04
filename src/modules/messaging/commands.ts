@@ -34,7 +34,7 @@ export function createMessagingCommands(d: {
       const s = session(expectedOwner); await s.ledger.act(peer, await s.id(), target, kind, value);
     },
     async markRead(peers: string[]) {
-      const s = session(), state = rootChatView(s.owner, await s.ledger.snapshot()); s.check();
+      const s = session(), state = rootChatView(s.owner, await s.ledger.unreadSnapshot(peers.filter(peer=>!peer.startsWith('group:')))); s.check();
       for (const peer of peers) {
         s.check();
         if (peer.startsWith('group:')) { await s.ledger.markGroupRead(peer.slice(6)); continue; }

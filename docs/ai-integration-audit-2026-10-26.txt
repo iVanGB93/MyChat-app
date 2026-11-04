@@ -1,0 +1,90 @@
+AoN AI integration audit — 2026-10-26
+
+Requested scope: read Superintelligent Dev Group, identify and fix remaining
+integration gaps; preserve live data. No new deployment authorization received
+at the time of this report. Integration edits remain local and uncommitted.
+
+Live evidence:
+- Read SecondNeuron chat sync; group 942b913e…4dbda. Outgoing group copies
+  appear once per recipient; their peer field is the recipient, not the author.
+  Axon's repeated-looking replies were outgoing copies of one logical message.
+- Muse says owner-memory endpoint is TBD and approvals require a code edit.
+  This contradicts the previously verified v3 activation. Fresh FirstNeuron
+  public HTTPS reads confirm ownerStatus installed, expected human/neuron IDs,
+  notes revision 0 and normal CA verification. Its external VM worker context
+  cannot be independently inspected here. Refresh her worker instructions using
+  live API evidence before attributing these claims to missing server features.
+- Axon explicitly says its automation is read-only/no-tests. API capability is
+  not host-task authorization; do not bypass this restriction. Owner must update
+  the task in ChatGPT to permit the intended non-destructive tests/operations.
+- SecondNeuron MCP subscriptions: two eligible existing subscriptions,
+  message.ready and diagnostic.changed; both show native_refresh extended=true.
+  Callback acceptance and processing declarations are separate evidence.
+- This session exposes 34 SecondNeuron tools but live capabilities advertise
+  additional memory/approval/renewal tools. Client catalog refresh is required;
+  absence in this session does not establish an absent backend route.
+- First, Second and Third all report source 0bf87db9da3bf20a4cedc5a1e9930a547607d53d,
+  clean/runtime_bound, runtime cbd68e73575b. Third's installed binding matches
+  its neuron; operational notes revision 0. No credentials printed or changed.
+- Shared server approval enforcement remains off / productionReady=false.
+  Do not claim full server-enforced integration or turn it on incidentally.
+
+Local changes in builds/aon-operator-20261022:
+- Shared read-only operator-context helper used by MCP and OpenClaw: current
+  release, reporting guidance, binding consistency, notes and explicit separation
+  of API scope, contact admission, AI task authorization and host privileges.
+  It never treats editable notes or self-consistency as independent human proof.
+- MCP upload schema now matches existing server limit: 256 x 4 KiB API parts
+  (1 MiB per request). Authenticated RPC body bounded at 1.5 MB; anonymous
+  discovery keeps 400 KB cap. Network stream/3 MB relay format unchanged.
+- New own-attachment verification tool checks full bytes/hash without returning
+  large contents to the model. 10 MiB regression passes; incomplete/deleted and
+  corrupt media refuse. No reads acknowledged and no sends performed.
+- OpenClaw manifest declares the context tool; operator turns point to live
+  capability evidence. A positive protected-owner mismatch now rejects even
+  while server enforcement is off, preserving legacy no-binding behavior.
+- API docs corrected: obsolete staged/TBD claims, native channel features,
+  operator authentication, current upload bounds, live reporting guidance and
+  owner-configured cadence. Existing sessions remain supported; DNS/token
+  migration is an optional credential-storage improvement, not feature parity.
+- MCP Docker context includes only the required shared helper.
+
+Tests:
+- 46/46 MCP tests pass including real SDK 1 MiB upload and oversized rejection.
+- 19/19 selected OpenClaw tests pass against installed WSL SDK; shared-context
+  regressions also covered by the MCP suite. Syntax/diff checks pass.
+- No live sends, contact edits, listener resets, data deletion, credential changes,
+  commits, deployments or phone changes performed during this audit.
+
+Remaining acceptance steps:
+1. Obtain explicit commit/push/deploy authorization; roll out adapter and channel
+   with state preserved, verify new tools in the actual hosts, refresh catalog.
+2. Muse: read status/operator-memory from her VM; reconcile live worker prompt,
+   contacts-derived policy, claim/pre-send checks and operational notes access.
+   Do not migrate/reset cursor or dedup. Report actual active version, not memory.
+3. Axon: owner updates the host task to permit specifically scoped, non-destructive
+   transfer/diagnostic operations; preserve owner approval for destructive actions.
+4. ATOMiX: confirm tools are visible in an owner-authorized operator conversation;
+   existing group host-tool grants remain owner-managed, no blanket grants added.
+5. Coordinate genuine live capability tests after activation. Realtime AI calls,
+   whole-network omniscience and arbitrary host administration are not supplied
+   by these changes. Scoped relay retry remains a separate unimplemented control.
+
+Deployment update (2026-10-26):
+User authorized AoN deployments going forward. Integration commit
+198b90efcacfe617cb51dc9a489fbd6bedf10a06 committed and pushed.
+MCP deployment 160a8d69-0904-499d-b1d5-d119fc30b1b2 SUCCESS.
+Initial deployment ef682c18 used the root neuron Dockerfile and crashed;
+corrected staging root Dockerfile/ignore to MCP files and restored service.
+Consistent SQLite backup integrity_check ok at
+/var/lib/axonic-mcp/backups/integration-198b90e/state.sqlite.
+Adapter sync ready, same two subscription IDs retained, cursor 921 -> 923,
+no reset recovery; new operator_context and verify_attachment listed live.
+OpenClaw changed files installed with backup at
+/home/ivan/.local/state/axonic-integration-backups/integration-198b90e.
+Gateway loads axonic-account. Pre-existing interrupted running turn from Oct23
+retained with two unaccepted outbox entries; channel requires operator review.
+No automatic replay, deletion or false healthy claim. ThirdNeuron live owner
+binding matches and reporting guidance v5 accessible. Server runtimes remain
+0bf87db9da3bf20a4cedc5a1e9930a547607d53d / cbd68e73575b (0.2.0).
+Host task/catalog refresh and Muse live prompt reconciliation remain necessary.

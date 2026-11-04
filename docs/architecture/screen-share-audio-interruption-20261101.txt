@@ -1,0 +1,44 @@
+Screen-share interruption investigation — November 1, 2026
+
+User reports two incidents at roughly two minutes. Clarification: user was viewing
+mother's shared screen and stopped hearing her. This is not established as local
+screen capture stopping; investigate receive audio/connectivity and sender too.
+
+Read-only evidence:
+- Connected receiver R3GYC0H7PMY. Recent logcat sample has no matching capture stop
+  or call failure. No active media projection at inspection time (receiver role
+  does not require one). This does not reconstruct the earlier incident.
+- Official-app exit history has package updates today and older low-memory exits;
+  no recent process crash matching the report was established.
+- Screen-share controller replaces the video sender only and has no two-minute
+  stop timer. Capture ends via OS track end, user stop, cleanup or overlay failure.
+- Live call retains its network lease; shared RTC peer is retained through pool
+  ownership. Existing ICE recovery and shared-transport disconnect deadlines need
+  correlation with an actual failed call before attributing this incident to them.
+
+Outstanding evidence requested: whether shared video continued or froze, whether
+the call remained open, and a fresh diagnostic from the mother's sending phone
+if available. For reproduction, record receive audio RTP bytes/packets, video
+frames, selected candidate pair, ICE transitions, audio route and sender capture
+state across at least several minutes. No inference of network failure merely
+from a silent microphone; silence, mute and route changes must be distinguished.
+
+No runtime changes or claimed fix in this investigation. Official app and all
+data preserved. Previous call-notification fixes remain separate working changes.
+
+FirstNeuron report review (November 1, 21:16 EST capture):
+- Correct sender report 8d6b06e0dfa3cb096e251581c0b62f58e101809cd24a32a9437156e5e9d71de7;
+  official 1.1.41 (112), Samsung SM-S947U, Android API 37. Read complete own-media
+  file on FirstNeuron; SHA-256 matches descriptor checksum. No contact changes.
+- Earlier SecondNeuron report was a different sender/build and is not this case.
+- Call reached signaling ready at 02:15:22.346Z. Background at 02:15:39.464Z,
+  active again at 02:15:48.047Z. Capture 02:16:41.827Z, only 79.481 seconds after
+  ready. Snapshot still ready, three connected peers, no runtime error.
+- This is NOT evidence of continuous audio, nor a captured two-minute failure.
+  No RTP/ICE/audio-route/capture-state measurements in report. Journal is bounded
+  and volatile; no historical failure can be reconstructed from absent entries.
+- Separately: eight outgoing pending media rows, seven expired authorizations.
+  These are per-recipient rows, not necessarily eight distinct files. No evidence
+  connects those rows to audio loss. Do not conflate transfer and call issues.
+- Need a report immediately after reproduction and receive/sender media stats
+  to distinguish transport loss, microphone/audio routing and capture failure.

@@ -1,0 +1,36 @@
+AoN review and owner-authorized deletion, 2026-11-01
+
+All three responding on source 9410758f0d12548929e59869e7dab65d00354b90,
+runtime afc205483a85. Own outgoing pending/stored queues zero at inspection.
+First/Second identity replication 3/3. Third 1/3, two connected peers:
+insufficient connected directory peers; not evidence of message loss.
+Second latest reports read through 18:33 UTC. Historical 49 HTTP 426 responses
+on /v2/axon, none new in latest report interval; client attribution unknown.
+Second current wake verification has no rejections, provider errors zero;
+missing authorized destination dominates retries. Five tracked private items
+backing off, no evidence establishing their recipient registration cause.
+Relay inventory: 63 locally unconfirmed recipient records, including six
+local receiving items; not equivalent to 63 undelivered user messages.
+First host samples healthy, 63% disk free. Second filesystem 89% free.
+
+Review limitation / execution error: the initial report collector extracted a
+prefix from an old deletion script using a newline-sensitive marker. The
+marker was absent, so it inadvertently executed the owner-authorized deletion
+routine before reading First/Third report text. No claim of complete historical
+report review for those nodes. Corrected collector subsequently read current
+status. Its post-logout requests also generated 401s; do not attribute those
+specific errors to mobile delivery. No application patch/deployment made.
+
+Deletion verification: First/Third authenticated histories each show zero
+undeleted outgoing records. Second's 17 outgoing logical messages received
+exact approved delete-for-everyone actions, all accepted and verified deleted;
+zero outgoing undeleted records, hasMore=false. Second human incoming messages
+unchanged. Targets were outgoing messages authored by their own neuron only;
+group copies deduplicated by logical ID. No account/queue/listener reset.
+Remote recipient application of tombstones is not independently verified.
+Second delete actions initially pending; do not claim all phone screens clear.
+
+Next investigation: correlate partial incoming media with worker jobs and
+recipient approval, inspect missing registration items, and Third replica
+eligibility. Aggregate counters alone do not justify changing retry/security
+logic. Current evidence does not establish a new safe application fix.

@@ -1,3 +1,5 @@
+import {t} from '../../localization/language';
+import {Chrome} from '../../theme';
 import React from 'react';
 import {
   Modal,
@@ -10,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Font, Radius, Spacing } from '../../theme';
+import { Font, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 import Avatar from '../ui/Avatar';
 
@@ -76,7 +78,7 @@ export default function ChatAvatarActionModal({
     >
       <View style={styles.backdrop}>
         <Pressable
-          accessibilityLabel="Close profile preview"
+          accessibilityLabel={t("Close profile preview")}
           style={StyleSheet.absoluteFill}
           onPress={onClose}
         />
@@ -92,7 +94,7 @@ export default function ChatAvatarActionModal({
         >
           <TouchableOpacity
             accessibilityRole="button"
-            accessibilityLabel="Close profile preview"
+            accessibilityLabel={t("Close profile preview")}
             style={styles.close}
             onPress={onClose}
           >
@@ -111,13 +113,13 @@ export default function ChatAvatarActionModal({
 
           <View style={[styles.divider, { backgroundColor: Colors.divider }]} />
           <View style={styles.actions}>
-            <Action icon="chatbubble-ellipses-outline" label="Message" onPress={onMessage} />
+            <Action icon="chatbubble-ellipses-outline" label={t("Message")} onPress={onMessage} />
             {!isGroup && onCall && (
-              <Action icon="call-outline" label="Call" onPress={onCall} />
+              <Action icon="call-outline" label={t("Call")} onPress={onCall} />
             )}
             <Action
               icon={isGroup ? 'people-outline' : 'information-circle-outline'}
-              label="Details"
+              label={t("Details")}
               onPress={onDetails}
             />
           </View>
@@ -140,7 +142,7 @@ const styles = StyleSheet.create({
     maxWidth: 380,
     alignItems: 'center',
     borderWidth: 1,
-    borderRadius: Radius.lg,
+    borderRadius: Chrome.panelRadius,
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.xl,
   },

@@ -8,17 +8,18 @@ import {ATTACHMENT_MAX_BYTES} from '../../services/identity/attachmentProtocol';
 import {withRootPickedMedia,pickRootSharedMedia} from '../storage';
 
 /** Native selection can background and lock the app; only stage bytes until normal unlock. */
-export async function pickRootMedia(peer:string,source:'camera'|'library',reply?:RootChatReply,groupId?:string,confirm?:ConfirmAttachment){
+export async function pickRootMedia(peer:string,source:'camera'|'library',reply?:RootChatReply,groupId?:string,confirm?:ConfirmAttachment,capture?:()=>Promise<ImagePicker.ImagePickerResult>){
  const owner=localAccount.status().account;
  if(!owner||localAccount.status().state!=='unlocked'||!groupId&&(!validAccountId(peer)||peer===owner))throw Error('Unlock your account and choose a peer');
  const audience=groupId?await rootGroupAttachmentAudience(groupId,reply):null;
  if(source==='camera'){
-  const permission=await ImagePicker.requestCameraPermissionsAsync();
+  const existing=await ImagePicker.getCameraPermissionsAsync?.();
+  const permission=existing?.granted?existing:await ImagePicker.requestCameraPermissionsAsync();
   if(!permission.granted)throw Error('Allow camera access in Settings to take a photo');
  }
  if(localAccount.status().account!==owner)throw Error('Account changed');
  const result=source==='camera'
-  ?await ImagePicker.launchCameraAsync({mediaTypes:['images'],quality:0.7})
+  ?await (capture?capture():ImagePicker.launchCameraAsync({mediaTypes:['images'],quality:0.7}))
   :await (pickRootSharedMedia()??ImagePicker.launchImageLibraryAsync({mediaTypes:['images','videos'],allowsMultipleSelection:true,selectionLimit:4,quality:1}));
  if(result.canceled)return;
  if(localAccount.status().account!==owner)throw Error('Account changed');
@@ -33,4 +34,4 @@ export async function pickRootMedia(peer:string,source:'camera'|'library',reply?
  if(localAccount.status().account!==owner)throw Error('Account changed');
  return withRootPickedMedia(selected.map(item=>({...item,assetId:result.assets.find(a=>a.uri===item.uri)?.assetId})),items=>queueRootAttachmentBatch({peer,owner,reply,audience:audience??undefined,items}));
 }
-export const pickRootGroupMedia=(id:string,source:'camera'|'library',confirm?:ConfirmAttachment,reply?:RootChatReply)=>pickRootMedia(id,source,reply,id,confirm);
+export const pickRootGroupMedia=(id:string,source:'camera'|'library',confirm?:ConfirmAttachment,reply?:RootChatReply,capture?:()=>Promise<ImagePicker.ImagePickerResult>)=>pickRootMedia(id,source,reply,id,confirm,capture);

@@ -1,3 +1,4 @@
+import {t,languageSnapshot} from '../../localization/language';
 import type {RootChatReply} from '../../modules/messaging';
 import {useIsFocused} from '@react-navigation/native';
 import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
@@ -7,7 +8,7 @@ import {File} from 'expo-file-system';
 import {Ionicons} from '@expo/vector-icons';
 import {useTheme} from '../../contexts/ThemeContext';
 import {localAccount} from '../../modules/identity';
-import {localAccountCalls} from '../../modules/calls';
+import {localAccountCalls,subscribeLocalAccountCalls} from '../../modules/calls';
 import {queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience} from '../../modules/media';
 import {createRootVoiceRecorder} from '../../modules/media';
 import {chatRoomStyles as styles} from './chat-room-styles';
@@ -15,7 +16,7 @@ import {createVoiceRecordingGesture} from '../../utils/voice-recording-gesture';
 
 const options={...RecordingPresets.HIGH_QUALITY,sampleRate:22050,numberOfChannels:1,bitRate:48000};
 const callActive=()=>{const call=localAccountCalls()?.snapshot();return !!call&&call.status!=='ended';};
-export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onError,onActive,reply,onSent}:{peer:string;groupId?:string;disabled:boolean;onError(error:unknown):void;onActive(active:boolean):void;reply?:RootChatReply;onSent?():void}){
+export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onError,onActive,onRecording,reply,onSent}:{peer:string;groupId?:string;disabled:boolean;onError(error:unknown):void;onActive(active:boolean):void;onRecording?(active:boolean):void;reply?:RootChatReply;onSent?():void}){
  const focused=useIsFocused();
  const {colors}=useTheme(),recorder=useAudioRecorder(options),owner=localAccount.status().account;
  const [state,setState]=useState<'idle'|'starting'|'recording'|'sending'>('idle'),[seconds,setSeconds]=useState(0);
@@ -29,11 +30,11 @@ export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onEr
   const subscription=AccessibilityInfo.addEventListener('reduceMotionChanged',value=>{changed=true;setReduceMotion(value);});
   return()=>{alive=false;subscription.remove();};
  },[]);
- const animateLayout=useCallback(()=>{if(!motionPreference.current)LayoutAnimation.configureNext({duration:180,create:{type:'easeInEaseOut',property:'opacity'},update:{type:'easeInEaseOut'},delete:{type:'easeInEaseOut',property:'opacity'}});},[]);
+ const animateLayout=useCallback(()=>{if(!motionPreference.current)LayoutAnimation.configureNext({duration:180,create:{type:'easeInEaseOut',property:'opacity'},update:{type:'easeInEaseOut'},delete:{type:'easeInEaseOut',property:'opacity'}});},[languageSnapshot()]);
  const controller=useMemo(()=>createRootVoiceRecorder({
   current:()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner&&AppState.currentState==='active'&&!callActive(),
   permission:async()=>{
-   if(callActive())throw Error('Finish your call before recording a voice message');
+   if(callActive())throw Error(t("Finish your call before recording a voice message"));
    if(groupId)await rootGroupAttachmentAudience(groupId,reply);
    // Recording is local. Verified recipient keys are required later, before encryption and delivery.
    // Android can briefly background the app even when requesting an already-granted
@@ -44,13 +45,21 @@ export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onEr
   mode:allowsRecording=>setAudioModeAsync({allowsRecording,playsInSilentMode:true,shouldPlayInBackground:false}),
   prepare:()=>recorder.prepareToRecordAsync(),record:()=>recorder.record({forDuration:300}),stop:()=>recorder.stop(),uri:()=>recorder.uri,
   remove:uri=>{try{const file=new File(uri);if(file.exists)file.delete();}catch{/* Native recorder can already have released its temporary file. */}},
-  enqueue:async uri=>{if(!owner)throw Error('Unlock your account');if(groupId)await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(groupId,reply),uri,'Voice message.m4a','audio/mp4');else await queueRootAttachmentSource(peer,uri,'Voice message.m4a','audio/mp4',owner,reply);onSent?.();},
+  enqueue:async uri=>{if(!owner)throw Error(t("Unlock your account"));if(groupId)await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(groupId,reply),uri,'Voice message.m4a','audio/mp4');else await queueRootAttachmentSource(peer,uri,'Voice message.m4a','audio/mp4',owner,reply);onSent?.();},
   now:Date.now,changed:s=>{const active=s!=='idle';if(wasActive.current!==active){animateLayout();wasActive.current=active;}setState(s);onActive(active);},
- }),[peer,groupId,owner,recorder,onActive,reply?.id,reply?.author,onSent,animateLayout]);
- const gesture=useMemo(()=>createVoiceRecordingGesture({start:()=>controller.start(),send:()=>controller.send(),cancel:()=>controller.cancel(),error:onError,held:()=>Vibration.vibrate(18),changed:(holding,cancelling)=>setGestureState({holding,cancelling}),schedule:setTimeout,clear:clearTimeout}),[controller,onError]);
+ }),[peer,groupId,owner,recorder,onActive,reply?.id,reply?.author,onSent,animateLayout,languageSnapshot()]);
+ const gesture=useMemo(()=>createVoiceRecordingGesture({start:()=>controller.start(),send:()=>controller.send(),cancel:()=>controller.cancel(),error:onError,held:()=>Vibration.vibrate(18),changed:(holding,cancelling)=>setGestureState({holding,cancelling}),schedule:setTimeout,clear:clearTimeout}),[controller,onError,languageSnapshot()]);
  useEffect(()=>{const sub=AppState.addEventListener('change',s=>{if(s!=='active')gesture.terminate();});return()=>{sub.remove();gesture.dispose();void controller.dispose().catch(()=>{});};},[controller,gesture]);
  useEffect(()=>{if(disabled||!focused)gesture.terminate();},[disabled,focused,gesture]);
- useEffect(()=>{if(state!=='recording'){setSeconds(0);return;}const start=Date.now();const timer=setInterval(()=>{const elapsed=Math.floor((Date.now()-start)/1000);setSeconds(elapsed);if(elapsed>=300||callActive())gesture.terminate();},250);return()=>clearInterval(timer);},[state,gesture]);
+ useEffect(()=>{const check=()=>{if(callActive())gesture.terminate();};const off=subscribeLocalAccountCalls(check);check();return off;},[gesture]);
+ useEffect(()=>{if(state!=='recording'){setSeconds(0);return;}const start=Date.now();const timer=setInterval(()=>{const elapsed=Math.floor((Date.now()-start)/1000);setSeconds(elapsed);if(elapsed>=300)gesture.terminate();},1000);return()=>clearInterval(timer);},[state,gesture]);
+ const recordingSignal=useRef(onRecording);recordingSignal.current=onRecording;
+ useEffect(()=>{
+  if(state!=='recording'||!focused||disabled)return;
+  const notify=()=>{if(AppState.currentState==='active')recordingSignal.current?.(true);};
+  notify();const timer=setInterval(notify,3000);
+  return()=>{clearInterval(timer);recordingSignal.current?.(false);};
+ },[state,focused,disabled]);
  const startRecording=()=>void controller.start().catch(onError);
  const active=state!=='idle'||gestureState.holding;
  useEffect(()=>{
@@ -65,18 +74,18 @@ export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onEr
   if(reduceMotion){bin.setValue(target);return;}
   const animation=Animated.spring(bin,{toValue:target,damping:18,stiffness:240,mass:0.7,useNativeDriver:true,isInteraction:false});animation.start();return()=>animation.stop();
  },[gestureState.cancelling,reduceMotion,bin]);
- return <View collapsable={false} accessible={!active} accessibilityRole={active?undefined:'button'} accessibilityLabel={active?undefined:'Record voice message'} accessibilityState={{disabled}} accessibilityHint="Tap to record with Send and Delete controls. Hold to record, release to send, or slide left to cancel."
-  accessibilityActions={[{name:'activate',label:'Record voice message'}]} onAccessibilityAction={()=>{if(!disabled&&!active)startRecording();}} onAccessibilityTap={()=>{if(!disabled&&!active)startRecording();}}
+ return <View collapsable={false} accessible={!active} accessibilityRole={active?undefined:'button'} accessibilityLabel={active?undefined:t("Record voice message")} accessibilityState={{disabled}} accessibilityHint={t("Tap to record with Send and Delete controls. Hold to record, release to send, or slide left to cancel.")}
+  accessibilityActions={[{name:'activate',label:t("Record voice message")}]} onAccessibilityAction={()=>{if(!disabled&&!active)startRecording();}} onAccessibilityTap={()=>{if(!disabled&&!active)startRecording();}}
   onStartShouldSetResponder={()=>!disabled&&state==='idle'} onResponderGrant={event=>gesture.press(event.nativeEvent.pageX)} onResponderMove={event=>gesture.move(event.nativeEvent.pageX)} onResponderRelease={event=>gesture.release(event.nativeEvent.pageX)} onResponderTerminationRequest={()=>false} onResponderTerminate={()=>gesture.terminate()}
-  style={active?[styles.recordingTray,{backgroundColor:colors.surface,flex:1,gap:12,borderColor:gestureState.cancelling?colors.error:colors.neonBorder}]:[styles.sendBtn,{backgroundColor:colors.primary,opacity:disabled?0.45:1}]}>
-  {!active?<Ionicons name="mic" size={24} color={colors.textInverse}/>:<Animated.View style={{flex:1,flexDirection:'row',alignItems:'center',gap:12,opacity:entry,transform:[{translateY:entry.interpolate({inputRange:[0,1],outputRange:[6,0]})}]}}>{gestureState.holding?<>
+  style={active?[styles.recordingTray,{backgroundColor:colors.surface,flex:1,gap:12,borderColor:gestureState.cancelling?colors.error:colors.neonBorder}]:[styles.sendBtn,{borderRadius:22,backgroundColor:colors.tabBarBg,borderColor:colors.neonBorder,opacity:disabled?0.45:1}]}>
+  {!active?<Ionicons name="mic-outline" size={24} color={colors.primary}/>:<Animated.View style={{flex:1,flexDirection:'row',alignItems:'center',gap:12,opacity:entry,transform:[{translateY:entry.interpolate({inputRange:[0,1],outputRange:[6,0]})}]}}>{gestureState.holding?<>
    <Animated.View style={{width:36,height:36,flexShrink:0,borderRadius:18,alignItems:'center',justifyContent:'center',backgroundColor:colors.error,transform:[{scale:bin.interpolate({inputRange:[0,1],outputRange:[1,1.12]})}]}}><Ionicons name="trash-outline" size={24} color="#fff" style={{width:24,height:24,lineHeight:24,textAlign:'center',includeFontPadding:false}}/></Animated.View>
-   <Text style={{flex:1,color:gestureState.cancelling?colors.error:colors.text}}>{gestureState.cancelling?'Release to cancel':`‹ Slide left to cancel · ${seconds}s`}</Text>
+   <Text style={{flex:1,color:gestureState.cancelling?colors.error:colors.text}}>{gestureState.cancelling?t("Release to cancel"):`‹ Slide left to cancel · ${seconds}s`}</Text>
    <Ionicons name="mic" size={24} color={colors.primary}/>
   </>:<>
-  <Pressable accessibilityLabel="Cancel recording" onPress={()=>void controller.cancel().catch(onError)}><Ionicons name="trash-outline" size={24} color={colors.error}/></Pressable>
-  <Text accessibilityLiveRegion="polite" style={{color:colors.text,flex:1}}>{state==='recording'?`Recording ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`:state==='starting'?'Starting microphone…':'Sending voice message…'}</Text>
-  <Pressable accessibilityLabel="Send voice message" disabled={state!=='recording'} onPress={()=>void controller.send().catch(onError)}><Ionicons name="send" size={24} color={colors.primary}/></Pressable>
+  <Pressable accessibilityLabel={t("Cancel recording")} onPress={()=>void controller.cancel().catch(onError)}><Ionicons name="trash-outline" size={24} color={colors.error}/></Pressable>
+  <Text accessibilityLiveRegion="polite" style={{color:colors.text,flex:1}}>{state==='recording'?`Recording ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`:state==='starting'?t("Starting microphone…"):t("Sending voice message…")}</Text>
+  <Pressable accessibilityLabel={t("Send voice message")} disabled={state!=='recording'} onPress={()=>void controller.send().catch(onError)}><Ionicons name="send" size={24} color={colors.primary}/></Pressable>
   </>}</Animated.View>}
  </View>;
 });

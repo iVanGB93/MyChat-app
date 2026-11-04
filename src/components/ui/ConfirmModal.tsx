@@ -1,3 +1,5 @@
+import {t} from '../../localization/language';
+import {Chrome} from '../../theme';
 /* ------------------------------------------------------------------ */
 /*  ConfirmModal — themed Alert/Confirm replacement                    */
 /*                                                                     */
@@ -16,6 +18,7 @@ import {
   Animated,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -23,7 +26,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Font, Radius, Spacing } from '../../theme';
+import { Font, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 
 export type ConfirmButtonStyle = 'default' | 'destructive' | 'cancel';
@@ -96,7 +99,7 @@ export default function ConfirmModal({
   };
 
   const effectiveButtons: ConfirmButton[] =
-    buttons && buttons.length > 0 ? buttons : [{ text: 'OK', style: 'default' }];
+    buttons && buttons.length > 0 ? buttons : [{ text: t("OK"), style: 'default' }];
 
   // For backdrop dismissal we treat the cancel button (if any) as the action.
   const handleBackdropPress = () => {
@@ -118,7 +121,7 @@ export default function ConfirmModal({
         borderColor: Colors.neonBorder,
         backgroundColor: 'transparent',
         textColor: Colors.textSecondary,
-        dashed: true,
+        dashed: false,
       };
     }
     return {
@@ -143,11 +146,15 @@ export default function ConfirmModal({
             shadowColor: Colors.primary,
             // Add the system nav inset (3-button bar on Android, home
             // indicator on iOS) so action buttons aren't hidden underneath.
-            paddingBottom: Spacing.xl + insets.bottom,
+            paddingBottom: Spacing.xl,
+            bottom: Math.max(insets.bottom, 8) + 4,
+            left: insets.left + Chrome.gutter,
+            right: insets.right + Chrome.gutter,
             transform: [{ translateY }],
           },
         ]}
       >
+        <ScrollView bounces={false} contentContainerStyle={{paddingBottom:4}}>
         <View style={[styles.handle, { backgroundColor: Colors.neonBorder }]} />
 
         {icon && (
@@ -190,6 +197,7 @@ export default function ConfirmModal({
             );
           })}
         </View>
+        </ScrollView>
       </Animated.View>
     </Modal>
   );
@@ -201,6 +209,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.55)',
   },
   sheet: {
+    maxHeight: '80%',
     position: 'absolute',
     left: 0,
     right: 0,
@@ -208,11 +217,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingTop: Spacing.md,
     paddingBottom: Spacing.xl,
-    borderTopLeftRadius: Radius.lg,
-    borderTopRightRadius: Radius.lg,
+    borderRadius: Chrome.panelRadius,
     borderWidth: 1,
-    borderBottomWidth: 0,
-    shadowOpacity: 0.45,
+
+    shadowOpacity: Chrome.shadowOpacity,
     shadowRadius: 24,
     shadowOffset: { width: 0, height: -8 },
     elevation: 16,
@@ -229,12 +237,12 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     width: 52,
     height: 52,
-    borderRadius: 14,
-    borderWidth: 1.5,
+    borderRadius: 26,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: Spacing.sm,
-    shadowOpacity: 0.5,
+    shadowOpacity: Chrome.shadowOpacity,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
   },
@@ -257,10 +265,11 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   button: {
+    minHeight: 48,
     paddingVertical: Spacing.md,
     alignItems: 'center',
-    borderRadius: Radius.md,
-    borderWidth: 1.5,
+    borderRadius: Chrome.controlRadius,
+    borderWidth: 1,
   },
   buttonText: {
     fontSize: Font.size.sm,

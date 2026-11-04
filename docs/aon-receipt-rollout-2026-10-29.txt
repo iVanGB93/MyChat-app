@@ -1,0 +1,52 @@
+AoN receipt recovery rollout, October 29 2026
+
+Commit c8fb1e3dc3a6492f5e4b9e2f44118eb70b89f8c4
+Avoid premature control timeouts and unblock group receipt recovery
+Pushed branch codex/aon-dashboard-style-20261028 to origin.
+Isolated checkout: builds/aon-wss-binary-20261026; working tree clean after commit.
+Only shared-source.json, hostedRootCustody.ts, persistentAxon.ts and the new
+hostedCustodyConcurrency regression were committed. Unrelated work preserved.
+
+All three AoNs verified:
+packageVersion 0.2.0
+sourceCommit c8fb1e3dc3a6492f5e4b9e2f44118eb70b89f8c4
+sourceDirty false, sourceMetadataStatus runtime_bound
+runtimeSha256 23cf1a9942992be775697971efe5d4099dd45ea05ad546199d133fc4b57cc8bf
+157 runtime modules
+
+FirstNeuron and ThirdNeuron: atomic executable-directory swaps, health HTTP 200,
+identity hashes unchanged, authenticated status and current chat HTTP 200,
+protected owner installed. No data directories touched; no backup created.
+SecondNeuron: Railway deployment db04e498-6ec9-48f3-b3bc-7032e0993a1f SUCCESS;
+authenticated connector status matches runtime/source above, owner installed.
+Verified staging Dockerfile matches deploy/Dockerfile.railway. Existing volume
+retained; no variables, credentials, MCP subscriptions, queues or data reset.
+
+Tests before deployment: 323 hosted tests passed. Shared timeout regressions
+and mobile full checks passed in the preceding investigation. Production phone
+app and mobile Git working tree were not committed/deployed by this rollout.
+
+Live notification recovery measurement after deployment
+- First attempted natural disconnected-background window. Dev kept connections
+  open throughout the 90-second observation after the initial 35-second wait.
+  Aborted that scenario before sending any message; no reset/force-stop used.
+- Ran a labeled warm-background hint-only FCM through FirstNeuron's gateway,
+  with the encrypted message held by SecondNeuron, to the Dev identity only.
+  An isolated synthetic sender was pinned/accepted only in Dev for this test.
+- Gateway forwarded in 1,029 ms from deposit start. Real background FCM callback
+  recorded provider-to-JS 68 ms (cross-clock), delivered/original priority high.
+- Recovery started 21:59:20.785Z; message commit 21:59:26.220Z (5,435 ms later).
+  Recovery finished 21:59:27.402Z: receipt_complete, elapsed 6,618 ms,
+  setup 1 ms, max wait lag 551 ms, zero overrun and zero observed device sleep.
+  Whole-process CPU 6,772 ms; not attributable solely to this recovery.
+- Preview posted 21:59:27.750Z. Signed receipt observed/verified by the test sender
+  after 9,153 ms; observer polls every 2 seconds, so this is an upper-bound
+  observation latency, not the receipt's exact arrival time.
+- Exactly one matching incoming message and matching displayed preview. Receipt
+  digest/signature verified. Existing message/queue data was not cleared.
+- Evidence builds/notification-warm-recovery-c8fb1e3.json; the 34,093 ms overall
+  script elapsed includes a deliberate 24-second observation wait, not delivery.
+- The earlier report's 20,103 ms receipt deadline is historical, not a paired
+  benchmark. This proves successful completion in this warm-background run,
+  not cold-start performance or a universal percentage improvement.
+- Normal phone app remains versionCode 105, lastUpdateTime 2026-10-29 08:39:16.

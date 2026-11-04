@@ -1,3 +1,4 @@
+import {ATTACHMENT_ACTIVE_JOB_LIMIT} from './attachmentSchedule';
 import type {AttachmentJobStore} from './attachmentTransferPorts';
 import {retiredAttachment} from './retiredAttachment';
 import {attachmentChanged} from './attachmentChanges';
@@ -57,19 +58,17 @@ export function createMobileAttachmentJobs(now:()=>number=Date.now,
     // Most startups have no retirement work. Check the bounded active queue on
     // the WAL reader before opening a writer/transaction or counting history.
     // Keep this inside the write queue; actual retirement rechecks in its transaction.
-    const rows=await(await db()).getAllAsync<{raw:string;revision:number}>(`SELECT raw,revision FROM jobs WHERE owner=? AND ${activeFormat} LIMIT 129`,owner);
+    const rows=await(await db()).getAllAsync<{raw:string;revision:number}>(`SELECT raw,revision FROM jobs WHERE owner=? AND ${activeFormat} LIMIT ${ATTACHMENT_ACTIVE_JOB_LIMIT+1}`,owner);
     const jobs=rows.map(r=>parse(r)).filter((j):j is AttachmentJob=>j!==null);
-    if(jobs.length>128||jobs.some(j=>j.owner!==owner))throw Error('Invalid attachment jobs');
+    if(jobs.length>ATTACHMENT_ACTIVE_JOB_LIMIT||jobs.some(j=>j.owner!==owner))throw Error('Invalid attachment jobs');
     if(!current())return;
     if(!jobs.some(j=>j.phase==='complete'||j.phase==='expired'||j.descriptor.manifest.expires<=now())){
      observed(owner,jobs);return;
     }
     await transaction(async tx=>{
-    const rows=await tx.getAllAsync<{raw:string;revision:number}>(`SELECT raw,revision FROM jobs WHERE owner=? AND ${activeFormat} LIMIT 129`,owner);
-    const jobs=rows.map(r=>parse(r)).filter((j):j is AttachmentJob=>j!==null);if(jobs.length>128||jobs.some(j=>j.owner!==owner))throw Error('Invalid attachment jobs');
+    const rows=await tx.getAllAsync<{raw:string;revision:number}>(`SELECT raw,revision FROM jobs WHERE owner=? AND ${activeFormat} LIMIT ${ATTACHMENT_ACTIVE_JOB_LIMIT+1}`,owner);
+    const jobs=rows.map(r=>parse(r)).filter((j):j is AttachmentJob=>j!==null);if(jobs.length>ATTACHMENT_ACTIVE_JOB_LIMIT||jobs.some(j=>j.owner!==owner))throw Error('Invalid attachment jobs');
     const finished=jobs.filter(j=>j.phase==='complete'||j.phase==='expired'||j.descriptor.manifest.expires<=now()).map(j=>j.phase==='complete'||j.phase==='expired'?j:{...j,phase:'expired' as const,revision:j.revision+1});
-    const count=await tx.getFirstAsync<{n:number}>(`SELECT COUNT(*) AS n FROM finished_jobs WHERE owner=? AND ${activeFormat}`,owner);
-    if((count?.n??5000)+finished.length>5000)throw Error('Attachment history is full');
     for(const j of finished){await tx.runAsync('INSERT INTO finished_jobs(owner,digest,revision,raw) VALUES(?,?,?,?)',owner,j.digest,j.revision,JSON.stringify(j));await tx.runAsync('DELETE FROM jobs WHERE owner=? AND digest=?',owner,j.digest);}
     if(!current())throw Error('Attachment account locked');
    });changed(owner);observed(owner,jobs.filter(j=>j.phase!=='complete'&&j.phase!=='expired'&&j.descriptor.manifest.expires>now()));});tail=work.catch(()=>{});await work;
@@ -91,8 +90,8 @@ export function createMobileAttachmentJobs(now:()=>number=Date.now,
    return !!row&&row.revision===revision&&['queued','uploading','downloading','confirming'].includes(row.phase);
   },
   async list(owner){if(!validAccountId(owner))throw Error('Invalid attachment owner');
-   const rows=await(await db()).getAllAsync<{raw:string;revision:number}>(`SELECT raw,revision FROM jobs WHERE owner=? AND ${activeFormat} LIMIT 129`,owner);
-   const jobs=rows.map(r=>parse(r)).filter((j):j is AttachmentJob=>j!==null);if(jobs.length>128||jobs.some(j=>j.owner!==owner))throw Error('Invalid attachment jobs');return jobs;
+   const rows=await(await db()).getAllAsync<{raw:string;revision:number}>(`SELECT raw,revision FROM jobs WHERE owner=? AND ${activeFormat} LIMIT ${ATTACHMENT_ACTIVE_JOB_LIMIT+1}`,owner);
+   const jobs=rows.map(r=>parse(r)).filter((j):j is AttachmentJob=>j!==null);if(jobs.length>ATTACHMENT_ACTIVE_JOB_LIMIT||jobs.some(j=>j.owner!==owner))throw Error('Invalid attachment jobs');return jobs;
   },
   save(job,expected,current){
    const next=clone(job);if(!validAttachmentJob(next)||next.revision!==(expected===null?0:expected+1)||JSON.stringify(next).length>10000)return Promise.resolve(false);
@@ -106,8 +105,8 @@ export function createMobileAttachmentJobs(now:()=>number=Date.now,
      if((previous?.revision??null)!==expected||!current())return;
      if(previous&&(previous.owner!==next.owner||previous.digest!==next.digest||previous.direction!==next.direction||JSON.stringify(previous.descriptor)!==JSON.stringify(next.descriptor)))return;
      if(previous&&['complete','expired'].includes(previous.phase)&&next.phase!==previous.phase)return;
-     const finished=next.phase==='complete'||next.phase==='expired',table=finished?'finished_jobs':'jobs',limit=finished?5000:128;
-     if(!previous||finished){// Only the capacity threshold matters. Bound the indexed read and avoid
+     const finished=next.phase==='complete'||next.phase==='expired',table=finished?'finished_jobs':'jobs',limit=ATTACHMENT_ACTIVE_JOB_LIMIT;
+     if(!previous&&!finished){// Only the capacity threshold matters. Bound the indexed read and avoid
      // native scheduling turns while holding the private write transaction.
      const count=await measure('checkpointCount',async()=>tx.getFirstSync<{n:number}>(`SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${table} WHERE owner=? AND ${activeFormat} LIMIT ${limit})`,next.owner));
       if((count?.n??limit)>=limit&&(!finished||!tx.getFirstSync<{revision:number}>('SELECT revision FROM finished_jobs WHERE owner=? AND digest=?',next.owner,next.digest)))return;}

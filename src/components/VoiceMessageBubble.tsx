@@ -1,3 +1,5 @@
+import {useLanguage} from '../localization/useLanguage';
+import {t,languageSnapshot} from '../localization/language';
 /* ------------------------------------------------------------------ */
 /*  VoiceMessageBubble                                                   */
 /*                                                                       */
@@ -23,6 +25,7 @@ import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-au
 import { Spacing, Radius, Font } from '../theme';
 import {
   audioPositionFromTrack,
+  isAudioSeekGesture,
   clampAudioPosition,
   nextVoicePlaybackRate,
   type VoicePlaybackRate,
@@ -35,6 +38,7 @@ interface Props {
   durationMs: number | null | undefined;
   /** True while the audio bytes are still being downloaded (chunked transfer). */
   loading?: boolean;
+  loadingLabel?: string;
   /** Render the play icon and progress in this color (e.g. inverse for sent bubbles). */
   tint: string;
   /** Render the duration text in this color. */
@@ -42,6 +46,7 @@ interface Props {
   /** Track background color. */
   trackBg: string;
   playbackAllowed?:()=>boolean;
+  subscribePlaybackAllowed?:(changed:()=>void)=>()=>void;
   onPlaybackError?:(error:string)=>void;
   messageFooter?:React.ReactNode;
 }
@@ -58,13 +63,16 @@ export default function VoiceMessageBubble({
   fileUri,
   durationMs,
   loading,
+  loadingLabel,
   tint,
   subtleColor,
   trackBg,
   playbackAllowed,
+  subscribePlaybackAllowed,
   onPlaybackError,
   messageFooter,
 }: Props) {
+ useLanguage();
   const player = useAudioPlayer(fileUri || null, { updateInterval: 250 });
   const status = useAudioPlayerStatus(player);
   const trackWidth = useRef(0);
@@ -74,12 +82,12 @@ export default function VoiceMessageBubble({
 
   // Ensure audio routes to the speaker (not call earpiece) when playing
   useEffect(() => {
-    if(playbackAllowed&&!playbackAllowed())return;
+    if(!fileUri||playbackAllowed&&!playbackAllowed())return;
     setAudioModeAsync({
       playsInSilentMode: true,
       shouldPlayInBackground: false,
     }).catch(() => {});
-  }, []);
+  }, [fileUri]);
 
   const isPlaying = !!status?.playing;
   // expo-audio status reports seconds; convert to ms for display.
@@ -108,7 +116,7 @@ export default function VoiceMessageBubble({
   // Idle bubbles must not poll call/recording state four times a second.
   // Starting playback checks synchronously above; only active playback needs
   // the ongoing interruption guard.
-  useEffect(()=>{if(!playbackAllowed||!isPlaying)return;const timer=setInterval(()=>{if(!playbackAllowed())player.pause();},250);return()=>clearInterval(timer);},[playbackAllowed,player,isPlaying]);
+  useEffect(()=>{if(!playbackAllowed||!isPlaying)return;const check=()=>{if(!playbackAllowed())player.pause();};const off=subscribePlaybackAllowed?.(check);check();if(off)return off;const timer=setInterval(check,250);return()=>clearInterval(timer);},[playbackAllowed,subscribePlaybackAllowed,player,isPlaying]);
 
   // Stop playback if the file disappears (e.g. message deleted)
   useEffect(() => {
@@ -131,7 +139,7 @@ export default function VoiceMessageBubble({
     const nextMs = audioPositionFromTrack(locationX, trackWidth.current, totalMs);
     seekPreviewRef.current = nextMs;
     setSeekPreviewMs(nextMs);
-  }, [disabled, totalMs]);
+  }, [disabled, totalMs,languageSnapshot()]);
 
   const commitSeek = useCallback((positionMs: number) => {
     if (disabled || totalMs <= 0) return;
@@ -139,17 +147,17 @@ export default function VoiceMessageBubble({
     seekPreviewRef.current = null;
     setSeekPreviewMs(null);
     player.seekTo(nextMs / 1000).catch(() => {});
-  }, [disabled, player, totalMs]);
+  }, [disabled, player, totalMs,languageSnapshot()]);
 
   const seekFromTap = useCallback((locationX: number) => {
     const nextMs = audioPositionFromTrack(locationX, trackWidth.current, totalMs);
     commitSeek(nextMs);
-  }, [commitSeek, totalMs]);
+  }, [commitSeek, totalMs,languageSnapshot()]);
 
   const seekPanResponder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
     onMoveShouldSetPanResponder: (_, gesture) => (
-      !disabled && totalMs > 0 && (Math.abs(gesture.dx) > 2 || Math.abs(gesture.dy) > 2)
+      !disabled && totalMs > 0 && isAudioSeekGesture(gesture.dx,gesture.dy)
     ),
     onPanResponderGrant: (event) => previewSeek(event.nativeEvent.locationX),
     onPanResponderMove: (event) => previewSeek(event.nativeEvent.locationX),
@@ -162,12 +170,12 @@ export default function VoiceMessageBubble({
       if (nextMs != null) commitSeek(nextMs);
     },
     onPanResponderTerminationRequest: () => false,
-  }), [commitSeek, disabled, previewSeek, totalMs]);
+  }), [commitSeek, disabled, previewSeek, totalMs,languageSnapshot()]);
 
   const accessibilitySeek = useCallback((direction: 'forward' | 'backward') => {
     const deltaMs = direction === 'forward' ? 5_000 : -5_000;
     commitSeek(displayedMs + deltaMs);
-  }, [commitSeek, displayedMs]);
+  }, [commitSeek, displayedMs,languageSnapshot()]);
 
   const cyclePlaybackRate = useCallback(() => {
     if (disabled) return;
@@ -176,27 +184,7 @@ export default function VoiceMessageBubble({
       player.setPlaybackRate(nextRate, 'high');
       setPlaybackRate(nextRate);
     } catch {}
-  }, [disabled, playbackRate, player]);
-
-  // Audio hasn't arrived yet (still downloading over chunked transfer).
-  if (loading && !fileUri) {
-    return (
-      <View style={styles.container}>
-        <View
-          style={[
-            styles.playBtn,
-            { borderColor: tint, backgroundColor: tint + '22', opacity: 0.6 },
-          ]}
-        >
-          <ActivityIndicator size="small" color={tint} />
-        </View>
-        <View style={styles.right}>
-          <View style={[styles.track, { backgroundColor: trackBg }]} />
-          <Text style={[styles.duration, { color: subtleColor }]}>Receiving…</Text>
-        </View>
-      </View>
-    );
-  }
+  }, [disabled, playbackRate, player,languageSnapshot()]);
 
   return (
     <View style={styles.container}>
@@ -211,11 +199,11 @@ export default function VoiceMessageBubble({
         ]}
         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       >
-        <Ionicons
+        {loading&&!fileUri?<ActivityIndicator size="small" color={tint}/>:<Ionicons
           name={isPlaying ? 'pause' : 'play'}
           size={18}
           color={tint}
-        />
+        />}
       </TouchableOpacity>
       <View style={styles.right}>
         <View
@@ -228,8 +216,8 @@ export default function VoiceMessageBubble({
             onPress={(event) => seekFromTap(event.nativeEvent.locationX)}
             disabled={disabled || totalMs <= 0}
             accessibilityRole="adjustable"
-            accessibilityLabel="Voice message playback position"
-            accessibilityHint="Tap or drag to seek. Swipe up or down to move five seconds."
+            accessibilityLabel={t("Voice message playback position")}
+            accessibilityHint={t("Tap or drag to seek. Swipe up or down to move five seconds.")}
             accessibilityValue={{
               min: 0,
               max: Math.max(0, Math.round(totalMs / 1000)),
@@ -237,8 +225,8 @@ export default function VoiceMessageBubble({
               text: `${fmtTime(displayedMs)} of ${fmtTime(totalMs)}`,
             }}
             accessibilityActions={[
-              { name: 'increment', label: 'Forward five seconds' },
-              { name: 'decrement', label: 'Back five seconds' },
+              { name: 'increment', label: t("Forward five seconds") },
+              { name: 'decrement', label: t("Back five seconds") },
             ]}
             onAccessibilityAction={(event) => {
               if (event.nativeEvent.actionName === 'increment') accessibilitySeek('forward');
@@ -267,7 +255,7 @@ export default function VoiceMessageBubble({
         </View>
         <View style={styles.metaRow}>
           <Text numberOfLines={1} style={[styles.duration, { color: subtleColor },messageFooter!=null&&{flex:1}]}>
-            {disabled ? '— : —' : `${fmtTime(displayedMs)} / ${fmtTime(totalMs)}`}
+            {disabled ? loadingLabel ?? '— : —' : `${fmtTime(displayedMs)} / ${fmtTime(totalMs)}`}
           </Text>
           <TouchableOpacity
             onPress={cyclePlaybackRate}
@@ -279,8 +267,8 @@ export default function VoiceMessageBubble({
               disabled && { opacity: 0.4 },
             ]}
             accessibilityRole="button"
-            accessibilityLabel={`Playback speed ${playbackRate} times`}
-            accessibilityHint="Cycles between normal, one and a half, and double speed"
+            accessibilityLabel={t("Playback speed {0} times",{0:playbackRate})}
+            accessibilityHint={t("Cycles between normal, one and a half, and double speed")}
           >
             <Text style={[styles.speedText, { color: tint }]}>{playbackRate}×</Text>
           </TouchableOpacity>

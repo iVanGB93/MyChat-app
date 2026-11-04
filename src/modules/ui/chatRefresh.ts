@@ -18,7 +18,7 @@ export function createChatRefresh<T>(d:{owner():string|null;read(owner:string):P
    else dirty=true;
    failures=0;
   }catch(error){if(!stopped&&d.owner()===owner){failures++;d.failed(error);}}
-  finally{running=false;if(!stopped&&(dirty||failures))arm(dirty?0:storageRetryDelay(failures));}
+  finally{running=false;if(!stopped&&(dirty||failures))arm(failures?storageRetryDelay(failures):0);}
  }
  function wake(owner:string){if(stopped||owner!==d.owner())return;dirty=true;
   if(!running){if(timer!==undefined)cancel(timer);arm(0);}

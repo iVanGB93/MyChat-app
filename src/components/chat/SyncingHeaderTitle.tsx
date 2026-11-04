@@ -14,11 +14,13 @@ export default function SyncingHeaderTitle({ title, syncing, color }: { title: s
     }
     const wave = Animated.loop(
       Animated.sequence([
-        Animated.stagger(45, pulses.map((pulse) => Animated.sequence([
-          Animated.timing(pulse, { toValue: 1, duration: 160, useNativeDriver: true }),
-          Animated.timing(pulse, { toValue: 0, duration: 240, useNativeDriver: true }),
+        // Decorative loops must not hold InteractionManager handles: virtualized
+        // chat rows can otherwise wait for an animation that never finishes.
+        Animated.parallel(pulses.map((pulse, index) => Animated.sequence([
+          Animated.timing(pulse, { toValue: 1, delay: index * 45, duration: 160, useNativeDriver: true, isInteraction: false }),
+          Animated.timing(pulse, { toValue: 0, duration: 240, useNativeDriver: true, isInteraction: false }),
         ]))),
-        Animated.delay(350),
+        Animated.timing(pulses[0], { toValue: 0, duration: 350, useNativeDriver: true, isInteraction: false }),
       ]),
     );
     wave.start();

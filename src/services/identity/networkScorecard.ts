@@ -1,0 +1,10 @@
+/** Local observations, not a reward ledger. No identifiers, polling or persistent writes. */
+export type ContributionEvent='messagesHeld'|'recipientReceipts'|'groupsHeld'|'attachmentGrantsHeld'|'blocksStored'|'attachmentReceipts'|'ciphertextBytesStored';
+export function createContributionMeter(now:()=>number,changed?:()=>void){
+ const startedAt=now(),counts:Record<ContributionEvent,number>={messagesHeld:0,recipientReceipts:0,groupsHeld:0,attachmentGrantsHeld:0,blocksStored:0,attachmentReceipts:0,ciphertextBytesStored:0};
+ return {commit(delta:Partial<Record<ContributionEvent,number>>){let updated=false;for(const key of Object.keys(counts) as ContributionEvent[]){const n=delta[key];if(typeof n==='number'&&Number.isSafeInteger(n)&&n>0){counts[key]=Math.min(Number.MAX_SAFE_INTEGER,counts[key]+n);updated=true;}}if(updated)try{changed?.();}catch{}},snapshot:()=>({startedAt,counts:{...counts}})};
+}
+export type ContributionSnapshot=ReturnType<ReturnType<typeof createContributionMeter>['snapshot']>;
+export function networkScorecard(input:{state:string;connected:number;error:boolean;privateRelay:ContributionSnapshot|null;groupRelay:ContributionSnapshot|null;mediaRelay:ContributionSnapshot|null}){
+ return {version:1,contribution:{privateRelay:input.privateRelay,groupRelay:input.groupRelay,mediaRelay:input.mediaRelay,evidence:'Local committed relay transitions. Recipient receipts have verified signatures; they do not prove this relay supplied all bytes.',scope:'Per service instance since startedAt; restart or account change starts a new window. Missing service is unavailable, not zero.',unavailable:['Verified forwarded bytes and throughput','Storage byte-hours','Independently verified availability','Lifetime contribution']},health:{state:input.state,connectedPeers:Math.max(0,input.connected),runtimeError:input.error,assessment:input.error?'attention':input.state!=='active'?'inactive':input.connected>0?'connected':'no_connected_peers',scope:'Current connectivity only, not delivery success, battery health or continuous uptime.'},rewards:{enabled:false,reason:'No combined score or rewards until measurements are independently verifiable.'}};
+}

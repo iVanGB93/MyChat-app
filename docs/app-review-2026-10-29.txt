@@ -1,0 +1,26 @@
+Axonic app review — October 29, 2026
+
+Scope
+Reviewed recent chat scrolling/gesture changes, timeline and transfer-state handoff, reply navigation, camera/attachment preview, media picker, voice recorder lifecycle, history page lifecycle, expired-media retry, background upload loop, Play update handling, navigation presentation, and module boundaries. Ran the full maintained app suite (identity, storage, messaging/groups, media/streams, calls, notifications/background work, UI helpers). This is not a claim every UI/device/OS combination was exercised.
+
+Fixed in this review
+1. Transfer progress could invalidate pending-selection hydration repeatedly. Separate job and selection revisions now publish valid selections without overwriting newer job progress. Regression covers progress arriving during an in-flight read.
+2. Camera close/background could race with capture resolution before unmount. Dismissal invalidates capture immediately; late results are ignored. Tests cover close, background, normal capture and duplicate taps.
+3. Quote navigation could repeat on receipts/history updates and keep resetting the highlight timeout. A target is positioned once; explicit failed-index retries remain supported. Tests cover updates and retry behavior.
+
+Earlier scrolling fix retained
+Automatic positioning yields to touch/drag/momentum; scroll events themselves do not create correction loops. Voice seeking claims horizontal drags only. Reply swipes yield to vertical movement. Those changes are also after the existing AAB.
+
+Validation after final changes
+npm run check: 1703 tests, 1700 passed, 3 optional benchmarks skipped, 0 failed.
+TypeScript, service cycles (257 modules), module boundaries (105 UI files), consolidation (384 reachable modules), asset references passed.
+Architecture documentation: 240 references checked; 49 hosted references deferred because this was a mobile review, not an AoN deployment review.
+git diff --check passed.
+Log: builds/full-review-20261029-final.log
+
+Limits / next validation
+No phone was connected at the prior device check. New fixes need live Dev tests: vertical swipes across voice messages, quote jump while receipts arrive, media arriving while reading history, cancellation during capture, and sending while other media transfers progress.
+Persistent SQLite lock incident was recovered by a Dev process restart in the preceding session; do not claim a permanent device-level resolution solely from automated checks. Fresh native build with cleanup patch and repeated lifecycle testing remains useful.
+Production Play download/install and long vendor-specific background behavior are not proven by unit tests.
+No production build, installation, publication, data clearing, commit, push, or AoN deployment performed in this review.
+Existing builds/Axonic-1.1.34-105.aab preserved, SHA256 4fdf20613f84dc4719a7555d14a94e6b9dc52efaaccffc82ff3b0ce3f42172c4. These source fixes are not in that artifact.

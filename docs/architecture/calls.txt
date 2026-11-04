@@ -1,6 +1,7 @@
 CALLS AND SCREEN SHARING
 Purpose: durable signaling, call state, audio/video sessions and screen sharing.
 Call control and the media path are distinct; signaling success is not video flow.
+Group-call design audit: docs/architecture/group-calls-audit-2026-10-31.txt.
 
 File: src/modules/calls/commands.ts
 File: src/services/identity/neuronCallCoordinator.ts
@@ -87,3 +88,44 @@ shared call coordinator/protocol remain portable. Stop is idempotent and rejects
 late ringing confirmations after stop/account change. Quality sampling uses a
 single-flight deadline; getStats has no push event, so the active 3s sampling
 interval is retained without overlapping requests or late publication.
+
+October 31 group calls (Dev only)
+See group-calls-implementation-2026-10-31.txt for shared room/leg ownership,
+live three-participant direct and TURN evidence, and remaining production gates.
+
+Release-candidate preparation: app.json extra.groupCallsEnabled now explicitly enables group calling independent of __DEV__. This prepares 1.1.38 testing; it is not a production build or deployment record. Four-device live media and extended background/handover tests remain pending.
+
+November 1, 2026: sequential private-call additions
+- Keep Add people available to the ad-hoc call creator after 2 -> 3 expansion;
+  remaining capacity uses the invited audience (including self), maximum four.
+- Negotiate the larger audience over existing authenticated media control
+  channels before the creator commits. Keep original legs/capture mounted;
+  new invitees still accept explicitly. No polling or media restart added.
+- Retain prior signed audiences only for already-known leg IDs so their existing
+  controls, including hangup, remain valid after growth. Reject shrinkage,
+  creator changes and invitations above four. Peers need updated client support.
+- Validated voice/video 2 -> 3 -> 4, six mesh edges, unchanged transport objects,
+  fourth-user consent, fifth-user rejection, old-leg hangup, picker capacity and
+  Add people visibility. Focused tests and TypeScript passed. Live multi-device
+  sequential addition has not yet been verified; official apps unchanged.
+
+Live acceptance, November 1, 2026, 21:40-21:42 EST:
+- Two connected Samsung phones used com.axonic.dev only; two existing emulators
+  received updated DEBUGGABLE com.axonic clients with install -r. The old emulator
+  clients lacked ExpoSecureStore. Current-system account state was empty on each;
+  initialized two test identities without clearing or uninstalling anything.
+- Ran video 2 -> 3 -> 4 using actual mounted CallOptions/GroupCallPicker handlers.
+  Picker existingCount was 2 then 3; Add people available at three, absent at four.
+- All four participants agreed on the audience and had three ready remote legs.
+  Two samples verified all 24 incoming media counters advanced (12 audio, 12 video;
+  video decoded frames advanced too). This verifies media flow, not a subjective
+  listening assessment. Original pair IDs/native connections stayed unchanged.
+- Inspected phone screenshot: four quadrants, original call retained, right arrow.
+- Added emulators left sequentially, leaving the original two phones connected.
+  Ending on one phone propagated; all four ended, zero remaining call-media edges.
+- Evidence: builds/sequential-call-live.json, sequential-call-sample-*.json,
+  sequential-call-four-status.json, sequential-call-two-final.json,
+  sequential-call-ended.json. Debug emulator build passed; no production build,
+  deployment, official phone installation, history cleanup or reset performed.
+- This closes sequential-addition live acceptance. It does not reproduce or
+  resolve the separate mother's screen-share/audio interruption.

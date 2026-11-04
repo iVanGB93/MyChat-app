@@ -1,8 +1,11 @@
-import {KeyboardFormScrollView} from '../ui/KeyboardForm';
+import {t} from '../../localization/language';
+import {Ionicons} from '@expo/vector-icons';
+import {Chrome} from '../../theme';
+import {KeyboardAvoidingScreen, KeyboardFormScrollView} from '../ui/KeyboardForm';
 import {KeyboardAwareTextInput as TextInput} from '../ui/KeyboardForm';
 import type {StickerDraftStorage} from '../../services/sticker-draft-store';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Keyboard, Text, TouchableOpacity, View, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -17,8 +20,9 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
   ownerId: number | string; onBusy: (busy: boolean) => void; onSaved: () => void;
 }) {
   const { colors: c } = useTheme();
-  const { width, height } = useWindowDimensions();
-  const previewHeight = Math.min(240, Math.max(96, height * .3), Math.max(96, width - 56));
+  const window=useWindowDimensions();
+  const previewSize=Math.max(100,Math.min(220,window.width-64,window.height*0.3));
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<string | undefined>(initialUri);
   const draftId=useRef<string | undefined>(undefined);
   const [loadingDraft,setLoadingDraft]=useState(!!draftStorage);
@@ -31,12 +35,10 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
     if (draft) void new File(draft).bytes().then((bytes) => {
       const head = String.fromCharCode(...bytes.slice(0, 12));
       if (active) setPreserveAnimation(head.startsWith('GIF87a') || head.startsWith('GIF89a') || (head.startsWith('RIFF') && head.slice(8) === 'WEBP'));
-    }).catch(() => { if (active) Alert.alert('Sticker unavailable', 'Could not read the selected image. Please choose it again.'); });
+    }).catch(() => { if (active) Alert.alert(t("Sticker unavailable"), t("Could not read the selected image. Please choose it again.")); });
     return () => { active = false; };
   }, [draft,loadingDraft]);
   const [pendingEdits, setPendingEdits] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const [reset, setReset] = useState(0);
   const ownedDrafts = useRef(new Set<string>());
   useEffect(() => () => {
     // Only remove editor-generated temporary copies, never the source photo.
@@ -55,41 +57,41 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
     if (lock.current) return;
     lock.current = true; setBusy(true); onBusy(true);
     try { await work(); }
-    catch (error) { Alert.alert('Sticker action failed', error instanceof Error ? error.message : 'Please try again.'); }
+    catch (error) { Alert.alert(t("Sticker action failed"), error instanceof Error ? error.message : t("Please try again.")); }
     finally { lock.current = false; setBusy(false); onBusy(false); }
   };
-  const button = (label: string, action: () => void, disabled = false) => <TouchableOpacity disabled={busy || disabled} accessibilityRole="button" onPress={action} accessibilityLabel={label} style={{ padding: 16, borderRadius: 18, backgroundColor: c.surfaceVariant, alignItems: 'center', opacity: disabled ? .45 : 1 }}><Text style={{ color: c.primary, fontWeight: '700' }}>{label}</Text></TouchableOpacity>;
-  const choose = async (uri: string) => { await persist(uri); setName(''); setPendingEdits(false); setReset((value) => value + 1); };
-  if(loadingDraft)return <ActivityIndicator accessibilityLabel="Restoring sticker draft" color={c.primary}/>;
+  const button = (label: string, action: () => void, disabled = false) => <TouchableOpacity disabled={busy || disabled} accessibilityRole="button" onPress={action} accessibilityLabel={label} style={{ flexGrow:1, padding: 16, borderWidth:1,borderColor:c.neonBorder,borderRadius: Chrome.controlRadius, backgroundColor: c.surfaceVariant, alignItems: 'center', opacity: disabled ? .45 : 1 }}><Text style={{ color: c.primary, fontWeight: '700' }}>{label}</Text></TouchableOpacity>;
+  const choose = async (uri: string) => { await persist(uri); setName(''); setPendingEdits(false); setEditing(false); };
+  if(loadingDraft)return <ActivityIndicator accessibilityLabel={t("Restoring sticker draft")} color={c.primary}/>;
   if(draftError)return <Text accessibilityRole="alert" style={{color:c.text,padding:16}}>{draftError}</Text>;
-  return <KeyboardFormScrollView scrollEnabled={!isDragging} contentContainerStyle={{ padding: 16, gap: 16 }}>
-    {!draft && <>
-    <Text style={{ color: c.text, fontSize: 24, fontWeight: '700' }}>Little moments. Big feelings.</Text>
-    <Text style={{ color: c.textSecondary }}>Turn a funny photo into your next favorite sticker. Crop, preview, then save — nothing sends automatically.</Text>
+  return <KeyboardAvoidingScreen>
+    {!draft ? <KeyboardFormScrollView avoidKeyboard={false} contentContainerStyle={{ padding: 16, gap: 16 }}>
+    <Text style={{ color: c.text, fontSize: 24, fontWeight: '700' }}>{t("Little moments. Big feelings.")}</Text>
+    <Text style={{ color: c.textSecondary }}>{t("Turn a funny photo into your next favorite sticker. Crop, preview, then save — nothing sends automatically.")}</Text>
     {button('＋ Create sticker', () => { void run(async () => {
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 1 });
       if (result.canceled || !result.assets[0]) return;
       await choose(result.assets[0].uri);
     }); })}
-    {button('Choose GIF / WebP file', () => { void run(async () => {
+    {button(t("Choose GIF / WebP file"), () => { void run(async () => {
       const result = await DocumentPicker.getDocumentAsync({ type: ['image/gif', 'image/webp'], copyToCacheDirectory: true, multiple: false });
       if (result.canceled || !result.assets[0]) return;
-      choose(result.assets[0].uri);
+      await choose(result.assets[0].uri);
     }); })}
-    </>}
-    {draft && <View style={{ gap: 12 }}>
-      {draftStorage&&<Text style={{color:c.textSecondary}}>Your image, name, and applied edits are saved on this device. Reopen Create after unlocking to continue.</Text>}
-      {preserveAnimation === null ? <ActivityIndicator color={c.primary} /> : preserveAnimation
-        ? <Image source={{ uri: draft }} autoplay style={{ width: previewHeight, height: previewHeight, alignSelf: 'center' }} contentFit="contain" />
-        : <View pointerEvents={busy ? 'none' : 'auto'}><PhotoEditor embedded preserveTransparency maxPreviewHeight={previewHeight} key={`${draft}:${reset}`} uri={draft}
-            onEditingChange={setPendingEdits}
-            onDraggingChange={setIsDragging}
-            onClose={() => setReset((value) => value + 1)}
-            onSave={(image) => { void run(async()=>{try{await persist(image.uri,name);}finally{if(draftStorage){try{const file=new File(image.uri);if(file.exists)file.delete();}catch{}}else ownedDrafts.current.add(image.uri);}}); }} /></View>}
-      {preserveAnimation && <Text style={{ color: c.textSecondary }}>GIF and WebP stickers keep their original animation. Editing tools are available for still photos only.</Text>}
-      <TextInput accessibilityLabel="Sticker name" placeholder="Give it a name (optional)" placeholderTextColor={c.textSecondary} value={name} onChangeText={value=>{setName(value);if(draftStorage&&draftId.current)void draftStorage.rename(draftId.current,value).catch(()=>setDraftError('Could not save the draft name. Please try again.'));}} maxLength={80} editable={!busy} style={{ color: c.text, backgroundColor: c.inputBg,borderColor:c.neonBorder,borderWidth:1,padding: 14, borderRadius: 14, width: '100%' }} />
-      {pendingEdits && <Text style={{ color: c.textSecondary }}>Apply or discard your edits before saving the sticker.</Text>}
-      {preserveAnimation !== null && button('Save sticker', () => { void run(async () => {
+    </KeyboardFormScrollView> : <View style={{flex:1,paddingHorizontal:8,paddingTop:4,gap:8}}>
+      <View style={{height:previewSize+80,alignItems:'center'}}>
+        {preserveAnimation === null ? <ActivityIndicator color={c.primary}/> : <Image source={{uri:draft}} autoplay={!!preserveAnimation} contentFit="contain" style={{width:previewSize,height:previewSize}}/>}
+        <View style={{position:'absolute',top:8,right:8,flexDirection:'row',gap:8}}>
+          {preserveAnimation===false&&<TouchableOpacity accessibilityRole="button" accessibilityLabel={t("Edit sticker")} disabled={busy} onPress={()=>setEditing(true)} style={{width:48,height:48,alignItems:'center',justifyContent:'center',borderRadius:Chrome.controlRadius,borderWidth:1,borderColor:c.neonBorder,backgroundColor:c.headerBg}}><Ionicons name="create-outline" size={24} color={c.primary}/></TouchableOpacity>}
+        </View>
+        <View style={{position:'absolute',bottom:8,left:8,right:8,flexDirection:'row',alignItems:'center',backgroundColor:c.inputBg,borderColor:c.neonBorder,borderWidth:1,borderRadius:Chrome.controlRadius}}>
+          <TextInput accessibilityLabel={t("Sticker name")} placeholder={t("Give it a name (optional)")} placeholderTextColor={c.textSecondary} value={name} onChangeText={value=>{setName(value);if(draftStorage&&draftId.current)void draftStorage.rename(draftId.current,value).catch(()=>setDraftError('Could not save the draft name. Please try again.'));}} maxLength={80} editable={!busy} returnKeyType="done" onSubmitEditing={()=>Keyboard.dismiss()} style={{flex:1,minWidth:0,color:c.text,padding:14}}/>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel={t("Finish naming sticker")} onPress={()=>Keyboard.dismiss()} style={{width:44,height:44,alignItems:'center',justifyContent:'center'}}><Ionicons name="checkmark" size={24} color={c.primary}/></TouchableOpacity>
+        </View>
+      </View>
+      {preserveAnimation&&<Text style={{color:c.textSecondary,paddingHorizontal:8}}>{t("Original animation preserved. Editing is available for still images.")}</Text>}
+      <View style={{flexDirection:'row',gap:8,paddingHorizontal:8,paddingBottom:8}}>
+      {preserveAnimation !== null && button(t("Save sticker"), () => { void run(async () => {
         if (preserveAnimation) {
           await importSticker(ownerId, draft, name.trim() || 'My animated sticker');
           await clearDraft(); onSaved(); return;
@@ -101,8 +103,13 @@ export default function StickerStudio({ ownerId, onBusy, onSaved, initialUri, dr
           onSaved();
         } finally { if (result.uri !== draft) { const file = new File(result.uri); if (file.exists) file.delete(); } }
       }); }, pendingEdits)}
-      {button('Cancel creation', () => { void run(async()=>{await clearDraft();setPendingEdits(false);}); })}
+      {button(t("Cancel creation"), () => { void run(async()=>{await clearDraft();setPendingEdits(false);}); })}
+      </View>
     </View>}
+    {draft&&editing&&<PhotoEditor floatingTools preserveTransparency maxPreviewHeight={Math.min(300,window.height*0.4)} title={t("Edit sticker")} uri={draft}
+      onEditingChange={setPendingEdits}
+      onClose={()=>{setEditing(false);setPendingEdits(false);}}
+      onSave={image=>{setEditing(false);void run(async()=>{try{await persist(image.uri,name);}finally{if(draftStorage){try{const file=new File(image.uri);if(file.exists)file.delete();}catch{}}else ownedDrafts.current.add(image.uri);}setPendingEdits(false);});}}/>}
     {busy && <ActivityIndicator color={c.primary} />}
-  </KeyboardFormScrollView>;
+  </KeyboardAvoidingScreen>;
 }

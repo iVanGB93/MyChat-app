@@ -5,6 +5,7 @@ import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes,utf8ToBytes} from '@noble/hashes/utils.js';
 import {validAccountId,verifyRecord,verifyPublicSignature,type IdentityRecord} from './identityProtocol.ts';
 import type {AttachmentEncoding} from './attachmentEncoding.ts';
+import {validReceivedRoute,type ReceivedRoute} from './deliveryEvidence.ts';
 
 /** A whole file through 3 MB, then independently authenticated 3 MB blocks. */
 export const ATTACHMENT_STREAM_BLOCK_BYTES=3_000_000;
@@ -21,7 +22,7 @@ export interface AttachmentManifest {
 export interface AttachmentChunk {index:number;ciphertext:string;proof:string[]}
 /** Trusted local SHA-256 implementation over the exact ASCII leaf serialization. */
 export type AttachmentLeafHash=(canonical:string)=>string;
-export interface AttachmentReceipt {version:1;id:string;digest:string;recipient:string;device:string;expires:number;signature:string}
+export interface AttachmentReceipt {version:1;id:string;digest:string;recipient:string;device:string;expires:number;signature:string;route?:ReceivedRoute;routeSignature?:string}
 const hex=(v:unknown,n:number):v is string=>typeof v==='string'&&v.length===n*2&&/^[a-f0-9]+$/.test(v);
 const encode=(v:unknown[])=>utf8ToBytes(JSON.stringify(v));
 const hash=(v:unknown[])=>bytesToHex(sha256(encode(v)));
@@ -137,15 +138,18 @@ export function verifyAttachmentChunk(m:AttachmentManifest,chunk:AttachmentChunk
  }catch{return false;}
 }
 const receiptBody=(r:AttachmentReceipt)=>encode(['axonic-attachment-receipt-v1',r.version,r.id,r.digest,r.recipient,r.device,r.expires]);
+const receiptRouteBody=(r:AttachmentReceipt)=>encode(['axonic-attachment-route-v1',r.signature,r.route!.sources,r.route!.partial]);
 /** Sign only after the receiver has durably stored and verified the complete file. */
-export function signAttachmentReceipt(m:AttachmentManifest,seed:Uint8Array,record:IdentityRecord,now:number):AttachmentReceipt {
+export function signAttachmentReceipt(m:AttachmentManifest,seed:Uint8Array,record:IdentityRecord,now:number,route?:ReceivedRoute):AttachmentReceipt {
  const r:AttachmentReceipt={version:1,id:m.id,digest:attachmentDigest(m),recipient:m.recipient,device:m.recipientDevice,expires:m.expires,signature:'00'.repeat(64)};
  if(!validAttachmentManifest(m,now)||!verifyRecord(record,now)||record.account!==r.recipient||!record.devices.some(d=>d.id===r.device&&d.signing===bytesToHex(ed25519.getPublicKey(seed))))throw Error('Invalid attachment recipient');
- r.signature=bytesToHex(ed25519.sign(receiptBody(r),seed));return r;
+ r.signature=bytesToHex(ed25519.sign(receiptBody(r),seed));
+ if(route){if(!validReceivedRoute(route)||route.sources.includes(m.recipient))throw Error('Invalid receipt route');r.route={sources:[...route.sources],partial:route.partial};r.routeSignature=bytesToHex(ed25519.sign(receiptRouteBody(r),seed));}return r;
 }
 export function verifyAttachmentReceipt(r:AttachmentReceipt,m:AttachmentManifest,record:IdentityRecord,now:number){
  try{if(!validAttachmentManifest(m,now)||!verifyRecord(record,now)||record.account!==m.recipient||r.version!==1||r.id!==m.id||r.digest!==attachmentDigest(m)
   ||r.recipient!==m.recipient||r.device!==m.recipientDevice||r.expires!==m.expires||!hex(r.signature,64))return false;
-  const d=record.devices.find(d=>d.id===r.device);return !!d&&verifyPublicSignature(hexToBytes(r.signature),receiptBody(r),hexToBytes(d.signing),{zip215:false});
+  if((r.route===undefined)!==(r.routeSignature===undefined)||r.route!==undefined&&(!validReceivedRoute(r.route)||r.route.sources.includes(r.recipient)||!hex(r.routeSignature,64)))return false;
+  const d=record.devices.find(d=>d.id===r.device);return !!d&&verifyPublicSignature(hexToBytes(r.signature),receiptBody(r),hexToBytes(d.signing),{zip215:false})&&(!r.route||verifyPublicSignature(hexToBytes(r.routeSignature!),receiptRouteBody(r),hexToBytes(d.signing),{zip215:false}));
  }catch{return false;}
 }

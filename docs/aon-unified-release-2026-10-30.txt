@@ -1,0 +1,38 @@
+Unified AoN deployment — October 30, 2026 (America/New_York)
+
+Source: b633a78aff52c9f30abfc1b4940f99e14b96a3dd
+Runtime: 5220df84f98f474359cede7980c0b47752c8aa340c7949977e3ff76b375aeab0
+Version: 0.2.0. All three authenticated status endpoints report this exact source,
+runtime_bound metadata and sourceDirty=false; network state active.
+Branch: codex/wake-direct-handoff-20261030, pushed to MyChat-neuron.
+Isolated checkout: builds/aon-direct-handoff-20261030. Unrelated working trees untouched.
+
+Included: bypass hosted relay handoff cooldown on authenticated reconnect; enable
+remote FCM gateway requests on neurons without local credentials; correctly report
+message and call push configuration separately. ThirdNeuron also receives the
+newer existing server code between c8fb1e3 and First/Second's former 56d9342 base.
+
+Validation: combined AoN suite324/324 passed. Subsequent reporting-only correction
+compiled and the affected message-wake/FCM tests15/15 passed. Shared manifest checks
+required restoring recorded CRLF bytes during testing; release checkout returned
+to committed source form before clean stamping. No semantic protocol divergence.
+
+FirstNeuron: systemd active, authenticated status/report guidance5, installed owner
+binding and unchanged identity. Message push configured;37 device registrations.
+SecondNeuron: Railway deployment40f46b60-b636-4c77-8a49-dcf5b53e5f20 SUCCESS;
+authenticated MCP status confirms exact release and reporting guidance5. Own queue0.
+ThirdNeuron: systemd active, installed owner binding and unchanged identity;
+message FCM gateway enabled on loopback8089. Credential outside repositories in a
+restricted WSL file (0640, service group readable). Firebase validate_only request
+using the existing Dev registration was accepted; no notification was sent by
+that validation. No secret values recorded here or in logs.
+
+Remaining mobile dependency: rootPushRegistration.ts currently targets only
+FIRST_NEURON.account. SecondNeuron and ThirdNeuron each report0 local registrations.
+Credential validation does not prove normal end-to-end phone delivery from3N.
+Until authenticated phone registration supports additional gateways, those nodes
+continue requesting wakes through1N when they lack the destination registration.
+Do not copy private token registries or claim full independent FCM failover yet.
+
+No data, identities, contacts, approvals, messages, queues or listener cursors were
+cleared. No backup created. SecondNeuron MCP service and phone apps not deployed.

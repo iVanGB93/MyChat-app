@@ -1,0 +1,15 @@
+Read-only diagnostic review, October 30 2026, approximately 18:10-18:14 America/New_York
+
+Phone report captured 2026-10-30T22:06:12.415Z, official 1.1.35/106. Complete 18686-byte JSON independently read through SecondNeuron MCP; verified SHA256 b782efb85c21a1d865483aa51ecf600a7a90a56dd81d54beb44127e42a88499a.
+
+Priority findings:
+1. Recovery elapsed 784498ms, setup same; deadline overrun 764498ms. Native sleep 296719ms, whole-process CPU 28352ms. Began background, finished foreground. HistorySnapshot max676942ms/26calls, sum687770ms. These durations include queue/storage/promise waits and suspension; cannot label as pure database or CPU time. Investigate persistence/setup cancellation boundaries and foreground resumption.
+2. 16 outgoing incomplete-media recipient rows; 7 expired authorizations, 9 live. Active phases 6 uploading/3 confirming; 7 absent active jobs. 15 recipients not directly connected, 1 connected. No receipt recorded for these rows; 0 confirming-connected-without-receipt. No proof of loss. Pending counts overlap; group fan-out is not unique files.
+3. Network bulk max93957ms, 4calls. No directStream stage in bounded snapshot, so transport attribution unavailable. Recent SecondNeuron custody timeouts for this phone warrant correlation.
+4. Phone private wake:15 remote calls,14retry/1unavailable,5backoff,0accepted. AoN no_authorized_destination repeated: First1940/Second2954 in respective epochs; not unique messages nor proof of push delivery failure.
+
+Positive: phone connected3,replicas3/3,no runtime error; ample disk. Captured layout15-25ms is first-container layout, not full frame performance. New diagnostic descriptor received22:06:18.381Z, complete22:06:19.543Z (1.162s local receive interval), not a large-transfer benchmark.
+
+Reviewed today's FirstNeuron and SecondNeuron periodic reports plus authenticated live status. Both clean commit56d9342b/runtimea26ec37e6361, own Pending0/Stored0. Second currentreplicas3/3, earlier1/3 throughout day; Firstcurrent2/3 awaitingconfirmations. First chat APIp95 32ms; Second5ms server duration. Overnight /v2/axon426 burst41/42 respectively, not recurring during subsequent reports. First recurrent401 and some403 remain unattributed; no guessing their source.
+
+Capacity/history improvements from preceding work remain local and undeployed. This review changed no configuration, messages, queues or app installations. ThirdNeuron not independently inspected. Next priorities: phone setup/history wait, live pending media versus expired authorization, then wake-destination/connection-timeout correlation. Do not claim local fixes already solved production observations.

@@ -38,5 +38,5 @@ export const chatState={getState:store.getState,getInitialState:store.getInitial
  subscribe(listener:Parameters<typeof store.subscribe>[0]){const off=store.subscribe(listener);
   if(readers++===0){const writes=subscribeOwnChatWrites(owner=>refresh?.wake(owner)),app=AppState.addEventListener('change',startRefresh);
    stopSources=()=>{writes();app.remove();};startRefresh();}
-  return()=>{off();if(--readers===0){refresh?.stop();refresh=undefined;stopSources?.();stopSources=undefined;}};
+  return()=>{off();if(--readers===0){refresh?.stop();refresh=undefined;stopSources?.();stopSources=undefined;snapshots.clear();model.clear();store.setState({state:empty,rooms:{},error:''});}};
  }};

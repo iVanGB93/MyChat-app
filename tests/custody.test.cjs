@@ -12,6 +12,22 @@ function fixture(t){const databases=new Map(),cache=new Map(),opens=[];const ran
  const request=async(s,i,operation,packet)=>JSON.parse(await s.receive(ids[i].record.account,JSON.stringify({operation,...(operation==='consume'?packet:{packet})})));
  t.after(()=>databases.forEach(d=>d.close()));return {ids,records,store,service,seal,request,protocol,load,random,now:()=>now,advance:ms=>now+=ms,expire:()=>now+=protocol.CUSTODY_TTL,stop:()=>active=false,databases,opens};
 }
+
+test('recipient route attestation is bound to its custody receipt and survives relay serialization',async t=>{
+ const f=fixture(t),e=await f.seal(),recipient=f.ids[2],relay=f.ids[1].record.account;
+ const r=f.protocol.signCustodyReceipt(e,recipient.signingSeed,recipient.encryptionSeed,{sources:[relay],partial:false});
+ assert(await f.protocol.verifyCustody(r,f.records,f.now()));
+ assert.deepEqual(f.protocol.parseCustody(JSON.stringify(r),f.now()).route,r.route);
+ for(const route of [{sources:[e.sender],partial:false},{sources:[relay],partial:true},{sources:[relay,relay],partial:false}])assert.equal(await f.protocol.verifyCustody({...r,route},f.records,f.now()),false);
+ assert.equal(await f.protocol.verifyCustody({...r,routeSignature:undefined},f.records,f.now()),false);
+ const other=await f.seal('different receipt');const r2=f.protocol.signCustodyReceipt(other,recipient.signingSeed,recipient.encryptionSeed);
+ assert.equal(await f.protocol.verifyCustody({...r2,route:r.route,routeSignature:r.routeSignature},f.records,f.now()),false);
+ const legacy={...r};delete legacy.route;delete legacy.routeSignature;assert(await f.protocol.verifyCustody(legacy,f.records,f.now()));
+ const s=f.service();assert.equal((await f.request(s,0,'deposit',e)).status,'held');assert.equal((await f.request(s,2,'receipt',r)).status,'accepted');
+ const polled=JSON.parse(await s.receive(e.sender,JSON.stringify({operation:'poll',exclude:[]})));
+ assert.deepEqual(polled.packet.route,r.route);assert.equal(polled.packet.routeSignature,r.routeSignature);
+ assert(await f.protocol.verifyCustody(polled.packet,f.records,f.now()));
+});
 test('versioned wake queue avoids idle reads but observes cross-factory deposits, receipts and expiry',async t=>{
  const f=fixture(t),e=await f.seal(),s=f.service();
  await f.request(s,0,'deposit',e);
@@ -33,6 +49,19 @@ test('versioned wake queue avoids idle reads but observes cross-factory deposits
  worker.stop();
 });
 
+test('a target receipt completes independently while another relay poll remains in flight',async t=>{
+ const f=fixture(t),e=await f.seal(),receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ let release;const blocked=new Promise(resolve=>{release=resolve;});
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>e.recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['ready','slow'],seal:async()=>e,receive:async()=>receipt,
+ request:async(peer,raw)=>{if(peer==='slow'){await blocked;return '{"status":"ok"}';}const q=JSON.parse(raw);return JSON.stringify(q.operation==='receipt'?{status:'accepted'}:{status:'ok',packet:q.exclude.includes(e.id)?null:e});}});
+ const running=courier.tick();
+ try{for(let n=0;n<100&&!courier.receiptAccepted(e.sender,e.id);n++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(courier.receiptAccepted(e.sender,e.id),true);assert.equal(courier.recoveryComplete(e.sender,e.id),false);
+ assert.equal(courier.receiptAccepted(e.sender,'ff'.repeat(32)),false);
+ }finally{release();await running;courier.stop();}
+ assert.equal(courier.receiptAccepted(e.sender,e.id),false);
+});
+
 test('invalid wake signatures stay in custody without redundant gateway requests or fabricated acceptance',async t=>{
  const f=fixture(t),e=await f.seal();e.wakeSignature='00'.repeat(64);
  assert.equal((await f.request(f.service(),0,'deposit',e)).status,'held');
@@ -44,16 +73,16 @@ test('invalid wake signatures stay in custody without redundant gateway requests
 
 test('overlapping wakes retain accepted receipts but require a fresh drain and respect invalidation',async t=>{
  const f=fixture(t),e=await f.seal(),receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
- let accept=false,empty=false;
- const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>e.recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['relay'],seal:async()=>e,receive:async()=>receipt,
+ let accept=false,empty=false;const acceptedEvents=[];
+ const courier=f.load('custodyCourier').createCustodyCourier({owner:()=>e.recipient,allowed:()=>true,now:f.now,records:f.records,own:{},relays:()=>['relay'],seal:async()=>e,receive:async()=>receipt,receiptAccepted:(sender,id)=>{acceptedEvents.push([sender,id]);throw Error('observer failure');},
  request:async(_peer,raw)=>{const q=JSON.parse(raw);if(q.operation==='receipt')return JSON.stringify({status:accept?'accepted':'retry'});return JSON.stringify({status:'ok',packet:empty||q.exclude.includes(e.id)?null:e});}});
- await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'inbox alone is insufficient');
- accept=true;f.advance(5000);await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),true);
+ await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'inbox alone is insufficient');assert.equal(courier.receiptAccepted(e.sender,e.id),false);assert.deepEqual(acceptedEvents,[]);
+ accept=true;f.advance(5000);await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),true);assert.deepEqual(acceptedEvents,[[e.sender,e.id]]);
  assert.equal(courier.recoveryComplete('another-sender',e.id),false);
- courier.resume();assert.equal(courier.recoveryComplete(e.sender,e.id),false);
+ courier.resume();assert.equal(courier.recoveryComplete(e.sender,e.id),false);assert.equal(courier.receiptAccepted(e.sender,e.id),true,'an unrelated drain cannot invalidate the target receipt');assert.equal(courier.receiptAccepted('another-sender',e.id),false);
  empty=true;await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),true,'accepted receipt survives overlapping wake');
  assert.equal(courier.recoveryComplete(e.sender,'ff'.repeat(32)),false,'empty inbox cannot prove an unrelated delivery');
- courier.invalidate();await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'account invalidation discards evidence');courier.stop();
+ courier.invalidate();await courier.tick();assert.equal(courier.recoveryComplete(e.sender,e.id),false,'account invalidation discards evidence');assert.equal(courier.receiptAccepted(e.sender,e.id),false);courier.stop();
 });
 
 test('local wake flag mismatches are diagnosed without forwarding, repair, deletion or acceptance',async t=>{
@@ -328,134 +357,6 @@ test('store factories retain one uncached native connection per database and iso
  for(const opened of f.opens)assert.deepEqual(opened.options,{useNewConnection:true});
 });
 
-function normalOutboxFixture(f) {
- const [sender,hub,recipient]=f.ids,owner=sender.record.account;
- let current=true,allowDelivery=true,direct=async()=>false,delivered=0;
- let message={id:'11111111-1111-4111-8111-111111111111',roomId:'22222222-2222-4222-8222-222222222222',content:'Normal encrypted outbox',createdAt:new Date(f.now()).toISOString()};
- const original={...message},own=f.load('ownCustodyStore').createOwnCustodyStore(),bindings=f.load('normalChatOutboxStore').createNormalChatOutboxStore();
- const boundary=f.load('normalChatBoundary').createNormalChatBoundary({owner:{user:14,account:owner},current:()=>current,now:f.now,
-  peer:async room=>room===original.roomId?{user:18,account:recipient.record.account}:null,authorized:()=>current,
-  readOutgoing:async()=>message,persist:async()=>false,delivered:async(_m,_p,guard)=>{if(!guard()||!allowDelivery)return false;delivered++;return true;}});
- const relay=f.service();let courier,outbox;
- const rebuild=()=>{
-  courier?.stop();outbox?.stop();
-  outbox=f.load('normalChatOutbox').createNormalChatOutbox({owner,current:()=>current,now:f.now,boundary,bindings,own,records:f.records,
-   read:async()=>message,direct:(...args)=>direct(...args),deposit:async(...args)=>(await courier.deposit(...args))===true});
-  courier=f.load('custodyCourier').createCustodyCourier({owner:()=>current?owner:null,allowed:()=>current,now:f.now,records:f.records,own,
-   relays:()=>[hub.record.account],request:(_relay,raw)=>relay.receive(owner,raw),confirmReceipt:(r,guard)=>outbox.confirmReceipt(r,guard),receive:async()=>null,
-   seal:async(record,device,id,text)=>f.protocol.sealCustody({...sender,recipient:record,recipientDevice:device,id,text,now:f.now(),random:async n=>f.random(n)})});
- };
- rebuild();
- return {original,owner,recipient,own,bindings,relay,boundary,rebuild,outbox:()=>outbox,courier:()=>courier,
-  edit:()=>message={...message,content:'Changed after transmission'},allow:v=>allowDelivery=v,direct:fn=>direct=fn,
-  delivered:()=>delivered,stop:()=>{current=false;outbox.stop();courier.stop();boundary.stop();}};
-}
-
-test('normal outbox survives recreation, reuses ciphertext and consumes receipt only after the original row confirms delivery',async t=>{
- const f=fixture(t),n=normalOutboxFixture(f);t.after(n.stop);
- assert.deepEqual(await n.outbox().attempt(n.original),{peerId:18,delivered:false});assert.equal(n.delivered(),0);
- const packet=await n.boundary.prepare(n.original),first=(await n.own.get(n.owner,packet.id)).envelope;
- const row=await n.bindings.find(n.owner,packet.id);assert.equal(row.messageId,n.original.id);assert(!JSON.stringify(row).includes(n.original.content));
- n.rebuild();assert.deepEqual(await n.outbox().attempt(n.original),{peerId:18,delivered:false});
- assert.deepEqual((await n.own.get(n.owner,packet.id)).envelope,first);
- const plaintext=f.protocol.openCustody(first,n.recipient.record.account,n.recipient.signingSeed,n.recipient.encryptionSeed);
- assert.equal(f.load('normalChatProtocol').decodeNormalChat(plaintext,f.now()).id,n.original.id);
- const receipt=f.protocol.signCustodyReceipt(first,n.recipient.signingSeed,n.recipient.encryptionSeed);
- assert.equal((await f.request(n.relay,2,'receipt',receipt)).status,'accepted');
- n.allow(false);await n.courier().tick();assert.equal(await f.store.transaction(r=>r[0].packet.kind),'receipt');assert.equal(n.delivered(),0);
- n.allow(true);f.advance(60001);await n.courier().tick();assert.equal(n.delivered(),1);assert.equal(await f.store.transaction(r=>r[0].packet),null);
-});
-
-test('normal receipt rejects tampering, stale content and stopped sessions without discarding relay evidence',async t=>{
- const f=fixture(t),n=normalOutboxFixture(f);t.after(n.stop);await n.outbox().attempt(n.original);
- const packet=await n.boundary.prepare(n.original),e=(await n.own.get(n.owner,packet.id)).envelope;
- const receipt=f.protocol.signCustodyReceipt(e,n.recipient.signingSeed,n.recipient.encryptionSeed);
- assert.equal(await n.outbox().confirmReceipt({...receipt,signature:'00'.repeat(64)}),false);
- n.edit();assert.equal(await n.outbox().confirmReceipt(receipt),false);assert.equal(n.delivered(),0);
- assert.equal(await n.outbox().attempt(n.original),null);n.stop();assert.equal(await n.outbox().confirmReceipt(receipt),false);
-});
-
-test('normal direct receipt confirms the original row and late direct completion after stop cannot deliver',async t=>{
- const f=fixture(t),n=normalOutboxFixture(f);t.after(n.stop);n.direct(async()=>true);
- assert.deepEqual(await n.outbox().attempt(n.original),{peerId:18,delivered:true});assert.equal(n.delivered(),1);
- let release;n.direct(()=>new Promise(r=>release=r));const pending=n.outbox().attempt(n.original);
- while(!release)await new Promise(r=>setImmediate(r));n.outbox().stop();release(true);
- assert.equal(await pending,null);assert.equal(n.delivered(),1);
-});
-
-test('normal outbox bindings reject changed payload digests and isolate cryptographic owners',async t=>{
- const f=fixture(t),n=normalOutboxFixture(f);t.after(n.stop);await n.outbox().attempt(n.original);
- const packet=await n.boundary.prepare(n.original),row=await n.bindings.find(n.owner,packet.id);
- assert.equal(await n.bindings.bind({...row,digest:'00'.repeat(32)},()=>true),false);
- assert.equal(await n.bindings.find(n.recipient.record.account,packet.id),null);
- assert.equal((await n.bindings.find(n.owner,packet.id)).digest,row.digest);
-});
-
-test('composed normal runtimes retry via an ordinary custodian and consume only verified delivery',async t=>{
- const f=fixture(t),[sender,relay,recipient]=f.ids,make=f.load('normalChatRuntime').createNormalChatRuntime;
- const own=f.load('ownCustodyStore').createOwnCustodyStore(),bindings=f.load('normalChatOutboxStore').createNormalChatOutboxStore();
- const hooks=new Map(),inbox=new Map();let delivered=false,pendingReads=0;
- const message={id:'11111111-1111-4111-8111-111111111111',roomId:'22222222-2222-4222-8222-222222222222',content:'Composed offline normal chat',createdAt:new Date(f.now()).toISOString()};
- const makeRuntime=(id,user,peer,peerUser)=>make({
-  identity:{status:()=>({state:'unlocked',account:id.record.account}),
-   sealCustody:(record,device,key,text)=>f.protocol.sealCustody({...id,recipient:record,recipientDevice:device,id:key,text,now:f.now(),random:f.random}),
-   receiveCustody:async(e,records,persist)=>{
-    if(!await f.protocol.verifyCustody(e,records,f.now()))return null;
-    const text=f.protocol.openCustody(e,id.record.account,id.signingSeed,id.encryptionSeed);
-    return await persist({from:e.sender,id:e.id,text})?f.protocol.signCustodyReceipt(e,id.signingSeed,id.encryptionSeed):null;
-   }},
-  records:f.records,own,bindings,custodyStore:f.load('mobileCustodyStore').createMobileCustodyStore(id.record.account),
-  allowed:account=>account===peer.record.account,
-  boundary:{owner:{user,account:id.record.account},current:()=>true,now:f.now,
-   peer:async room=>room===message.roomId?{user:peerUser,account:peer.record.account}:null,authorized:()=>true,
-   readOutgoing:async()=>user===14?message:null,
-   persist:async(m,guard)=>{if(!guard())return false;inbox.set(m.id,m);return true;},
-   delivered:async(_m,_p,guard)=>{if(!guard())return false;delivered=true;return true;}},
-  pending:async()=>{if(user===14){pendingReads++;return delivered?[]:[message];}return [];},
-  network:h=>{hooks.set(id.record.account,h);return {sendChatMessage:async()=>false,custodians:()=>[relay.record.account],
-   custodyRequest:(_target,raw)=>relayService.receive(id.record.account,raw),tick(){},stop(){hooks.delete(id.record.account);}};}
- });
- const relayService=f.service(),a=makeRuntime(sender,14,recipient,18),b=makeRuntime(recipient,18,sender,14);
- t.after(()=>{a.stop();b.stop();});
- const settle=async predicate=>{for(let i=0;i<100;i++){if(await predicate())return;await new Promise(r=>setImmediate(r));}assert.fail('Runtime did not settle');};
- a.tick();await settle(async()=>!!(await f.store.transaction(rows=>rows[0]?.packet)));
- assert.equal(delivered,false);assert.equal(pendingReads,1);
- b.tick();await settle(async()=>await f.store.transaction(rows=>rows[0]?.packet?.kind==='receipt'));
- assert.equal(inbox.size,1);assert.equal(inbox.get(message.id).content,message.content);
- f.advance(5001);a.tick();await settle(async()=>delivered&&await f.store.transaction(rows=>rows[0]?.packet===null));
- assert.equal(pendingReads,1,'retry interval is independent of receipt polling');
- a.stop();assert.equal(await a.attempt(message),null);assert.equal(hooks.has(sender.record.account),false);
-});
-
-test('runtime shutdown cancels an asynchronous pending-row scan before any network send',async t=>{
- const f=fixture(t),id=f.ids[0];let release,sends=0,closed=0;
- const runtime=f.load('normalChatRuntime').createNormalChatRuntime({identity:{status:()=>({state:'unlocked',account:id.record.account})},
-  records:f.records,own:f.load('ownCustodyStore').createOwnCustodyStore(),bindings:f.load('normalChatOutboxStore').createNormalChatOutboxStore(),
-  custodyStore:{transaction:async fn=>fn([])},allowed:()=>true,
-  boundary:{owner:{user:14,account:id.record.account},current:()=>true,now:f.now,peer:async()=>null,authorized:()=>true,
-   readOutgoing:async()=>null,persist:async()=>false,delivered:async()=>false},
-  pending:()=>new Promise(r=>release=r),network:()=>({sendChatMessage:async()=>{sends++;return true;},custodians:()=>[],custodyRequest:async()=>null,tick(){},stop(){closed++;}})});
- runtime.tick();runtime.tick();while(!release)await new Promise(r=>setImmediate(r));runtime.stop();release([{id:'cancelled'}]);await new Promise(r=>setImmediate(r));
- runtime.stop();assert.equal(sends,0);assert.equal(closed,1);
-});
-
-test('normal background retry waits for the custody poll slot and cancels cleanly during polling',async t=>{
- for(const stopDuringPoll of [false,true]){
-  const f=fixture(t),id=f.ids[0];let release,polls=0,scans=0;
-  const runtime=f.load('normalChatRuntime').createNormalChatRuntime({identity:{status:()=>({state:'unlocked',account:id.record.account})},
-   records:f.records,own:f.load('ownCustodyStore').createOwnCustodyStore(),bindings:f.load('normalChatOutboxStore').createNormalChatOutboxStore(),
-   custodyStore:{transaction:async fn=>fn([])},allowed:()=>true,
-   boundary:{owner:{user:14,account:id.record.account},current:()=>true,now:f.now,peer:async()=>null,authorized:()=>true,
-    readOutgoing:async()=>null,persist:async()=>false,delivered:async()=>false},
-   pending:async()=>{scans++;return [];},network:()=>({sendChatMessage:async()=>false,custodians:()=>[f.ids[1].record.account],
-    custodyRequest:()=>{polls++;return new Promise(r=>release=r);},tick(){},stop(){}})});
-  t.after(()=>runtime.stop());runtime.tick();runtime.tick();await new Promise(r=>setImmediate(r));
-  assert.equal(polls,1);assert.equal(scans,0,'retry must wait until poll releases the request slot');
-  if(stopDuringPoll)runtime.stop();release(JSON.stringify({status:'ok',packet:null}));await new Promise(r=>setImmediate(r));
-  assert.equal(scans,stopDuringPoll?0:1);runtime.stop();
- }
-});
-
 test('compact custody wake authenticates its recipient, device, digest and expiry without including content',async t=>{
  const f=fixture(t),e=await f.seal(),p=f.protocol,data=p.createCustodyWake(e,f.ids[0].record);
  const verify=d=>p.verifyCustodyWake(d,f.ids[0].record,e.recipient,e.recipientDevice,f.now());
@@ -716,6 +617,21 @@ test('one-hop relay delivers only to the recipient and commits its signed receip
  assert.equal(JSON.parse(await other.receive(f.ids[1].record.account,JSON.stringify({operation:'deliver',packet:e}))).status,'rejected');
  worker.stop();
 });
+test('direct delivery recovery confirms the receipt after the relay response, even after sender consumption',async t=>{
+ const f=fixture(t),e=await f.seal(),relay=f.service();await f.request(relay,0,'deposit',e);
+ let confirmWork,release;const responseReturned=new Promise(r=>{release=r;});const events=[];
+ const confirmation=f.load('receiptConfirmation').createReceiptConfirmation({owner:()=>e.recipient,now:f.now,accepted:(...v)=>events.push(v),request:async(peer,raw)=>{assert.equal(peer,f.ids[1].record.account);await responseReturned;return relay.receive(e.recipient,raw);}});
+ const receiver=f.load('custodyService').createCustodyService({owner:e.recipient,store:{transaction:async fn=>fn([])},records:f.records,now:f.now,current:()=>true,
+  receiveOwn:async packet=>{const receipt=f.protocol.signCustodyReceipt(packet,f.ids[2].signingSeed,f.ids[2].encryptionSeed);confirmWork=confirmation.confirm(receipt,f.ids[1].record.account);return receipt;}});
+ assert.equal(await relay.deliverDirect(e,(_peer,raw)=>receiver.receive(f.ids[1].record.account,raw)),true);
+ assert.equal(confirmation.complete(e.sender,e.id),false,'returning a signed receipt alone is not acceptance evidence');
+ const row=(await f.store.inspect())[0];assert.equal(row.packet.kind,'receipt');
+ assert.equal((await f.request(relay,0,'consume',{id:e.id,digest:row.digest})).status,'accepted');
+ release();await confirmWork;assert.equal(confirmation.complete(e.sender,e.id),true);assert.deepEqual(events,[[e.sender,e.id]]);
+ assert.equal((await f.store.inspect())[0].packet,null,'confirmation must not resurrect consumed custody');
+ confirmation.stop();
+});
+
 test('failed direct delivery retains custody and falls back to encrypted inline FCM with custodian hint',async t=>{
  const f=fixture(t),e=await f.seal('small encrypted message'),relay=f.service();await f.request(relay,0,'deposit',e);let payload;
  const worker=f.load('custodyWakeForwarder').createCustodyWakeForwarder({inlineEnvelope:true,custodian:f.ids[1].record.account,store:f.store,records:f.records,now:f.now,current:()=>true,peers:()=>['gateway'],
@@ -777,4 +693,32 @@ test('busy custody defers briefly without blacklisting a healthy relay or markin
  t.after(()=>q.stop());await q.deposit(e.recipient,'test',e.id);assert.equal(held,0);
  await q.deposit(e.recipient,'test',e.id);assert.equal(requests,1);
  f.advance(1001);assert.equal(await q.deposit(e.recipient,'test',e.id),true);assert.equal(requests,2);assert.equal(held,1);
+});
+
+test('scorecard counts committed custody and signed receipts once, excluding retries and failed commits',async t=>{
+ const f=fixture(t),s=f.service(),e=await f.seal();
+ for(let i=0;i<3;i++)assert.equal((await f.request(s,0,'deposit',e)).status,'held');
+ assert.equal(s.contribution().counts.messagesHeld,1);
+ const receipt=f.protocol.signCustodyReceipt(e,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ for(let i=0;i<3;i++)assert.equal((await f.request(s,2,'receipt',receipt)).status,'accepted');
+ assert.equal(s.contribution().counts.recipientReceipts,1);
+ const bad=f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,store:{transaction:async fn=>{await fn([]);throw Error('disk failed');}},records:f.records,now:f.now,current:()=>true});
+ await f.request(bad,0,'deposit',await f.seal());assert.equal(bad.contribution().counts.messagesHeld,0);
+ assert.equal(f.service().contribution().counts.messagesHeld,0,'new observation epoch does not claim old work');
+});
+
+test('trial accounting observes only committed valid receipts and deduplicates retries',async t=>{
+ const f=fixture(t),rows=new Map(),pending=[];
+ const {createTrialCredits}=f.load('trialCredits');
+ const credits=createTrialCredits({transaction:async work=>work({get:k=>rows.get(k),put:(k,v)=>rows.set(k,v)})});
+ const s=f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,store:f.store,records:f.records,now:f.now,current:()=>true,trial:e=>pending.push(credits.observe(e))});
+ const envelope=await f.seal();await credits.load();
+ await f.request(s,0,'deposit',envelope);assert.equal(pending.length,0);
+ const receipt=f.protocol.signCustodyReceipt(envelope,f.ids[2].signingSeed,f.ids[2].encryptionSeed);
+ await f.request(s,3,'receipt',receipt);assert.equal(pending.length,0);
+ assert.equal((await f.request(s,2,'receipt',receipt)).status,'accepted');
+ assert.equal((await f.request(s,2,'receipt',receipt)).status,'accepted');
+ await Promise.all(pending);assert.equal(credits.snapshot().balance,101);assert.equal(credits.snapshot().earned,1);
+ let failedCredits=0;const failing=f.load('custodyService').createCustodyService({owner:f.ids[1].record.account,store:{...f.store,transaction:async()=>{throw Error('disk failure');}},records:f.records,now:f.now,current:()=>true,trial:()=>failedCredits++});
+ assert.equal((await f.request(failing,2,'receipt',receipt)).status,'rejected');assert.equal(failedCredits,0);
 });

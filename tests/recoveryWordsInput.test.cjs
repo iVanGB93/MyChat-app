@@ -4,7 +4,7 @@ function editor(initial=''){
  let value=initial,cursor=0;const hooks=[];
  const react={createElement:(type,props,...children)=>({type,props,children}),useState:init=>{const i=cursor++;if(!(i in hooks))hooks[i]=init;return [hooks[i],v=>hooks[i]=v];},useRef:init=>{const i=cursor++;return hooks[i]??=( {current:init});}};
  const native={Pressable:'Pressable',TextInput:'TextInput',Text:'Text',View:'View',StyleSheet:{create:x=>x}};
- const c={exports:{},require:name=>name==='react'?react:name==='react-native'?native:name==='./KeyboardForm'?{KeyboardAwareTextInput:'TextInput'}:{useTheme:()=>({colors:{}})}};vm.runInNewContext(source,c);
+ const c={exports:{},require:name=>require('./helpers/localization.cjs')(name) ?? (name==='../../theme'?require('./helpers/theme.cjs'):name==='react'?react:name==='react-native'?native:name==='./KeyboardForm'?{KeyboardAwareTextInput:'TextInput'}:{useTheme:()=>({colors:{}})})};vm.runInNewContext(source,c);
  const nodes=tree=>[tree,...tree.children.flat(Infinity).filter(x=>x&&typeof x==='object').flatMap(nodes)];
  return {get value(){return value;},render(){cursor=0;return nodes(c.exports.default({value,onChangeText:v=>value=v}));}};
 }

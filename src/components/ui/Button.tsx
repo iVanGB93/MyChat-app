@@ -1,10 +1,11 @@
+import {Chrome} from '../../theme';
 /* ------------------------------------------------------------------ */
 /*  Button — futuristic neon-glow variants                            */
 /* ------------------------------------------------------------------ */
 
 import React from 'react';
 import { TouchableOpacity, Text, StyleSheet, ActivityIndicator, ViewStyle, TextStyle } from 'react-native';
-import { Font, Radius, Spacing } from '../../theme';
+import { Font, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 
 interface Props {
@@ -34,7 +35,7 @@ export default function Button({
   const primaryStyle = {
     backgroundColor: Colors.primary,
     shadowColor: Colors.primary,
-    shadowOpacity: 0.55,
+    shadowOpacity: Chrome.shadowOpacity,
     shadowRadius: 12,
     shadowOffset: { width: 0, height: 0 },
     elevation: 6,
@@ -42,10 +43,10 @@ export default function Button({
 
   const outlineStyle = {
     backgroundColor: 'transparent',
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
+    borderWidth: 1,
+    borderColor: Colors.neonBorder,
     shadowColor: Colors.primary,
-    shadowOpacity: 0.3,
+    shadowOpacity: Chrome.shadowOpacity,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
   };
@@ -93,7 +94,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.lg,
-    borderRadius: Radius.md,
+    borderRadius: Chrome.controlRadius,
     gap: Spacing.sm,
     minHeight: 52,
   },

@@ -1,0 +1,29 @@
+Expanded owner authorization: delete all AoN-authored messages for everyone,
+including replies, after the report-only cleanup.
+
+FirstNeuron: 317 logical messages (199 private, 118 group), all delete actions
+accepted; final API history has zero undeleted outgoing messages; no API errors.
+SecondNeuron: 37 logical messages (27 private, 10 group), exact MCP operations
+approved through documented host approval and executed; final paginated history
+has zero undeleted outgoing messages. Each selected target verified deleted.
+ThirdNeuron: 153 logical messages, all delete actions accepted; zero undeleted
+outgoing messages and zero API errors. Incoming snapshot unchanged there.
+
+Total: 507 additional logical messages, beyond earlier 39 report deletions.
+Each generated action targets its own AoN author only. Group fanout copies are
+deduplicated by logical group/message ID. No account, contact, membership,
+listener, credential, database, or queue reset. No user-authored target selected.
+
+Concurrent observations: First/Second incoming history changed during cleanup,
+including incoming deletions from other AoNs and from the protected owner's
+phone. Two sampled owner-message deletions were independently verified as
+incoming owner-authored actions; they are not targets in this cleanup.
+
+Delivery remains incomplete; do not claim recipient screens are already empty.
+Last cumulative delete-action receipts (includes earlier deletion batches):
+FirstNeuron all delivered235/pending443; owner's phone delivered90/pending106.
+ThirdNeuron all delivered23/pending420; owner's phone pending153.
+SecondNeuron earlier cumulative private actions delivered94/pending4.
+ADB has no devices attached; recipient UI was not inspected.
+Evidence: builds/all-aon-delete-1136-{first,third}.jsonl and receipt files,
+builds/all-aon-delete-1136-requests.json (exact MCP request metadata).

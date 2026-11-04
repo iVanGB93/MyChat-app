@@ -1,6 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function load(path,deps={}){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>deps[n]);return out;}
 const status=load('src/services/identity/rootMessageStatus.ts'),info=load('src/modules/messaging/messageInfoState.ts',{'../../services/identity/rootMessageStatus':status});
+
+test('route display names endpoints and keeps storage attempts separate from confirmed delivery',()=>{
+ const owner='sender',peer='recipient',relay='relay';
+ const m={direction:'outgoing',peer,messageStorageRelays:['first-relay'],messageDelivery:{version:1,scope:'payload',method:'custody',relays:[relay],partial:false,at:100}};
+ const rows=info.messageInfoRoutes(m,{owner,name:id=>id==='relay'?'FirstNeuron':'Wife'});
+ assert.match(rows[0].value,/You → FirstNeuron \(relay\) → Wife \(recipient\)/);
+ assert(!rows[0].value.includes('first-relay'));assert.match(rows[1].value,/Storage acceptance is not proof/);
+});
 test('route display distinguishes receipt paths, payload sources and unknown media',()=>{
  const legacy={direction:'outgoing',status:'delivered',attachment:{}};
  assert.equal(info.messageInfoRoutes(legacy).length,2);

@@ -1,0 +1,48 @@
+AoN bounded chat backpressure rollout, October 20, 2026 (EDT)
+
+User explicitly authorized deployment to all AoNs and further Dev sleep/network
+switch testing. Used isolated existing release worktree/branch rather than the
+concurrently modified main AoN checkout. Only persistentAxon.ts and its canonical
+shared-source hash changed from the preceding deployed release.
+
+Committed and pushed to MyChat-neuron, branch codex/rtc-stability-20261020:
+803d7784f2e3924a7ed049dcdcb5a0ad5f1b6e9f
+Runtime SHA256 f0bae585ee226d3fbb8fac4eceb1494f41f68e595519750e3f04e084fef27245
+135 modules, runtime-bound metadata, sourceDirty=false.
+Exact git archive built/tested under Linux: 237 passed, zero skipped/failed.
+
+FirstNeuron: dist deployed, systemd active, /health ok, exact release verified.
+ThirdNeuron: same dist deployed, systemd active, exact release verified.
+Both retained dist-before-803d778 rollback directories; identity/data untouched.
+SecondNeuron: Railway deployment d3b613d7-ce43-411c-8edc-6075c4cf9a6d SUCCESS.
+Authenticated connector independently reports matching full source/runtime hash
+and six connected peers immediately after deployment.
+
+No production phone build/install. Mobile source still contains independent
+uncommitted work. Isolated hosted branch is not merged into concurrent main.
+
+Test artifacts: aon-chat-queue-linux-tests.txt, dev-five-minute-sleep.txt,
+dev-network-switch.txt, dev-network-switch-manual.txt in builds.
+First sleep probe rejected Samsung Dozing display state; corrected observer
+accepts Asleep/Dozing. This is screen-off/AOD on USB charging, not forced deep
+idle. First network probe could not confirm cellular before automatic Wi-Fi
+return; Wi-Fi restored. User then manually disabled Wi-Fi for the retry.
+
+Completed live results:
+- Receiver remained Asleep/Dozing for 301 seconds. Its JS debugger was not
+  accessed during the sleep/wake observation. Emulator sent a labeled test;
+  Android displayed its actual text preview in 2930 ms, no matching generic
+  notification, screen still Asleep/Dozing. No app opening was needed.
+- Manual Wi-Fi-off retry confirmed cellular default network 396. Texts and
+  read receipts passed both directions; 18944-byte attachment checksum passed.
+  Original Wi-Fi enabled/connected state restored automatically afterward.
+- After returning to Wi-Fi, texts/read receipts and a 1036000-byte file passed,
+  but file completion took 39759 ms after enqueue (preparation excluded).
+  This is a performance regression to investigate, not a production-ready claim.
+- No forced-idle, battery-disconnect, process-kill or airplane-mode test was
+  performed; USB charging and Dev runtime limit extrapolation to release Doze.
+- Additional repeat delivered the file with matching checksum, but its elapsed
+  time is not a clean measurement: an overlapping diagnostic debugger request
+  timed out while the same Dev targets were under test. Discard that repeat's
+  76992 ms as a benchmark. The earlier uninterrupted 39759 ms result remains a
+  valid observation requiring follow-up. Avoid concurrent run() on one target.

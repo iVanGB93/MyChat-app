@@ -1,3 +1,4 @@
+import type {ReceivedRoute} from './deliveryEvidence';
 import {sealGroupCustody,openGroupCustody,verifyGroupCustodyPayload,type GroupCustodyPayload} from './groupCustodyProtocol';
 import {joinGroupCustodyMessage} from './groupCustodyMessages';
 import {signProfile} from './rootProfileProtocol';
@@ -10,7 +11,6 @@ import { signCallMediaSignal, type CallMediaSignal } from './callMediaProtocol';
 import { publicDevice } from './identityProtocol';
 import {signRootGroupBackup} from './rootGroups';
 import type {RootGroupMembership} from './rootGroupTypes';
-import { signChatBinding, type ChatBindingChallenge } from './chatIdentityBinding';
 import type { IntroductionHooks } from './identityIntroductions';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { entropyToMnemonic } from '@scure/bip39';
@@ -30,7 +30,7 @@ export interface IdentityStorage {
   writeDeviceSecret(value: string): Promise<void>;
 }
 export interface LocalIdentityStatus { state: 'empty' | 'locked' | 'unlocked' | 'backup'; account: string | null; busy: boolean; removalPending?:boolean }
-/** One experimental local account, separate from existing Django storage and sessions. */
+/** One local cryptographic account with controller-owned keys. */
 export function createLocalIdentityController(storage: IdentityStorage, random: SecureRandom, now: () => number,
   derive?: PasswordDerivation) {
   let identity: UnlockedIdentity | null = null, draft: UnlockedIdentity | null = null;
@@ -200,7 +200,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       const result = await sealCustody({ ...source, recipient, recipientDevice, id, text, now: now(), random });
       assertCurrent(e); if (source !== identity) throw Error('Account operation interrupted'); return result;
     },
-    async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>, group?:GroupCustodyPayload) {
+    async receiveCustody(envelope: CustodyEnvelope, records: IdentityRecordStore, persist: (message: { from: string; id: string; text: string }) => Promise<boolean>, group?:GroupCustodyPayload,relay?:string) {
       const e = epoch, source = identity; if (!source || busy) return null;
       if (!await verifyCustody(envelope, records, now())) return null;
       assertCurrent(e); if (source !== identity) return null;
@@ -208,7 +208,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       if(group){if(!await verifyGroupCustodyPayload(group,records,now()))return null;assertCurrent(e);if(source!==identity)return null;const opened=openGroupCustody(group,envelope,text);text=joinGroupCustodyMessage(opened.text,opened.metadata,envelope.recipient,envelope.id);}
       if (!await persist({ from: envelope.sender, id: envelope.id, text })) return null;
       assertCurrent(e); if (source !== identity || envelope.expires <= now()) return null;
-      return signCustodyReceipt(envelope, source.signingSeed, source.encryptionSeed);
+      return signCustodyReceipt(envelope, source.signingSeed, source.encryptionSeed,relay?{sources:[relay],partial:false}:undefined);
     },
     signProfile(data:Uint8Array,revision:number){
       if(!identity||busy)throw Error('Unlock your account first');const root=rootFromEntropy(identity.entropy);
@@ -225,9 +225,9 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       if(!identity||busy)throw Error('Unlock the local account first');
       return signAttachmentManifest(input,identity.signingSeed,identity.record,now());
     },
-    signAttachmentReceipt(manifest:AttachmentManifest){
+    signAttachmentReceipt(manifest:AttachmentManifest,route?:ReceivedRoute){
       if(!identity||busy)throw Error('Unlock the local account first');
-      return signAttachmentReceipt(manifest,identity.signingSeed,identity.record,now());
+      return signAttachmentReceipt(manifest,identity.signingSeed,identity.record,now(),route);
     },
     signCall(input: Omit<CallControl,'version'|'record'|'device'|'signature'>) {
       if (!identity || busy) throw Error('Unlock the local account first');
@@ -240,11 +240,6 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
     signCallMedia(input: Omit<CallMediaSignal,'version'|'record'|'device'|'signature'>) {
       if (!identity || busy) throw Error('Unlock the local account first');
       return signCallMediaSignal({...input,record:identity.record},identity.signingSeed,now());
-    },
-    /** Caller supplies its authenticated legacy owner; private keys remain controller-owned. */
-    signChatBinding(owner: number, challenge: ChatBindingChallenge) {
-      if (!identity || busy) throw Error('Unlock the local account first');
-      return signChatBinding(identity.record, identity.signingSeed, owner, challenge, now());
     },
     async signRequest(audience: { account: string; instance: string }, operation: IdentityRequest['operation'], payload: string) {
       const e = epoch, source = identity;
@@ -289,3 +284,4 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
     },
   };
 }
+

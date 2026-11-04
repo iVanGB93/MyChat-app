@@ -1,0 +1,28 @@
+Production readiness checkpoint — 2026-10-30
+
+Proposed next local release: 1.1.36 / Android versionCode 107.
+Not built or authorized in this pass. Current metadata remains 1.1.35 / 106.
+
+Social screen header now reads Axonic; bottom tab remains Social.
+Includes the working-tree sharing and network/recovery fixes documented in
+sharing-audit-2026-10-30.txt and connection-transfer-audit-2026-10-30.txt.
+Existing unrelated work preserved; this is not a clean-commit assertion.
+
+Checks:
+- Latest full unit suite: 1760 passed, 3 skipped, no failures.
+- After the header edit: TypeScript, dependency cycles, module boundaries,
+  consolidation, asset references, native identity/stream admission and native
+  notification completion tests passed.
+- Sharing native changes compiled in Dev and passed live link/photo replacement,
+  cancel/resume and identical-repeat tests. Dev identity/messages preserved.
+- Existing local signing keystore and previous production AAB are present.
+
+Remaining release validation:
+- Cold/screen-off FCM recovery and the final 10 MB completion measurement remain
+  unverified; the prior test's narrow message lookup also needs investigation.
+- Upon explicit build approval, increment versions, adapt the existing local
+  production build/validation runner for 107, preserve production flags and use
+  the upload signing override (not raw Gradle's debug signing default).
+- Verify AAB manifest, signature continuity, source/configuration fingerprint,
+  all four ABIs and bundle integrity after compilation.
+- No production build, publication, official-app installation or deployment here.

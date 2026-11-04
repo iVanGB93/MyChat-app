@@ -1,5 +1,6 @@
+import {Chrome} from '../../theme';
 import {StyleSheet} from 'react-native';
-import {Font,Spacing,Radius} from '../../theme';
+import {Font,Spacing} from '../../theme';
 export const groupCreateStyles = StyleSheet.create({
   container: { flex: 1 },
   form: { flexShrink: 0, paddingHorizontal: Spacing.md, paddingTop: Spacing.md },
@@ -16,6 +17,6 @@ export const groupCreateStyles = StyleSheet.create({
   contactName: { fontSize: Font.size.md, ...Font.semiBold },
   contactSub: { fontSize: Font.size.sm, marginTop: 2 },
   footer: { flexShrink: 0, padding: Spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
-  createButton: { minHeight: 48, borderRadius: Radius.md, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: Spacing.sm },
+  createButton: { minHeight: 48, borderRadius: Chrome.controlRadius, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: Spacing.sm },
   createText: { color: '#fff', fontSize: Font.size.md, ...Font.semiBold },
 });

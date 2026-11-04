@@ -1,0 +1,39 @@
+External sharing audit — 2026-10-30
+
+Scope: Android incoming SEND/SEND_MULTIPLE, share parser, recipient selection,
+media review, staging, account isolation, cancellation and partial batch retry.
+
+Fixed:
+- A new Android intent supersedes the retained launch intent. Consumption clears
+  SEND extras from the activity so a consumed share cannot return on recreation.
+- Native errors clear obsolete content; new valid shares clear obsolete errors.
+- Files take precedence in mixed text/file payloads. Current accompanying text
+  is preserved; text/plain streams remain files. ClipData URIs are supported.
+- Each newly received payload owns a distinct review lifetime, including an
+  identical repeat. Replacement resets selection/error/review state.
+- Synchronous duplicate-tap guard and current-draft/account checks protect the
+  asynchronous review, metadata and copy boundaries before queueing.
+- Known sizes reach review; invalid file metadata is rejected before dispatch.
+
+Validation:
+- Focused sharing suite: 26 passed.
+- Full unit suite: 1760 passed, 3 skipped, 0 failures. TypeScript passed.
+- Android arm64 Dev build succeeded; updated only com.axonic.dev in place.
+- Verified unchanged Dev identity and retention of baseline message keys;
+  official package version/update metadata unchanged. No backup/wipe performed.
+- Live phone Android intent test: link visible, then new photo visible with old
+  link absent; cancel + Home/resume does not replay; identical photo can be shared
+  again as a fresh draft. All tests cancelled; no messages sent.
+
+Limits of evidence:
+- Live photo used a harmless app-cache fixture via Android SEND. Automated tests
+  cover content staging and interruption; external cloud-provider URI expiry,
+  each gallery/browser vendor, iOS share extension, and end-to-end external media
+  sending were not revalidated live in this pass.
+- Native changes require the next production build; official app not updated.
+- Existing batch-size and file-size policy was not changed in this audit.
+
+Reproducibility: scripts/patch-share-intent.cjs applies the native and JS
+dependency fixes during postinstall, with idempotence/unsupported-source guards.
+Tests: shareIntake, shareSession, shareNativePatch, sharedContent, sharePreview,
+rootSharedFile. Build/test logs are in builds/share-audit-*.

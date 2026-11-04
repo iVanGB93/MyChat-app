@@ -26,3 +26,8 @@ test('recording releases audio exactly once despite repeated background cleanup'
  assert.equal(f.events.filter(e=>e==='stop').length,1);
  assert.equal(f.events.filter(e=>Array.isArray(e)&&e[0]==='mode'&&e[1]===false).length,1);
 });
+
+test('voice activity subscriptions report transitions immediately and cannot break cleanup',async()=>{
+ const f=setup(),events=[],off=f.out.subscribeRootVoiceRecording(()=>events.push(f.out.rootVoiceRecordingActive()));
+ const bad=f.out.subscribeRootVoiceRecording(()=>{throw Error('Observer failure');});const c=f.create();await c.start();assert.deepEqual(events,[true]);await c.cancel();assert.deepEqual(events,[true,false]);off();bad();await c.start();await c.dispose();assert.deepEqual(events,[true,false]);
+});

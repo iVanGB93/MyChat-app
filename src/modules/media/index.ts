@@ -1,6 +1,11 @@
 /** Attachment and voice application API; file ownership remains in the platform adapter. */
 export {controlRootAttachment} from '../../services/identity/rootAttachmentRuntime';
-export {queueRootAttachmentBatch,queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,rootAttachmentProgress,retryRootAttachmentSelection,removeRootAttachmentSelection} from '../../services/identity/rootAttachmentSelections';
+export type {Selection as AttachmentSelection} from '../../services/identity/rootAttachmentSelections';
+export {retryRootAttachmentCaption,queueRootAttachmentBatch,queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience,rootAttachmentProgress,retryRootAttachmentSelection,removeRootAttachmentSelection} from '../../services/identity/rootAttachmentSelections';
 export {attachmentDigest,attachmentBlockBytes} from '../../services/identity/attachmentProtocol';
-export {createRootVoiceRecorder,rootVoiceRecordingActive} from '../../services/identity/rootVoiceRecorder';
+export {createRootVoiceRecorder,rootVoiceRecordingActive,subscribeRootVoiceRecording} from '../../services/identity/rootVoiceRecorder';
 export {subscribeAttachmentChanges,subscribeAttachmentContentChanges} from '../../services/identity/attachmentChanges';
+
+export {backgroundUploadScheduled} from '../../services/identity/backgroundUploadStatus';
+
+export {resendExpiredRootAttachment} from '../../services/identity/rootExpiredAttachment';

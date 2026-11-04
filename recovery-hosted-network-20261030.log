@@ -1,0 +1,57 @@
+(node:10816) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ host identity survives restart and corrupt files are never replaced (37.6737ms)
+[Axonic peer closed] {"peer":"77a9dbb6","reason":"transport-closed","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+✔ ordinary unknown peer authenticates without Django or contact pairing and disconnect releases slot (136.4079ms)
+[Axonic peer closed] {"peer":"06e150df","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+[Axonic peer closed] {"peer":"afc2719a","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+[Axonic peer closed] {"peer":"30a5ae47","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:introductions":1,"request:introductions":1}}
+✔ host advertises relay-only RTC and signed introductions exclude relay-only destinations (6301.2918ms)
+[Axonic peer closed] {"peer":"0f30f8e6","reason":"transport-closed","traffic":{}}
+✔ pending authentication occupies capacity before WebSocket upgrade (84.5971ms)
+[Axonic peer closed] {"peer":"3c42aed8","reason":"invalid-hello","traffic":{"hello":1}}
+✔ spoofed account and browser origin cannot establish a connection (80.866ms)
+✔ expired identity fails closed while retaining its account (38.3537ms)
+✔ host renewal serializes, persists across restart, keeps keys, and refuses writes after shutdown (15.8316ms)
+✔ failed host renewal does not advertise an unpersisted record (13.4393ms)
+✔ durable host registry accepts complete renewal ancestry, never a gap (59.8438ms)
+[Axonic peer closed] {"peer":"351e7304","reason":"transport-closed","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:introductions":1,"request:introductions":1}}
+[Axonic peer closed] {"peer":"ac1b7f0b","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1}}
+✔ three ordinary neurons exchange bounded reports over real sockets without promoting reports to dial targets (6663.7984ms)
+[Axonic peer closed] {"peer":"4337d8a7","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"signal":3}}
+[Axonic peer closed] {"peer":"51949b18","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+✔ ordinary host forwards signed setup once between connected peers and rejects a forged third-party sender (294.7387ms)
+[Axonic peer closed] {"peer":"d7b71e52","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:push":1}}
+[Axonic peer closed] {"peer":"48e054b2","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1}}
+✔ hosted custodian forwards durable pending wake metadata to a connected push gateway (237.281ms)
+[Axonic peer closed] {"peer":"d2b72f43","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1}}
+✔ hosted custodian drains its durable wake queue through its local gateway without another AoN (161.5116ms)
+[Axonic peer closed] {"peer":"61c6b133","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"response:push":2,"request:directory":1}}
+[Axonic peer closed] {"peer":"89c2148c","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4}}
+[Axonic peer closed] {"peer":"f4231b22","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+✔ group wake recovers an unknown sender through the authenticated directory before sending push (1306.7242ms)
+[Axonic peer closed] {"peer":"0bd49596","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4}}
+[Axonic peer closed] {"peer":"e1ceeb4e","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":2}}
+[Axonic peer closed] {"peer":"4c288ed2","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":1,"request:custody":2}}
+✔ shared group custody negotiates over authenticated sockets and serves recipient-bound grants (277.4776ms)
+[Axonic peer closed] {"peer":"1ddc5e16","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":3}}
+[Axonic peer closed] {"peer":"2b6a82f1","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":3}}
+✔ local observed response quality orders hosted custody and group peers without extra requests (152.6243ms)
+[Axonic peer closed] {"peer":"c91df9d9","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":1}}
+[Axonic peer closed] {"peer":"5ff95654","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1}}
+✔ real authenticated sockets deliver through one custodian without an FCM wake (211.7415ms)
+[Axonic peer closed] {"peer":"259c8bcb","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4,"response:custody":2}}
+[Axonic peer closed] {"peer":"61787901","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1,"response:custody":1}}
+✔ an idle authenticated recipient receives a later deposit by event, then sender gets a receipt event (208.9901ms)
+✔ idle hosted network arms expiry but no empty inbox or wake polling (150.7507ms)
+[Axonic peer closed] {"peer":"da9bd7ef","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":1}}
+[Axonic peer closed] {"peer":"59b4cdd3","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4}}
+✔ event-driven hosted group work still repairs a replica after its retry deadline (209.8967ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 16799.2493

@@ -1,0 +1,28 @@
+(node:42592) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ owner policy gates call start, acceptance and media without blocking relay infrastructure (221.2391ms)
+✔ hosted own callers exchange selected call control and signed media through shared phone protocol (200.8202ms)
+✔ another dashboard cannot control or read media and missing heartbeats end the own call (205.5658ms)
+✔ blocking ends active own calls and journal recovery never resumes stale media (236.811ms)
+✔ routed media rejects tampering and replay, and acknowledgments are scoped to the current call (210.4847ms)
+✖ hosted own call queues while the recipient is offline, wakes once and completes only after signed recipient selection (170.992ms)
+✔ cancelled offline hosted calls cannot progress to media after delayed relay delivery (74.9335ms)
+✔ hosted own callers complete signed selection through another ordinary neuron with no local relay or direct recipient axon (482.1765ms)
+✔ call start resolves a missing peer identity and failed starts release the browser claim (84.5173ms)
+ℹ tests 9
+ℹ suites 0
+ℹ pass 8
+ℹ fail 1
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 1972.5225
+
+✖ failing tests:
+
+test at tests\hostedRootCalls.test.mjs:50:1
+✖ hosted own call queues while the recipient is offline, wakes once and completes only after signed recipient selection (170.992ms)
+  TypeError [Error]: Cannot read properties of null (reading 'status')
+      at TestContext.<anonymous> (file:///D:/Proyects/Axonic-app/builds/aon-wss-binary-20261026/tests/hostedRootCalls.test.mjs:60:74)
+      at async Test.run (node:internal/test_runner/test:1069:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:752:7)

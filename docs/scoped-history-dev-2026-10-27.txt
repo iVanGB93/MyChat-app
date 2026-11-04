@@ -1,0 +1,24 @@
+Scoped group, attachment and FCM history reads - October 27, 2026
+
+Implemented in the portable ledger with the existing Dev-only SQLite adapter.
+Group text sends, actions, incoming group messages/actions and same-group media
+batches read the affected group plus cross-group ID-conflict records. Group
+membership/recovery and whole-group read marking remain full-state operations.
+Attachment admission/reconciliation uses attachment records plus current policy.
+Notification previews and generic FCM routing load one exact delivery and related
+private actions or logical-ID group actions. Missing/deleted handling preserved.
+
+Live read-only checks on connected Axonic Dev:
+382 messages total; attachment query loaded 280 descriptor records in 83.31 ms.
+Every descriptor's allowed/denied result matched the complete-state calculation.
+Notification query loaded one incoming group message plus one action in 18.34 ms;
+its rendered/deleted/read state matched the complete-state view. Zero full reads
+in either measured query. These are query measurements, not FCM arrival latency.
+No new real push, group message, transfer or call was sent for these checks.
+
+Validation: full npm run check passed 1,656 tests, 3 intentionally skipped;
+then 62 focused tests passed including the added indexed FCM routing regression.
+Includes SQLite migration/reopen, transactional scope protection, group collision,
+group deletion by logical ID, attachment policy/block refresh, worker scheduling,
+and existing FCM content-recovery regressions. Type and architecture checks pass.
+No production build, commit, push, deployment, reset or deletion performed.

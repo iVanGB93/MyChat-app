@@ -1,0 +1,47 @@
+Storage waits and sender confirmation — October 25, 2026
+
+Changes (local/Dev only; live AoNs not deployed)
+1. Successful attachment custody publication is memoized in a bounded 128-entry,
+   generation/owner/digest-scoped set. Receipt polling still runs, but does not
+   repeatedly reread chat history to publish the identical stored marker.
+   Failed callbacks are not cached. Invalidation/restart rechecks durable state.
+   Signed final receipts remain mandatory for delivered/completed status.
+2. Profile recovery first checks the revision-scoped history view. Known profile
+   capabilities skip redundant ledger mutation; unknown capabilities persist and
+   then refresh the view. Permission checks before sharing remain intact.
+3. Relay test harness now observes file custody separately from independent
+   descriptor custody. The latter is checked after file custody: its delta is
+   time to observe/check it, not necessarily time the server first stored it.
+
+Tests
+1547 passed, 3 optional skips, 0 failed (storage-waits-full-tests.log).
+TypeScript, module boundaries, service cycles, hosted shared parity/types pass.
+Targeted regressions: repeated status lookup does not repeat successful durable
+publication; invalidation retries; a failed publication retries; known profile
+capabilities skip history mutation; missing capabilities still persist.
+Shared attachmentTransfer/profileRecovery synchronized locally for AoNs.
+
+Live data
+Intermediate 10MB run (relay-confirmation-10.json): file custody observed13.200s;
+descriptor check0.262s later; upload total13.462s, receive18.798s, checksum valid.
+Profile-recovery source was being edited during this run, so this is not the final
+stable-code benchmark. It does not prove the old57.9s tail has been eliminated.
+Final stable-code5MB run (relay-confirmation-final5.json): file custody7.046s;
+descriptor check0.263s later; upload total7.309s; receive23.325s, checksum valid.
+Message present at first sample1.958s. One transfer failure recovered; received
+source77fe994d... rather than previous778f81f3..., so route differs from prior runs.
+Receiver ledger:31 storage reads aggregate8.939s, max1.542s; mutation queue max
+1.627s, snapshot queue max2.508s. HistorySnapshot aggregate4.744s.
+Timings overlap; storage timing includes native scheduling, not pure disk time.
+Receiver clock starts after Dev debugger reconnect/unlock, not sender selection.
+Both Dev apps restored and original identity/message-key baselines preserved.
+Normal apps untouched. No data/queues cleared, commit/push/deployment performed.
+
+Remaining
+The previous58s sender tail did not reproduce and cannot be assigned to a proven
+root cause from the old aggregate timing. Stored-file status polls were waiting
+for final receipts, not themselves proof that bytes were still uploading.
+Cold native scheduling/read latency and serialized ledger waits remain.
+Transport contention is a follow-up candidate: custodyRequest may return null
+when locally busy, while the courier can treat an unsuccessful deposit as relay
+unavailability. No protocol/cooldown changes made without targeted validation.

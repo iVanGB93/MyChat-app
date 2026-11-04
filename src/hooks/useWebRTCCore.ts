@@ -1,4 +1,7 @@
+import {createCallExpansion} from '../services/callExpansion';
+import type {GroupCallRoom} from '../services/identity/groupCallRoom';
 import {createCallQualityMonitor,type CallQuality} from '../services/callQualityMonitor';
+import {createCallSpeakingMonitor} from '../services/callSpeakingMonitor';
 import {deliverCallSignal} from '../services/callSignalRetry';
 import {createCallScreenShare} from '../services/callScreenShare';
 import {createCallEndHandshake} from '../services/callEndHandshake';
@@ -42,6 +45,11 @@ export interface UseWebRTCOptions {
   peerUserId: number | string;
   /** The authenticated neuron adapter owns signaling and ICE configuration. */
   mediaTransport?: CallMediaTransport;
+  /** Room owns capture lifetime; leg cleanup must never stop these tracks. */
+  roomStream?: MediaStream;
+  onExpandCall?: (room:GroupCallRoom)=>Promise<boolean>;
+  onExpansionAccepted?: (room:GroupCallRoom)=>Promise<boolean>;
+  onSpeaking?: (local:boolean,remote:boolean)=>void;
   /** Called when the peer connection reaches the connected state. */
   onConnected?: () => void;
   /** Called when the peer connection disconnects/fails. */
@@ -54,10 +62,20 @@ export default function useWebRTCCore({
   isOutgoing,
   peerUserId,
   mediaTransport,
+  roomStream,
+  onSpeaking,
+  onExpandCall,onExpansionAccepted,
   onConnected,
   onDisconnected,
 }: UseWebRTCOptions) {
+  const commitExpansionRef=useRef(onExpansionAccepted);commitExpansionRef.current=onExpansionAccepted;
+  const expandRef=useRef(onExpandCall);expandRef.current=onExpandCall;
+  const expansion=useRef<ReturnType<typeof createCallExpansion>|null>(null);
+  const [canExpandCall,setCanExpandCall]=useState(false);
+  const expandCall=useCallback((room:GroupCallRoom)=>expansion.current?.request(room)??Promise.resolve(false),[]);
   const recoveryRef = useRef<ReturnType<typeof createCallRecovery> | null>(null);
+  const speakingRef=useRef(onSpeaking);speakingRef.current=onSpeaking;
+  const speakingMonitor=useRef<ReturnType<typeof createCallSpeakingMonitor>|null>(null);
   const [recovering, setRecovering] = useState(false);
   const disconnectedRef = useRef(onDisconnected);
   disconnectedRef.current = onDisconnected;
@@ -111,6 +129,7 @@ export default function useWebRTCCore({
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [isScreenSharing,setIsScreenSharing]=useState(false),[screenShareBusy,setScreenShareBusy]=useState(false),[screenShareError,setScreenShareError]=useState<string|null>(null);
   const [remoteScreenSharing,setRemoteScreenSharing]=useState(false);
+  const openControlChannel=useRef<(()=>void)|null>(null);
   const videoStateChannel=useRef<RTCDataChannel|null>(null),sharingRef=useRef(false);
   const endHandshake=useRef<ReturnType<typeof createCallEndHandshake>|null>(null);
   const notifyCallEnded=useCallback(()=>endHandshake.current?.end()??Promise.resolve(),[]);
@@ -168,6 +187,10 @@ export default function useWebRTCCore({
   /** Acquire camera + mic. Idempotent — returns the existing stream if one
    *  has already been acquired for this call. */
   const acquireMedia = useCallback(async (): Promise<MediaStream> => {
+    if(roomStream){
+      if(cleanedUp.current)throw Error('Call ended');
+      localStreamRef.current=roomStream;setLocalStream(roomStream);return roomStream;
+    }
     if (localStreamRef.current) {
       return localStreamRef.current;
     }
@@ -215,7 +238,7 @@ export default function useWebRTCCore({
     } finally {
       mediaAcquirePromiseRef.current = null;
     }
-  }, [callType]);
+  }, [callType,roomStream]);
 
   const applyVideoBitrate = useCallback(async (
     pc: RTCPeerConnection,
@@ -326,7 +349,11 @@ export default function useWebRTCCore({
       sharedPeer.current=lease;
       const pc = lease.connection as RTCPeerConnection;
       pcRef.current = pc;
-      if(callType==='video'){
+      if(speakingRef.current){
+        speakingMonitor.current=createCallSpeakingMonitor({current:()=>!cleanedUp.current&&pcRef.current===pc,stats:()=>pc.getStats(),publish:(local,remote)=>speakingRef.current?.(local,remote)});
+        speakingMonitor.current.start();
+      }
+      {
         const label=lease.channelLabel;
         const attach=(channel:RTCDataChannel)=>{
           if(channel.label!==label)return;
@@ -337,13 +364,19 @@ export default function useWebRTCCore({
             send:raw=>{if(cleanedUp.current||pcRef.current!==pc||channel.readyState!=='open'||channel.bufferedAmount>4096)return false;try{channel.send(raw);return true;}catch{return false;}},
             ended:()=>{if(!cleanedUp.current&&pcRef.current===pc)disconnectedRef.current?.();},
           });endHandshake.current=ending;
-          (channel as any).onopen=publishVideoState;
-          (channel as any).onmessage=(event:{data:unknown})=>{if(cleanedUp.current||pcRef.current!==pc||ending.receive(event.data))return;const sharing=readCallVideoState(event.data);if(sharing!==null)setRemoteScreenSharing(sharing);};
-          (channel as any).onclose=()=>{ending.close();if(videoStateChannel.current===channel){videoStateChannel.current=null;if(!cleanedUp.current)setRemoteScreenSharing(false);}};
-          publishVideoState();
+          expansion.current?.close();
+          const expand=createCallExpansion(String(callId),{send:raw=>{if(cleanedUp.current||pcRef.current!==pc||channel.readyState!=='open'||channel.bufferedAmount>16384)return false;try{channel.send(raw);return true;}catch{return false;}},adopt:room=>expandRef.current?.(room)??Promise.resolve(false),commit:room=>commitExpansionRef.current?.(room)??Promise.resolve(false),enabled:()=>!!expandRef.current&&!!commitExpansionRef.current,ready:setCanExpandCall});expansion.current=expand;
+          (channel as any).onopen=()=>{publishVideoState();expand.opened();};
+          (channel as any).onmessage=(event:{data:unknown})=>{if(cleanedUp.current||pcRef.current!==pc||ending.receive(event.data)||expand.receive(event.data))return;const sharing=readCallVideoState(event.data);if(sharing!==null)setRemoteScreenSharing(sharing);};
+          (channel as any).onclose=()=>{expand.close();ending.close();if(videoStateChannel.current===channel){videoStateChannel.current=null;if(!cleanedUp.current)setRemoteScreenSharing(false);}};
+          publishVideoState();if(channel.readyState==='open')expand.opened();
         };
         (pc as any).ondatachannel=(event:{channel:RTCDataChannel})=>attach(event.channel);
-        if(isOutgoing)attach(pc.createDataChannel(label,{ordered:true}));
+        openControlChannel.current=()=>{if(isOutgoing&&!cleanedUp.current&&pcRef.current===pc&&!videoStateChannel.current)attach(pc.createDataChannel(label,{ordered:true}));};
+        // Shared SCTP is already live: creating this channel before the answerer
+        // acquires its call lease makes the network correctly reject the channel.
+        // A signed answer proves the remote call handler is installed.
+        if(lease.mode==='dedicated')openControlChannel.current();
       }
       hasRemoteDesc.current = false;
       fullDescriptionSent.current = false;
@@ -523,6 +556,7 @@ export default function useWebRTCCore({
             if(sharedPeer.current&&callPeerMode(data.sdp)!==sharedPeer.current.mode)throw Error('Call peer mode changed');
             if(sharedPeer.current&&!sharedPeer.current.validateRemote(data.sdp))throw Error('Shared peer certificate changed');
             await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+            openControlChannel.current?.();
             if(sharedPeer.current?.mode==='shared'){refreshSharedRemote(pc);onConnected?.();void detectConnectionType(pc);}
             hasRemoteDesc.current = true;
             flushCandidates();
@@ -605,17 +639,19 @@ export default function useWebRTCCore({
   /* ---- Cleanup ---- */
   const cleanup = useCallback(() => {
     debugLog('[WebRTC] cleanup');
+    expansion.current?.close();expansion.current=null;
     cleanedUp.current = true;
     peerSelection.current?.stop();
     screenShareRef.current?.close();
     endHandshake.current?.close();endHandshake.current=null;
-    videoStateChannel.current?.close();videoStateChannel.current=null;
+    openControlChannel.current=null;videoStateChannel.current?.close();videoStateChannel.current=null;
     recoveryRef.current?.stop();
     recoveryRef.current = null;
     for(const [timer,resolve] of signalWaits.current){clearTimeout(timer);resolve();}
     signalWaits.current.clear();
 
     qualityMonitor.current?.stop();qualityMonitor.current=null;
+    speakingMonitor.current?.stop();speakingMonitor.current=null;
 
     if (pcRef.current) {
       if(sharedPeer.current){
@@ -636,7 +672,7 @@ export default function useWebRTCCore({
     }
 
     if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      if(!roomStream)localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
     }
 
@@ -653,7 +689,7 @@ export default function useWebRTCCore({
   }, [cleanup]);
 
   return {
-    isScreenSharing,remoteScreenSharing,screenShareBusy,screenShareError,startScreenSharing,stopScreenSharing,setScreenControlsExcluded,notifyCallEnded,
+    canExpandCall,expandCall,isScreenSharing,remoteScreenSharing,screenShareBusy,screenShareError,startScreenSharing,stopScreenSharing,setScreenControlsExcluded,notifyCallEnded,
     recovering,
     localStream,
     remoteStream,

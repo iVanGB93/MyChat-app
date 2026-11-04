@@ -27,7 +27,7 @@ class AxonicNearbyModule : Module() {
   private var callSetupUntil = 0L
   private var wakeUntil = 0L
   private val wakeTimer = Executors.newSingleThreadScheduledExecutor()
-  private fun transportAllowed() = foregroundGate.allowed(SystemClock.elapsedRealtime()) || protectedCall() || SystemClock.elapsedRealtime() < wakeUntil || SystemClock.elapsedRealtime() < callSetupUntil
+  private fun transportAllowed() = foregroundGate.allowed(SystemClock.elapsedRealtime()) || AttachmentUploadJob.transportAllowed() || MessageRecoveryJob.transportAllowed() || protectedCall() || SystemClock.elapsedRealtime() < wakeUntil || SystemClock.elapsedRealtime() < callSetupUntil
   private var connectedCall = false
   private fun protectedCall(): Boolean {
     if (!connectedCall) return false
@@ -50,6 +50,41 @@ class AxonicNearbyModule : Module() {
   }
   override fun definition() = ModuleDefinition {
     Name("AxonicNearby")
+    Function("attachmentUploadSchedule") { owner: String -> AttachmentUploadJob.schedule(requireNotNull(appContext.reactContext), owner) }
+    Function("attachmentUploadDisarm") { owner: String -> AttachmentUploadJob.disarm(owner) }
+    Function("messageRecoveryEnqueue") { raw: String, high: Boolean -> MessageRecoveryJob.enqueue(requireNotNull(appContext.reactContext), raw, high) }
+    Function("messageRecoveryCurrent") { token: String -> MessageRecoveryJob.current(token) }
+    Function("messageRecoveryComplete") { token: String -> MessageRecoveryJob.complete(token) }
+    Function("attachmentUploadScheduled") { owner: String -> AttachmentUploadJob.scheduled(requireNotNull(appContext.reactContext), owner) }
+    Function("attachmentUploadCurrent") { token: String -> AttachmentUploadJob.current(token) }
+    Function("attachmentUploadState") { token: String, count: Int, percent: Int, state: String -> AttachmentUploadJob.progress(token, count, percent, state) }
+    Function("attachmentUploadProgress") { token: String, count: Int, percent: Int -> AttachmentUploadJob.progress(token, count, percent) }
+    Function("attachmentUploadComplete") { token: String, outcome: String -> AttachmentUploadJob.complete(token, outcome) }
+    AsyncFunction("phoneNetworkInfo") {
+      val context = requireNotNull(appContext.reactContext)
+      val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+      val network = cm.activeNetwork
+      val caps = network?.let { cm.getNetworkCapabilities(it) }
+      val link = network?.let { cm.getLinkProperties(it) }
+      mapOf(
+        "connected" to (network != null),
+        "transport" to when {
+          caps == null -> "Offline"
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "VPN"
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Mobile data"
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+          else -> "Other"
+        },
+        "validated" to (caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true),
+        "metered" to cm.isActiveNetworkMetered,
+        "interfaceName" to link?.interfaceName,
+        "addresses" to (link?.linkAddresses?.map { "${it.address.hostAddress}/${it.prefixLength}" } ?: emptyList<String>()),
+        "gateways" to (link?.routes?.filter { it.isDefaultRoute }?.mapNotNull { it.gateway?.takeUnless { address -> address.isAnyLocalAddress }?.hostAddress }?.distinct() ?: emptyList<String>()),
+        "dns" to (link?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList<String>()),
+        "mtu" to link?.mtu
+      )
+    }
     Events("axonLanChanged")
     Function("axonLanEvents") { true }
     // Aggregate process clocks only. Deltas distinguish sleep from elapsed
@@ -262,9 +297,10 @@ class AxonicNearbyModule : Module() {
       bytes.joinToString("") { "%02x".format(it) }
     }
     OnActivityEntersForeground { synchronized(this@AxonicNearbyModule) {
-      foregroundGate.resume(); backgroundClose?.cancel(false); backgroundClose = null
+      appContext.reactContext?.let { AttachmentUploadJob.resume(it) }; foregroundGate.resume(); backgroundClose?.cancel(false); backgroundClose = null
     } }
     OnActivityEntersBackground { synchronized(this@AxonicNearbyModule) {
+      appContext.reactContext?.let { AttachmentUploadJob.pause(it) }
       val delay = foregroundGate.pause(SystemClock.elapsedRealtime())
       backgroundClose?.cancel(false)
       backgroundClose = wakeTimer.schedule({ synchronized(this@AxonicNearbyModule) {

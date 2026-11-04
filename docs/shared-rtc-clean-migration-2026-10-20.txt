@@ -1,0 +1,25 @@
+Shared WebRTC calls - clean migration checkpoint (2026-10-20)
+
+User explicitly waived compatibility with older mobile and AoN versions.
+Removed mobile separate-PC call fallback and shared-call capability negotiation.
+Calls require an authenticated network RTC lease; cleanup detaches tracks and releases lease without closing the PC.
+Removed legacy fallback regression; missing shared transport fails closed.
+Fixed post-call ICE restart admission: initial connection remains data-only; after an admitted call, bounded retained audio/video sections can survive a restart. Device, certificate and original-session checks remain enforced. Signed signaling SDP bound is 9000 bytes; total envelope bound remains 14000.
+
+Validation:
+- Mobile npm run check: 1441 passed, 3 skipped, zero failures; type/module/cycle/consolidation checks passed.
+- Added post-call signed restart test proving existing channel survives and wrong device/certificate/session remains rejected.
+- Isolated AoN worktree builds/aon-rtc-stability-20261020: synchronized sharedRtcCall, rtcAxonTransport, axonSignaling, callMediaTransport, neuronCallCoordinator, persistentAxon plus manifest/sync source entry.
+- AoN npm test with loopback/temp-file access: 237 passed, zero failures. Initial sandbox run failed on file/loopback tests; elevated run passed.
+- Earlier live calls reused phone PCs 5/4, passed video/audio/chat and post-hangup 1 MiB transfer. Those predate final fallback removal.
+- Final clean-phone retest did NOT complete: call control remained finding / debugger operation timed out before ringing. Do not claim latest full live validation.
+- Test instrumentation cleanup completed. No production build, official app update, commit or deployment in this checkpoint.
+
+Remaining:
+1. Diagnose clean-reload call admission/finding stall on Dev phones; avoid overlapping debugger run() calls on the same device.
+2. Repeat shared calls, concurrent message/media, hangup, screen sharing and network switching on final code.
+3. Complete AoN browser/host ownership design: callDashboard still creates a browser call-only PC while host runtime owns WSS chat/data. Copying portable protocol does NOT migrate this architecture. Do not report AoNs as using shared RTC until this is implemented and tested.
+4. Network ICE restart after LAN-to-RTC promotion may retain old signaling locator; validate recovery route when LAN is retired.
+5. Commit/push AoN source and deploy all hosts only with complete tested implementation, preserving concurrent unrelated AoN work.
+
+Mobile docs/dev-group-invitation-2026-10-20.md belongs to another chat; preserve.

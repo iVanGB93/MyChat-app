@@ -1,3 +1,4 @@
+import type {RootChatMessage} from '../messaging';
 import {createStore} from 'zustand/vanilla';
 import {useStore} from 'zustand';
 import {useMemo} from 'react';
@@ -11,37 +12,39 @@ import {retainEqual} from '../../services/identity/sharedState';
 import {createAttachmentProgressLookup} from '../../utils/attachment-progress';
 
 type Progress=Awaited<ReturnType<typeof rootAttachmentProgress>>;
+const handoffs=new Map<string,Progress['selections'][number]>();
 const empty:Progress={jobs:[],selections:[]};
 type Lookup=(digest:string)=>Progress['jobs'][number]|undefined;
 const makeLookup=(jobs:Progress['jobs'])=>createAttachmentProgressLookup(jobs,(digest:string)=>digest);
 const store=createStore<{value:Progress;lookup:Lookup}>(()=>({value:empty,lookup:makeLookup(empty.jobs)}));
-let readers=0,epoch=0,revision=0,stop:(()=>void)|undefined,timer:ReturnType<typeof setTimeout>|undefined;
+let readers=0,epoch=0,revision=0,jobRevision=0,stop:(()=>void)|undefined,timer:ReturnType<typeof setTimeout>|undefined;
 let flight=false,dirty=false;
 const owner=()=>localAccount.status().state==='unlocked'?localAccount.status().account:null;
-function publish(value:Progress){const previous=store.getState(),next=retainEqual(previous.value,value);if(next!==previous.value)store.setState({value:next,lookup:next.jobs===previous.value.jobs?previous.lookup:makeLookup(next.jobs)});}
+function publish(value:Progress){if(handoffs.size){const ids=new Set(value.selections.map(s=>s.id));value={...value,selections:[...value.selections,...[...handoffs.values()].filter(s=>!ids.has(s.id))]};}const previous=store.getState(),next=retainEqual(previous.value,value);if(next!==previous.value)store.setState({value:next,lookup:next.jobs===previous.value.jobs?previous.lookup:makeLookup(next.jobs)});}
 async function hydrate(){
  if(!readers||AppState.currentState!=='active')return;
  if(flight){dirty=true;return;}flight=true;dirty=false;
- const account=owner(),generation=epoch,version=revision;
- try{const next=await rootAttachmentProgress();if(account===owner()&&generation===epoch){if(version===revision)publish(next);else dirty=true;}}
- catch{/* Preserve last known progress; retry while observed. */dirty=true;}
- finally{flight=false;if(dirty&&readers){clearTimeout(timer);timer=setTimeout(()=>void hydrate(),1000);}}
+ let failed=false;
+ const account=owner(),generation=epoch,version=revision,jobsVersion=jobRevision;
+ try{const next=await rootAttachmentProgress();if(account===owner()&&generation===epoch){if(version===revision)publish(jobsVersion===jobRevision?next:{...next,jobs:store.getState().value.jobs});else dirty=true;}}
+ catch{/* Preserve last known progress; retry while observed. */dirty=true;failed=true;}
+ finally{flight=false;if(dirty&&readers&&AppState.currentState==='active'){clearTimeout(timer);timer=setTimeout(()=>void hydrate(),failed?1000:0);}}
 }
 export const transferState={getState:store.getState,getInitialState:store.getInitialState,subscribe(listener:Parameters<typeof store.subscribe>[0]){
  const off=store.subscribe(listener);
  if(readers++===0){
-  const jobs=subscribeAttachmentJobProgress(row=>{if(row.owner!==owner())return;revision++;
+  const jobs=subscribeAttachmentJobProgress(row=>{if(row.owner!==owner())return;jobRevision++;
    const {owner:_owner,...value}=row;const old=store.getState().value;
    const jobs=old.jobs.filter(j=>j.digest!==row.digest);if(!['complete','expired'].includes(row.phase))jobs.push(value);
    jobs.sort((a,b)=>a.digest.localeCompare(b.digest));publish({...old,jobs});});
-  const selections=subscribeAttachmentSelections(account=>{if(account===owner()){revision++;void hydrate();}});
+  const selections=subscribeAttachmentSelections((account,_pending,published)=>{if(account===owner()){for(const selection of published??[]){handoffs.set(selection.id,selection);if(handoffs.size>64)handoffs.delete(handoffs.keys().next().value!);}revision++;void hydrate();}});
   const app=AppState.addEventListener('change',()=>{if(AppState.currentState==='active')void hydrate();});
   stop=()=>{jobs();selections();app.remove();};void hydrate();
  }
  return()=>{off();if(--readers===0){epoch++;stop?.();stop=undefined;clearTimeout(timer);}};
 }};
 let boundOwner=owner();
-localAccount.subscribe(()=>{const next=owner();if(next&&next===boundOwner)return;boundOwner=next;epoch++;revision++;publish(empty);if(readers)void hydrate();});
+localAccount.subscribe(()=>{const next=owner();if(next&&next===boundOwner)return;boundOwner=next;epoch++;revision++;handoffs.clear();publish(empty);if(readers)void hydrate();});
 function useSource(){const focused=useIsFocused(),foreground=useForeground();
  const source=useMemo(()=>({...transferState,subscribe:focused&&foreground?transferState.subscribe:()=>()=>{}}),[focused,foreground]);
  return source;
@@ -49,3 +52,10 @@ function useSource(){const focused=useIsFocused(),foreground=useForeground();
 /** Parent screens observe pending selections only. Progress belongs to its row. */
 export function useTransferState(){const source=useSource(),selections=useStore(source,s=>s.value.selections);return useMemo(()=>({selections}),[selections]);}
 export function useTransferProgress(digest:string){return useStore(useSource(),s=>s.lookup(digest));}
+
+/** Called after durable rows render: there must be no empty frame between stores. */
+export function acknowledgeAttachmentHandoffs(messages:RootChatMessage[]){
+ const removed=new Set<string>();
+ for(const [id,s] of handoffs)if(messages.some(m=>m.direction==='outgoing'&&(s.group?m.group?.id===s.group.id&&m.group.messageId===s.group.messageId:!m.group&&m.peer===s.peer&&m.id===s.id))){handoffs.delete(id);removed.add(id);}
+ if(removed.size){const value=store.getState().value;publish({...value,selections:value.selections.filter(s=>!removed.has(s.id))});}
+}

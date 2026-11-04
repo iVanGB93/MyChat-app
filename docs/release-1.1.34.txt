@@ -1,0 +1,28 @@
+Axonic 1.1.34 / Android versionCode 105 — built and validated locally
+
+Artifact: builds/Axonic-1.1.34-105.aab
+Size: 107740492 bytes
+SHA256: 4fdf20613f84dc4719a7555d14a94e6b9dc52efaaccffc82ff3b0ce3f42172c4
+Bundled source SHA256: 75adb9ffe0452f5e0eeb5600311361adad7d8ca275fe101c323e7f2a53b99046
+
+Includes the current working tree: chat/media presentation and scrolling fixes, in-app camera workflow, typing/recording indicators, transfer/retry improvements, and native SQLite reload cleanup. Unrelated existing work preserved; this is a working-tree build, not a clean-commit claim.
+
+Validation
+- Pre-release evidence: docs/pre-release-1.1.34.txt.
+- Final version change: TypeScript, SQLite cleanup test, and three production indexed-history migration/preservation tests passed.
+- Local Gradle bundleRelease succeeded in 2m 7s, all four Android ABIs. No EAS cloud build.
+- bundletool validated; jarsigner verified; upload certificate matches 1.1.33.
+- Manifest: com.axonic, 1.1.34/code105, non-debuggable, no instrumentation; upload job and screen-sharing permissions present.
+- Bundled Expo configuration and source fingerprint match.
+- Previous 1.1.33 AAB hash unchanged.
+- Sentry automatic uploads disabled for this build, consistent with previous local builds. No source-map upload claimed.
+
+Commands/evidence
+node builds/build-local-production-105.cjs --approved-1.1.34
+node builds/validate-production-105.cjs
+builds/local-production-aab-105.log
+builds/local-aab-105-validation.json
+builds/local-aab-105-manifest.xml
+builds/local-aab-105-signature.txt
+
+User explicitly authorized this local production build. No publication, phone installation, data deletion/reset, commit, or push performed. Actual production runtime and prolonged background behavior still require post-install validation; Dev restart recovery is not proof of a permanent lock fix.

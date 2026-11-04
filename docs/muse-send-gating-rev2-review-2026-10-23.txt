@@ -1,0 +1,46 @@
+Muse send-gating Revision 2 independent review
+
+Archive SHA256:
+d332c5e2d1fd6909e20afe087ffd3f6286e0ff358a5b4ce0116c1b66e2cf938b
+
+Scope: offline source review and synthetic tests only. No activation, real
+HTTP, live listener/queue access, message deletion or resends. Test harness
+requires temporary queue paths and explicit --state on subprocesses; real
+transport is disabled. Original package source was not modified.
+
+Result: 108/108 supplied checks pass. Independent regressions confirm:
+- Removed CLI completion command refuses fabricated evidence, state unchanged.
+- Revocation, stale approval, recovery and expired claim during reconciliation
+  prevent the subsequent POST, preserving the persisted payload.
+- HTTP 401 unauthorized lookup is unknown rather than absent.
+
+Not cleared for activation: two remaining fail-open conditions reproduced.
+
+1. Missing binding permits dispatch.
+   fn_queue.py binding_ok returns true when binding is None. Starting with a
+   synthetic claimed item and prior attempt, remove binding during the lookup,
+   return confirmed absence: helper sends once and completes. The new dispatch
+   gate invokes this legacy permissive binding predicate.
+   Require a positively validated protected owner/neuron binding; missing or
+   malformed binding must hold. Add first-send and post-reconciliation tests.
+
+2. Pagination is not a validated consistent history walk.
+   production_fetch_outgoing checks repeated 'before' strings but not a stable
+   snapshot 'cursor' or a reset on later pages. It also accepts missing before,
+   invalid message entries, and error:false. Each independent fake response
+   produced lookup='absent', not unknown. A two-page walk changing snapshot and
+   returning reset=true on page 2 also produced absent.
+   Local AoN chatSync.ts confirms history continuation is tied to epoch and
+   revision; invalidated continuation restarts with reset=true. Such a walk is
+   not proof of absence. Validate required response/page/row fields against the
+   actual server contract, reject any error key, reject reset after page 1 and
+   changed snapshot cursor, and treat malformed/missing pagination as unknown.
+   Add end-to-end tests asserting no resend/completion for these conditions.
+
+Independent executable probes:
+builds/muse-send-gating-rev2-review/tests/codex_isolated_review.py
+Run with WSL python3; all state is synthetic and guarded under its temporary root.
+
+CLI removal is an application workflow safeguard, not a security boundary
+against a process with unrestricted Python execution and queue-file write access.
+No such stronger isolation is claimed by this review.

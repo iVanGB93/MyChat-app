@@ -24,7 +24,7 @@ function db() {
 function key(owner: string, callId: string) {
   if (!validAccountId(owner) || !/^[0-9a-f]{64}$/.test(callId)) throw Error('Invalid call journal key');
 }
-export interface OwnCallSummary {id:string;peer:string;outgoing:boolean;media:'voice'|'video';at:number}
+export interface OwnCallSummary {id:string;peer:string;outgoing:boolean;media:'voice'|'video';at:number;group?:string;members?:string[];room?:import('./groupCallRoom').GroupCallRoom}
 // Read only the invitation needed by the UI, not every signed signaling event.
 // SQLite validates the document before extraction; malformed/oversized rows still fail closed.
 const summaryProjection = `call_id,
@@ -33,11 +33,19 @@ const summaryProjection = `call_id,
  THEN json_object('owner',json_extract(data,'$.owner'),'callId',json_extract(data,'$.callId'),
  'raw',json_extract(data,'$.entries[0].raw')) END END AS summary`;
 /** Display-only own history; it cannot authorize signaling or recreate a call. */
-export async function listOwnCallHistory(owner:string):Promise<OwnCallSummary[]>{
+export async function listOwnCallHistory(owner:string,peer?:string,group?:string):Promise<OwnCallSummary[]>{
  if(!validAccountId(owner))throw Error('Invalid call owner');
+ if(group!==undefined&&(!/^[a-f0-9]{64}$/.test(group)||peer!==undefined))throw Error('Invalid call group');
+ if(peer!==undefined&&(!validAccountId(peer)||peer===owner))throw Error('Invalid call peer');
  return serial(async()=>{
-  const database=await db(),active=await database.getAllAsync<{call_id:string;summary:string|null}>(`SELECT ${summaryProjection} FROM call_journal WHERE owner=? LIMIT 64`,owner);
-  const archived=await database.getAllAsync<{call_id:string;summary:string|null}>(`SELECT ${summaryProjection} FROM call_history WHERE owner=? ORDER BY archived_at DESC LIMIT 100`,owner);
+  const database=await db();
+  async function summaries(table:'call_journal'|'call_history'){
+   if(group!==undefined)return database.getAllAsync<{call_id:string;summary:string|null}>(`SELECT * FROM (SELECT ${summaryProjection} FROM ${table} WHERE owner=?) WHERE CASE WHEN json_valid(json_extract(summary,'$.raw')) THEN json_extract(json_extract(summary,'$.raw'),'$.room.group')=? ELSE 0 END`,owner,group);
+   if(peer===undefined)return database.getAllAsync<{call_id:string;summary:string|null}>(`SELECT ${summaryProjection} FROM ${table} WHERE owner=? ${table==='call_history'?'ORDER BY archived_at DESC LIMIT 100':'LIMIT 64'}`,owner);
+   // Filter compact invitation summaries inside SQLite; never transfer other peers' journals.
+   return database.getAllAsync<{call_id:string;summary:string|null}>(`SELECT * FROM (SELECT ${summaryProjection} FROM ${table} WHERE owner=?) WHERE CASE WHEN json_valid(json_extract(summary,'$.raw')) THEN json_extract(json_extract(summary,'$.raw'),'$.caller')=? OR json_extract(json_extract(summary,'$.raw'),'$.callee')=? OR json_extract(json_extract(summary,'$.raw'),'$.caller')=json_extract(json_extract(summary,'$.raw'),'$.callee') ELSE 1 END`,owner,peer,peer);
+  }
+  const active=await summaries('call_journal'),archived=await summaries('call_history');
   const calls=new Map<string,OwnCallSummary>();
   for(const row of [...active,...archived]){
    if(!row.summary)throw Error('Invalid own call history');const journal=JSON.parse(row.summary);
@@ -45,8 +53,17 @@ export async function listOwnCallHistory(owner:string):Promise<OwnCallSummary[]>
    const event=JSON.parse(journal.raw) as CallControl;
    if(event.callId!==row.call_id||!validAccountId(event.caller)||!validAccountId(event.callee)||event.caller===event.callee
     ||!['voice','video'].includes(event.media)||!Number.isSafeInteger(event.issuedAt)||![event.caller,event.callee].includes(owner))throw Error('Invalid own call history');
+   // Group mesh legs are signaling journals, not separate private calls.
+   // Keep the journals for recovery without inventing one private call per member.
+   if(group!==undefined){
+    const room=event.room;if(!room||room.group!==group||!room.members.includes(owner))continue;
+    const existing=calls.get(room.id);
+    if(!existing||event.issuedAt<existing.at)calls.set(room.id,{id:room.id,peer:room.creator,outgoing:room.creator===owner,media:event.media,at:event.issuedAt,group,members:room.members,room});
+    continue;
+   }
+   if(event.room)continue;
    calls.set(event.callId,{id:event.callId,peer:event.caller===owner?event.callee:event.caller,outgoing:event.caller===owner,media:event.media,at:event.issuedAt});
-  }return [...calls.values()].sort((a,b)=>b.at-a.at).slice(0,100);
+  }const sorted=[...calls.values()].sort((a,b)=>b.at-a.at||a.id.localeCompare(b.id));return peer===undefined&&group===undefined?sorted.slice(0,100):sorted;
  });
 }
 /** Bounded own-call inventory for restart recovery, never a public network directory. */

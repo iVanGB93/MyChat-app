@@ -110,6 +110,7 @@ export function createIdentityNetwork(d: {
   const unsubscribe = d.identity.subscribe(reconcile);
   reconcile();
   return {
+    retainCallPeer(account:string){return pool?.retain(account)??(()=>{});},
     subscribeConnected(listener:(peer:string)=>void){connectedListeners.add(listener);return()=>{connectedListeners.delete(listener);};},
     eventCallPeers:()=>[...sessions].filter(s=>s.supportsCallInboxEvents()).map(s=>s.snapshot().account!),
     subscribeTopology(listener:()=>void){topologyListeners.add(listener);return()=>{topologyListeners.delete(listener);};},
@@ -152,9 +153,11 @@ export function createIdentityNetwork(d: {
     },
     setLimit(next: number) {
       if (!Number.isInteger(next) || next < 3 || next > 10) throw Error('Allow axons must be between 3 and 10');
-      limit = next; pool?.setLimit(next);
+      pool?.setLimit(next); limit = next;
     },
-    pushPeers: () => rankedSessions().filter(s => s.snapshot().state === 'connected' && s.supportsPush()).map(s => s.snapshot().account!).filter(Boolean),
+    // Authentication completes before the dialing pool commits its connected row.
+    // Capability events must include that newly authenticated gateway immediately.
+    pushPeers: () => [...new Set([...sessions].filter(s => s.snapshot().state === 'connected' && s.supportsPush()).map(s => s.snapshot().account!).filter(Boolean))],
     pushRequest(target: string, raw: string) {
       const session = [...sessions].find(s => s.snapshot().account === target && s.snapshot().state === 'connected');
       return session?.supportsPush() ? session.pushRequest(raw) : Promise.resolve(null);

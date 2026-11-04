@@ -32,7 +32,7 @@ export async function rootWakeContext(){
  return validAccountId(owner.account)&&record?.account===owner.account&&record.devices?.some((d:{id:string})=>d.id===owner.device)?owner as {account:string;device:string}:null;
 }
 export async function rootWakeBlocked(owner:string,sender:string){
- const raw=await ownChatStore(owner).read();if(!raw)return false;
+ const store=ownChatStore(owner),raw=store.indexed?(await store.indexed.readScope({metadata:true})).raw:await store.read();if(!raw)return false;
  const ledger=JSON.parse(raw);if(ledger.version!==1||!Array.isArray(ledger.contacts))throw Error('Contact policy unavailable');
  return ledger.contacts.some((c:{account:string;blocked:boolean})=>c.account===sender&&c.blocked);
 }
@@ -40,7 +40,7 @@ const context=rootWakeContext,blocked=rootWakeBlocked;
 /** Caller names come only from this account's saved nicknames, after verification. */
 async function callerName(owner:string,sender:string){
  try{
-  const raw=await ownChatStore(owner).read();
+  const store=ownChatStore(owner),raw=store.indexed?(await store.indexed.readScope({metadata:true})).raw:await store.read();
   const ledger=raw?JSON.parse(raw):null;
   if(ledger?.version!==1||!Array.isArray(ledger.contacts))return 'Unknown caller';
   const contact=ledger.contacts.find((c:{account:string})=>c?.account===sender);

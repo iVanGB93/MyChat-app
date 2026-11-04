@@ -1,0 +1,43 @@
+Two-phone Dev performance and reliability — 2026-10-31
+
+Devices: R3GYC0H7PMY and R3GL10CNS1K, com.axonic.dev only. Official apps unchanged. No histories reset/deleted. Labelled Dev-to-Dev messages and unique synthetic files added.
+
+Results
+Text delivery + read acknowledgments passed both ways (~1.9 s observed including debugger polling). Small 18,944-byte file checksum passed (~3.6 s).
+1 MB: main to second 2322 ms; reverse 3706 ms.
+5 MB: main to second 3889 ms; reverse 3841 ms.
+10 MB: main to second 4055 ms; reverse 4023 ms.
+All six file checksums and sizes passed. End-to-end includes preparation and observation overhead, not raw network throughput. Files used changing content to avoid prior-file reuse. Runtime evidence includes RTC direct-stream attempts. No relay speed claim from these foreground samples.
+Screen-off/background delivery: second 4780 ms, main 7819 ms observed. Each had one preview notification, no generic duplicate; foreground read receipt produced no extra notification. This is a short connected-debugger test, not prolonged Doze certification.
+Chat opening after improvements: main first-container layout 53/49/50 ms; second 59/54/53 ms. Initial page readiness main 8/2/2 ms, second 4/3/3 ms. Other event-driven reads main 68-81 ms. Container layout is not complete message paint or animation completion.
+Dev gfx navigation samples: 513/1690 and 621/1681 janky frames, including UI automation/inspection and debugger overhead. These are not a controlled release A/B measurement; smooth release rendering not established. Baseline navigation only completed on main (50/67/64 ms layout); second baseline was interrupted by refresh. Idle frame sample timed out with app backgrounded; not a successful responsiveness measure.
+Actual notification tap remains pending: Android retained the notification shade, asked owner to unlock. Do not claim successful tap routing from notification text still visible in shade.
+Recent bounded AndroidRuntime/ReactNativeJS samples: no fatal exceptions or JS errors found on either device; not complete historical coverage.
+
+Changes (mobile only)
+- Reuse equal conversation summaries without notifying consumers again.
+- Reuse unchanged message-page objects and remove redundant loading toggle on background refresh; initial loading and explicit pagination still preserved.
+- Consolidate full/page/summary avatar reads through one cache-backed hook, seed cached avatars immediately and avoid equal-state updates.
+- Add paged readiness measurements to existing bounded diagnostic journal; no message IDs/content, new polling or scheduled maintenance.
+
+Validation
+Full check 1819 passed, 3 intentional skips, 0 failures; typecheck/dependency/module/consolidation/assets checks passed. Subsequent avatar consolidation typecheck and 35 focused lifecycle/page/cache tests passed; avatar/call appearance checks run separately. No build, commit, push or AoN deploy requested/performed.
+Evidence: builds/two-phone-network-20261031.txt, notification-{main,second}-20261031.txt, two-phone-file-performance-20261031.json, chat-nav-after.json, network-ui-check-20261031.txt.
+
+Unlocked follow-up: actual tap of the retained labelled Dev notification opened com.axonic.dev directly in Second Phone Dev conversation; message text and composer verified in UI (builds/notif-result.xml). This confirms routing, not a precise transition duration. Second phone foreground idle sample: 542 animation frames/5s, p50 8.34ms, p95 10.11ms, max 104.40ms, 4 gaps >50ms. Main debugger was disconnected, reconnecting before sampling.
+
+Final paired foreground sample after main Dev-only restart: main p50 16.72ms/p95 17.57ms/max 71.46ms, 4 gaps >50ms in 5s; second p50 20.89ms/p95 22.08ms/max 79.59ms, 5 gaps >50ms in 5s. Adaptive frame cadence varied between samples. Both were active, no UI automation during sampling. No sustained stall in these short samples; occasional Dev frame spikes remain. Evidence builds/dev-idle-frames-20261031.json. Notification routing check is now complete; no production build/publication/official install.
+
+Frame-spike follow-up (2026-10-31)
+A Hermes sampling trace showed background identity/signature verification work. Reused the existing exact-signature cache for identity descriptors/responses and refreshed hot entries within its unchanged 256-entry bound. Expiry, nonce, identity/history and other authorization checks still run each time; signature algorithm and wire format unchanged. Shared AoN source aligned locally, not deployed.
+Validation: mobile full check 1821 passed, 3 skipped, 0 failed, including type/module/assets checks; 29 identity tests passed. AoN initial parallel run 337/338 passed with one group wake settle timeout; isolated hosted-network 20/20 passed and complete serial suite 338/338 passed without test changes. Dev live messages/read receipts passed both directions (1959/1881ms observed); 18,944-byte file checksum passed (4231ms observed).
+Persistent-inspector 10-second frame baseline: second p95 8.89ms/max87.43ms/7 gaps over50ms; main p95 9.00ms/max88.62ms/9 gaps. Follow-up: second p95 21.52ms/max159.88ms/3 gaps; main p95 21.72ms/max105.49ms/11 gaps. Adaptive cadence and differing background activity prevent a controlled improvement claim; intermittent spikes remain. The later trace had React tracing events but no Hermes CPU profile, so it cannot substantiate a CPU before/after comparison. These are Dev observations, not release performance certification.
+Evidence: builds/frame-stable-session-*.json, builds/frame-spike-full-check.txt, builds/aon-direct-handoff-20261030/frame-signature-serial-tests.txt. No production build, deployment or official-app change performed.
+
+Live stuck-scroll fix (2026-10-31)
+Captured the main phone still inside the stuck Dev chat, before navigation/reload. Its inverted ScrollView reported animating=true while stationary, with momentum begin just after momentum end; a test swipe reproduced the same ordering. Offset observed at 55.2 vs requested bottom 56. Shared useChatScroll settled any sub-56 offset with another animated scroll inside the end callback. Changed corrective settling to nonanimated with a 1-unit tolerance and immediate offset update. Explicit user jump remains animated; no timer/watchdog added. Private and group screens share this hook.
+16 scroll regressions and TypeScript passed. Eight alternating vertical swipes on the same phone moved between ~56 and ~400 offsets; every settled sample had animating=false and end >= begin. Evidence builds/locked-scroll-runtime.json, locked-scroll-after-swipe.json, scroll-fixed-settled.json, scroll-fix-live-20261031.json. Dev refreshed in place; no data reset, official-app change, build or deployment. This verifies the reproduced loop, not every possible future gesture failure.
+
+Trial top-up button (2026-10-31)
+Credits modal reuses ConfirmContext and offers Add 50 trial credits. Shared append-only ledger records top-ups separately from earnings; fixed +50, per-request deduplication, atomic journal/balance update, no reset or service gating. Older balances without topUps are read as zero; new summary preserves allowance, earned, spent and prior entries. Event-driven existing balance subscription updates badge.
+7 ledger tests and TypeScript passed; hosted SQLite adapter regression passed with aligned local shared core. Live Dev button press: balance 90 -> 140, earned 2 unchanged, spent 12 unchanged, entries 15 -> 16, topUps 0 -> 50, serviceRestricted false. Badge accessibility verified Trial credits: 140. Official app and deployed AoNs untouched. Evidence builds/credits-modal-new.xml and credits-topup-after.xml.

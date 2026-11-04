@@ -1,8 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),{DatabaseSync}=require('node:sqlite');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer:makeTransfer}=load('attachmentTransfer');
 function createAttachmentTransfer(d){
- const {store,readChunk,readChunks,writeChunk,writeChunks,commitFile,peers,request,sharedPeers,bulkPeers,blockStreamPeers,uploadBatchPeers,batchChunks,batchWindow,bulkRequest,directStream,serveStream,...policy}=d;
- return makeTransfer({...policy,storage:{jobs:store,files:{readChunk,readChunks,writeChunk,writeChunks,commitFile}},connections:{peers,request,sharedPeers,bulkPeers:bulkPeers??peers,blockStreamPeers:blockStreamPeers??peers,uploadBatchPeers:uploadBatchPeers??peers,batchChunks,batchWindow:batchWindow??(()=>d.downloadWindow?Math.min(2,d.downloadWindow):1),bulkRequest:bulkRequest??request,directStream,serveStream}});
+ const {store,readChunk,readChunks,writeChunk,writeChunks,commitFile,peers,request,sharedPeers,bulkPeers,blockStreamPeers,uploadBatchPeers,batchChunks,batchWindow,bulkRequest,directStream,serveStream,sendingStream,...policy}=d;
+ return makeTransfer({...policy,storage:{jobs:store,files:{readChunk,readChunks,writeChunk,writeChunks,commitFile}},connections:{peers,request,sharedPeers,bulkPeers:bulkPeers??peers,blockStreamPeers:blockStreamPeers??peers,uploadBatchPeers:uploadBatchPeers??peers,batchChunks,batchWindow:batchWindow??(()=>d.downloadWindow?Math.min(2,d.downloadWindow):1),bulkRequest:bulkRequest??request,directStream,serveStream,sendingStream}});
 }
 function directContext(t,overrides={}){
  const f=context(t),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
@@ -21,7 +21,7 @@ test('stale direct peer is not probed again before each relay block or receipt l
  await sender.enqueue(f.descriptor,'outgoing');await sender.tick();
  const before=probes;assert.equal((await f.job(0)).phase,'uploading');
  await sender.tick();await sender.tick();assert.equal((await f.job(0)).phase,'confirming');
- await sender.tick();assert.equal(probes,before);assert.equal(f.rows[0].received,2);
+ await sender.tick();assert.equal(probes,before+1);await sender.tick();assert.equal(probes,before+1,'confirmation probes are throttled');assert.equal(f.rows[0].received,2);
  assert.equal((await f.job(0)).receipt,null,'custody alone is never delivery');
 });
 test('direct stream uses normal file verification and signed delivery receipt',async t=>{
@@ -35,6 +35,23 @@ test('direct stream uses normal file verification and signed delivery receipt',a
  assert.deepEqual((await f.job(1)).delivery,{version:1,scope:'payload',method:'peer',relays:[],at:now,partial:false});
  assert.equal((await f.job(0)).delivery.scope,'receipt');assert.equal((await f.job(0)).delivery.method,'peer');
 });
+test('recipient signed source report survives relay receipt polling without confusing receipt and payload routes',async t=>{
+ const f=context(t,1_000_000),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);let sourceReport;
+ const receiver=createAttachmentTransfer({...base,signReceipt:async(m,route)=>{
+  sourceReport=route;return a.signAttachmentReceipt(m,f.ids[1].signingSeed,f.ids[1].record,now,route);
+ }});
+ await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<6;i++)await sender.tick();
+ await receiver.enqueue(f.descriptor,'incoming');for(let i=0;i<8;i++)await receiver.tick();
+ f.advance(30001);await sender.tick();
+ assert.equal((await f.job(1)).phase,'complete',JSON.stringify({phase:(await f.job(1)).phase,error:(await f.job(1)).error,cursor:(await f.job(1)).cursor}));
+ assert.deepEqual(sourceReport,{sources:[f.ids[2].record.account],partial:false},JSON.stringify({sources:(await f.job(1)).receivedSources,delivery:(await f.job(1)).delivery,receipt:(await f.job(1)).receipt?.route}));
+ assert.equal((await f.job(0)).phase,'complete');
+ assert.deepEqual((await f.job(0)).receipt.route,sourceReport);
+ assert.equal((await f.job(0)).delivery.scope,'payload');
+ assert.deepEqual((await f.job(0)).delivery.relays,sourceReport.sources);
+ assert.equal((await f.job(1)).phase,'complete');
+});
+
 test('DTLS sender does not need encrypted relay block capabilities',async t=>{
  let attempts=0,bulk=0;
  const f=directContext(t,(f)=>({blockStreamPeers:()=>[],bulkPeers:()=>[],sharedPeers:()=>[],
@@ -740,7 +757,7 @@ test('successful custody publication is not repeated by receipt polling; invalid
  await worker.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await worker.tick();
  assert.equal((await f.job(0)).phase,'confirming');assert.equal(held,1);
  for(let i=0;i<3;i++){f.advance(3000);await worker.tick();}assert.equal(held,1);assert.equal(f.complete.length,0);
- worker.invalidate();f.advance(3000);await worker.tick();assert.equal(held,2);
+ worker.invalidate();f.advance(30000);await worker.tick();assert.equal(held,2);
 });
 test('failed custody publication retries instead of suppressing the durable mark',async t=>{
  const f=context(t);let held=0;const worker=createAttachmentTransfer({...f.deps(0),stored:async()=>{if(++held===1)throw Error('storage unavailable');}});
@@ -748,3 +765,62 @@ test('failed custody publication retries instead of suppressing the durable mark
  assert.equal(held,1);f.advance(120001);for(let i=0;i<8;i++)await worker.tick();
  assert.equal(held,2);assert.equal((await f.job(0)).phase,'confirming');assert.equal(f.complete.length,0);
 });
+test('ready receiver gets a bounded head start; stalled pull cannot starve custody',async t=>{
+ const f=context(t),base=f.deps(0);let probes=0;
+ const worker=createAttachmentTransfer({...base,peers:()=>[f.manifest.recipient,...base.peers()],request:async(peer,raw)=>{
+  if(JSON.parse(raw).operation==='direct-status'){probes++;return JSON.stringify({status:'ready'});}
+  return base.request(peer,raw);
+ }});
+ await worker.enqueue(f.descriptor,'outgoing');await worker.tick();assert.equal((await f.job(0)).phase,'queued');
+ f.advance(2000);await worker.tick();assert.equal((await f.job(0)).phase,'queued');
+ f.advance(1000);await worker.tick();assert.equal((await f.job(0)).phase,'uploading');
+ for(let n=0;n<4;n++)await worker.tick();assert.equal((await f.job(0)).phase,'confirming');assert.equal((await f.job(0)).receipt,null);
+ assert(probes>=1);
+});
+
+test('sender recovers a verified recipient receipt when the custodian is disconnected',async t=>{
+ const f=context(t,1000),receiver=createAttachmentTransfer(f.deps(1));
+ const incoming=await receiver.enqueue(f.descriptor,'incoming');
+ const receipt=a.signAttachmentReceipt(f.manifest,f.ids[1].signingSeed,f.ids[1].record,now);
+ assert(await f.store.save({...incoming,revision:1,phase:'complete',receipt},0,()=>true));
+ const sender=createAttachmentTransfer({...f.deps(0),peers:()=>[f.manifest.recipient],request:(_peer,raw)=>receiver.receive(raw,{account:f.manifest.sender,device:f.manifest.senderDevice,expiresAt:now+60000})});
+ const outgoing=await sender.enqueue(f.descriptor,'outgoing');
+ assert(await f.store.save({...outgoing,revision:1,phase:'confirming',cursor:1,relay:f.ids[2].record.account,custodians:[f.ids[2].record.account]},0,()=>true));
+ await sender.tick();assert.equal((await f.job(0)).phase,'complete');assert.deepEqual((await f.job(0)).receipt,receipt);assert.equal(f.chunks.size,0);assert.deepEqual(f.complete,['outgoing']);
+});
+test('recipient status cannot complete sender without a valid signed receipt',async t=>{
+ const f=context(t,1000),sender=createAttachmentTransfer({...f.deps(0),peers:()=>[f.manifest.recipient],request:async()=>JSON.stringify({status:'completed',receipt:{signature:'invalid'}})});
+ const job=await sender.enqueue(f.descriptor,'outgoing');await f.store.save({...job,revision:1,phase:'confirming'},0,()=>true);
+ await sender.tick();assert.equal((await f.job(0)).receipt,null);assert.notEqual((await f.job(0)).phase,'complete');assert.deepEqual(f.complete,[]);
+});
+
+test('held custody sleeps between recovery polls but a signed direct receipt bypasses that wait',async t=>{
+ const f=context(t),base=f.deps(0);let statusCalls=0;
+ const sender=createAttachmentTransfer({...base,request:async(peer,raw)=>{if(JSON.parse(raw).operation==='status')statusCalls++;return base.request(peer,raw);}});
+ await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<8;i++)await sender.tick();
+ const held=await f.job(0);assert.equal(held.phase,'confirming');f.advance(2000);await sender.tick();const before=statusCalls;
+ f.advance(2000);await sender.tick();assert.equal(statusCalls,before);
+ const receipt=await f.deps(1).signReceipt(f.manifest);
+ const response=JSON.parse(await sender.receive(JSON.stringify({version:1,operation:'direct-receipt',digest:held.digest,receipt}),{account:f.manifest.recipient,device:f.manifest.recipientDevice,expiresAt:now+60000}));
+ assert.equal(response.status,'completed');assert.equal((await f.job(0)).next,0);
+ await sender.tick();assert.equal((await f.job(0)).phase,'complete');
+});
+
+test('an admitted local stream defers redundant custody without checkpointing or blocking fallback',async t=>{const f=context(t,300001),base=f.deps(0);let streaming=true,requests=0;const worker=createAttachmentTransfer({...base,sendingStream:()=>streaming,request:async(...args)=>{requests++;return base.request(...args);}});await worker.enqueue(f.descriptor,'outgoing');const before=await f.job(0);await worker.tick();assert.equal(requests,0);assert.deepEqual(await f.job(0),before);streaming=false;await worker.tick();assert(requests>0);assert.equal((await f.job(0)).phase,'uploading');});
+test('a stream admitted during block preparation prevents the redundant bulk send',async t=>{const f=context(t,300001),base=f.deps(0);let streaming=false,bulk=0;const worker=createAttachmentTransfer({...base,sendingStream:()=>streaming,readChunks:undefined,readChunk:async(...args)=>{const chunk=await base.readChunk(...args);streaming=true;return chunk;},bulkRequest:async(...args)=>{bulk++;return base.request(...args);}});await worker.enqueue(f.descriptor,'outgoing');await worker.tick();assert.equal((await f.job(0)).phase,'uploading');await worker.tick();assert.equal(streaming,true);assert.equal(bulk,0);assert.equal((await f.job(0)).cursor,0);assert.equal((await f.job(0)).receipt,null);});
+test('direct receipt tells receiver about partial custodians and cleanup survives restart',async t=>{
+ const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
+ await sender.enqueue(f.descriptor,'outgoing');await sender.tick();
+ // Deposit one block through the real relay, then a direct stream wins.
+ const out=await f.job(0);await base.request(f.ids[2].record.account,JSON.stringify({version:1,operation:'status',digest:out.digest}));
+ const upload=f.deps(0);const batch=load('attachmentBatch');
+ await upload.request(f.ids[2].record.account,JSON.stringify({version:1,operation:'put-batch',digest:out.digest,index:0,count:1,data:batch.packAttachmentBatch(f.manifest,0,[await upload.readChunk(out,0)])}));
+ assert.equal(f.chunks.size,1);
+ const peer={account:f.ids[1].record.account,device:f.ids[1].device.id,expiresAt:now+60000};
+ const deps={...base,peers:()=>[f.manifest.sender,f.ids[2].record.account],request:(p,raw)=>p===f.manifest.sender?sender.receive(raw,peer):base.request(p,raw),directStream:async()=>{f.written.push(f.plain.slice());return true;}};
+ let receiver=createAttachmentTransfer(deps);await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();await receiver.tick();
+ assert.equal((await f.job(1)).phase,'confirming');assert.equal(f.chunks.size,1);assert((await f.job(1)).custodians.includes(f.ids[2].record.account));
+ receiver.stop();receiver=createAttachmentTransfer(deps);await receiver.tick();
+ assert.equal((await f.job(1)).phase,'complete');assert.equal(f.chunks.size,0);assert(f.rows[0].receipt);
+});
+

@@ -1,3 +1,5 @@
+import {useLanguage} from '../../localization/useLanguage';
+import {t,languageSnapshot} from '../../localization/language';
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Animated,
@@ -32,6 +34,7 @@ interface FullscreenImageViewerProps {
 type GestureMode = 'pinch' | 'pan' | null;
 
 export default function FullscreenImageViewer({ uri, accentColor, onClose }: FullscreenImageViewerProps) {
+ useLanguage();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const scale = useRef(new Animated.Value(MIN_IMAGE_ZOOM)).current;
@@ -55,9 +58,9 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
       Animated.spring(translateX, { toValue: boundedX, useNativeDriver: true, damping: 20, stiffness: 220 }),
       Animated.spring(translateY, { toValue: boundedY, useNativeDriver: true, damping: 20, stiffness: 220 }),
     ]).start();
-  }, [height, scale, translateX, translateY, width]);
+  }, [height, scale, translateX, translateY, width,languageSnapshot()]);
 
-  const resetImage = useCallback(() => animateTo(MIN_IMAGE_ZOOM, 0, 0), [animateTo]);
+  const resetImage = useCallback(() => animateTo(MIN_IMAGE_ZOOM, 0, 0), [animateTo,languageSnapshot()]);
 
   useEffect(() => {
     scale.stopAnimation();
@@ -77,7 +80,7 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
     if (distance <= 0) return;
     mode.current = 'pinch';
     pinchStart.current = { distance, scale: scaleValue.current };
-  }, []);
+  }, [languageSnapshot()]);
 
   const beginPan = useCallback((event: GestureResponderEvent) => {
     const touch = event.nativeEvent.touches[0];
@@ -89,7 +92,7 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
       x: translation.current.x,
       y: translation.current.y,
     };
-  }, []);
+  }, [languageSnapshot()]);
 
   const settleGesture = useCallback(() => {
     mode.current = null;
@@ -98,7 +101,7 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
       return;
     }
     animateTo(scaleValue.current, translation.current.x, translation.current.y);
-  }, [animateTo, resetImage]);
+  }, [animateTo, resetImage,languageSnapshot()]);
 
   const panResponder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: (event) => event.nativeEvent.touches.length >= 2,
@@ -151,7 +154,7 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
     onPanResponderRelease: settleGesture,
     onPanResponderTerminate: settleGesture,
     onPanResponderTerminationRequest: () => false,
-  }), [beginPan, beginPinch, height, scale, settleGesture, translateX, translateY, width]);
+  }), [beginPan, beginPinch, height, scale, settleGesture, translateX, translateY, width,languageSnapshot()]);
 
   const handleImageTap = useCallback(() => {
     const now = Date.now();
@@ -162,12 +165,12 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
     lastTapAt.current = 0;
     if (scaleValue.current > MIN_IMAGE_ZOOM) resetImage();
     else animateTo(DOUBLE_TAP_IMAGE_ZOOM, 0, 0);
-  }, [animateTo, resetImage]);
+  }, [animateTo, resetImage,languageSnapshot()]);
 
   const close = useCallback(() => {
     resetImage();
     onClose();
-  }, [onClose, resetImage]);
+  }, [onClose, resetImage,languageSnapshot()]);
 
   const imageStyle = {
     transform: [
@@ -191,7 +194,7 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
             style={styles.imagePressable}
             onPress={handleImageTap}
             accessibilityRole="imagebutton"
-            accessibilityLabel="Fullscreen image. Double-tap or pinch to zoom."
+            accessibilityLabel={t("Fullscreen image. Double-tap or pinch to zoom.")}
           >
             {uri ? (
               <Animated.View style={[styles.imageFrame, imageStyle]}>
@@ -210,7 +213,7 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
           onPress={close}
           activeOpacity={0.75}
           accessibilityRole="button"
-          accessibilityLabel="Close image"
+          accessibilityLabel={t("Close image")}
           style={[styles.closeButton, { top: insets.top + Spacing.md, borderColor: accentColor }]}
         >
           <Ionicons name="close" size={25} color="#FFFFFF" />
@@ -218,7 +221,7 @@ export default function FullscreenImageViewer({ uri, accentColor, onClose }: Ful
 
         <View pointerEvents="none" style={[styles.hint, { bottom: insets.bottom + Spacing.lg }]}> 
           <Ionicons name="expand-outline" size={16} color={accentColor} />
-          <Text style={styles.hintText}>Pinch or double-tap to zoom · Drag to move</Text>
+          <Text style={styles.hintText}>{t("Pinch or double-tap to zoom · Drag to move")}</Text>
         </View>
       </View>
     </Modal>

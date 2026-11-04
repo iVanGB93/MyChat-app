@@ -226,7 +226,7 @@ export function createPersistentAxon(d: {
       // Never extend the proof or initial handshake.
       // Custody may wait for durable storage on a busy phone. A four-second
       // disk delay must not restart an otherwise usable LAN/media connection.
-      const grace=peer&&(operation==='custody'||operation==='describe'||operation==='authenticate'||operation==='introductions'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
+      const grace=peer&&(operation==='custody'||operation==='directory'||operation==='push'||operation==='describe'||operation==='authenticate'||operation==='introductions'||mediaPending.size>0||mediaInbound>0||d.now()-lastMediaAt<5000);
       const timeout=grace?Math.max(1,Math.min(15000,peer!.expiresAt-d.now())):
         operation === 'call-control' || operation === 'call-media' || operation === 'call-relay' || operation === 'call-media-relay' || operation === 'call-media-forward' ? 15000 : 4000;
       pending = { started:d.now(), operation, id, resolve, reject, until:d.now()+timeout, timer:setTimeout(() => stop('exchange-timeout:' + operation),timeout) };scheduleChanged();

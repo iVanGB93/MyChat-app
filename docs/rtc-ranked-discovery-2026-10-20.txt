@@ -1,0 +1,31 @@
+RTC route investigation (local development), October 20, 2026
+
+Read-only SecondNeuron status confirmed the unanswered target is connected to
+that AoN. This does not prove the target has capacity or foreground execution
+to accept RTC. No packet payloads, credentials or personal messages were read.
+
+Added local RTC snapshot fields: signaling via-account, initiator, whether an
+answer was applied, and native connection state. No additional network probes.
+The two emulator identities have a working RTC link. Repeated open-timeout
+attempts are to a different account, with no answer applied (state=new).
+
+Fixed a separate routing defect: each discovery pass previously offered every
+introduction for the same target, so the last introducer silently won. It now
+chooses one currently connected introducer by the existing local peer ranking,
+ignores expired/disconnected sources, and uses the freshest duplicate hint from
+the same source. Existing pool backoff and established-link ownership remain.
+This does not claim the unanswered target is repaired.
+
+Tests cover reversed introduction order, expired hints, disconnected source
+failover, configured bootstrap protection, and the full npm run check suite.
+Live sampling log: builds/rtc-route-final-probe.txt. Earlier probe was interrupted
+by a development reload and is not an uninterrupted soak result.
+No production build/install or AoN deployment in this step.
+
+Final results: 1431 tests passed, 3 skipped, no failures. Forty live samples over
+more than two minutes showed three connected peers and one open RTC link on
+each emulator, with zero detected established-session resets. Sampling cannot
+exclude a disconnect/reconnect entirely between samples. Post-run bidirectional
+texts and read receipts passed; 1,036,000-byte media checksum matched, delivery
+observed 3364ms after enqueue returned (preparation excluded). Separate unanswered
+RTC destination and real phone LAN/private-network validation remain unresolved.

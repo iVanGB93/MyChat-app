@@ -16,6 +16,7 @@ function fixture() {
   const hooks = [];
   const pending = [];
   const loops = [];
+  const timings = [];
   let cursor = 0;
   const same = (a, b) => a && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   class Value {
@@ -48,7 +49,8 @@ function fixture() {
     },
     Animated: {
       Value, Text: 'Animated.Text',
-      timing: (value, config) => ({ value, config }),
+      timing: (value, config) => { timings.push(config); return { value, config }; },
+      parallel: (steps) => steps,
       sequence: (steps) => steps,
       stagger: (_, steps) => steps,
       delay: () => null,
@@ -62,6 +64,7 @@ function fixture() {
   vm.runInNewContext(compiled, sandbox);
   return {
     loops,
+    timings,
     render(title, syncing = true) {
       cursor = 0;
       const tree = sandbox.exports.render({ title, syncing, color: '#fff' });
@@ -104,4 +107,14 @@ test('header caps rendered characters without splitting emoji surrogate pairs', 
   const letters = f.render('😀'.repeat(30));
   assert.equal(letters.length, 24);
   assert.ok(letters.every((letter) => letter.children[0] === '😀'));
+});
+
+test('continuous sync decoration never blocks interaction-dependent chat work', () => {
+  const f = fixture();
+  f.render('Family');
+  assert.ok(f.timings.length > 0);
+  assert.ok(f.timings.every(config => config.isInteraction === false && config.useNativeDriver === true));
+  assert.deepEqual(f.timings.filter(config => config.toValue === 1).map(config => config.delay), [0, 45, 90, 135, 180, 225]);
+  f.unmount();
+  assert.ok(f.loops.every(loop => loop.stopped));
 });

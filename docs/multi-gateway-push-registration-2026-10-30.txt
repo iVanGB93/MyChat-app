@@ -1,0 +1,9 @@
+Multi-gateway phone push registration — 2026-10-30
+
+Axonic Dev now registers its FCM token through every connected authenticated session advertising push gateway capability. Registration does not depend on FIRST_NEURON or peer ranking. A topology event can occur before the connection pool commits its connected row; pushPeers therefore uses authenticated sessions directly. Regression covers this ordering.
+
+Each gateway has independent lease renewal and failure backoff. Discovery, reconnect and token refresh are event-driven. No periodic discovery polling. A failed or stalled gateway does not block others. Concurrent token-ownership conflicts share one token rotation; unsuccessful rotation remains retryable. Disconnect invalidates unfinished work; server leases remain available for background wake. Revocation reaches currently connected gateways only; offline leases expire server-side.
+
+Live Dev main phone: two available gateways, both registered (FirstNeuron and SecondNeuron). SecondNeuron reports one local registration, previously zero. ThirdNeuron is not connected to the phone, so its live registration remains unverified; the same capability-driven code handles it when connected. No server registry copying, official app changes, resets or data deletion.
+
+Validation: 20 focused registration/routing/composition tests pass; 153 persistent-connection/deadline tests pass, 2 skipped; TypeScript and module boundaries pass. Token-free live evidence: builds/video-notification-1136/dev-gateway-registration.json.

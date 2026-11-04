@@ -1,0 +1,46 @@
+AoN and phone receipt recovery follow-up, October 29 2026
+
+Live evidence (read-only)
+SecondNeuron source 221af9cd / runtime 1ffd4ad82c79 reported an
+exchange-timeout:push closure to FirstNeuron. Most phone closures were classified
+only transport-closed; this is not evidence that every closure is a server fault.
+
+Changes
+1. Shared persistentAxon: authenticated push and directory requests use the same
+   maximum 15-second grace as custody operations, bounded by authentication expiry.
+   Busy custody queues return retry, not a transport-failure-shaped null. This
+   latter shared change was already present/tested in the phone working tree and
+   is now synchronized into the isolated AoN release checkout.
+2. AoN hostedRootCustody: private and group couriers tick concurrently. Each
+   preserves its own lease, event-driven drain state, and serialized durable store.
+   A held private request no longer prevents independent group reconciliation.
+3. Phone direct relay delivery generated a signed receipt without recording the
+   relay's acceptance in wake recovery. Its message could disappear from polling
+   after the relay accepted it, leaving recovery waiting until its 20-second cap.
+   New receiptConfirmation shares confirmation between inline notifications and
+   direct delivery. Uses existing receipt/group-receipt operations; no wire change.
+   Direct handlers return without awaiting the reverse request (ordered-connection
+   deadlock avoidance). Only accepted replies for the current owner/unexpired
+   receipt emit completion. Failure retains normal durable polling recovery.
+   Confirmation after sender consumption is idempotent and leaves tombstones intact.
+
+Validation
+- AoN full suite: 323 passed, zero failures (elevated for local sockets/temp DBs).
+  Initial sandboxed run stalled after filesystem/process arbitration failures;
+  stopped that test process and reran outside the sandbox. No live data involved.
+- Four paired-session timeout regressions pass: late directory/push responses
+  survive four seconds; unanswered requests still terminate at the deadline.
+- Receipt confirmation + recovery tests: 31 passed. Additional real custody-store
+  regression passes: direct receipt accepted, sender consumes it, recipient confirms
+  without resurrecting the row, and recovery records acceptance.
+- Dev phone loaded the new module, returned a FirstNeuron directory lookup in
+  80 ms, and retained its identity and existing pending job. No test message sent.
+
+Scope and limits
+AoN changes are staged in builds/aon-wss-binary-20261026, not committed or deployed.
+Do not deploy the unrelated dirty Axonic-neuron main working directory.
+Phone code is running only in Dev; no official app update, data reset, history
+deletion, production build, or live AoN configuration change.
+The direct receipt gap is reproduced by controlled protocol/store tests. A fresh
+live notification round trip is still needed to quantify improvement; do not claim
+the historical 20,103 ms incident is conclusively attributed or fully eliminated.

@@ -1,5 +1,10 @@
 AXONIC CURRENT RELEASE GATES — 10 OCTOBER 2026
 
+HISTORICAL CHECKPOINT, despite the filename. Start with docs/START-HERE.txt.
+This file does not authorize a build or describe the current installed release.
+Keep the dated evidence below; consult the latest release-specific record and
+working-tree changes before planning a new production build.
+
 Current status
 Non-UI readiness fixes are implemented in the mobile working tree. This is not a release approval or a production-build result. No official phone install, release build, store submission, deployment, commit, account wipe or retirement was performed in this pass. Existing unrelated changes remain.
 The prior production-neuron-release.md is historical and must not be used for current registration, feature flags or Django dependencies.

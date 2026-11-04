@@ -11,7 +11,7 @@ import {rootChatView} from './rootChatActions';
 let tail:Promise<unknown>=Promise.resolve();
 /** OS actions operate only on a message already admitted into this device's own inbox. */
 export function handleRootNotificationAction(action:string,data:unknown,input?:string){
- if(action==='root-call-answer'||action==='root-call-decline')return queueRootCallNotificationAction(action,data).then(()=>{});
+ if(action==='root-call-open'||action==='root-call-answer'||action==='root-call-decline')return queueRootCallNotificationAction(action,data).then(()=>{});
  if(!['root-reply','root-mark-read'].includes(action))return Promise.resolve();
  const task=tail.then(async()=>{
   const target=rootNotificationTarget(data),messageId=(data as {messageId?:string})?.messageId;
@@ -21,7 +21,7 @@ export function handleRootNotificationAction(action:string,data:unknown,input?:s
   if(localAccount.status().account!==target.account)return;
   if(localAccount.status().state!=='unlocked'){await queueRootNotificationOpen(data);return;}
   const current=()=>localAccount.status().state==='unlocked'&&localAccount.status().account===target.account;
-  const ledger=localRootChat(),state=rootChatView(target.account,await ledger.snapshot());
+  const ledger=localRootChat(),state=rootChatView(target.account,await ledger.messageSnapshot(target.sender,messageId));
   if(!current())return;
   const message=state.messages.find(m=>m.direction==='incoming'&&m.peer===target.sender&&m.id===messageId&&m.group?.id===target.group);
   const contact=state.contacts.find(c=>c.account===target.sender),group=target.group?state.groups?.find(g=>g.id===target.group):undefined;

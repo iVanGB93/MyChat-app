@@ -155,6 +155,15 @@ export const Radius = {
   full: 9999,
 };
 
+/** App chrome; separate from media clipping, QR codes and message geometry. */
+export const Chrome = {
+  panelRadius: 28,
+  cardRadius: 24,
+  controlRadius: 22,
+  gutter: 12,
+  shadowOpacity: 0.12,
+};
+
 export const Font = {
   regular: { fontWeight: '400' as const, letterSpacing: 0.2 },
   medium: { fontWeight: '500' as const, letterSpacing: 0.3 },

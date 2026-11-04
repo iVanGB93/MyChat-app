@@ -1,0 +1,22 @@
+1.1.30 follow-up investigation — 2026-10-27
+
+Scope: implemented local fixes; tested separate com.axonic.dev on both phones. Official app installations and their data unchanged. No commit, push, AoN deployment or production build.
+
+Background CPU: LocalAccountApp retained its UI network lease throughout backgrounding. Added foregroundNetworkLease to release that reference on background and reacquire on foreground; active call views retain the reference until terminal state. Independent notification recovery references remain bounded and independent. Pending transfers retain durable work; without a call/recovery lease, backgrounding pauses networking rather than keeping an unbounded runtime alive. This addresses a concrete CPU contributor, not proof of the cause of all historical excessive-CPU exits.
+
+Pending media: wife's snapshot contains 14 outgoing incomplete entries (8 awaiting descriptor evidence, 6 descriptor-known incomplete), 17 stored group per-recipient rows. Report deliberately omits identifiers and phases, so exact affected recipients/jobs cannot be traced from it. Fixed another concrete stall: indefinitely repeated direct-status ready previously deferred relay upload every two seconds forever. Direct readiness now gets a three-second head start; after that encrypted custody can proceed. Existing verified-receipt requirement preserved. No production pending records deleted, reset or marked delivered.
+
+Direct stream: original production 8,833,256-byte early abort not reproduced. Added fixed source-open/source-read/send/channel stage to fallback logging without raw exceptions or paths. Regression verifies source-read classification and error redaction.
+
+Live Dev results:
+- Background main Dev for 25 seconds: active network snapshot became null; other foreground Dev stayed connected. Returning main Dev recreated network.
+- Background notification: approved Dev-to-Dev message delivered in 5,133ms, exactly one OS preview, no generic duplicate; foreground read receipt passed.
+- 8,833,256-byte synthetic binary, wife Dev to main Dev: checksum verified; 18,875ms overall, direct sender 1,638ms / receiver 1,622ms. Receiver had one previous verified block before stream upgrade; not a pure-stream-only end-to-end benchmark.
+- 5,322,979-byte existing gallery test photo, main Dev to wife Dev: checksum verified; 5,098ms overall, direct sender 2,024ms / receiver 1,972ms, zero previous verified blocks.
+- Initial gallery test harness incorrectly passed a content URI directly to the lower-level staging API and failed before send. Corrected harness used withRootPickedMedia, as the real picker does. No product change made for that harness error.
+
+Validation: npm run check passed: TypeScript, 1,600 tests, 3 optional skips, cycles/module/consolidation/assets. Subsequently added a redacted-stage regression and reran the stream adapter suite: 17/17 passed. git diff --check passed. Lifecycle tests cover normal/reentrant release, active calls, resume and independent recovery reference retention. No live call was placed in this pass.
+
+Open verification: longer production-style background/Doze observation is still required to establish fewer OS CPU stops; inspect per-transfer evidence on wife's official app or capture richer diagnostics to attribute its backlog; original production direct abort needs exact failure-stage evidence if it recurs. Shared attachmentTransfer change remains local and is not yet deployed to AoNs.
+
+Evidence: builds/review-1130-summary.txt; review-1130-dev-background.json; review-1130-dev-notification.log; review-1130-dev-transfer.json; review-1130-gallery-transfer.json; review-1130-check.log; review-1130-stream-tests.log.

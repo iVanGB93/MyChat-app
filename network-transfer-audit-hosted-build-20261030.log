@@ -1,0 +1,9 @@
+
+> axonic-neuron@0.2.0 build
+> node scripts/clean-dist.mjs && tsc -p tsconfig.json
+
+
+> axonic-neuron@0.2.0 postbuild
+> node scripts/stamp-release.mjs
+
+Source release: 56d9342b9ac1208922547f1f5151ddfbee2d9581 (modified tracked source)

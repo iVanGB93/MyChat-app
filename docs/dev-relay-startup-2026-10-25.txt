@@ -1,0 +1,46 @@
+Relay startup follow-up — October 25, 2026
+
+Changes (Dev/local only; no commit/push/deployment)
+- Empty retirement scans use the bounded active WAL reader and skip writer creation,
+  write transaction and archived-history count when no work exists. Serialized with
+  writes; real retirement rechecks in its transaction, retains rollback and history.
+- Concurrent attachment snapshot consumers share an in-flight read only for the
+  exact owner/revision/epoch. Revision changes, clearing, lock and failures never
+  install or authorize stale results. Shared source synchronized locally to AoN.
+- Job save reads its bounded indexed prior metadata synchronously on the private
+  writer connection, avoiding one async native scheduling turn. Durable writes,
+  count limits, CAS, descriptor equality, cancellation and rollback unchanged.
+
+Validation
+- Full mobile suite after first two changes: 1541 pass, 3 optional skips, 0 fail.
+- Final relevant transfer/snapshot/scheduling suite: 91 pass, 1 optional skip.
+- New tests cover empty retirement (one reader, no writer/transaction), coalescing,
+  revision/epoch races, and retirement rollback after an actual archived insert.
+  Rollback fixture now locks on the write rather than depending on callback count.
+- TypeScript, module boundaries, dependency cycles, AoN shared parity/typecheck pass.
+- Both physical Dev clients tested. No native reinstall required this turn.
+
+Live evidence
+builds/relay-startup-fixed5.json: 5MB receive23974ms; maintenance440ms.
+builds/relay-startup-fixed10.json: 10MB receive29329ms; maintenance405ms.
+builds/relay-startup-final5.json: final code 5MB receive29481ms;
+ maintenance277ms, historySnapshot4535ms, reconciliation1605ms,
+ cumulative concurrent bulk requests14382ms. First message seen17421ms;
+ job downloading at18913ms. All hashes match, sender offline, FirstNeuron source.
+
+Interpretation
+Previous cold maintenance measurement1699ms fell to277–440ms in these runs.
+Snapshot coalescing eliminates duplicate same-revision reads, but live aggregate
+history waits remain variable and no end-to-end receive speedup is established.
+Latest5MB run spent ~17sec before the message appeared; that is not block decode.
+Startup ledger/native scheduling and message-arrival timing remain unresolved.
+Stage durations overlap and cannot be summed against observed wall time.
+Receive observation begins after Dev reconnect/unlock, not original send/launch.
+Thermal status0 on both phones at end; throttling was not established.
+
+Preservation
+Both Dev apps restored; all original baseline message keys retained:
+151->173 and252->274. Call state idle. No deletion/reset, credentials changed,
+normal app operations or production builds. Live AoNs remain0bf87db/cbd68e73575b.
+Unrelated mobile edits preserved. Shared attachmentPolicy change only staged in
+local isolated AoN worktree, not deployed.

@@ -14,3 +14,7 @@ test('network uses quality for custody, groups, media and displayed rank without
  net.offer({account:ids[1],endpoint:'test1',route:'lan',expiresAt:50000});net.offer({account:ids[2],endpoint:'test2',route:'internet',expiresAt:50000});net.tick();await new Promise(r=>setImmediate(r));
  assert.equal(net.custodians()[0],ids[2]);assert.equal(net.groupCustodians()[0],ids[2]);assert.equal(net.attachmentPeers()[0],ids[2]);assert.equal(net.snapshot().pool.connections[0].rank,1);assert.equal(net.snapshot().pool.connections[0].account,ids[2]);await net.sendChatMessage(ids[1],'text','id');assert.deepEqual(requests,[ids[1]]);
 });
+test('topology announces a push gateway before pool dial completion',async t=>{
+ const {createIdentityNetwork}=load('identityNetwork'),id='axonic:1:'+'1'.repeat(64),peer='axonic:1:'+'2'.repeat(64);let atEvent;
+ const net=createIdentityNetwork({now:()=>1000,store:{},identity:{status:()=>({state:'unlocked',account:id,busy:false}),subscribe:()=>()=>{},createAxon:async()=>({ready:Promise.resolve({peer:{account:peer,device:'a'.repeat(64),instance:'b'.repeat(64),expiresAt:100000}}),snapshot:()=>({account:peer,state:'connected',quality:quality(20)}),supportsPush:()=>true,stop(){},tick(){}})},connect:async()=>({close(){}})});t.after(()=>net.stop());net.subscribeTopology(()=>{atEvent=net.pushPeers();});net.offer({account:peer,endpoint:'test',route:'internet',expiresAt:50000});net.tick();await new Promise(setImmediate);assert.deepEqual(atEvent,[peer]);
+});

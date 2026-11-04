@@ -1,3 +1,4 @@
+import {t} from '../../localization/language';
 import {Ionicons} from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import {getFirstMessageUrl} from '../SmartMessageText';
@@ -19,7 +20,7 @@ export default function RootMessageMenu({message,close,copy,reply,forward,edit,r
  const owner=localAccount.status().account,a=message.attachment,digest=a?attachmentDigest(a.manifest):null;
  const ready=!!owner&&!!digest&&rootAttachmentFile(owner,digest).exists&&(message.direction==='outgoing'||message.status==='delivered');
  const sticker=parseSticker(message.text),url=getFirstMessageUrl(message.text),menuHeight=Math.min(520,height-100);
- const perform=(action:()=>Promise<unknown>)=>void action().catch(e=>Alert.alert('Media',e instanceof Error?e.message:'Please try again.'));
+ const perform=(action:()=>Promise<unknown>)=>void action().catch(e=>Alert.alert('Media',e instanceof Error?e.message:t("Please try again.")));
  const icons:Record<string,React.ComponentProps<typeof Ionicons>['name']>={Info:'information-circle-outline','Add to favorites':'star-outline','Open link':'open-outline','Copy link':'link-outline','Copy message':'copy-outline',Reply:'arrow-undo-outline',Forward:'arrow-redo-outline','Save attachment':'download-outline','Create sticker':'happy-outline','Delete downloaded media':'trash-outline','Edit message':'create-outline','Delete message':'trash-outline','Remove my reaction':'heart-dislike-outline'};
  const option=(label:string,fn:()=>void,danger=false)=><TouchableOpacity accessibilityRole="button" accessibilityLabel={label} onPress={()=>{close();fn();}} style={[styles.contextOption,{flexDirection:'row',alignItems:'center',gap:12}]}><Ionicons name={icons[label]??'ellipse-outline'} size={20} color={danger?colors.error:colors.primary}/><Text style={[styles.contextOptionText,{color:danger?colors.error:colors.text}]}>{label}</Text></TouchableOpacity>;
  return <Modal transparent animationType="fade" statusBarTranslucent onRequestClose={close}><Pressable onPress={close} style={[styles.modalBackdrop,{backgroundColor:colors.overlay}]}><Pressable onPress={()=>{}} style={[styles.contextPanel,{backgroundColor:colors.surface,borderColor:colors.neonBorder,top:Math.max(24,Math.min((pageY??height/2)-70,height-menuHeight-24))}]}>
@@ -34,9 +35,9 @@ export default function RootMessageMenu({message,close,copy,reply,forward,edit,r
   {!message.attachment&&url&&option('Open link',()=>perform(()=>Linking.openURL(url)))}
   {!message.attachment&&url&&option('Copy link',()=>perform(()=>Clipboard.setStringAsync(url)))}
   {!message.attachment&&option('Copy message',copy)}{option('Reply',reply)}{forward&&option('Forward',forward)}
-  {ready&&a&&option('Save attachment',()=>perform(async()=>{await saveRootDownloadedMedia(owner!,digest!,a.name,a.mime);Alert.alert('Media saved',a.mime.startsWith('image/')||a.mime.startsWith('video/')?'Saved in Gallery.':'Saved in Downloads/Axonic.');}))}
+  {ready&&a&&option('Save attachment',()=>perform(async()=>{await saveRootDownloadedMedia(owner!,digest!,a.name,a.mime);Alert.alert(t("Media saved"),a.mime.startsWith('image/')||a.mime.startsWith('video/')?t("Saved in Gallery."):t("Saved in Downloads/Axonic."));}))}
   {ready&&a?.mime.startsWith('image/')&&createSticker&&option('Create sticker',()=>createSticker(rootAttachmentFile(owner!,digest!).uri))}
-  {ready&&message.direction==='incoming'&&option('Delete downloaded media',()=>Alert.alert('Delete downloaded media?','Remove this downloaded file and its Axonic Gallery copy? The message remains.',[{text:'Cancel',style:'cancel'},{text:'Delete',style:'destructive',onPress:()=>perform(async()=>{await removeRootDownloadedMedia(owner!,digest!);onMediaChanged?.();})}]),true)}
+  {ready&&message.direction==='incoming'&&option('Delete downloaded media',()=>Alert.alert(t("Delete downloaded media?"),t("Remove this downloaded file and its Axonic Gallery copy? The message remains."),[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>perform(async()=>{await removeRootDownloadedMedia(owner!,digest!);onMediaChanged?.();})}]),true)}
   {message.direction==='outgoing'&&!message.attachment&&option('Edit message',edit)}
   {message.direction==='outgoing'&&option('Delete message',remove,true)}{!!message.reactions?.length&&option('Remove my reaction',()=>react(''))}
  </ScrollView></Pressable></Pressable></Modal>;

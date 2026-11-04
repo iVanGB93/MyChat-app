@@ -1,0 +1,41 @@
+Axonic 1.1.31 / Android versionCode 102 — built and validated locally
+
+Artifact: builds/Axonic-1.1.31-102.aab
+Size: 107696081 bytes
+SHA256: a9ddffbd574ec008bd4c01c19a15bf9560b3835056ccc132963d21c74d9ad1e6
+Bundled source SHA256: e0ad50886291fe718daa228416ba0a85d39dd7c3578c808d8053b64d6f16668d
+
+Indexed mobile history is enabled in production. One-time migration validates
+and atomically imports existing legacy history without deleting its source.
+After migration, reads/writes use the indexed store; failures never fall back
+to stale legacy records. Scoped reads and conversation paging remain shared
+portable interfaces; this promotion changes the mobile adapter, not AoN deploys.
+
+Validation:
+- npm run check passed: 1679 tests passed, 3 skipped; typecheck, cycles,
+  module boundaries, consolidation and assets passed.
+- 27 targeted indexed-history tests passed, including production (__DEV__ false)
+  adapter migration, cold reopen, committed mutation, rollback and corrupt source.
+- Phone Dev native SQLite: isolated in-memory 150-row migration, selected mutation,
+  reopen, one legacy read, and zero full-history reads for selected queries.
+  Real phone history untouched by that fixture.
+- Native identity/stream guards and notification completion checks passed.
+- Local Gradle bundleRelease succeeded. No EAS cloud build.
+- bundletool validation passed; com.axonic, 1.1.31/code102, non-debuggable,
+  no instrumentation, four Android ABIs and required capture/overlay permissions.
+- jarsigner passed; upload certificate matches 1.1.30. Source/config fingerprints
+  match current sources. Previous 1.1.30 AAB unchanged.
+
+Evidence: builds/release-102-checks.log, indexed-production-102-tests.log,
+release-102-native-history.json, release-102-native-guards.log,
+release-102-native-notification.log, local-production-aab-102.log,
+local-aab-102-validation.json, local-aab-102-manifest.xml,
+local-aab-102-signature.txt.
+
+Build commands:
+node builds/build-local-production-102.cjs --approved-1.1.31
+node builds/validate-production-102.cjs
+
+No publication, installation, commit, push, AoN deployment or data deletion.
+This validates the bundle and migration behavior; it is not a post-install
+production runtime test. Existing unrelated work remains in the workspace.

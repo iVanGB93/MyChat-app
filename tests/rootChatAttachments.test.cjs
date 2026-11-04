@@ -99,3 +99,11 @@ test('single-read attachment admission still checks account lock after asynchron
  await assert.rejects(receiver.receive(f.manifest.sender,f.manifest.id,f.wire),/Unlock/);
  assert.equal(reads,1);assert.equal(writes,0);
 });
+
+test('oversized attachment captions report packet size rather than identity failure',async()=>{
+ const f=setup(),descriptor={...f.descriptor,caption:'x'.repeat(1600)};
+ assert.throws(()=>chat.assertAttachmentFits(descriptor),/shorten the caption/);
+ await assert.rejects(f.ledgers[0].enqueueAttachment(descriptor),/shorten the caption/);
+ assert.equal((await f.ledgers[0].snapshot()).messages.length,0);
+ chat.assertAttachmentFits({...descriptor,caption:'Short caption'});
+});

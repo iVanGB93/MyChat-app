@@ -1,0 +1,19 @@
+UI and background-upload readiness — 2026-10-28
+
+Scope: recent chat controls/style, message info, update presentation, and background upload changes. No production build, publication, commit or official-app installation performed.
+
+Final automated checks: npm run check passed: 1714 passed, 3 skipped, 0 failed (1717 total). TypeScript, cycles (263 modules), module boundaries (102 UI files), consolidation and assets passed. Native axonic-nearby debug Kotlin compilation passed.
+
+Fixed during review: Windows-encoded punctuation in AppUpdateBanner.tsx and AttachmentUploadJob.kt converted to valid UTF-8 without changing behavior. Entry-registration test now covers upload handler initialization. Native transport policy test includes the explicit upload-job lifetime. Three behavioral message-details tests cover indexed lookup, committed refresh, stale scope/lock rejection, error presentation and hidden-screen suspension.
+
+Phone: SM-S948U1, com.axonic.dev. Live message info showed selected message, sender, times, delivery and reaction author. Right swipe opened voice confirmation; left swipe opened video confirmation; both dismissed without placing calls. Normal com.axonic remains code103, lastUpdateTime 2026-10-28 13:31:42.
+
+UI performance: eight alternating vertical swipes per sample, no message sends. Android gfxinfo counters reset for each sample (diagnostic counters only). Dev/Hermes on USB/Metro, not production benchmarking; no before/after baseline supports claiming a speed improvement.
+- Chat list: 580 rendered frames, 1 janky (0.17%), Android p95 19ms/p99 20ms. JS requestAnimationFrame p95 12.73ms/p99 20.51ms, two >50ms gaps; max345ms includes initial probe/start boundary.
+- Private chat: 587 rendered frames, 0 janky; Android p95 9ms/p99 10ms. JS p95 9.74ms/p99 11.77ms, max16.22ms; no >50ms gaps.
+- Sticker bounce uses native animation, no per-frame React setState; expression timer disabled in background/unfocused/reduced-motion.
+Evidence: builds/ui-perf-list-20261028.json; builds/ui-perf-chat-20261028.json; builds/readiness-ui-final-20261028.log; builds/readiness-native-20261028.log.
+
+Background-upload live checks: see background-media-uploads-2026-10-28.txt. Home, screen-off, force-stop/reopen, pause/resume passed with checksums; baseline identity/messages preserved. Long Doze/vendor behavior and live account-lock remain outside these short device checks. Android14+ upload job only; older versions retain reopen/foreground guidance.
+
+Ready to proceed to an explicitly authorized production build for these changes. Build must assign next approved version/name and increment code beyond103; preserve indexed-history flags and signing. Current package remains1.1.32/code103. A successful release build/signature/package validation is still required. Actual Play update eligibility/download/install cannot be validated with Dev. No new production claim from Dev frame timings.

@@ -71,3 +71,11 @@ Shared maintenance replaces separate phone/host setInterval ownership. Expiratio
 still runs each minute while active; a locked phone has no maintenance timer.
 Account events wake it, but repeated events before the deadline do not rescan.
 Storage failure retries at 5s; Node injects unref timers. No data format change.
+
+October 30 event coordinator audit
+Phone changed() events now coalesce onto one microtask rather than a frame timer;
+Node retains injected event-loop timers. Self-generated bursts yield for fairness;
+changes during work run afterward without reentrancy. Future retries/expiry keep
+their deadlines. Stop suppresses queued events. Shared source is staged in the
+AoN checkout; this entry does not imply deployment. Details and validation:
+connection-transfer-audit-2026-10-30.txt

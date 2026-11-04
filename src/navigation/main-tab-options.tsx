@@ -1,3 +1,4 @@
+import {FloatingTabHeader} from './FloatingHeader';
 import React, {useCallback} from 'react';
 import {View} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
@@ -11,20 +12,16 @@ function TabIcon({ label, focused }: { label: string; focused: boolean }) {
   // and feels closer to the cyberpunk "glowing line" aesthetic.
   const iconMap: Record<string, [React.ComponentProps<typeof Ionicons>['name'], React.ComponentProps<typeof Ionicons>['name']]> = {
     Chats:   ['chatbubble-ellipses-outline', 'chatbubble-ellipses'],
-    Calls:   ['call-outline',                'call'],
+    Game:    ['game-controller-outline',     'game-controller'],
     Profile: ['person-outline',              'person'],
   };
-  const [outline, filled] = iconMap[label] ?? ['ellipse-outline', 'ellipse'];
+  const [outline] = iconMap[label] ?? ['ellipse-outline', 'ellipse'];
   return (
-    <View style={{ alignItems: 'center', justifyContent: 'center' }}>
+    <View style={{ alignItems: 'center', justifyContent: 'center',width:48,height:30 }}>
       <Ionicons
-        name={focused ? filled : outline}
+        name={outline}
         size={24}
         color={focused ? Colors.primary : Colors.textTertiary}
-        style={{
-          opacity: focused ? 1 : 0.7,
-          transform: [{ scale: focused ? 1.05 : 1 }],
-        }}
       />
     </View>
   );
@@ -34,6 +31,8 @@ function TabIcon({ label, focused }: { label: string; focused: boolean }) {
 export function useMainTabOptions(){const {colors:Colors}=useTheme();const insets=useSafeAreaInsets();return useCallback(({route}:{route:{name:string}}):BottomTabNavigationOptions => ({
         // Screen hooks pause their own polling; freezing adds a Suspense thaw on each tab switch.
         freezeOnBlur: false,
+        headerTransparent: route.name==='Chats'||route.name==='Profile',
+        header: props => <FloatingTabHeader {...props}/>,
         headerStyle: {
           backgroundColor: Colors.headerBg,
           elevation: 0,
@@ -45,20 +44,25 @@ export function useMainTabOptions(){const {colors:Colors}=useTheme();const inset
         headerTintColor: Colors.primary,
         tabBarStyle: {
           backgroundColor: Colors.tabBarBg,
-          borderTopColor: Colors.neonBorder,
+          borderColor: Colors.neonBorder,
+          borderWidth: 1,
           borderTopWidth: 1,
-          // Grow the bar to host the system nav inset (3-button bar on
-          // Android, home indicator on iOS) so labels/icons aren't
-          // covered by the OS bar on devices without gesture nav.
-          height: 62 + insets.bottom,
-          paddingBottom: 10 + insets.bottom,
+          borderRadius: 32,
+          position: 'absolute',
+          start: 16,
+          end: 16,
+          bottom: Math.max(insets.bottom,8)+8,
+          // Screens provide scroll clearance; content can continue behind the pill.
+          height: 66,
+          paddingBottom: 8,
           paddingTop: 6,
           elevation: 12,
           shadowColor: Colors.primary,
-          shadowOpacity: 0.15,
+          shadowOpacity: 0.12,
           shadowRadius: 16,
           shadowOffset: { width: 0, height: -4 },
         },
+        tabBarHideOnKeyboard: true,
         tabBarActiveTintColor: Colors.primary,
         tabBarInactiveTintColor: Colors.textTertiary,
         tabBarLabelStyle: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 1 },

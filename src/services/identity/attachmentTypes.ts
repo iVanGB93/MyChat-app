@@ -1,3 +1,4 @@
+/** Bound unfinished work independently of retained, indexed transfer history. */
 import type {AttachmentManifest,AttachmentReceipt} from './attachmentProtocol.ts';
 import type {DeliveryEvidence} from './deliveryEvidence.ts';
 

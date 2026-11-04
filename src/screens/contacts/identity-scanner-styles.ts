@@ -1,3 +1,4 @@
+import {Chrome} from '../../theme';
 import {StyleSheet} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
 export const identityScannerStyles = StyleSheet.create({
@@ -12,7 +13,7 @@ export const identityScannerStyles = StyleSheet.create({
     height: 260,
     borderWidth: 2,
     borderRadius: Radius.lg,
-    shadowOpacity: 0.7,
+    shadowOpacity: Chrome.shadowOpacity,
     shadowRadius: 14,
     shadowOffset: { width: 0, height: 0 },
     elevation: 6,
@@ -23,7 +24,7 @@ export const identityScannerStyles = StyleSheet.create({
     right: Spacing.lg,
     padding: Spacing.md,
     backgroundColor: 'rgba(0,0,0,0.6)',
-    borderRadius: Radius.md,
+    borderRadius: Chrome.controlRadius,
   },
   hintText: {
     color: '#fff',

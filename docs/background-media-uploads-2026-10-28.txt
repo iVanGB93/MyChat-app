@@ -1,0 +1,36 @@
+Background media uploads — 2026-10-28
+
+Implementation:
+- Android 14+ user-initiated JobScheduler task, scheduled from foreground queue admission or foreground recovery. Single native job per installation. No schedule polling.
+- JobService starts the existing React Native headless entry. Its token grants native socket lifetime only while the Android job exists. The JS task takes/releases an independent shared-network lease.
+- Durable preparation selections and outgoing job checkpoints stay authoritative. Completion requires confirmed message/attachment custody or recipient delivery, never a local preview or cursor reaching 100%.
+- Task observes queue/ledger/account changes; native bounded waits observe OS cancellation. Reads are coalesced at 500ms. UI, calls and notification recovery retain independent leases.
+- Android progress notification opens Axonic. Existing per-attachment pause/resume controls remain authoritative; resume can schedule a new job. Failed/paused work is preserved.
+- Manual/automatic account locking stops upload work. Startup uses the existing remembered-session policy, never a credential bypass.
+- JS lease budget 19 minutes, native deadline 20 minutes. Budget expiry preserves checkpoints and prompts reopen. User force-stop is not bypassed. Android system interruptions can reschedule the job; app foreground recovery also inspects unfinished work.
+- Android below 14: no new background job; existing foreground/reopen recovery and explicit keep-open UI remain. This limitation is visible, not advertised as background support.
+- Separate Dev phone update installed with data preserved; no official-app installation or release build. No queues/messages/identities deleted.
+
+Validation:
+- Native Kotlin compilation passed.
+- Dev-only APK assembled locally for arm64-v8a and x86_64.
+- TypeScript, module-boundary and service-cycle checks passed.
+- 18 focused lifecycle/status/observation tests pass (14 task/lease/status plus 4 durable-observation checks).
+- Android 16 emulator: isolated native job scheduled successfully, 11 of 12 timed progress steps ran after pressing Home; job completed and released its lifetime. This was a no-transfer probe, not throughput evidence.
+- Restored the actual headless handler by reloading Dev. Empty-account native job refused work and showed the unlock-required notification.
+
+Still required before release:
+- Manual account-lock behavior is covered by focused tests, not a live phone account-lock exercise. Longer vendor battery/Doze conditions remain outside these short transfer checks.
+- Emulator probe does not prove end-to-end phone uploads or device-vendor battery behavior.
+
+Live phone evidence (October 28):
+- SM-S948U1 / Android API 37, com.axonic.dev only. Original baseline identity and 405 message keys checked before each transfer.
+- 5 MiB upload with Home immediately after queue: full receiver download SHA-256 matched; approximately 10.6 seconds queue-to-observation. Native job active in background.
+- 10 MiB upload with screen off immediately after queue: full receiver download SHA-256 matched; approximately 4.2 seconds queue-to-observation. Native job active in background. These are individual observations, not comparative throughput benchmarks; device/server/PC clocks and polling affect timing.
+- Normal com.axonic remains versionCode 103, lastUpdateTime 2026-10-28 13:31:42, unchanged.
+- Interrupted 10 MiB upload recovered after user unlocked Android and Dev's Metro bundle reopened. Original message ID 2bbf4c949eae82373c186b7787d51e1097b8039555b30965b36d28c50a8a2049 retained; receiver checksum matched. No requeue. Missing JobScheduler entry after force-stop was expected; the harness initially treated this as an error, recorded in evidence. Force-stop remains respected until explicit reopen.
+- Pause/resume 10 MiB: job entered cancelled at cursor 0; held unchanged for four seconds; retry then Home completed under original message ID with matching receiver checksum. Approximately 22 seconds including deliberate pause and retry. Evidence: builds/background-upload-phone-pause-1793218938389.json.
+- Final verification: baseline identity/all 405 message keys preserved; outgoing jobs empty; background upload job no longer scheduled. No message/file deletion, official-app update, commit, or release build.
+- Evidence: builds/background-upload-phone-home-1793218057566.json; builds/background-upload-phone-screenoff-1793218256835.json; builds/background-upload-phone-recovery-1793218299699.json.
+
+Evidence: builds/background-upload-native-lifetime.json; builds/background-upload-native-compile.log; builds/background-upload-dev-build.log; builds/background-upload-tests.log.

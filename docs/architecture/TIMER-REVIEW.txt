@@ -67,3 +67,22 @@ Validation/evidence
   Live video call both sides p2p, quality good; one-sided hangup cleared both states.
 - AoN changes are local and tested only. No commit, push or deployment in this pass.
   Existing live fleet remains 658ecc2. No production build or normal app changes.
+
+November 1, 2026 audit update (local changes, not deployment evidence)
+- Hosted call-relay expiry now uses createDeadlineTask with the relay's earliest
+  expiry. Empty caches have no periodic sweep. This supersedes item 8's one-second
+  call-relay sweep; identity renewal and other expiry obligations remain.
+- Root audio playback interruption uses existing call/account state events plus
+  recorder-controller activity events. Generic VoiceMessageBubble callers without
+  an event source retain their active-playback guard; production RootAudioPlayer
+  supplies the event source. Voice recording observes calls immediately and its
+  elapsed-time UI updates once per second. Remote recording presence still renews
+  every three seconds for the four-second remote expiry.
+- Transfer UI rereads stale selection snapshots immediately, coalesced, while
+  genuine read failures keep one-second backoff. Background UI retries are off.
+- Chat refresh failure backoff is retained even if a write arrived during a read.
+- Continuous syncing-title animation uses no interaction handles, including its
+  pauses; it must not defer virtualized chat work.
+- In a 45-second live emulator idle sample, attachments and message/call workers
+  performed no extra runs. Transport maintenance remained active. See
+  deep-audit-20261101.txt for evidence, limitations and deployed/local separation.

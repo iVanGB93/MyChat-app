@@ -1,0 +1,123 @@
+1.1.36 video notification investigation — 2026-10-30
+
+Read-only capture of both official phones. No notification opened, apps installed,
+data cleared, test messages sent, or settings changed.
+Evidence: builds/video-notification-1136/ (receiver logcat-all.txt,
+wife-logcat-all.txt, notification detail and system snapshots).
+
+Target message 16be1d13329571d404c6cea5a5aa179b2e86a424be205a740d8a47b0d4ffd820.
+Message timestamp 1793408475478; notification created 1793408536793:
+61.315 seconds. This is timestamp-to-notification, not a separately measured
+server-to-device latency. Sender clock alignment has not been independently measured.
+
+Receiver sequence (epoch seconds):
+1793408477.589 background wake; recovery resumed at 8477.721.
+1793408480.078 Samsung Freecess FZ com.axonic, disables HeadlessJsTaskService lock.
+1793408510.928 Freecess UFZ, reason broadcast.
+1793408511.085 recovery deadline: 33371 ms elapsed, waitLagMs 31041.
+1793408514.960 another recovery starts.
+1793408534.872 RTC connected to wife's identity, host-host UDP, RTT 7 ms.
+1793408535.610 receiver local-close, mediaEnabled false.
+1793408535.620 recovery deadline: 20659 ms, waitReason receipt.
+1793408536.788 notification displayed-ms 80.
+Sender confirms RTC connected at 8534.750, channel-closed at 8535.683;
+its next attempt times out at 8586.407.
+
+Incoming processing during this interval includes dedup waits up to 11150 ms,
+store 12043 ms and presentation 9800 ms. These are individual log observations,
+not additive stages proven to belong to the target video. Concurrent control
+messages followed the authorized large AoN deletion run. Causal contribution
+of that backlog still needs controlled confirmation.
+
+Current wake function axonMessageWake permits transports for a bounded window;
+it does not itself protect the process from Samsung freezing. rootMessageRecovery
+uses a 20-second wall-clock budget and releases its runtime reference at deadline.
+Increasing that timeout alone would not resolve process suspension.
+
+Confirmed: background suspension, deadline-driven connection closure and delayed
+notification. Not yet established: exact target-specific FCM correlation (logs lack
+message IDs), relay availability time, or the target's durable attachment job state.
+SecondNeuron paginated inventory checked through offset 650 did not expose a target
+match; this is not proof of absence or delivery (remaining page and other relays).
+
+Next: inspect durable sender/receiver diagnostics after preserving unopened state;
+test an Android-supported bounded background media handoff in Dev with screen off,
+plus control-message backlog contention. Preserve official apps/data.
+
+Implementation and controlled Dev follow-up (2026-10-30)
+- Added one-shot Android MessageRecoveryJob for background message FCM, preserving
+  signature/account checks and existing durable queues. High delivered-priority
+  FCM uses expedited admission. Recovery is bounded to 120 seconds, with a native
+  180-second lifecycle guard; no periodic job or receiving foreground notification.
+- New work enqueued into an active job triggers drain immediately. Android does
+  not guarantee another onStartJob for an already running job. Four work items may
+  execute concurrently. Cancellation tokens stop obsolete job-owned recovery.
+- Added content-free provider-to-JS callback timing and job queue timing.
+- Found an independent relay bug: ThirdNeuron had no local FCM credentials and
+  consequently advertised no push-client capability. It retained 304 wake hints
+  with zero remote forwarding attempts. A hosted neuron now advertises client
+  support with gateway=false even without local FCM credentials. It still cannot
+  register devices as a gateway. Remote signed-wake forwarding regression passes.
+- Isolated commit 8800c4581c127bf7a415c679ab6c9794b19afc02, pushed on
+  codex/relay-push-client-20261030. ThirdNeuron deployed runtime c4913ab4372f,
+  source clean/runtime_bound. After rollout: 30 remote gateway calls, 16 forwarded,
+  14 retry, zero rejected. First/Second not redeployed for this change.
+- Mobile full suite: 1770 tests, 1767 passed, 3 skipped, zero failures; TypeScript
+  passes. Dev native build succeeds. Hosted suite: 323/323 passed with required
+  local filesystem/socket permission (sandbox-only run could not exercise stores).
+- Initial post-relay-fix screen-off tests: 3 MiB and 10 MiB both received, exact
+  checksums match, pre-existing Dev message keys and identity preserved. Checksums
+  are measured after reopening; they alone do not prove background completion.
+  3 MiB has background receipt_complete evidence in 7293 ms. The next 10 MiB
+  notification was requested while backgrounded, but queued stale hints exposed
+  the active-job drain issue fixed above. See screen-off-fixed-results.json.
+- Further repeat after drain fix retains a long pre-message wait in the 3 MiB run:
+  send began 1793410996406, FCM callback 1793410998171 (provider delta69ms),
+  job queue7ms; notification requested1793411058829. Incoming3MiB stream completes
+  at1793411060353, directStream1261ms. Thus fast FCM and fast payload streaming do
+  NOT establish fast end-to-end delivery: roughly60 seconds before message arrival
+  remains under investigation. No claim that the original delay is fully solved.
+- Official com.axonic remains versionCode107, lastUpdateTime2026-10-30 19:59:05.
+  No official installation, notification opening, data deletion or backup occurred.
+
+Follow-up: isolated the ~60-second pre-message wait to hosted delivery wiring.
+Production creates hostedRootChat without its optional peers callback. Its direct
+reconnect bypass consequently saw an empty connected set even while the real
+custody network was authenticated to the phone. Successful relay handoff suppressed
+resending for60s. The regression (production-shaped fixture with custody.network,
+no peers callback, fixed clock) failed as pending before the change and passes as
+delivered after using the authenticated network custodians as the fallback list.
+The ordinary relay cooldown stays intact for disconnected recipients.
+
+Commit ea6d5c37c8b434c50f2d4d4e9ac08311558e89c2 pushed on
+codex/wake-direct-handoff-20261030 from FirstNeuron's exact base56d9342.
+Only hostedRootChat.ts and its regression test changed. FirstNeuron deployed
+runtime986fa84867ac, source clean/runtime_bound; service active, no data changes.
+Full hosted suite: all behavioral tests passed; one pre-existing checkout newline
+manifest mismatch was resolved by restoring only its recorded CRLF bytes for
+verification. Focused hosted chat+manifest suite30/30 passed. Release source was
+restored to committed byte form before clean build. No semantic protocol edits.
+After FirstNeuron rollout, the same3MiB screen-off case:
+- PC send start1793411487032; Dev FCM callback1793411489074;
+  provider-to-callback72ms, native job queue3ms.
+- Notification display1793411493041; attachment completion1793411495221;
+  stream1586ms; recovery receipt_complete1793411495717,6572ms.
+- Exact checksum matched after reopening; completion log precedes reopening.
+- Clock check bounds the phone about424–490ms behind PC. Therefore corrected
+  send-to-file completion is approximately8.6–8.7s (report rounded9s), rather
+  than raw cross-clock8.2s. Prior60s wait is far larger than this clock offset.
+The post-fix10MiB transfer was also completed with screen off and a matching
+checksum: start1793411592723, notification1793411596321, file1793411598797.
+Corrected for the measured clock offset, file completion ~6.5s. It reused an
+existing background connection; this is NOT reported as a fresh FCM wake test.
+Both sizes preserved all pre-existing Dev message keys and the account identity.
+A separate final10MiB fresh-wake run is recorded in screen-off-cold10-results.json.
+Final fresh10MiB wake (screen off): send start1793411720601; FCM callback
+1793411723466 (provider delta46ms); job queue4ms; notification display
+1793411735168; attachment completion1793411738071, stream2496ms.
+With measured phone/PC offset, end-to-end ~17.9s, rounded18s. The earlier
+pre-fix10MiB run took ~67s. This is one controlled sample, not a latency guarantee.
+The60s sender cooldown has been removed, but startup/storage work and unrelated
+receipt-only recoveries reaching the120s bound remain visible; do not claim all
+background/battery inefficiencies solved. Official apps and data remain intact.
+Final cold10 checksum verified; pre-existing message keys and Dev identity preserved. Test ended with Dev reopened. No production build performed.

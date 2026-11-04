@@ -1,0 +1,52 @@
+Cold-history and message-arrival follow-up — October 25, 2026
+
+Local/Dev changes; no commit, push or AoN deployment.
+- Combine a peer topology capability observation into one serialized history read
+  and at most one write, instead of four reads and multiple writes. Profile
+  recovery also uses the combined operation. Existing per-field callers retained.
+- Use the existing owner/revision-scoped read-only runtime view for receive-path
+  duplicate detection and notification preview. Durable admission remains separate.
+- Reuse the validated history inside a single serialized receive operation:
+  text, attachments, controls and actions previously read the same history again.
+  Account current() is still checked after async attachment signature validation.
+- Add bounded aggregate ledger timing counters (snapshot queue, mutation queue,
+  storage read). No payloads, IDs, peers or credentials; process-local only.
+- Shared ledger synchronized to the local isolated AoN worktree, parity/types pass.
+
+Validation
+Full suite before final admission optimization: 1542 pass, 3 optional skip.
+Final admission-focused suite: 157 pass. Additional explicit async account-lock
+regression and ledger/attachment suite: 40 pass. TypeScript passes.
+Module boundaries and dependency cycles passed; hosted parity/types passed.
+Tests cover atomic capability failure, no-op observations, per-field preservation,
+single-read message admission, duplicate/conflict handling and lock-after-verify.
+
+Live measurements (receiver main Dev phone; sender second Dev phone offline)
+5 MB batching/runtime-view run: upload 10.512s, receive 29.596s.
+First observed message at 9.886s; historySnapshot aggregate 4.801s.
+10 MB instrumented run: upload 57.903s, receive 20.465s.
+Message already present at first observation 1.855s; download job first observed
+at 12.247s. HistorySnapshot aggregate 4.997s; queue maintenance 1.253s.
+Ledger counters: 48 storage reads, aggregate 8.739s, max 1.113s;
+22 mutation queue waits aggregate 10.031s, max 1.458s;
+22 snapshot queue waits aggregate 11.227s, max 1.687s.
+All files passed checksum and relay-source checks; both app histories preserved.
+
+Interpretation
+No universal speedup claimed. 10 MB receiving improved in this sample versus the
+previous 29.329s, but upload/storage confirmation took substantially longer.
+Receive timings start after debugger reconnect/unlock, not at sender selection.
+Aggregate concurrent timings overlap and must not be added as wall time.
+Counters show both storage-read latency and queue contention, not a pure network
+bottleneck. Storage-read timing includes native scheduling, not disk I/O alone.
+No normal apps, histories, queues, identities or credentials reset/removed.
+
+Final 5 MB run including single-read admission (relay-cold-history-final5.json):
+upload 8.813s, receive 27.300s. Message first observed at 5.390s;
+downloading first observed at 13.315s, confirming at 24.817s.
+Checksum, offline sender, FirstNeuron source and both histories verified.
+47 storage reads aggregate 12.844s (max1.485s); mutation queue max2.304s,
+snapshot queue max3.168s. Reconciliation148ms. Attachment history waits6.286s.
+These aggregate timings overlap. Cold storage/native scheduling and ledger queue
+contention remain; earlier message observation is not proof all startup is fixed.
+Final diff whitespace, module boundary and cycle checks pass.

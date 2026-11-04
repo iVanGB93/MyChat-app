@@ -1,0 +1,27 @@
+Block processing and variable transfer follow-up
+
+Change: mobile verified relay writes now borrow the single validated block during
+the synchronous file write, removing a redundant allocation/copy/clear of up to
+3,000,000 bytes per block. The caller retains ownership and erasure responsibility.
+Range, account-lock, prefix, final-size and checksum checks remain unchanged.
+This is a mobile file-adapter change; the shared protocol and AoN code are unchanged.
+
+Validation: 42 file/preparation regressions passed; types and module boundaries
+passed. Tests verify buffer identity, caller bytes intact, replay, missing-prefix
+rejection and final checksum publication. Architecture reference check: 252 passed.
+
+Real Dev-only relay repeat: 5,000,000 bytes, sender stopped before receive;
+FirstNeuron was the verified source. Checksum matched. Upload observed 19,003 ms:
+  block read/materialization 5,921 ms (two blocks);
+  bulk requests 5,534 ms; stale direct-status probe 4,016 ms (one request);
+  remaining time includes setup, scheduler and test observation delays.
+Receive observed 21,491 ms from debugger readiness, not cold-start time.
+These are one-run observations, not a controlled throughput benchmark. They do
+not demonstrate an end-to-end speedup from the copy removal. Prior 15-16 second
+uploads lacked this stale-peer probe; total speed remains variable.
+
+Still open: separate hashing/encryption/encoding costs within materialization;
+reduce stale-route probing without suppressing direct upgrades; examine receiver
+waits and repeat controlled measurements. No encryption/checksum bypass proposed.
+No production build, deployment, normal-app installation or data reset performed.
+Evidence: builds/block-processing-tests.log and block-processing-relay-results.json.

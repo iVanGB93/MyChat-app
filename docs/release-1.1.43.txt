@@ -1,0 +1,24 @@
+Axonic 1.1.43 / Android versionCode 114 — local production build
+Explicitly authorized November 3, 2026. Build current working tree, not a claim
+of a clean committed mobile revision. No publication or phone installation.
+
+Changes since 1.1.42:
+- Outgoing media can complete using its verified recipient receipt even if the
+  sender removed the original local file after upload. Incoming still requires
+  the locally stored file; receipt validation remains mandatory.
+- Canonical message writes defer disposable display-page rebuilding until UI
+  reads, including foreground writes. Durable dirty markers preserve recovery.
+- Ledger diagnostics separate queue wait, scope preparation, and execution.
+- Expo audio routing leaves ordinary media on Android's selected output rather
+  than forcing speaker communication routing; explicit earpiece behavior remains.
+
+Limits: Bluetooth route change compiled and regression-tested but not retested
+with a live headset. Historical expired transfers are not automatically resent
+or falsely completed. Startup contention remains under investigation; no measured
+overall cold-start speedup claimed. Mother's prior screen-share/audio interruption
+remains unproven by available diagnostic evidence.
+
+AoN rollout is separate: all three already run source5776d15, runtime97df4913e656.
+No new AoN deployment is part of this mobile build.
+
+Build, checks and validation results will be recorded on completion.

@@ -1,0 +1,20 @@
+Axonic 1.1.38 / Android versionCode 109 — built locally, 2026-10-31
+
+Artifact: builds/Axonic-1.1.38-109.aab
+Bytes: 107773215
+SHA256: 89c5fc2afcaa1202b94f63a1c89ff365cd469af5accbe47e87059018c982ae65
+Source SHA256: c7119dece40718059fbd480c5bedf9117348dae735e9be63043b8afe8927ea0a
+
+Includes shared private/group call UI, up to four participants, signed audience and fresh rejoin legs, event-driven Join availability, participant selection, and module-based diagnostic report v2 with privacy-filtered call events. Explicit groupCallsEnabled flag verified in bundled config.
+
+Validation: full mobile audit 1805 passed, 3 skipped; subsequent release flag and diagnostic checks passed. AoN call regressions 39/39. Local Gradle bundleRelease passed for four ABIs; bundletool/jarsigner validated. Package com.axonic, 1.1.38/109, non-debuggable, no instrumentation. Signing certificate matches 1.1.37; previous artifact unchanged. Existing release flags preserved; Sentry automatic upload disabled. Mobile artifact includes the working tree, not a clean-commit claim.
+
+AoN source commit: 1c0423f28150c63650e29c25f057e5a0531bb09e
+Branch pushed: codex/group-call-release-1138
+All three deployed: FirstNeuron, SecondNeuron, ThirdNeuron.
+Runtime SHA256: 7a27a15b0f8b3688a1ba4e93c62992cb6aa0a6cdc4afe935d05f2e60f19fe83b
+Package version: 0.2.0 on each. Authenticated status, diagnostics, relay inventory and installed owner binding verified on each. SecondNeuron Railway deployment b9243510-e3e0-4a2c-b824-55e5ffafcc9e SUCCESS. No data reset.
+
+Remaining live acceptance: four-device audio/video, extended background and handover. Three-device direct/TURN and leave/rejoin previously passed; those do not prove four-device media. Group screen sharing is not implemented. Neuron diagnostic guidance is in docs/architecture/DIAGNOSTIC-REPORT-V2.txt; adoption by AI listeners is not claimed.
+
+No publication or official-app installation. Evidence: builds/local-production-aab-109.log, local-aab-109-validation.json, aon-1138-deployment.json.

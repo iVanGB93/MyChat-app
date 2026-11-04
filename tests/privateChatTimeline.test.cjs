@@ -1,0 +1,8 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
+const out={};new Function('exports',ts.transpileModule(fs.readFileSync('src/modules/ui/privateChatTimeline.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out);
+const merge=out.privateChatTimeline,peer='peer';
+const message=(id,at,extra={})=>({id,at,peer,direction:'incoming',...extra}),call=(id,at,extra={})=>({id,at,peer,outgoing:false,media:'voice',...extra});
+test('calls and messages merge newest-first with distinct stable keys and no source mutation',()=>{const m=[message('same',10),message('later',30)],c=[call('same',20)],before=JSON.stringify([m,c]);assert.deepEqual(merge(m,c,peer,false).map(r=>r.key),['message:incoming:later','call:same','message:incoming:same']);assert.equal(JSON.stringify([m,c]),before);});
+test('calls respect the message paging boundary and appear as older pages load',()=>{const c=[call('old',1),call('edge',10),call('new',40)];assert.deepEqual(merge([message('m',10)],c,peer,true).filter(r=>r.call).map(r=>r.call.id),['new','edge']);assert.equal(merge([message('m',10)],c,peer,false).filter(r=>r.call).length,3);});
+test('call-only chats retain all their calls and exclude other peers and group messages',()=>{assert.deepEqual(merge([message('g',10,{group:{id:'group'}})],[call('own',4),call('foreign',5,{peer:'other'})],peer,false).map(r=>r.key),['call:own']);});
+test('equal-time rows have deterministic order independent of input order',()=>{const a=message('a',1),b=message('b',1),c=call('c',1);assert.deepEqual(merge([a,b],[c],peer,false),merge([b,a],[c],peer,false));});

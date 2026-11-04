@@ -29,6 +29,8 @@ export function createNeuronConnections(d: {
   const candidates = new Map<string, Candidate>(), slots = new Map<string, Slot>();
   const upgrades = new Map<string, Slot>();
   const inboundPromotionRetry = new Map<string, number>();
+  const retained=new Map<string,number>();
+  const protectedSlot=(slot:Slot)=>slot.state==='connected'&&retained.has(slot.candidate.account);
   const allSlots = () => [...slots.values(), ...upgrades.values()];
   const occupied = () => slots.size + upgrades.size;
   const owns = (slot: Slot) => slots.get(slot.candidate.account) === slot || upgrades.get(slot.candidate.account) === slot;
@@ -70,6 +72,7 @@ export function createNeuronConnections(d: {
   function start(candidate: NeuronCandidate, open: OpenNeuron) {
     if (stopped || !valid(candidate) || upgrades.has(candidate.account)) return false;
     const previous = slots.get(candidate.account);
+    if(previous&&protectedSlot(previous))return false;
     if (previous && (previous.state !== 'connected' || rank(candidate) >= rank(previous.candidate))) return false;
     const known = candidates.get(candidate.account);
     if (known && known.retryAt > d.now()) return false;
@@ -80,7 +83,7 @@ export function createNeuronConnections(d: {
       // Retain its working connection until authentication completes, and keep
       // another established wider-network route after a successful LAN upgrade.
       const established = [...slots.values()].filter(s => s.state === 'connected');
-      const victim = established.filter(s => s !== previous
+      const victim = established.filter(s => s !== previous&&!protectedSlot(s)
         && rank(s.candidate) > rank(candidate)
         && (candidate.route !== 'lan' && !preferredRtc(candidate) || established.some(other =>
           other !== previous && other !== s && other.candidate.route !== 'lan')))
@@ -106,6 +109,8 @@ export function createNeuronConnections(d: {
           fail(slot); close(link ?? undefined); return;
         }
         if (previous) {
+          // A call may borrow the old connection while this upgrade authenticates.
+          if(protectedSlot(previous)){close(link);return;}
           retire(previous, false);
           upgrades.delete(candidate.account);
           slots.set(candidate.account, slot);
@@ -132,7 +137,7 @@ export function createNeuronConnections(d: {
     const outside = () => [...slots.values()].some(s => s.state !== 'closing' && s.candidate.route !== 'lan');
     // Reserve one route beyond LAN, including when that candidate arrives after a LAN-only pool filled.
     if (limit > 1 && occupied() === limit && !outside() && available.some(c => c.value.route !== 'lan')) {
-      const victim = [...slots.values()].reverse().find(s => s.state === 'connected');
+      const victim = [...slots.values()].reverse().find(s => s.state === 'connected'&&!protectedSlot(s));
       if (victim) retire(victim, false);
     }
     while (occupied() < limit && available.length) {
@@ -146,6 +151,11 @@ export function createNeuronConnections(d: {
     }
   }
   return {
+    retain(account:string){
+      if(stopped||!accountPattern.test(account))throw Error('Connection unavailable');
+      retained.set(account,(retained.get(account)??0)+1);let released=false;
+      return ()=>{if(released)return;released=true;const count=(retained.get(account)??1)-1;if(count>0)retained.set(account,count);else retained.delete(account);};
+    },
     offer, tick,
     nextDeadline(){
       if(stopped)return Infinity;
@@ -157,10 +167,11 @@ export function createNeuronConnections(d: {
     resume() { if (stopped) return; for (const c of candidates.values()) { c.failures = 0; c.retryAt = 0; } tick(); },
     setLimit(next: number) {
       if (!Number.isInteger(next) || next < 1 || next > 20) throw Error('Invalid axon limit');
+      if(allSlots().filter(protectedSlot).length>next)throw Error('Finish the call before reducing the connection limit');
       limit = next;
       // Keep closer established links; cancel surplus upgrades/handshakes first.
       const ranked = allSlots().filter(s => s.state !== 'closing').sort((a, b) =>
-        Number(upgrades.has(a.candidate.account) && upgrades.get(a.candidate.account) === a) - Number(upgrades.has(b.candidate.account) && upgrades.get(b.candidate.account) === b)
+        Number(protectedSlot(b))-Number(protectedSlot(a))||Number(upgrades.has(a.candidate.account) && upgrades.get(a.candidate.account) === a) - Number(upgrades.has(b.candidate.account) && upgrades.get(b.candidate.account) === b)
         || Number(a.state !== 'connected') - Number(b.state !== 'connected') || rank(a.candidate) - rank(b.candidate));
       for (const slot of ranked.slice(limit)) retire(slot, false);
       tick();

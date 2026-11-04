@@ -1,0 +1,71 @@
+THREE-REPOSITORY CLEANUP — 2026-10-23
+
+Scope and preservation
+Reviewed Axonic, Axonic-app and Axonic-neuron. Existing staged and unstaged work
+was retained. No commit, push, deployment, install, production build, account
+reset, dependency update or live-message operation was performed.
+No databases, identities, credentials, message history, relay data, backups,
+release artifacts, build archives or user-provided attachments were deleted.
+
+Removed (recoverable from Git; files were tracked and unmodified before removal)
+  Axonic-app/assets/splash-icon.png
+    SHA256 033489e76c2c284eab65823d15dcddae4c589820a216a2dfc6b818f9efd072dc
+  Axonic-app/assets/splash-screen.png
+    SHA256 1aa30f502e5ca44adb908dc63ed3f240828ec75623082306eb898c0f3588d9c5
+  Axonic-app/scripts/experiments/phone-chunk-benchmark.cjs (89 lines)
+    Orphaned helper for the previously removed actual-chunk experiment runner.
+Reference searches across maintained code/docs in all three repositories found
+no consumers for these three files. The separate direct-stream experiment remains:
+its session implementation is used by a maintained regression test.
+
+Fixed / prevention
+  app.json referenced absent assets/favicon.png; it now reuses assets/icon.png.
+  Added check:assets to npm run check, with two tests for existing references and
+  a missing-config-asset fixture. It checks literal app/source paths, not arbitrary
+  dynamic native generation; native/plugin resource checks remain necessary.
+  Ignored Axonic/.codex-remote-attachments/ in Git without deleting its contents.
+
+AI/documentation consolidation
+  Axonic/docs/WORKSPACE.txt: repository ownership, permissions and historical-doc scope.
+  Axonic-app/docs/START-HERE.txt: current architecture, media/transfer/state guides.
+  Axonic-neuron/docs/START-HERE.txt: service/integration/shared-source ownership.
+  Backend/AoN READMEs now distinguish current navigation from old architecture.
+  Android media/deletion docs explicitly point to the single-copy implementation.
+  production-release-current.txt is marked as the October 10 historical checkpoint.
+  app-modules.md links shared state; tests/README.txt reflects asset validation.
+Historical incident/release reports and UI evidence remain at stable paths to
+preserve traceability. New navigation avoids treating them as current instructions.
+No AGENTS.md permission rules were removed or relaxed.
+
+Code reachability findings
+  Mobile consolidation passed: 320 runtime-reachable source modules, plus eight
+  documented hosted support roots. Those shared files are NOT dead mobile code.
+  AoN runtime/test dependency scan found rtcAxonTransport.ts outside those paths,
+  but it is explicitly managed by sync-core/shared-source and was retained.
+  Django legacy modules still have URL/task consumers; removing them solely
+  because mobile changed architectures would change the deployed service.
+  No additional production module was proven safe to delete in this pass.
+
+Validation
+  Mobile npm run check: 1,452 passed, 3 skipped, 0 failed (1,455 total), plus
+    TypeScript, cycles, boundaries, consolidation and asset-reference checks.
+  AoN npm test: 237 passed, 0 failed.
+  MCP adapter npm test: 37 passed, 0 failed.
+  Standalone OpenClaw adapter tests: 39 passed, 0 failed. Full SDK-dependent
+    channel dispatch/live gateway validation was not run during cleanup.
+  Django check: no issues; migration check: no changes; isolated tests: 139 passed.
+  Git diff whitespace checks passed for all three repositories.
+  Full test logs are in the respective builds/cleanup-*-2026-10-23.log files.
+  These checks are local; no claim of live fleet parity or new phone validation.
+
+Existing cross-repository drift — preserved, NOT automatically synchronized
+  relayInventory.ts, groupCustodyMessages.ts, rootMessageStatus.ts,
+  neuronCallCoordinator.ts, callMediaTransport.ts, rootChatLedger.ts,
+  rootChatTypes.ts, attachmentBatch.ts, attachmentTransfer.ts,
+  attachmentProtocol.ts, attachmentCustody.ts, callRelayPump.ts,
+  identityProtocol.ts, neuronConnections.ts, axonSignaling.ts,
+  rtcAxonTransport.ts, persistentAxon.ts.
+  sync-core --check stops at the first mismatch. A separate read-only comparison
+  of its source map found these 17 differences before any core file was touched.
+  Reconcile deliberately before a coordinated release; don't overwrite other
+  chats' pending protocol work as part of housekeeping.

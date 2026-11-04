@@ -1,0 +1,22 @@
+Pre-release review — 2026-11-01
+
+Scope: existing mobile worktree, two authenticated Dev emulators. All existing data preserved. No phone installation, production build, commit, push or AoN deployment.
+
+Fixed:
+- Theme preference read failure no longer releases startup before saved language initialization completes. Added a regression test exercising a rejected theme read and deferred language readiness.
+- Blocked conversation preview now uses the Spanish catalog.
+
+Validation:
+- npm run check: 1,858 passed, 3 optional tests skipped, zero failures. Includes type checks, service cycles, module boundaries, consolidation and asset references.
+- After the two fixes: type check and targeted localization/chat-list tests passed (9); localization suite now has 6 tests, including startup failure regression.
+- Native identity/stream guard and notification completion checks passed.
+- Live emulator private text delivery, editing, reactions, read receipts, group creation/acceptance/delivery passed.
+- 10,000,000-byte transfer: size and checksum verified, 26,907 ms end-to-end. Dev emulators on a shared PC; not a production throughput benchmark. Performance remains a follow-up concern.
+- Voice call: both sides ready, P2P, no recovery; hangup cleared both media/signaling states.
+- 45-second idle observation: no attachment worker runs/wakes added and zero failures; call/inbox/delivery tasks stayed idle. Transport maintenance and private custody wake work still ran; this is not a claim of zero background work.
+- Cold restart: identities preserved; 6 summaries each, 1 index read each, 0 source/full-history reads and 0 builds. chat_list_ready storage measurements 8 ms and 97 ms. Dev launcher/Metro readiness observed 11.4 s and 18.0 s, not release launch measurements.
+- Current-process log sample: no FATAL EXCEPTION, JavascriptException, ReactNativeJS TypeError/ReferenceError matches on either emulator. Chat-list screenshot inspected.
+
+Limits: no physical phones connected. No new live screen-sharing, four-person call or actual FCM screen-off delivery test in this review. Relevant automated regressions passed; previous live checks are not represented as newly repeated here. No evidence of a release-blocking correctness failure in the checks performed. Build version is still 1.1.40 / 111; choose/increment the next release only with build authorization.
+
+Evidence: builds/pre-release-review-check.log, pre-release-final-typecheck.log, pre-release-final-focused.log, pre-release-localization.log, pre-release-native-rtc.log, pre-release-native-notifications.log, pre-release-live-messaging.log, pre-release-live-call.log, pre-release-idle.log, pre-release-cold-start.log, pre-release-screen.png.

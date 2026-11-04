@@ -14,3 +14,13 @@ test('video frame returned after a lock or account switch is discarded',async()=
 test('current unlocked owner receives the local video preview',async()=>{
  const f=fixture(),work=f.out.rootVideoThumbnail('owner','digest');f.finish('data:image/jpeg;base64,preview');assert.equal(await work,'data:image/jpeg;base64,preview');
 });
+
+test('selected video thumbnails accept local media and reject network sources',async()=>{
+ const f=fixture();
+ assert.equal(await f.out.selectedVideoThumbnail('https://example.com/video.mp4'),null);
+ assert.equal(f.calls(),0);
+ for(const uri of ['content://media/video/12','file:///cache/picker.mp4']){
+  const work=f.out.selectedVideoThumbnail(uri);f.finish('data:image/jpeg;base64,frame');
+  assert.equal(await work,'data:image/jpeg;base64,frame');
+ }
+});

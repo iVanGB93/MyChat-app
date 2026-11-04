@@ -1,3 +1,4 @@
+import {t} from '../../localization/language';
 import {withRootSharedFile} from '../../modules/storage';
 import {useAttachmentPreview} from './AttachmentPreview';
 import React,{createContext,useContext,useRef,useState,useEffect} from 'react';
@@ -12,56 +13,68 @@ import {sharedItems,sharedBatch} from '../../modules/ui/sharedContent';
 import {useTheme} from '../../contexts/ThemeContext';
 
 type Pending={reviewed?:boolean;key:string;items:ReturnType<typeof sharedItems>;batch:ReturnType<typeof sharedBatch>};
-const Context=createContext<null|{pending:React.MutableRefObject<Pending|null>;intent:ReturnType<typeof useShareIntent>}>(null);
+const Context=createContext<null|{pending:React.MutableRefObject<Pending|null>;intent:ReturnType<typeof useShareIntent>;revision:number}>(null);
 export function RootShareProvider({children}:{children:React.ReactNode}){
  const intent=useShareIntent({resetOnBackground:false}),pending=useRef<Pending|null>(null);
- return <Context.Provider value={{intent,pending}}>{children}</Context.Provider>;
+ // A new OS event owns a new draft, even when its bytes match a previous share.
+ const incoming=useRef({value:intent.shareIntent,error:intent.error,revision:0});
+ if(incoming.current.value!==intent.shareIntent||incoming.current.error!==intent.error){
+  incoming.current={value:intent.shareIntent,error:intent.error,revision:incoming.current.revision+1};pending.current=null;
+ }
+ return <Context.Provider value={{intent,pending,revision:incoming.current.revision}}>{children}</Context.Provider>;
 }
 export default function RootSharePicker({onSent}:{onSent(target:string):void}){
+ const context=useContext(Context)!;
+ return <ShareSession key={context.revision} onSent={onSent}/>;
+}
+function ShareSession({onSent}:{onSent(target:string):void}){
  const context=useContext(Context)!,{intent,pending}=context,{colors}=useTheme();
  const [state,setState]=useState<RootChatState>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[selected,setSelected]=useState('');
  const preview=useAttachmentPreview();
- const mounted=useRef(true);
+ const mounted=useRef(true),sending=useRef(false);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
- useEffect(()=>{if(!intent.hasShareIntent)return;let alive=true;void conversations().snapshot().then(s=>{if(alive)setState(s);}).catch(()=>{if(alive)setError('Unable to read conversations.');});return()=>{alive=false;};},[intent.hasShareIntent]);
+ useEffect(()=>{if(!intent.hasShareIntent)return;let alive=true;void conversations().metadataSnapshot().then(s=>{if(alive)setState(s);}).catch(()=>{if(alive)setError(t("Unable to read conversations."));});return()=>{alive=false;};},[intent.hasShareIntent]);
  if(!intent.hasShareIntent&&!intent.error)return null;
- const key=JSON.stringify(intent.shareIntent);
- let validation='';
- try{if(!pending.current||pending.current.key!==key){const items=sharedItems(intent.shareIntent);pending.current={key,items,batch:sharedBatch(items)};}}catch(e){validation=e instanceof Error?e.message:'Unable to read shared content.';}
+ const key=String(context.revision);
+ let validation=intent.error||'';
+ try{if(!validation&&(!pending.current||pending.current.key!==key)){const items=sharedItems(intent.shareIntent);pending.current={key,items,batch:sharedBatch(items)};}}catch(e){validation=e instanceof Error?e.message:t("Unable to read shared content.");}
  const draft=validation?null:pending.current;
- const close=()=>{if(busy||pending.current?.batch.busy)return;pending.current=null;setSelected('');setError('');intent.resetShareIntent();};
+ const close=()=>{if(sending.current||busy||pending.current?.batch.busy)return;pending.current=null;setSelected('');setError('');intent.resetShareIntent();};
  const choices=[...(state?.contacts??[]).filter(c=>!c.blocked).map(c=>({id:c.account,name:c.alias||shortIdentity(c.account)})),...(state?.groups??[]).filter(g=>g.accepted&&!g.blocked&&g.members.includes(localAccount.status().account!)).map(g=>({id:'group:'+g.id,name:g.name,group:true}))];
  const target=draft?.batch.target||selected;
  async function send(){
-  if(!draft||!target||busy)return;
+  if(!draft||!target||busy||sending.current)return;
   const owner=localAccount.status().account;if(!owner)return;
-  setBusy(true);setError('');
+  const current=()=>mounted.current&&pending.current===draft&&localAccount.status().state==='unlocked'&&localAccount.status().account===owner;
+  const checkCurrent=()=>{if(!current())throw Error(t("Share changed. Review the current selection before sending."));};
+  sending.current=true;setBusy(true);setError('');
   try{
    if(!draft.reviewed){
     const files=draft.items.filter((item):item is Exclude<typeof item,{text:string}>=>!('text' in item));
-    if(files.length){const reviewed=await preview.confirm(files);if(!reviewed)return;draft.items=[...draft.items.filter(item=>'text' in item),...reviewed];draft.batch=sharedBatch(draft.items);}
+    if(files.length){const reviewed=await preview.confirm(files);if(!reviewed)return;checkCurrent();draft.items=[...draft.items.filter(item=>'text' in item),...reviewed];draft.batch=sharedBatch(draft.items);}
     draft.reviewed=true;
    }
-   const result=await draft.batch.send(owner,target,()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner,async item=>{
-    const fresh=await conversations().snapshot();
-    if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)throw Error('Unlock your account to continue.');
+   checkCurrent();
+   const result=await draft.batch.send(owner,target,current,async item=>{
+    const fresh=await conversations().metadataSnapshot();
+    checkCurrent();
     const group=target.startsWith('group:')?target.slice(6):null;
-    if(group){const g=fresh.groups?.find(g=>g.id===group);if(!g||g.blocked||!g.accepted||!g.members.includes(owner))throw Error('Choose an active group.');}
-    else if(!fresh.contacts.some(c=>c.account===target&&!c.blocked))throw Error('This conversation is unavailable or blocked.');
+    if(group){const g=fresh.groups?.find(g=>g.id===group);if(!g||g.blocked||!g.accepted||!g.members.includes(owner))throw Error(t("Choose an active group."));}
+    else if(!fresh.contacts.some(c=>c.account===target&&!c.blocked))throw Error(t("This conversation is unavailable or blocked."));
     if('text' in item)return group?messaging.sendGroupText(group,item.text,undefined,owner):messaging.sendText(target,item.text,undefined,owner);
-    return withRootSharedFile(owner,item.uri,async uri=>group?queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(group),uri,item.name,item.mime,item.caption):queueRootAttachmentSource(target,uri,item.name,item.mime,owner,undefined,item.caption));
+    return withRootSharedFile(owner,item.uri,async uri=>{checkCurrent();if(group){const audience=await rootGroupAttachmentAudience(group);checkCurrent();return queueRootGroupAttachmentSource(audience,uri,item.name,item.mime,item.caption);}return queueRootAttachmentSource(target,uri,item.name,item.mime,owner,undefined,item.caption);});
    });
    if(result&&pending.current===draft){pending.current=null;intent.resetShareIntent();if(mounted.current){setSelected('');onSent(target);}}
-  }catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Unable to share. Try again.');}
-  finally{if(mounted.current)setBusy(false);}
+  }catch(e){if(mounted.current)setError(e instanceof Error?e.message:t("Unable to share. Try again."));}
+  finally{sending.current=false;if(mounted.current)setBusy(false);}
  }
- const first=draft?.items[0],file=first&&!('text' in first)?first:null;
- const content=first&&'text' in first?first.text:file?.caption||file?.name||'Shared content';
+ const first=draft?.items.find(item=>!('text' in item))??draft?.items[0],file=first&&!('text' in first)?first:null;
+ const content=first&&'text' in first?first.text:file?.caption||file?.name||t("Shared content");
  const previewContent=draft&&<View style={{flexDirection:'row',alignItems:'center',gap:12}}>
-  {file?.mime.startsWith('image/')?<Image source={{uri:file.uri}} accessibilityLabel="Shared image preview" style={{width:56,height:56,borderRadius:10}}/>:<Ionicons name={file?file.mime.startsWith('video/')?'videocam-outline':file.mime.startsWith('audio/')?'musical-notes-outline':'document-outline':'chatbubble-outline'} size={28} color={colors.primary}/>}
-  <View style={{flex:1,gap:4}}><Text style={{color:colors.primary,fontSize:12,fontWeight:'600'}}>{draft.items.length===1?'SHARED CONTENT':`${draft.items.length} ITEMS TO SHARE`}</Text><Text numberOfLines={2} style={{color:colors.text,fontSize:14}}>{content}</Text></View>
+  {file?.mime.startsWith('image/')?<Image source={{uri:file.uri}} accessibilityLabel={t("Shared image preview")} style={{width:56,height:56,borderRadius:10}}/>:<Ionicons name={file?file.mime.startsWith('video/')?'videocam-outline':file.mime.startsWith('audio/')?'musical-notes-outline':'document-outline':'chatbubble-outline'} size={28} color={colors.primary}/>}
+  <View style={{flex:1,gap:4}}><Text style={{color:colors.primary,fontSize:12,fontWeight:'600'}}>{draft.items.length===1?t("SHARED CONTENT"):`${draft.items.length} ITEMS TO SHARE`}</Text><Text numberOfLines={2} style={{color:colors.text,fontSize:14}}>{content}</Text></View>
  </View>;
- return <><ConversationRecipientPicker visible={!preview.isOpen} title="Share to Axonic" choices={choices} selected={draft?target:''} busy={busy} locked={!!draft?.batch.target} loading={!state&&!error} preview={previewContent}
-  description={draft?.batch.completed?`${draft.batch.completed} of ${draft.items.length} items queued. Retry sends the remaining items.`:'Select a conversation. You can review media before sending.'}
+ return <><ConversationRecipientPicker visible={!preview.isOpen} title={t("Share to Axonic")} choices={choices} selected={draft?target:''} busy={busy} locked={!!draft?.batch.target} loading={!state&&!error} preview={previewContent}
+  description={draft?.batch.completed?`${draft.batch.completed} of ${draft.items.length} items queued. Retry sends the remaining items.`:t("Select a conversation. You can review media before sending.")}
   error={error||validation||intent.error||undefined} submitLabel="Send" onSelect={setSelected} onSubmit={()=>void send()} onClose={close}/>{preview.modal}</>;
 }

@@ -1,0 +1,115 @@
+GROUP CALLS - DEVELOPMENT IMPLEMENTATION AND ACCEPTANCE
+2026-10-31. Enabled only in Dev; not a production readiness declaration.
+
+Architecture
+- groupCallRoom.ts binds immutable room ID, group, membership revision and sorted
+  participants to signed call controls. Each pair has a deterministic leg ID and
+  offerer. Only a creator invitation can open a ringing room. Other pair invites
+  wait for that invitation and the local user's explicit acceptance.
+- groupCallCoordinator.ts composes the existing durable private-call coordinator
+  per pair. Membership and blocked contacts are checked again before admission.
+  Departure ends the local participant's legs; it does not end other pairs.
+- groupCallCapture.ts and RootGroupCallMedia.tsx own one microphone/camera capture
+  per room. Per-peer hooks own negotiation and senders, not capture lifetime.
+- Existing authenticated data WebRTC connections are borrowed and pinned against
+  normal pool eviction. Hangup releases media use, preserving the data connection.
+  Missing direct peers retain the dedicated TURN fallback.
+- Call readiness uses subscriptions plus an expiry deadline. No new idle polling.
+  An initial media setup deadline prevents indefinite Connecting tiles.
+- Group legs remain in durable journals but are excluded from private call bubbles.
+- Portable protocol/coordinator/connection changes are synchronized to the local
+  AoN source and type-checked. No AoN source release was deployed in this task.
+
+Live validation: phone R3GYC0H7PMY com.axonic.dev and two test emulators
+- Three-person voice: all six incoming audio paths had RTP bytes.
+- Three-person video: all six incoming paths had audio and decoded video frames.
+  Native peer connection IDs matched the existing data connections.
+- Creator left: remaining emulator pair continued; data peers remained connected.
+- One labeled group text during video delivered once to both recipients.
+- Forced dedicated TURN video: all three pairs, both endpoints relay candidates,
+  positive incoming audio and decoded video frames on every endpoint.
+- Subsequent private video regression passed with bidirectional media.
+- Test calls ended and temporary TURN-forcing overrides restored in finally.
+  No official phone app update, data reset, production build, commit or push.
+
+TURN finding and authorized server changes
+FirstNeuron /etc/turnserver.conf previously had user-quota=4, total-quota=30,
+max-bps=500000 and bps-capacity=2500000. Increasing allocation counts alone did
+not fix the failure: exactly five relay allocations were available. With explicit
+user approval, user-quota=64, total-quota=1024 and bps-capacity=25000000 are now
+applied; max-bps remains 500000. coturn was restarted and is active. The subsequent
+three-way forced relay test passed. This does not demonstrate capacity for 1,024
+simultaneous allocations: bandwidth and the existing 49160-49200 port range are
+separate bounds. Larger rooms/concurrency require measured capacity planning.
+Reference: https://github.com/coturn/coturn/blob/master/docker/coturn/turnserver.conf
+
+Automated validation
+- 173 focused tests passed: groupCalls, callControlProtocol, callMedia,
+  callPeerSelection, webRtcTransport, rootCallScheduling, neuronConnections,
+  appModules and mobileCallJournalStore.
+- Mobile TypeScript, AoN TypeScript and module boundaries passed.
+- Full suite: 1,790 tests; 1,786 passed, 3 skipped, 1 failed. Remaining failure is
+  the pre-existing photoEditor.test.cjs:84 assertion expecting a full-size sticker
+  preview instead of the previously implemented compact preview. No sticker code
+  was changed for group calls.
+
+Evidence in ignored builds/
+group-call-video-sample.json; group-call-after-caller-left.json;
+group-call-concurrent-message-verified.json; group-call-turn-results.json;
+group-call-turn-after-capacity.txt; group-call-private-regression.json;
+group-call-focused-final.txt; group-call-full-tests-final.txt.
+
+Remaining before production enablement
+- Group screen sharing is not implemented; private screen sharing is unchanged.
+- Background/restart/wake, network handover, mixed
+  direct/TURN rooms, larger rooms and sustained media/load acceptance remain.
+- Measure subjective audio/video quality on multiple physical phones; emulators
+  provide RTP evidence, not proof of microphone/speaker quality.
+- Updated AoN signaling verification must be deployed before claiming group
+  signaling via offline/wake/relay paths. Direct authenticated signaling was used
+  in these device tests, including the TURN-media tests.
+
+Group UX follow-up
+- Picker defaults to all eligible peers, supports voice/video and a selected
+  signed subset. Nonselected members receive no invitation and cannot join it.
+- Group history uses filtered compact journal projections and deduplicates mesh
+  legs by room ID. One local call entry appears in the group timeline, on the
+  creator's side; private history excludes these legs. It does not claim delivery
+  of history entries to nonparticipants or distinguish answered/missed outcomes.
+- Speaking borders use audio-level metadata sampled only during a group leg,
+  every 250ms with nonoverlapping reads and 350ms release hold. Native audioLevel
+  and totalAudioEnergy/totalSamplesDuration verified on phone and both emulators.
+  No recorded audio or idle monitoring. Muting suppresses the local highlight.
+- Repeat three-person voice: both emulators rang/accepted; phone history visually
+  verified including the preceding two-person call. Calls ended after testing.
+
+Shared call presentation (October 31)
+- CallSessionScreen owns the active screen, participant layout, minimized window and system-window presentation for private/group voice/video calls. CallControls and CallOptions share controls and audio routing UI.
+- OutgoingCallAppearance is the shared setup sheet; GroupCallPicker adds participant selection without a nested scroll container.
+- useCallAudioSession owns one audio route/foreground subscription, OS call lease and keep-awake lifetime per call, independent of room leg count.
+- Private RootMedia and RootGroupCallMedia retain distinct media ownership: private screen sharing and group shared capture must not be conflated. Group screen sharing remains unsupported.
+- Validation: TypeScript passes; 62 focused call tests pass. Live phone plus two emulators: private voice/video and three-person group voice/video passed with incoming audio on all six group directions and decoded video on all six video directions. Shared group audio options inspected; minimize/restore exercised. Test calls ended; normal app and stored data preserved.
+
+Group departure and video layout follow-up
+- Terminal pair events close a room immediately when all expected legs have ended; no scheduler tick is required. Two remaining connected participants can continue after the creator leaves.
+- Video remote views split the full height equally; self uses the private-call draggable 110x150 preview. Voice retains participant tiles.
+- Regression reproduces final departure without tick. Live phone departure left the emulator pair connected; after emulator 1 hung up, emulator 2 reached ended in 1.8 seconds. Test calls cleaned up.
+
+Incoming preview and rejoin (Dev)
+- Incoming group video uses the same foreground/permission-gated local camera preview as private video. Capture is stopped before room capture begins.
+- Lower remote participant label is at the top of its tile.
+- Latest group call history exposes Join for its signed original audience. Availability is verified on tap, not inferred from an old history entry; there is no continuously synchronized room-presence indicator yet.
+- Optional signed rejoin nonce derives fresh pair IDs within the same immutable room. Active accepted peers admit the fresh legs; inactive or unrelated rooms reject without ringing. Existing terminal journals are never reopened. Fresh local presentation IDs prevent an earlier dismissed screen hiding the rejoined call.
+- TypeScript and 101 focused tests pass. Live phone leave/rejoin took 3.5 seconds; emulator pair remained active and six incoming audio/video directions recovered. Test calls ended. Requires updated endpoints for rejoin signaling; still Dev-only.
+
+Event-driven call availability
+- groupCallPresence tracks each invited participant's own active state over authenticated encrypted chat transport. These ephemeral packets are intercepted before message/history storage. No periodic heartbeat or room polling.
+- Subscribe/query once on chat open, catch up on a new authenticated connection, publish on participant state transitions. Only failed events receive three bounded delivery retries. Unknown/disconnected peers cannot enable Join; policy changes remove unauthorized availability.
+- Join is shown only for the latest matching-revision call with a currently connected participant reporting active. Closing the last pair publishes inactive and removes Join. This is observed network state, not a guarantee during an undetected partition; disconnect detection fails closed.
+- Delayed control for retired legs cannot recreate them alongside replacement connections. Membership revisions now also wake call-policy checks.
+- Live phone + two emulators: three leave/rejoin cycles passed (3.9, 5.9, 8.3 seconds); two active connections per device, unaffected emulator pair retained its native connection throughout. After final departures Join became unavailable in 2.6 seconds. All test calls ended.
+
+Four-person limit and layout
+- MAX_GROUP_CALL_PARTICIPANTS=4 is shared by signed-room validation and the call picker. Group chat membership is unchanged; larger groups select up to three invitees plus the caller. Groups above the limit start with no preselected invitees.
+- Four-person video renders three remote feeds and the local camera as equal 50% x 50% quadrants, local mirrored in the fourth cell, with no extra floating self-preview. Two/three-person presentation remains unchanged.
+- Local tests cover four participants negotiating six pair connections, departure/rejoin preserving the remaining mesh, five-person rejection, selection replacement at the cap and layout geometry. 150 focused tests passed; real four-device media/quality testing is deferred until the fourth device is available.

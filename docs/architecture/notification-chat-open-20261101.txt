@@ -1,0 +1,32 @@
+NOTIFICATION CHAT OPEN — NOVEMBER 1, 2026
+
+Finding: indexed canonical writes defer presentation work while backgrounded.
+The previous dirty marker did not retain the affected conversation keys, so the
+next chat/index read rebuilt the projection from the complete canonical history.
+This adds avoidable history work when opening a notification on a large account.
+
+Change: sparse commits durably union dirty conversation keys before canonical
+commit. On foreground demand, the existing indexed readRooms API and existing
+partial projection publisher repair only those rooms, using current canonical
+metadata/actions. No new timer, queue or parallel cache. Multiple background
+updates and process restarts retain the union. Metadata-only changes use an empty
+room set with fresh metadata. Full writes, unknown/invalid dirty scopes, missing
+indexes and damaged pages retain full recovery. Read failures remain failures;
+they never publish an empty replacement or erase the durable recovery marker.
+
+Tests: conversationPages suite 26/26 passes, including restart, repeated scoped
+commits, group scope union, metadata, read failure, failed canonical commit and a
+full write superseding scoped recovery. TypeScript passes. Full regression output:
+builds/notification-pages-full-check.log.
+
+Live: a labelled message sent between the two emulator identities while receiver
+was backgrounded; opened its actual OS notification from the shade. Chat messages
+rendered and projection sourceReads stayed at zero across the operation. Evidence:
+builds/notification-page-open.json. This verifies no full-history projection read
+in that run, not a precise tap-to-first-frame duration or a cold killed-process
+benchmark on a large phone account. Existing messages/identities were preserved.
+
+Still bounded by: first-time/missing-index recovery, affected-room size, storage
+contention and actual message download when the notification was only a hint.
+The change does not promise zero latency or replace authenticated recovery.
+Local source only; not in the current production AAB and not deployed to AoNs.

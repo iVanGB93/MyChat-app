@@ -139,8 +139,8 @@ test('biometrics cannot bypass an unavailable device capability',async()=>{
 });
 test('sole entry registers neuron background handlers regardless of obsolete feature flags',()=>{
  const source=fs.readFileSync('index.ts','utf8');
- function run(flag){const calls=[];new Function('process','require',source)({env:{EXPO_PUBLIC_AXONIC_LOCAL_ACCOUNT:flag}},path=>{calls.push(path);return path.endsWith('crashReporting')?{configureCrashReporting:()=>calls.push('crash-init')}:path==='expo'?{registerRootComponent:()=>calls.push('registered')}:path.endsWith('rootBackgroundEntry')?{registerRootBackgroundHandlers:()=>calls.push('root-background')}:{default:{}};});return calls;}
- assert.deepEqual(run('1'),['./src/services/crashReporting','crash-init','./src/services/identity/rootBackgroundEntry','root-background','expo','./src/screens/LocalAccountApp','registered']);assert.deepEqual(run(undefined),run('1'));assert.deepEqual(run('0'),run('1'));
+ function run(flag){const calls=[];new Function('process','require',source)({env:{EXPO_PUBLIC_AXONIC_LOCAL_ACCOUNT:flag}},path=>{calls.push(path);return path.endsWith('crashReporting')?{configureCrashReporting:()=>calls.push('crash-init')}:path==='expo'?{registerRootComponent:()=>calls.push('registered')}:path.endsWith('backgroundMediaUploads')?{registerBackgroundMediaUploads:()=>calls.push('media-background')}:path.endsWith('rootBackgroundEntry')?{registerRootBackgroundHandlers:()=>calls.push('root-background')}:{default:{}};});return calls;}
+ assert.deepEqual(run('1'),['./src/services/crashReporting','crash-init','./src/services/identity/rootBackgroundEntry','root-background','./src/composition/backgroundMediaUploads','media-background','expo','./src/screens/LocalAccountApp','registered']);assert.deepEqual(run(undefined),run('1'));assert.deepEqual(run('0'),run('1'));
 });
 
 

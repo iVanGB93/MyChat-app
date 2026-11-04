@@ -1,3 +1,5 @@
+import {trialReference,type TrialObservation} from './trialCredits.ts';
+import {createContributionMeter,type ContributionEvent} from './networkScorecard.ts';
 import type {CustodyRow,CustodyStore,CustodyLimits} from './relayStorage.ts';
 export type {CustodyRow,CustodyStore,CustodyLimits} from './relayStorage.ts';
 import { custodyDigest, parseCustody, verifyCustody, CUSTODY_TTL, type CustodyEnvelope, type CustodyReceipt } from './custodyProtocol.ts';
@@ -55,8 +57,9 @@ export function validateCustodyRows(value: unknown, limits: CustodyLimits = DEFA
  */
 export function createCustodyService(d: { owner: string; store: CustodyStore; records: IdentityRecordStore; now(): number; current(): boolean; stored?(packet:CustodyEnvelope):Promise<void>;
   receiveOwn?(packet:CustodyEnvelope,relay:string):Promise<CustodyReceipt|null>;
-  changed?(peer:string):void;
+  changed?(peer:string):void; scoreChanged?():void;trial?(event:TrialObservation):void;
 }) {
+  const meter=createContributionMeter(d.now,d.scoreChanged);
   const limits = d.store.limits ?? DEFAULT_CUSTODY_LIMITS;
   let queued = 0;
   const prune = (rows: CustodyRow[]) => { for (let i = rows.length - 1; i >= 0; i--) if (rows[i].expires <= d.now()) rows.splice(i, 1); };
@@ -92,6 +95,7 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
       });
     }
     let deposited:CustodyEnvelope|null=null,changed:string|null=null;
+    const delta:Partial<Record<ContributionEvent,number>>={};
     const result=await d.store.transaction(rows => {
       validateCustodyRows(rows, limits); prune(rows);
       if (!d.current()) return JSON.stringify({ status: 'rejected' });
@@ -102,7 +106,7 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
           if (!old || old.recipient !== packet.recipient || old.recipientDevice !== packet.recipientDevice
             || old.expires !== packet.expires || old.digest !== packet.digest) return JSON.stringify({ status: 'rejected' });
           // Replace ciphertext atomically. A consumed receipt remains only a digest tombstone.
-          if (old.packet) {if(old.packet.kind==='envelope')changed=packet.sender;old.packet = packet;}
+          if (old.packet) {if(old.packet.kind==='envelope'){changed=packet.sender;delta.recipientReceipts=1;}old.packet = packet;}
           return JSON.stringify({ status: 'accepted' });
         }
         const digest = custodyDigest(packet);
@@ -113,7 +117,7 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
           || JSON.stringify(rows).length + JSON.stringify(packet).length + 600 > limits.bytes) return JSON.stringify({ status: 'full' });
         rows.push({ sender: packet.sender, recipient: packet.recipient, recipientDevice: packet.recipientDevice,
           id: packet.id, expires: packet.expires, digest, packet });
-        deposited=packet;
+        deposited=packet;delta.messagesHeld=1;
         changed=packet.recipient;
         return JSON.stringify({ status: 'held' });
       }
@@ -131,12 +135,15 @@ export function createCustodyService(d: { owner: string; store: CustodyStore; re
       }
       return JSON.stringify({ status: 'rejected' });
     });
+    meter.commit(delta);
+    if(packet?.kind==='receipt'&&JSON.parse(result).status==='accepted')try{d.trial?.({kind:'relay-receipt',reference:trialReference(packet.sender,packet.id,packet.recipient)});}catch{}
     // Notify only after durable commit. Push failure must never undo custody or imply delivery.
     if(deposited&&d.current()&&d.stored)void Promise.resolve().then(()=>d.stored!(deposited!)).catch(()=>{});
     if(changed&&d.current())try{d.changed?.(changed);}catch{/* The committed row is recovered on reconnect. */}
     return result;
   }
   return {
+    contribution:meter.snapshot,
     /** Only the existing authenticated recipient connection is eligible. */
     async deliverDirect(packet:CustodyEnvelope,request:(recipient:string,raw:string)=>Promise<string|null>):Promise<boolean>{
       if(!d.current()||packet.expires<=d.now())return false;

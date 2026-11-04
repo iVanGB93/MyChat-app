@@ -30,9 +30,10 @@ export function deviceRemovalKeys(keys:readonly string[],account:string){
  if(!validAccountId(account))throw Error('Invalid removal account');
  const exact=new Set([...ownPrefixes.map(p=>p+account),'@axonic_stickers:v1:root-'+account.slice(9),'@axonic_imported_stickers:v1:root-'+account.slice(9),
  '@axonic_auto_lock_v1','@axonic_local_account_name_v1','@axonic_root_call_wake_owner_v1','@axonic_root_notification_open_v1']);
- return keys.filter(k=>exact.has(k)||k.startsWith('@axonic_root_draft:'+account+':'));
+ return keys.filter(k=>exact.has(k)||k.startsWith('@axonic_root_draft:'+account+':')||k.startsWith('@axonic_conversations_v1:'+account+':'));
 }
 export const deviceRemovalTables=[
+ ['axonic_own_history_v2.db','own_history_records','owner'],['axonic_own_history_v2.db','own_history_accounts','owner'],
  ['axonic_group_custody_v1.db','group_custody','owner'],
  ['axonic_own_attachment_jobs_v1.db','jobs','owner'],['axonic_own_attachment_jobs_v1.db','finished_jobs','owner'],
  ['axonic_call_control_v1.db','call_journal','owner'],['axonic_call_control_v1.db','call_history','owner'],

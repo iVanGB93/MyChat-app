@@ -15,7 +15,7 @@ export async function forwardRootMessage(source:Pick<RootChatMessage,'peer'|'id'
  const check=()=>{if(!owner||localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)throw Error('Unlock your account to forward this message');};
  const group=recipient.startsWith('group:')?recipient.slice(6):undefined;
  check();if(!group&&(!validAccountId(recipient)||recipient===owner))throw Error('Choose another identity');
- const state=rootChatView(owner!,await localRootChat().snapshot());check();
+ const state=rootChatView(owner!,await localRootChat().messageSnapshot(source.peer,source.id,source.direction));check();
  if(state.contacts.find(c=>c.account===recipient)?.blocked)throw Error('This identity is blocked');
  const message=state.messages.find(m=>m.peer===source.peer&&m.id===source.id&&m.direction===source.direction);
  if(!message||message.deleted)throw Error('This message is no longer available');

@@ -1,0 +1,19 @@
+NETWORK SCORECARD — 2026-10-31
+
+Shared core: src/services/identity/networkScorecard.ts. Used by phones and the hosted network. No reward/combined score. Contribution and connection health are separate objects.
+
+Contribution comes from existing durable custody transitions, after transaction success: private message storage, accepted group job, unique encrypted media blocks/bytes, media grants, and first verified recipient receipts. Duplicate deposits/blocks/receipts and rollback do not add counts. Shared group content is counted on actual first block insertion, not once per recipient grant. Ciphertext bytes are decoded payload bytes, not wire bytes or plaintext size. Receipt evidence does not establish that this relay supplied all content; the recipient may use another route.
+
+No polling, new scheduler, database table, message scan, or identifier history is added. Existing change notifications refresh the phone global network state and hosted dashboard. Diagnostics include the same scorecard under network.evidence.scorecard; hosted status/monitoring exposes scorecard. Existing custody tombstones provide idempotency, not a separate reward ledger.
+
+Scope: each service instance has startedAt; counters are local, volatile observations. A restart/account switch creates a new window. Uninstantiated services are null/unavailable, not zero. No historical backfill or claimed lifetime total. Pending storage residence, independently verified availability and actual forwarded throughput remain explicitly unavailable. These cannot responsibly be derived from a receipt, an ACK or process age. This is not tamper-proof accounting or a basis for payments.
+
+Health reports current network state, connected-peer count and runtime error separately. A low-traffic neuron is not classified unhealthy. No inference of CPU, battery, storage integrity or delivery success.
+
+Phone UI: existing Network panel; AoN UI: existing Network page. Core and hosted changes prepared in builds/aon-direct-handoff-20261030 (the clean release-based worktree), not the unrelated dirty historical AoN checkout. No commit, push, deployment, installation or new production build in this change.
+
+Validation: mobile full check 1811 passed / 3 skipped, TypeScript and module checks passed. Subsequent media-count focused checks 13 passed. Hosted compilation and reporting checks passed. Hosted full suite originally 332/334: dashboard test resolved, plus one pre-existing shared manifest mismatch for attachmentConnections.ts. Investigation found four existing streaming files whose source hashes disagree with their manifest, unchanged by this task (attachmentConnections, directAttachmentStream, wssStreamCipher, wssAttachmentStreams); do not silently overwrite them with newer phone code. Scorecard/custody selected core parity passes. No device currently connected for visual Dev check.
+
+2026-10-31 FOLLOW-UP — streaming parity repaired
+Two stale hashes (attachmentConnections/directAttachmentStream) and real missing WSS native-crypto/timing/revocation interfaces were resolved against canonical phone files. attachmentTiming and updated streamWake now explicitly mapped; no platform-native module imported into AoN core. Selected shared parity and complete stored-file manifest validation pass. Full AoN regression: 335/335 passed; an additional injected-crypto/default interop test passes for binary and text in both directions (37 focused tests).
+Phone R3GYC0H7PMY: existing com.axonic.dev used, no installation/data reset. Runtime/global scorecard matched, two active peers; contribution and health layout visually checked after scrolling Network. Official app untouched. Evidence: builds/scorecard-phone-check.json, scorecard-dev-detail.png, stream-alignment-full-tests.txt, stream-alignment-final-focused.txt. No live transfer speed claim, deployment, commit or push.

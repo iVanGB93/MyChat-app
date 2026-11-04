@@ -3,7 +3,7 @@ const source=ts.transpileModule(fs.readFileSync('src/components/chat/ChatCompose
 function composer(){
  let text='';const sends=[];
  const react={createElement:(type,props,...children)=>({type,props,children}),forwardRef:f=>f,useState:v=>[v&&typeof v==='object'&&'empty' in v?{empty:text.length===0,sendable:!!text.trim()}:v,()=>{}],useRef:v=>({current:v}),useImperativeHandle:()=>{}};
- const c={exports:{},require:n=>n==='react'?react:n==='react-native'?{View:'View',Text:'Text',Pressable:'Pressable',TouchableOpacity:'TouchableOpacity'}:n.includes('safe-area')?{useSafeAreaInsets:()=>({bottom:0})}:n.includes('ThemeContext')?{useTheme:()=>({colors:{}})}:n.includes('use-chat-draft')?{useChatDraft:()=>[text,v=>text=v]}:n.includes('KeyboardForm')?{KeyboardAwareTextInput:'Input'}:n.includes('chat-room-styles')?{chatRoomStyles:{}}:n.includes('vector-icons')?{Ionicons:'Icon'}:{__esModule:true,default:'Voice'}};
+ const c={exports:{},require:n=>require('./helpers/localization.cjs')(n) ?? (n==='react'?react:n==='react-native'?{View:'View',Text:'Text',Pressable:'Pressable',TouchableOpacity:'TouchableOpacity'}:n.includes('safe-area')?{useSafeAreaInsets:()=>({bottom:0})}:n.includes('ThemeContext')?{useTheme:()=>({colors:{}})}:n.includes('use-chat-draft')?{useChatDraft:()=>[text,v=>text=v]}:n.includes('KeyboardForm')?{KeyboardAwareTextInput:'Input'}:n.includes('chat-room-styles')?{chatRoomStyles:{}}:n.includes('AnimatedStickerButtonFace')?{__esModule:true,default:'StickerFace'}:n.includes('vector-icons')?{Ionicons:'Icon'}:{__esModule:true,default:'Voice'})};
  vm.runInNewContext(source,c);
  const nodes=(n,path='')=>[{...n,path},...(n?.children??[]).flat(Infinity).flatMap((x,i)=>x&&typeof x==='object'?nodes(x,path+'.'+i):[])];
  return {sends,type:v=>text=v,render:()=>{const tree=nodes(c.exports.ChatComposer({owner:'owner',peer:'peer',onSend:v=>sends.push(v)},null));tree.find(n=>typeof n.type==='function').props.ref.current={getText:()=>text};return tree;}};
@@ -17,7 +17,7 @@ function draftEditor(platform='android'){
  const react={createElement:(type,props)=>({type,props}),forwardRef:f=>f,useRef:v=>{const i=cursor++;return hooks[i]??={current:v};},useLayoutEffect:(f,deps)=>{const i=cursor++,old=hooks[i];if(!old||deps.some((v,j)=>v!==old[j])){hooks[i]=deps;f();}},useImperativeHandle:(r,f)=>r.current=f()};
  const update=v=>text=typeof v==='function'?v(text):v;
  const imports={react,'react-native':{Platform:{OS:platform}},'../../hooks/use-chat-draft':{useChatDraft:()=>[text,update]},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../ui/KeyboardForm':{KeyboardAwareTextInput:'Input'},'./chat-room-styles':{chatRoomStyles:{}}};
- const c={exports:{},require:n=>imports[n]??{}};vm.runInNewContext(editorSource,c);
+ const c={exports:{},require:n=>require('./helpers/localization.cjs')(n) ?? (imports[n]??{})};vm.runInNewContext(editorSource,c);
  const props={owner:'test',scope:'peer',onState:s=>flags.push({...s}),onTyping:()=>{}};
  return {flags,nativeCalls,ref,render(){cursor=0;const tree=c.exports.testDraftEditor(props,ref);tree.props.ref.current=native;return tree;}};
 }

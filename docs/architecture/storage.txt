@@ -61,3 +61,151 @@ remain in their existing locations; future physical moves should preserve import
 account guards and transaction semantics. Do not create a routing-aware StoreManager.
 Guide: messaging.txt
 Guide: transfers.txt
+
+Disposable conversation read index (October 27)
+File: src/services/identity/conversationProjection.ts
+File: src/services/identity/conversationPageStore.ts
+Pure shared builders/paging accept injected storage/hash ports. The mobile storage
+adapter uses AsyncStorage and existing native SHA-256 (ASCII-escaped page JSON;
+portable fallback for records beyond the native input bound). No AoN deployment
+is part of this change.
+The canonical own-chat ledger/schema remains authoritative and unchanged. Derived
+index version 2 lives in the owner-scoped @axonic_conversations_v1 namespace. It
+contains small previews/counts/contact/group metadata, selected group-photo records,
+and a page directory. Message pages contain 50 coalesced conversation records;
+quote lookup records locate older targets without loading unrelated rooms.
+A durable dirty marker precedes canonical writes. Shared serialization prevents
+read/write races. After commit, only changed derived pages are written; metadata
+is published last. Projection failure cannot turn a committed send into a reported
+send failure. Missing/dirty/corrupt projections rebuild from the canonical ledger;
+canonical read failure stays an error, never empty history. Initial indexing and
+write-side projection still process the source ledger. Future protocol-storage
+indexing is separate work; this change removes full-history reads from chat-list
+and ordinary room UI paths. No stored messages or media are removed.
+Test: tests/conversationPages.test.cjs
+
+Revision-scoped network read projections (October 27)
+rootChatLedger now exposes metadataSnapshot and deliverySnapshot. These are
+validated operational projections, never complete history and never sourced from
+the disposable UI index. Incoming duplicate and outgoing-receipt membership use
+exact peer+ID sets via hasReceived / hasOutgoingReceipt; private/group receipt
+semantics and profile receipt matching are preserved.
+A canonical successful write refreshes projections from the committed state only
+when its revision is unambiguous. External revisions, uncertain writes and explicit
+cache invalidation discard them; every query checks the account. Callers receive
+independent copies. Stores without revision support rebuild rather than assuming
+freshness. A revision changing during a cold projection read rejects the result.
+Legacy adapters still read canonical history once on cold network access.
+The Dev-only indexed adapter described below removes that requirement. Pending
+work and policy metadata may still grow with backlog.
+
+Indexed own history (October 27, Dev rollout)
+Portable engine: services/identity/indexedOwnHistory.ts, injected SQL interface.
+Mobile adapter: modules/storage/indexedChatStore.ts. Production remains on the
+legacy adapter; indexedChatEnabled is explicitly gated by __DEV__.
+On first use only, validate and transactionally import existing canonical JSON
+into axonic_own_history_v2.db. The original legacy value remains untouched.
+All future Dev writes use SQLite; the legacy value is no longer current. Do not
+switch a migrated Dev account back to the legacy adapter without reconciliation.
+Migration failure rolls back and fails closed; it must never overwrite the source.
+
+Canonical metadata and records are separate. Operational reads fetch pending
+records only; membership uses exact SQL keys. Routine private sends, attachments,
+edits, read acknowledgments, receipts, and contact/profile/capability mutations use
+selected records and version-checked transactions. Capacity checks remain global.
+Never deliver a partial state to full-state permission-cache observers.
+UI projection maintenance rebuilds affected rooms, not the full account; failures
+leave a durable dirty marker and recover from the canonical store.
+
+Remaining full-state paths include explicit chat deletion/import, export/account
+recovery, and initial UI projection rebuilding.
+This is not a claim that the entire app cold-start is now history-free. AoN storage
+adapters remain unchanged; the portable ledger's indexed interface is optional.
+Tests: indexedOwnHistory.test.cjs, conversationPages.test.cjs, rootChatLedger.test.cjs.
+
+Group, attachment and notification queries (October 27 follow-up)
+Indexed group sends/actions/receives and same-group attachment batches read the
+selected group plus exact delivery-ID/logical-ID conflict records across groups.
+Global capacity enforcement remains transactional. Cross-group logical-ID reuse
+and collisions with private/control records are still rejected. This is currently
+per-group loading, not per-message loading inside large groups.
+
+attachmentRevisionSnapshot reads messages with attachment descriptors and all
+policy metadata, without text messages, action history or group control packets.
+It remains revision-bound; blocking and membership changes invalidate permission
+reuse. Completed attachments remain in this projection because serving/recovery
+may still need them; it is not just the pending outbox.
+
+messageSnapshot/readMessage reads exact peer+delivery ID and only associated
+private actions or group actions by logical message ID. The latter is essential
+for deletions and edits in generic FCM routing. The incoming notification preview
+and notification-open resolver use this query. Unknown records remain unknown;
+query errors do not silently fall back to stale data. FCM contact policy already
+uses metadata-only reads. Network content recovery itself is unchanged.
+
+Indexes on attachment presence and logical group IDs are added transactionally
+by SQLite's CREATE INDEX IF NOT EXISTS during store initialization; existing
+canonical rows are retained. Official app/AoN adapters remain unchanged.
+
+Membership, recovery and group-read queries (October 27)
+The control scope loads retained outgoing group packets, the exact incoming
+control delivery/replay/conflict record, and an explicitly selected group photo
+when needed. It does not load ordinary chat bodies or the entire received-control
+replay history. SQLite aggregates enforce the replay count and UTF-8 byte budget.
+Outgoing packet history remains necessary for pending-body deduplication, stable
+ID retries and delivered-versus-pending behavior; it has not been evicted.
+New packet collisions with omitted private history are checked inside the commit
+transaction. Selected photo/conflict records are read-only. Version checks,
+signed owner recovery, group limits and whole-transaction rollback still apply.
+Ordinary mute/block/accept changes use metadata only; recovery confirmation uses
+control records because it may generate signed backups.
+
+Group-read scope loads that group's unread incoming messages and group actions.
+Receipts retain deterministic IDs, deletion guards and global action capacity.
+New receipt collisions against omitted history reject the entire transaction,
+including the read flags. A repeat produces no additional receipt. UI projection
+maintenance still refreshes the affected conversation when its visible read or
+avatar state changes; it does not rebuild other conversations.
+
+Startup/background full-read audit (October 27)
+Automatic media export/cleanup now uses mediaSnapshot: current and retired
+attachment messages, only their private/group actions, plus policy and removal
+tombstones. Indexed joins preserve first-reference ordering, group logical IDs,
+and deletion behavior without loading text or group-control history. This view
+is distinct from attachment admission, which needs no rendered actions.
+Notification actions use exact messageSnapshot; navigation after a notification
+and the external share picker use metadataSnapshot. Relationship migration is
+metadata-only. Unsupported/malformed packet types are rejected before ledger IO.
+Bulk mark-read selects unread private messages and actions; group-only selections
+perform no full snapshot. Group custody grants select their delivery IDs.
+The delivery worker's snapshot dependency already resolves to deliverySnapshot
+in composition: its generic snapshot method name is not a full-history read.
+
+Still full reads on indexed Dev:
+- explicit diagnostic report capture (not its recipient policy check);
+- explicit storage management screen;
+- explicit delete/reset, and legacy public snapshot consumers;
+- first canonical migration and missing/dirty conversation-projection rebuild.
+No claim that production/AoN legacy adapters or every user action are history-free.
+
+Forwarding, attachment selection and group views (October 27)
+Forwarding reads the exact peer/message/direction plus its action evidence.
+Group attachment quote checks read the logical message plus deletion actions;
+unquoted audience checks read metadata only. Diagnostic attachment retries use
+an ID lookup across peers, retaining collision and deletion evidence.
+Group creation reads metadata. Group settings read only that group's attachment
+messages/actions for photo selection. Message info reads all recipient copies
+of one logical message (not the deduplicated timeline projection).
+useGroupSnapshot refreshes on durable writes and foreground/focus changes; it
+stops while hidden/backgrounded and rejects stale owner/scope completions.
+The portable store contract is shared; the indexed adapter remains Dev-only.
+Legacy adapters retain the existing complete-read fallback.
+
+Production promotion — 1.1.31 / code 102
+The mobile indexed-history adapter is now enabled in both Dev and production.
+The one-time migration validates the legacy record and commits all rows with its
+account marker atomically. The legacy source is preserved, never used as a
+fallback after migration. Failed migration remains retryable; malformed history
+is not replaced by an empty account. Account removal covers both indexed tables.
+Release-mode adapter tests and isolated on-phone native SQLite migration/reopen
+checks passed; the latter used 150 fixture rows without touching real history.

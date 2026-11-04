@@ -1,0 +1,35 @@
+TURN AND RELAY FOLLOW-UP — October 25, 2026 (UTC evidence extends into October 26)
+Scope: both physical phones, com.axonic.dev only. No production app change, data reset, deployment, commit or production build.
+
+Changes
+- Shared attachment worker only probes the recipient before initial custody. A failed probe no longer starts an extra descriptor grace delay and retry. Already-uploading jobs do not wait for a stale direct peer before each block.
+- Three active transfer turns per waiting outgoing receipt lookup, with independent fair cursors. Verified receipt completion and incoming receipt acknowledgments remain active work.
+- Metadata-only timing separates networkDirectStatus and networkCustodyStatus; aggregate networkStatus retained. No payloads or credentials logged.
+- attachmentSchedule/attachmentTransfer synchronized to local AoN shared core. Live AoNs unchanged.
+
+TURN evidence and limitation
+- Original test changed ICE config after borrowing an established direct peer. Immutable bundle configuration and reused ICE state made the test misleading. Relay candidates alone did not prove selected relay routing.
+- Initial diagnostic substituted fresh leases to isolate TURN infrastructure. The final scripts/test-dev-turn-call.cjs instead only makes shared acquisition fail and sets the existing ICE provider policy to relay: production callPeerSelection creates and cleans up the connection. It requires actual selected relay/relay and received video. The signed custom SDP marker is validated in application signaling; native SDP normalization can remove it, so the harness does not inspect the native copy for that marker.
+- Real two-way video selected relay/relay. User confirmed moving screen share and camera return. Counters captured screen frames at receiver, then both camera senders restored. Sustained run had zero freezes; small packet loss (10/15 reported packets) was present, so this is not a zero-loss claim. Reverse-originating TURN call also passed and ended cleanly.
+- This gap was subsequently fixed locally: callPeerSelection allows a 1.5-second shared-acquisition grace, then opens call-only ICE. Signed SDP conveys the mode; the answerer obeys it. Late shared leases are released without closing the network connection. Dedicated peer certificates are pinned for the accepted call. Cancellation prevents late creation, and cleanup closes only owned peers. Unit tests cover timeout and failure; live fault injection verified automatic fallback in both initiating directions. This is controlled failure testing on two phones at home, not a new remote-city/mobile-network field trial. No release built or installed.
+
+5 MB store-and-forward evidence
+Baseline: upload confirmation 27.246 s; receiver observation after reopening 14.672 s.
+Final B -> offline A: upload 15.028 s; receipt after reopening 17.767 s.
+Final A -> offline B: upload 16.202 s; receipt after reopening 10.614 s.
+Both final runs: sender stopped before receiver opens; FirstNeuron confirmed as source; complete-file checksum matches; both apps restored; history intact.
+Timing includes source creation/preparation, custody confirmation, debugger polling; download measurement starts after debugger reconnect, not at app launch. These are individual live observations, not statistically controlled throughput claims. Direct connectivity/staleness differs by run.
+Final upload stages: ~6.2-6.4 s encrypted block materialization/read, ~5.2 s two block requests; custody status 36-58 ms, no direct-status request in those final runs. Unit regression covers a stale direct peer still advertised as connected. Further work: native block materialization/serialization and receive processing.
+
+Direct regression
+All 1/5/10 MB transfers pass in both directions with matching checksums. Latest 10 MB observations 10.954/10.291 s versus earlier 4.899/4.839 s. Direct performance varies and needs further tracing; do not claim all direct speed is improved. One early shared-storage observation was false while publication was pending; final check found all 9/11 incoming session attachments present in shared phone storage.
+
+Preservation/final state
+Original identities and all 112/213 baseline message keys retained. 27 additional test message records per phone. No active attachment jobs at final inspection. Both test calls ended and temporary overrides restored; Metro remains available. Normal apps untouched.
+
+Validation/evidence
+Mobile typecheck and module boundaries pass. Shared-core parity and AoN typecheck pass. Hosted attachment/WSS tests: 35/35 pass outside Windows sandbox (sandbox blocked atomic fixture renames; no product change needed). Mobile attachment scheduling/transfer regressions recorded in builds/relay-scheduling-final-tests.log.
+Evidence: builds/organization-relay-final-results.json, builds/organization-relay-reverse-results.json, builds/organization-transfer-after-relay-results.json, builds/turn-fresh-live.log, builds/turn-fresh-final.log, builds/turn-reverse-final.log, builds/relay-hosted-tests.log.
+
+Final automatic-fallback validation: 205/205 call tests, mobile typecheck, module boundaries pass; attachment regressions 83 pass / 1 optional benchmark skipped; 35 hosted attachment/WSS tests pass. Final TURN call after sharing returned both camera senders to 1280x720, 24-25 fps, zero recorded freezes and zero reported lost packets in that final run. Prior TURN runs had minor packet loss. Shared voice call still connected p2p and cleared both ends. Final preservation: all 112/213 baseline keys, identities, and 11/9 received session files in shared storage intact.
+Automatic fallback evidence: builds/turn-automatic-live.log, builds/turn-automatic-reverse.log, builds/turn-automatic-final.log, builds/call-fallback-tests.log.

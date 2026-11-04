@@ -1,10 +1,12 @@
+import {trialReference,type TrialObservation} from './trialCredits.ts';
+import {createContributionMeter,type ContributionEvent} from './networkScorecard.ts';
 import type {GroupCustodyRow,GroupCustodyStore} from './relayStorage.ts';
 export type {GroupCustodyRow,GroupCustodyStore} from './relayStorage.ts';
 import {custodyDigest,parseCustody,verifyCustody,type CustodyEnvelope,type CustodyReceipt} from './custodyProtocol.ts';
 import {groupCustodyDigest,matchesGroupGrant,validGroupCustodyPayload,verifyGroupCustodyPayload,type GroupCustodyPayload} from './groupCustodyProtocol.ts';
 import {validAccountId} from './identityProtocol.ts';
 import type {IdentityRecordStore} from './identityAdmission.ts';
-export const GROUP_CUSTODY_LIMITS={jobs:128,perSender:16,perRecipient:64,bytes:4*1024*1024};
+export const GROUP_CUSTODY_LIMITS={jobs:4096,perSender:1024,perRecipient:2048,bytes:64*1024*1024};
 /** Limits are charged before accepting responsibility. An incomplete staged job
  * is never reported held; recipient grants are committed as one delivery job. */
 export function validateGroupCustodyRows(rows:GroupCustodyRow[]){
@@ -30,8 +32,9 @@ export function validateGroupCustodyRows(rows:GroupCustodyRow[]){
 }
 export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStore;records:IdentityRecordStore;now():number;current():boolean;stored?(grant:CustodyEnvelope):Promise<void>;
  receiveOwn?(grant:CustodyEnvelope,payload:GroupCustodyPayload,relay:string):Promise<CustodyReceipt|null>;
- changed?(peer:string):void;
+ changed?(peer:string):void;scoreChanged?():void;trial?(event:TrialObservation):void;
 }){
+ const meter=createContributionMeter(d.now,d.scoreChanged);
  let queued=0,replicating=false,nextReplica=0;
  const reply=(status:string,extra:object={})=>JSON.stringify({status,...extra});
  const sweep=(rows:GroupCustodyRow[])=>{for(let i=rows.length-1;i>=0;i--)if(rows[i].expires<=d.now()||rows[i].accepted&&rows[i].recipients.every(v=>v.consumed)||!rows[i].accepted&&rows[i].stagedUntil<=d.now())rows.splice(i,1);};
@@ -60,6 +63,7 @@ export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStor
    const p=parseCustody(JSON.stringify(q.packet),d.now());if(!p||p.kind!==(q.operation==='group-grant'?'envelope':'receipt')||p.kind==='receipt'&&p.recipient!==peer||!await verifyCustody(p,d.records,d.now())||!d.current())return reply('rejected');packet=p;
   }
   const wakes:CustodyEnvelope[]=[],changed=new Set<string>();
+  const delta:Partial<Record<ContributionEvent,number>>={};
   const result=await d.store.transaction(rows=>{
    validateGroupCustodyRows(rows);sweep(rows);if(!d.current())return reply('rejected');
    if(payload){
@@ -89,24 +93,26 @@ export function createGroupCustodyService(d:{owner:string;store:GroupCustodyStor
     // A relay may replicate the signed job. It cannot alter the audience or
     // manufacture missing grants; all recipients must have validated proofs.
     if(row.digest!==q.digest)return reply('rejected');if(row.accepted)return reply('held');
-    if(row.recipients.some(v=>!v.grant))return reply('incomplete');row.accepted=true;
+    if(row.recipients.some(v=>!v.grant))return reply('incomplete');row.accepted=true;delta.groupsHeld=1;
     for(const v of row.recipients){wakes.push(v.grant!);changed.add(v.recipient);}return reply('held');
    }
    if(q.operation==='group-receipt'&&packet?.kind==='receipt'&&row.accepted){
     const v=row.recipients.find(v=>v.id===packet!.id);if(!v||packet.expires!==row.expires||packet.digest!==v.digest||packet.recipient!==v.recipient||packet.recipientDevice!==v.recipientDevice)return reply('rejected');
-    if(!v.consumed){if(!v.receipt)changed.add(row.sender);v.receipt=packet;}
+    if(!v.consumed){if(!v.receipt){changed.add(row.sender);delta.recipientReceipts=1;}v.receipt=packet;}
     if(row.recipients.every(v=>v.receipt||v.consumed)){row.payload=null;for(const recipient of row.recipients)recipient.grant=null;}
     return reply('accepted');
    }
    if(q.operation==='group-consume'&&peer===row.sender&&row.accepted){const v=row.recipients.find(v=>v.id===q.messageId&&v.digest===q.digest);if(!v||!v.receipt&&!v.consumed)return reply('rejected');v.receipt=null;v.consumed=true;return reply('accepted');}
    return reply('rejected');
   });
+  meter.commit(delta);
+  if(packet?.kind==='receipt'&&JSON.parse(result).status==='accepted')try{d.trial?.({kind:'relay-receipt',reference:trialReference(packet.sender,packet.id,packet.recipient)});}catch{}
   // Never notify or report held before the transaction successfully commits.
   if(d.current())for(const grant of wakes)void Promise.resolve().then(()=>d.stored?.(grant)).catch(()=>{});
   if(d.current())for(const peer of changed)try{d.changed?.(peer);}catch{/* Retain committed work. */}
   return result;
  }
- return {async receive(peer:string,raw:string){if(!d.current()||!validAccountId(peer)||peer===d.owner||typeof raw!=='string'||raw.length>16000||queued>=4)return reply('rejected');queued++;try{return await handle(peer,raw);}catch{return reply('rejected');}finally{queued--;}},
+ return {contribution:meter.snapshot,async receive(peer:string,raw:string){if(!d.current()||!validAccountId(peer)||peer===d.owner||typeof raw!=='string'||raw.length>16000||queued>=4)return reply('rejected');queued++;try{return await handle(peer,raw);}catch{return reply('rejected');}finally{queued--;}},
  async payloadFor(grant:CustodyEnvelope){
   return d.store.transaction(rows=>{validateGroupCustodyRows(rows);return structuredClone(rows.find(r=>r.accepted&&r.expires>d.now()&&r.sender===grant.sender&&r.recipients.some(v=>v.id===grant.id&&v.digest===custodyDigest(grant)))?.payload??null);});
  },

@@ -14,6 +14,19 @@ test('local wake bypasses failed-dial backoff once without duplicating active sl
 });
 const account = n => 'axonic:1:' + n.toString(16).padStart(64, '0');
 const drain = () => new Promise(r => setImmediate(r));
+test('active call connections survive capacity changes and release independently',async()=>{
+ const f=fixture(3);for(const i of [1,2,3])f.pool.offer(f.candidate(i));f.pool.tick();for(const i of [0,1,2])f.finish(i);await drain();
+ const release=f.pool.retain(account(3)),second=f.pool.retain(account(3)),other=f.pool.retain(account(2));
+ assert.throws(()=>f.pool.setLimit(1),/Finish the call/);assert.equal(f.pool.snapshot().limit,3);
+ f.pool.setLimit(2);assert(f.pool.snapshot().connections.some(c=>c.account===account(3)));assert(f.pool.snapshot().connections.some(c=>c.account===account(2)));
+ release();release();assert.throws(()=>f.pool.setLimit(1));second();f.pool.setLimit(1);assert.equal(f.pool.snapshot().connections[0].account,account(2));other();f.pool.stop();
+});
+test('borrowing a connection during an in-flight upgrade preserves the borrowed connection',async()=>{
+ const f=fixture(3,{preferRtc:()=>true});f.pool.offer(f.candidate(1));f.pool.tick();f.finish(0);await drain();
+ f.pool.offer({...f.candidate(1,'internet'),endpoint:'rtc:'+account(1)});f.pool.tick();assert.equal(f.opens.length,2);
+ const release=f.pool.retain(account(1));f.finish(1);await drain();assert.deepEqual(f.closed,[1]);assert.equal(f.pool.snapshot().connections[0].route,'lan');
+ release();f.pool.tick();assert.equal(f.opens.length,3);f.finish(2);await drain();assert(f.closed.includes(0));f.pool.stop();
+});
 function fixture(limit, options={}) {
   let now = 1000;
   const opens = [], closed = [];

@@ -54,7 +54,7 @@ export function startRootMediaExport(){
    const verifiedLinks=new Map<string,{uri:string;until:number}>();
    worker=createReceivedMediaExporter({
     current:()=>!stopped&&generation===epoch&&localAccount.status().account===owner&&localAccount.status().state==='unlocked'&&AppState.currentState==='active',
-    snapshot:async()=>rootChatView(owner,await localRootChat().snapshot()),enabled:getAutoSaveReceivedMedia,
+    snapshot:async()=>rootChatView(owner,await localRootChat().mediaSnapshot()),enabled:getAutoSaveReceivedMedia,
     read:async()=>JSON.parse(await AsyncStorage.getItem(key)||'{}') as Record<string,MediaExportRecord>,
     write:rows=>AsyncStorage.setItem(key,JSON.stringify(rows)),
     source:digest=>{const f=rootAttachmentFile(owner,digest);return f.exists?f.uri:null;},
@@ -109,7 +109,7 @@ export async function finishRootMediaCleanup(){
  const owner=localAccount.status().account;if(!owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account');
  if(!native?.supported)return 0;
  const key='@axonic_received_exports_v1:'+owner,rows=JSON.parse(await AsyncStorage.getItem(key)||'{}') as Record<string,MediaExportRecord>;
- const state=rootChatView(owner,await localRootChat().snapshot());let pending=0,asked=false;
+ const state=rootChatView(owner,await localRootChat().mediaSnapshot());let pending=0,asked=false;
  for(const [digest,row] of Object.entries(rows)){
   if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account');
   if(!row.peer||!row.id)continue;

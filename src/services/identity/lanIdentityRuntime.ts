@@ -168,7 +168,10 @@ export function createLanIdentityRuntime(d: Dependencies) {
         };
         const attempt=()=>{
           if(disposed||!current()){finish(null);return;}
-          const lease=rtc?.borrowCall(account,device,id);if(lease){finish(lease);return;}
+          const lease=rtc?.borrowCall(account,device,id);if(lease){
+            const release=network.retainCallPeer(account);let released=false;
+            finish({...lease,release(){if(released)return;released=true;lease.release();release();d.onWorkChanged?.();}});return;
+          }
           if(network.attachmentStreamPeer(account)?.device===device){
             if(streamRequests.has(account)||streamRequests.size<5)streamRequests.set(account,{device,until:d.now()+30000});
             d.onWorkChanged?.();

@@ -4,11 +4,11 @@ function fixture(){let now=100000,owner='self',allowed=true;const sent=[];const 
 test('ephemeral typing is scoped to recipient, expires, and never consumes normal chat',async()=>{
  const f=fixture();assert.equal(await f.activity.receive('peer','["ordinary-message"]'),null);
  assert.equal(await f.activity.receive('peer','["axonic-chat-activity-v1","self",true,107000]'),true);assert.equal(f.activity.typing('peer'),true);
- f.advance(7001);assert.equal(f.activity.typing('peer'),false);
+ f.advance(3999);assert.equal(f.activity.typing('peer'),true);f.advance(1);assert.equal(f.activity.typing('peer'),false);
  assert.equal(await f.activity.receive('peer','["axonic-chat-activity-v1","wrong",true,114000]'),false);
 });
 test('typing is rate limited, stop is immediate, and block/lock prevents transmission',async()=>{
- const f=fixture();await f.activity.notify('peer',true);await f.activity.notify('peer',true);assert.equal(f.sent.length,1);
+ const f=fixture();await f.activity.notify('peer',true);await f.activity.notify('peer',true);assert.equal(f.sent.length,1);assert.equal(JSON.parse(f.sent[0][1])[3],104000);
  await f.activity.notify('peer',false);assert.equal(f.sent.length,2);
  f.block();f.advance(4000);await f.activity.notify('peer',true);assert.equal(f.sent.length,2);
  f.activity.clear();assert.equal(f.activity.typing('peer'),false);f.lock();await f.activity.notify('peer',false);assert.equal(f.sent.length,2);
@@ -25,3 +25,6 @@ test('group activity never leaks into direct chats or another group',async()=>{
  const f=fixture(),group='a'.repeat(64);await f.activity.receive('peer',JSON.stringify(['axonic-chat-activity-v1','self',true,107000,group]));
  assert.equal(f.activity.typing('peer',group),true);assert.equal(f.activity.typing('peer'),false);assert.equal(f.activity.typing('peer','b'.repeat(64)),false);
 });
+
+test('recording hints are separate, group-scoped and expire in four seconds',async()=>{const f=fixture(),g='a'.repeat(64);await f.activity.receive('peer',JSON.stringify(['axonic-chat-recording-v1','self',true,107000,g]));assert.equal(f.activity.recording('peer',g),true);assert.equal(f.activity.recording('peer'),false);assert.equal(f.activity.typing('peer',g),false);f.advance(4000);assert.equal(f.activity.recording('peer',g),false);});
+test('recording refresh coalesces, stop clears immediately, and restart sends immediately',async()=>{const f=fixture();await f.activity.notify('peer',true,undefined,'recording');await f.activity.notify('peer',true,undefined,'recording');assert.equal(f.sent.length,1);assert.equal(JSON.parse(f.sent[0][1])[0],'axonic-chat-recording-v1');await f.activity.receive('peer','["axonic-chat-recording-v1","self",true,104000]');await f.activity.receive('peer','["axonic-chat-recording-v1","self",false,104000]');assert.equal(f.activity.recording('peer'),false);await f.activity.notify('peer',false,undefined,'recording');await f.activity.notify('peer',true,undefined,'recording');assert.equal(f.sent.length,3);f.block();await f.activity.notify('other',true,undefined,'recording');assert.equal(f.sent.length,3);});

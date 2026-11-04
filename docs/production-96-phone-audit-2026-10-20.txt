@@ -1,0 +1,22 @@
+Production 1.1.25 / 96 - two-phone audit, October 20, 2026
+Both phones: com.axonic installed through com.android.vending, version 1.1.25/96.
+Existing chat lists and accounts opened. No reinstall, account change or wipe.
+Authorized labeled private texts sent in both directions through the normal UI.
+Sender draft cleared. Both received both texts. Pending indicators remained
+visible after recipient receipt; later cleared on both. Receipt delay needs
+investigation; no precise per-stage timings available in release UI automation.
+Background test on iVan: actual labeled message preview visible in Android shade,
+no generic open-app alert for that test. Both have notification permission.
+Recent log sample: no matching React Native error or fatal exception found.
+Brief frame sample: phone A 172 frames, 95th percentile 16ms; phone B 69 frames,
+95th percentile 19ms. Android deadline-jank counters 40.7% and 14.49%, respectively;
+legacy counters differ. Small sample includes keyboard/input and UI automation,
+not an isolated benchmark. PSS approximately 541 MiB and 401 MiB, respectively;
+this is one snapshot, not proof of a leak or long-session stability.
+Controlled unanswered-call check: caller visibly ringing and receiving phone's
+notification shade had Answer/Decline actions. After caller cancellation, those
+actions disappeared and Android reported no started audio player at the check
+approximately 3 seconds later. Setup observed around 18 seconds including ADB
+UI dumps; this is not an exact signaling latency. No active test call left.
+Not tested: cold-start/Doze/reboot, video/media integrity, WAN handover, sustained
+memory usage. This is a targeted production smoke audit, not a full release matrix.

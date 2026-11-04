@@ -13,8 +13,9 @@ export function createCustodyCourier(d: {
   owner(): string | null; allowed(peer: string): boolean; now(): number; records: IdentityRecordStore;
   own: OwnCustodyStore; messages?: TestMessageStore; relays(): string[];
   eventDriven?(peer:string):boolean;
+  receiptAccepted?(sender:string,id:string):void;
   /** Normal-chat adapter must durably apply the verified receipt before relay consumption. */
-  held?(envelope:CustodyEnvelope):Promise<void>;
+  held?(envelope:CustodyEnvelope,relay:string):Promise<void>;
   confirmReceipt?(receipt: CustodyReceipt, current: () => boolean, relay:string): Promise<boolean>;
   request(relay: string, raw: string): Promise<string | null>;
   seal(record: IdentityRecord, device: string, id: string, text: string): Promise<CustodyEnvelope>;
@@ -35,6 +36,9 @@ export function createCustodyCourier(d: {
   }
   return {
     diagnostics:polls.diagnostics,
+    // A specific wake may finish after its own durable receipt exchange. Other
+    // inboxes and outgoing deposits are independent work, not its completion gate.
+    receiptAccepted:(sender:string,id:string)=>!stopped&&acknowledged.has(sender+':'+id),
     nextDeadline:()=>stopped||!d.owner()?Infinity:polls.nextDeadline(d.relays()),
     recoveryComplete(sender:string,id:string) {
       const relays=[...new Set(d.relays())].slice(0,10);
@@ -67,7 +71,7 @@ export function createCustodyCourier(d: {
         catch { /* Treat transport failure like an unanswered request. */ }
         if (l.current() && response?.status === 'held') {
           await d.own.held(l.owner!, id, relay, l.current);
-          if(l.current())await d.held?.(saved.envelope);
+          if(l.current())await d.held?.(saved.envelope,relay);
           return l.current();
         }
         if(response?.status==='completed')return;
@@ -160,6 +164,7 @@ export function createCustodyCourier(d: {
               if(packet.kind==='envelope'){
                 if(acknowledged.size>=256)acknowledged.delete(acknowledged.values().next().value!);
                 acknowledged.add(packet.sender+':'+packet.id);
+                try{d.receiptAccepted?.(packet.sender,packet.id);}catch{/* Observers cannot undo receipt acceptance. */}
               }
             }
             else incomplete=true;
@@ -175,3 +180,4 @@ export function createCustodyCourier(d: {
     stop() { stopped = true; epoch++; acknowledged.clear();drained.clear();skips.clear(); deferred.clear(); },
   };
 }
+

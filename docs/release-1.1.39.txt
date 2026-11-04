@@ -1,0 +1,16 @@
+Axonic 1.1.39 / Android versionCode 110 — built locally, 2026-10-31
+
+Artifact: builds/Axonic-1.1.39-110.aab
+Bytes: 107781938
+SHA256: c66d820896ab772d21511ffc2bc2bfb29abf12c06c190e06708b28b904397b65
+Source SHA256: 4703852495a8ebcb8fe321122940c49576cc442d74357e0ff785c90818ce51e2
+
+Includes trial credits with a borderless Social badge and Add 50 trial credits modal action. Top-ups remain separate from earned contribution; historical entries and simulated spending are preserved. Service remains unrestricted, including negative balances. Existing event-driven state updates drive the badge.
+Chat changes: summary/page/avatar reuse, duplicate identity-signature verification reuse with unchanged authorization checks, bottom-edge scroll-loop fix shared by private/group chats, and Message... composer placeholder. Existing group-call release flag retained.
+
+Validation: complete mobile unit suite 1825 passed, 3 skipped, zero failed. Architecture check initially caught direct ledger imports from the badge; corrected through the module API. Final TypeScript, cycles, module boundaries, consolidation and asset checks passed; 16 focused credits/state tests passed after correction. Native identity/stream-admission and notification-completion guards passed. Previous live Dev evidence covers both-phone messages, receipts, file checksums, notification routing; live top-up 90 -> 140 with spent12 and earned2 unchanged, and eight consecutive scroll gestures with released responder.
+Local Gradle bundleRelease succeeded. bundletool/jarsigner validated; upload certificate matches 1.1.38. Package com.axonic, 1.1.39/110, four ABIs, non-debuggable and no instrumentation. Bundled configuration and source hash match. Sentry automatic uploads disabled. Previous 1.1.38 artifact hash unchanged.
+
+Limits: intermittent Dev frame spikes remain; no controlled release performance improvement claim. Four-device media and extended background/handover acceptance are still not established by these checks. Trial accounting is local/provisional, not synchronized or redeemable. Build contains the current working tree, not a clean-commit claim.
+No publication, installation, commit/push or AoN deployment performed for this build.
+Evidence: builds/release-110-checks.log, release-110-native-guards.log, release-110-native-notification.log, local-production-aab-110.log, local-aab-110-validation.json; docs/architecture/dev-performance-20261031.txt.

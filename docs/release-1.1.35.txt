@@ -1,0 +1,32 @@
+Axonic 1.1.35 / Android versionCode 106 — built and validated locally
+
+Artifact: builds/Axonic-1.1.35-106.aab
+Size: 107746272 bytes
+SHA256: 2842da9f1cc6b9f6ab345cf39398bc4348503c30a83ce23a48fc775cee78bcdf
+Bundled source SHA256: 538a3fcbb3f1071fb56fa6173f5962da6958e4a45193f2ff1e04cc00a34eac06
+
+Includes current working tree. Existing unrelated work preserved; not a
+clean-commit claim. See docs/pre-release-1.1.35.txt for changes and limitations.
+
+Validation
+- Pre-release full check: 1729 passed, 3 skipped, zero failures.
+- Native identity/stream and notification completion regressions passed.
+- After version update: TypeScript and 3 production indexed-history tests passed.
+- Local Gradle bundleRelease succeeded in 1m 30s; four Android ABIs.
+- Bundletool validated; jarsigner verified; certificate matches 1.1.34.
+- Manifest com.axonic, version 1.1.35/code 106, non-debuggable, no instrumentation.
+- Bundled configuration and source fingerprint match; prior AAB unchanged.
+- Sentry automatic uploads disabled as in previous local releases.
+
+Commands/evidence
+node builds/build-local-production-106.cjs --approved-1.1.35
+node builds/validate-production-106.cjs
+builds/local-production-aab-106.log
+builds/local-aab-106-validation.json
+builds/local-aab-106-manifest.xml
+builds/local-aab-106-signature.txt
+
+Explicitly authorized local production build. No publication, official-app
+installation, commit or push performed. Earlier Dev cleanup was a separate
+user-authorized operation, not part of production startup or migration.
+Cold-process recovery latency remains a known performance limitation.

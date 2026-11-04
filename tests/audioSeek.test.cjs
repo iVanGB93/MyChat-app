@@ -37,3 +37,5 @@ test('voice playback speed cycles through every supported rate', () => {
   assert.equal(nextVoicePlaybackRate(2), 1);
   assert.equal(nextVoicePlaybackRate(1.25), 1);
 });
+
+test('voice seeking only claims intentional horizontal drags',()=>{const {isAudioSeekGesture}=moduleValue.exports;assert.equal(isAudioSeekGesture(3,40),false);assert.equal(isAudioSeekGesture(20,25),false);assert.equal(isAudioSeekGesture(2,1),false);assert.equal(isAudioSeekGesture(30,5),true);assert.equal(isAudioSeekGesture(-30,5),true);assert.equal(isAudioSeekGesture(NaN,0),false);});

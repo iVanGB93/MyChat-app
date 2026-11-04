@@ -1,0 +1,36 @@
+✔ host sampler supports ThirdNeuron without inventing FirstNeuron services (1.3738ms)
+✔ health samples bound retention and preserve failure/recovery transitions (0.462ms)
+✔ rapid flapping cannot grow transition history without bound (0.79ms)
+(node:19176) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ rejection diagnostics are fixed redacted reasons and preserve generic wire replies (35.9828ms)
+✔ failure evidence distinguishes altered silence from invalid signatures without accepting either (10.4536ms)
+✔ authenticated retry replies expose remaining lease without destination or identity details (9.0689ms)
+✔ unavailable wake destinations back off, retain custody, and retry promptly through new gateways (20.6661ms)
+✔ gateway reconnect churn cannot reset backlog backoff and new gateways do not retry old ones (13.4758ms)
+✔ wake diagnostics distinguish unavailable destinations and retained retry leases without exposing identities (8.5394ms)
+✔ custody wake targets one registered device and authenticates without message content (10.0465ms)
+✔ legacy or forged envelope cannot send a notice, and invalid tokens are revoked (13.2258ms)
+✔ authenticated ordinary custodian forwards metadata with shared direct-deposit deduplication (11.5996ms)
+✔ forwarded wake rejects altered routing and retries definite failures after backoff (11.9105ms)
+✔ a full completed-wake cache does not block notifications for later messages (645.8068ms)
+✔ inline encrypted wakes are validated, bounded and deduplicated by the same message digest (8.0974ms)
+✔ ordinary stored envelopes opt into inline FCM while group hooks retain metadata-only behavior (9.2367ms)
+✔ custodian hints bind to the requesting peer and preserve encrypted inline content (6.1999ms)
+✔ wake traces correlate retries and payload fallbacks without exposing identities or signed data (1.3623ms)
+(node:52796) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ hosted directory fallback serves only valid public pins and respects cancellation and request validation (33.1771ms)
+✔ unknown original sender is admitted through signed lookup; retry verifies wake and sends once (36.8093ms)
+✔ mismatched wake pin refreshes signed ancestry, sends once, and never rolls back (28.9061ms)
+✔ missing recipient pins recover without inventing a push registration (29.0933ms)
+✔ recovery rejects wrong-account and tampered records and cancellation without changing pins (16.3364ms)
+✔ recovery respects concurrent pins and limits repeated unavailable lookups (19.4029ms)
+ℹ tests 24
+ℹ suites 0
+ℹ pass 24
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 940.6068

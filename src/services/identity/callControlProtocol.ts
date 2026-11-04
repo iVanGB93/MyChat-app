@@ -4,6 +4,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { verifyPublicSignature, recordDigest, validAccountId, verifyRecord, type IdentityRecord } from './identityProtocol.ts';
 import {createCallValidationCache} from './callValidationCache.ts';
+import {validGroupCallRoom,groupCallRoomKey,groupCallLegId,groupCallOfferer,type GroupCallRoom} from './groupCallRoom.ts';
 
 export type CallControlKind = 'invite' | 'ringing' | 'accept' | 'selected' | 'reject' | 'busy' | 'cancel' | 'end';
 export interface CallControl {
@@ -12,12 +13,14 @@ export interface CallControl {
   media: 'voice' | 'video'; kind: CallControlKind; invitation: string | null;
   sequence: number; issuedAt: number; expiresAt: number; signature: string;
   selectedDevice?: string; acceptance?: string;
+  room?: GroupCallRoom;
+  rejoin?: string;
 }
 const hex = (v: unknown, length: number) => typeof v === 'string' && v.length === length && /^[0-9a-f]+$/.test(v);
 const body = (e: CallControl) => utf8ToBytes(JSON.stringify(['axonic-call-control-v1', e.version,
   recordDigest(e.record), e.device, e.callId, e.caller, e.callee, e.callerDevice,
   e.media, e.kind, e.invitation, e.sequence, e.issuedAt, e.expiresAt,
-  e.selectedDevice ?? null, e.acceptance ?? null]));
+  e.selectedDevice ?? null, e.acceptance ?? null,...(e.room?[groupCallRoomKey(e.room)]:[]),...(e.rejoin?[e.rejoin]:[])]));
 export const callControlDigest = (e: CallControl) => bytesToHex(sha256(body(e)));
 
 /** A valid signature is insufficient: require the exact latest locally pinned record. */
@@ -39,7 +42,11 @@ function verifyCallControlUncached(raw: string, pinned: IdentityRecord, now: num
       || !Number.isSafeInteger(e.expiresAt) || e.expiresAt <= now || e.expiresAt <= e.issuedAt
       || e.expiresAt - e.issuedAt > 60000 || e.expiresAt > e.record.expiresAt
       || !hex(e.signature, 128)) return null;
+    if(e.rejoin!==undefined&&(!e.room||!hex(e.rejoin,64)))return null;
     const caller = e.record.account === e.caller && e.device === e.callerDevice;
+    if(e.room!==undefined&&(!validGroupCallRoom(e.room)||!e.room.members.includes(e.caller)||!e.room.members.includes(e.callee)
+      ||e.callId!==groupCallLegId(e.room,e.caller,e.callee,e.rejoin)||!e.rejoin&&e.caller!==groupCallOfferer(e.room,e.caller,e.callee)
+      ||e.caller===e.room.creator&&e.callerDevice!==e.room.creatorDevice))return null;
     const callee = e.record.account === e.callee;
     if (!caller && !callee) return null;
     if (e.kind === 'invite' ? (!caller || e.sequence !== 0 || e.invitation !== null)
@@ -88,7 +95,9 @@ export function createCallerCallControl(raw: string, pinned: IdentityRecord, now
       const e = verifyCallControl(next, latest, time);
       if (!e || e.invitation !== invitation || e.callId !== invite.callId || e.caller !== invite.caller
         || e.callee !== invite.callee || e.callerDevice !== invite.callerDevice || e.media !== invite.media
-        || e.issuedAt < invite.issuedAt || e.kind === 'invite') return false;
+        || e.issuedAt < invite.issuedAt || e.kind === 'invite'
+        || e.rejoin!==invite.rejoin
+        || (e.room?groupCallRoomKey(e.room):null)!==(invite.room?groupCallRoomKey(invite.room):null)) return false;
       const caller = e.record.account === invite.caller;
       const key = `${e.record.account}:${e.device}`;
       if (declined.has(key)) return false;
@@ -137,7 +146,9 @@ export function createRecipientCallControl(raw: string, pinned: IdentityRecord, 
       const e = verifyCallControl(next, latest, time);
       if (!e || e.callId !== invite.callId || e.caller !== invite.caller || e.callee !== invite.callee
         || e.callerDevice !== invite.callerDevice || e.media !== invite.media
-        || e.invitation !== state.invitation || e.issuedAt < invite.issuedAt) return false;
+        || e.invitation !== state.invitation || e.issuedAt < invite.issuedAt
+        || e.rejoin!==invite.rejoin
+        || (e.room?groupCallRoomKey(e.room):null)!==(invite.room?groupCallRoomKey(invite.room):null)) return false;
       if (e.record.account === invite.callee && e.device !== device) return false;
       if (e.kind === 'selected' && e.selectedDevice !== device) {
         // Only the initiating caller can sign selection. Once confirmed locally, a conflicting

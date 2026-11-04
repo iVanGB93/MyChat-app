@@ -1,0 +1,38 @@
+Axonic next production candidate: 1.1.35 / Android versionCode 106
+
+Prepared locally; production compilation has not started. Source version remains
+1.1.34 / 105 until explicit build confirmation, per project instructions.
+
+Includes current working-tree fixes: incoming admission coalescing and recovery
+timings, held-upload notification accounting, media retry status icons, New chat
+saved-contact filtering and themed contact deletion, and header alignment.
+Existing unrelated work is preserved. This is not a clean-commit release claim.
+
+Readiness checks
+- npm run check passed (builds/pre-release-106-check.log).
+- Focused production indexed-history, background-work observation and
+  notification-action tests: 21 passed.
+- Native identity/stream admission and notification completion tests passed.
+- Touched tracked files passed whitespace checks.
+- Existing local signing keystore, bundletool and previous-release validation
+  evidence are present. Signing compatibility must still be verified at build.
+
+Live Dev evidence
+- Android Mark as read set the synthetic message read, created one receipt action,
+  and dismissed its notification. Sender receipt arrival was not measured.
+- Held transfer notification stayed absent after backgrounding; the original
+  queue/file were preserved during that validation. Subsequent user-authorized
+  Dev-only cleanup removed old history/media/jobs while retaining identity,
+  32 contacts and 10 groups. No cleanup is a production migration.
+- Cold-process recovery succeeded, but took 15.2 seconds including 14.3 seconds
+  setup/admission. This remains a performance limitation, not a speed claim.
+
+Prepared commands (do not run without explicit production-build confirmation)
+1. Increment app.json, package metadata, and Android code to 1.1.35 / 106.
+2. node builds/build-local-production-106.cjs --approved-1.1.35
+3. node builds/validate-production-106.cjs
+
+These compile locally with four ABIs and existing signing credentials; they do
+not publish or install the official app. Sentry auto-uploads remain disabled as
+in the preceding local release. Validate manifest, signature continuity,
+source fingerprint and bundle integrity after compilation.

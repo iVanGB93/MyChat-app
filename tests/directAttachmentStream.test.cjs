@@ -44,6 +44,7 @@ test('account invalidation closes idle sessions without further network traffic'
 });
 test('receiver waiting for offer times out and cleans its attempt',async t=>{
  const f=pair(t);void f.b.start();f.advance(15001);await assert.rejects(f.b.done,/timeout/);
+ assert.deepEqual(f.b.progress(),{state:'failed',offset:0,ack:0,queued:0,idleMs:15001});
 });
 test('late hash completion after cancellation cannot emit completion',async t=>{
  let release,entered=false;const gate=new Promise(r=>release=r);

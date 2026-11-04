@@ -1,0 +1,17 @@
+Two physical Axonic Dev phones — organization acceptance, 2026-10-25
+
+Scope: com.axonic.dev only. Normal apps untouched. No deployment, production build, deletion or reset.
+Phone B updated in place to Dev build 98 to supply required native stream APIs. Both original identities preserved.
+
+PASS: text delivery/read both directions; small attachment checksum; global chat/transfer state subscriptions; 1/5/10 MB direct transfers in both directions, checksums and shared-storage destinations; offline 5 MB relay via FirstNeuron with sender stopped; group invitations and group text/read in both directions; voice call direct and hangup cleared both.
+Direct observed times: 1 MB 3.588/3.328 s; 5 MB 3.580/4.466 s; 10 MB 4.899/4.839 s. Includes preparation and observation overhead.
+Relay observed: custody upload 27.246 s, receiver observation after reopening 14.672 s. Sender offline, received source FirstNeuron, checksum valid. Performance remains open: status requests 12.121 s aggregate, file reads 5.947 s aggregate; these stage totals do not establish an additive critical path.
+Preservation verified after tests: all original 112/213 message keys retained; 16 new test records each at checkpoint.
+
+Group harness initially read raw stored read field, not rootChatView receipt projection. Corrected harness, repeat passed. No application patch needed for that timeout.
+Video connected with host/host candidate pair, 1280x720, about 24 fps and no reported packet loss at sample. Relay forcing in test harness did not take effect: TURN NOT verified. Screen sharing and stop-sharing/camera return awaiting user capture approval; test call left active for that step.
+Hosted/browser organization changes have not been deployed in this turn; live AoN validation must not be inferred from Dev tests.
+
+Evidence: builds/organization-*-result*.json, builds/organization-*.log, builds/global-state-call-result.json, builds/dev-organization-baseline.json.
+
+Final live check: user confirmed sharing and stopping sharing both worked. Final counters confirmed camera tracks restored on both phones (1280x720, 24-25 fps), selected route host/host, reported packet loss zero. These final counters do not independently measure the earlier screen-capture interval. Test call ended on both phones; test instrumentation restored. Final preservation check passed: original 112/213 message keys and identities intact, 16 additional test records on each. TURN verification and relay performance remain open; no production readiness claim.

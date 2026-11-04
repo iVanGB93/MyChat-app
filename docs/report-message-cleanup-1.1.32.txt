@@ -1,0 +1,23 @@
+AoN report-message cleanup for release 1.1.32 — 2026-10-28
+
+Owner explicitly requested delete-for-everyone of AoN report messages.
+FirstNeuron: 13 periodic health reports deleted via authenticated message-action API.
+SecondNeuron: 12 periodic health reports plus one phone diagnostic analysis deleted
+via MCP message-delete, with exact operation/hash/author/target approvals through
+the documented host approve.mjs mechanism. All 13 targets verified deleted.
+ThirdNeuron: no undeleted outgoing messages in current API history.
+
+FirstNeuron incoming count unchanged (122); all non-target outgoing text preserved.
+SecondNeuron incoming and non-target outgoing messages individually compared and
+preserved. User diagnostic attachments, test files, test prompts, non-report chat,
+and scorecard discussion were not selected. No chat database clears or diagnostic
+log resets. Identities, contacts, approvals, group memberships and listeners intact.
+
+Automatic review rejected a broader FirstNeuron selection containing group
+coordination/integration discussion. No deletion from that rejected selection ran;
+the selection was narrowed to the 13 explicit periodic reports before execution.
+
+Delete actions are normal queued network messages. First receipt check: 13 actions,
+0 delivered, 13 pending. Source deletion is verified; recipient screens are not.
+Offline recipients apply the actions after delivery/reconnection. No claim that
+this resets the AIs' external scheduled-report baselines or memory.

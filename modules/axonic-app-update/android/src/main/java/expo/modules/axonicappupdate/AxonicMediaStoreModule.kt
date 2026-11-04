@@ -172,7 +172,10 @@ class AxonicMediaStoreModule : Module() {
         require(uri.scheme == "file")
         File(requireNotNull(uri.path)).canonicalFile.also {
           val root = File(context.filesDir, "axonic-own-attachments-v1").canonicalFile
-          require(it.path.startsWith(root.path + File.separator) && it.name == "content" && it.isFile)
+          val cache = context.cacheDir.canonicalFile
+          val ownAttachment = it.path.startsWith(root.path + File.separator) && it.name == "content"
+          val pickerCopy = it.path.startsWith(cache.path + File.separator)
+          require((ownAttachment || pickerCopy) && it.isFile)
         }
       }
       val retriever = MediaMetadataRetriever()

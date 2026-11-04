@@ -55,5 +55,50 @@ File: src/screens/chat/RootMessageInfoScreen.tsx
 File: src/screens/contacts/RootContactScreen.tsx
 File: src/screens/contacts/RootNewChatScreen.tsx
 File: src/screens/contacts/RootBlockedUsersScreen.tsx
-File: src/screens/calls/RootCallHistoryScreen.tsx
+File: src/modules/ui/usePrivateCallHistory.ts
 File: src/screens/calls/RootOutgoingCallScreen.tsx
+
+Conversation summaries and room paging (October 27)
+File: src/modules/ui/conversationState.ts
+File: src/modules/ui/useConversationPages.ts
+The chat list subscribes to a Zustand summary index, not the full message ledger.
+Contacts and call-name consumers share its metadata. Open rooms keep their own
+50-message window and extend it on older-message scrolling. New arrivals preserve
+the oldest loaded position; old quote targets are separate references. List and
+room observers suspend when inactive; account locking clears shared summaries.
+Some detail screens retain the legacy snapshot hook; its global full-history cache
+is released when the last observer leaves. This is not a claim that all protocol
+or diagnostic history reads are paginated.
+Test: tests/conversationPages.test.cjs
+Test: tests/globalStateLifecycle.test.cjs
+
+Private call timeline / Game tab (October 27)
+The former Calls tab is replaced by Game (Coming soon). Call records now render
+as distinct local timeline rows in the corresponding private chat, interleaved
+by timestamp. They cannot be quoted, forwarded or acknowledged as messages.
+Callbacks still route through OutgoingCall; blocked contacts cannot use the card.
+usePrivateCallHistory listens to committed call-journal changes while focused and
+foreground, and guards owner/peer changes. privateChatTimeline respects the loaded
+message window; older call rows become visible as message paging expands.
+Peer-filtered SQLite invitation projections retain all that peer's stored calls,
+without the old global 100-row cutoff hiding them behind another peer's activity.
+No call journals, signaling events or messages are migrated or deleted.
+File: src/modules/ui/privateChatTimeline.ts
+File: src/modules/ui/usePrivateCallHistory.ts
+File: src/screens/game/RootGameScreen.tsx
+Test: tests/privateChatTimeline.test.cjs
+Test: tests/mobileCallJournalStore.test.cjs
+
+Voice playback / Bluetooth routing (2026-11-02)
+The connected official phone repeatedly started then paused voice clips within
+roughly 0.1-0.25 seconds. Android audio logs showed Axonic's forced speaker
+communication route activating at the same time. Disconnecting Bluetooth restored
+playback, confirmed by the owner. Expo Audio's default route implementation called
+setSpeakerphoneOn(true) even for ordinary media. The existing audio install patch
+now releases the communication override for normal media (API 31+), with
+speakerphone-off on older Android; Android chooses Bluetooth/headset/speaker.
+Explicit earpiece mode remains supported. Focus-loss handling is unchanged.
+This native correction requires a rebuilt client. Focused checks pass; Bluetooth
+verification with the corrected Dev binary remains required before claiming a
+live fix. The phone disconnected during the Dev rebuild. No official app changed.
+Files: scripts/patch-audio-recorder.cjs, tests/audioRecorderPatch.test.cjs.

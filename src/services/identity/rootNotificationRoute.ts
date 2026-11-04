@@ -27,9 +27,16 @@ export async function queueRootNotificationOpen(data:unknown){
 export async function pendingRootNotificationOpen(account:string){
  const raw=await AsyncStorage.getItem(KEY);if(!raw)return null;
  const target=rootNotificationTarget({type:'root_neuron_message',...JSON.parse(raw)});if(target?.account!==account)return null;
- if(!target.hintId)return target;
+ if(!target.hintId){
+  // A decrypted private preview already identifies its destination. Do not wait
+  // behind unrelated message writes merely to open that screen.
+  if(!target.group)return target;
+  const store=ownChatStore(account),saved=store.indexed?(await store.indexed.readScope({metadata:true})).raw:await store.read();
+  const state=saved?JSON.parse(saved):null;
+  return state?.groups?.some((g:{id:string})=>g.id===target.group)?target:{...target,inbox:true,unavailable:'group_unknown' as const};
+ }
  // A signed wake identifies a delivery, not its conversation or unread status.
- const saved=await ownChatStore(account).read();
+ const store=ownChatStore(account),saved=store.indexed?await store.indexed.readMessage(target.sender,target.hintId):await store.read();
  const state=saved?JSON.parse(saved):null;
  const message=state?.version===1&&Array.isArray(state.messages)?state.messages.find((m:{id:string;peer:string;direction:string})=>m.id===target.hintId&&m.peer===target.sender&&m.direction==='incoming'):null;
  if(!message)return {...target,inbox:true,unavailable:'not_received' as const};

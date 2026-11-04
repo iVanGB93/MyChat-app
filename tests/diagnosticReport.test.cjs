@@ -3,6 +3,13 @@ function load(path,deps={}){const out={};new Function('exports','require',ts.tra
 const status=load('src/services/identity/rootMessageStatus.ts');
 const report=load('src/services/diagnosticReport.ts',{'./identity/rootMessageStatus':status});
 const journal=load('src/services/diagnosticJournal.ts');
+test('report queue errors explain known failures without exposing arbitrary native errors',()=>{
+ assert.match(report.diagnosticReportSendError(Error('Invalid diagnostic attachment')),/file format/);
+ assert.match(report.diagnosticReportSendError(Error('The selected neuron is blocked')),/Unblock/);
+ assert.match(report.diagnosticReportSendError(Error('Finish or remove a pending attachment first')),/queue is full/);
+ assert.match(report.diagnosticReportSendError(Error('This preview expired. Capture a new report')),/Capture a new/);
+ const message=report.diagnosticReportSendError(Error('secret path or token'));assert(!message.includes('secret'));assert.match(message,/Retry this same preview/);
+});
 
 test('poll report whitelists numeric counters and distinguishes local passes from delivery',()=>{
  const result=report.summarizePollingForReport({private:{startedPasses:4,emptyPasses:3,itemPasses:1,peer:'secret',busySkips:NaN},group:{cooldownSkips:9,token:'secret'},pendingDerivations:1,owner:'secret'});
@@ -70,4 +77,71 @@ test('recovery timing exports bounded numeric evidence and fixed reasons only',(
 test('network-reset cancellations are separate from active pending or incomplete media',()=>{
  const s=report.summarizeReportMessages({networkResetAt:100,messages:[{direction:'outgoing',status:'pending',at:1,networkCancelledAt:100,attachment:{manifest:{expires:200}}}]},150);
  assert.equal(s.networkResetAt,100);assert.equal(s.private.outgoing.cancelled,1);assert.equal(s.private.outgoing.pending,0);assert.equal(s.incompleteMedia,0);assert.equal(s.oldestOwnPendingSeconds,null);assert.equal(s.incompleteMediaEvidence.outgoing,0);
+});
+test('pending media joins exact descriptor/direction/peer without exporting private fields',()=>{
+ const message={id:'visible-id',peer:'secret-peer',direction:'outgoing',status:'pending',at:0,attachment:{manifest:{id:'grant-id'}}};
+ const jobs=[{direction:'incoming',descriptor:{manifest:{id:'grant-id',sender:'secret-peer'}},phase:'complete',failures:0,next:0},
+ {direction:'outgoing',descriptor:{manifest:{id:'grant-id',recipient:'secret-peer'}},phase:'confirming',failures:2,next:200,receipt:{secret:'receipt'}}];
+ const s=report.summarizePendingMedia({messages:[message,{...message,id:'deleted',deleted:true}],contacts:[{account:'secret-peer',blocked:true}]},jobs,['secret-peer'],100);
+ assert.equal(s.pending,1);assert.equal(s.peerConnected,1);assert.equal(s.peerBlocked,1);assert.equal(s.phases.confirming,1);assert.equal(s.retrying,1);assert.equal(s.receiptRecorded,1);assert.equal(s.retryScheduled,1);assert.equal(s.activeJobAbsent,0);assert(!JSON.stringify(s).includes('secret'));assert(!JSON.stringify(s).includes('grant-id'));
+});
+test('unavailable active queue is not reported as missing jobs',()=>{
+ const state={messages:[{id:'a',peer:'b',direction:'outgoing',status:'pending',attachment:{manifest:{id:'a'}}}],contacts:[]};
+ const unknown=report.summarizePendingMedia(state,null,[],100);assert.equal(unknown.available,false);assert.equal(unknown.activeJobAbsent,0);
+ const empty=report.summarizePendingMedia(state,[],[],100);assert.equal(empty.available,true);assert.equal(empty.activeJobAbsent,1);assert.equal(empty.peerNotConnected,1);
+});
+
+
+test('deadline wait phase accepts only bounded fixed reasons on deadline events',()=>{
+ const d=journal.createDiagnosticJournal(()=>1);
+ for(const waitReason of ['setup','receipt','attachment']){
+  d.record('recovery_finished',{reason:'deadline',waitReason});
+  assert.equal(d.snapshot().events.at(-1).waitReason,waitReason);
+ }
+ for(const [event,reason,waitReason] of [['recovery_finished','deadline','secret'],['recovery_finished','receipt_complete','receipt'],['app_active','deadline','setup']]){
+  d.record(event,{reason,waitReason});assert.equal(d.snapshot().events.at(-1).waitReason,undefined);
+ }
+ assert(!JSON.stringify(d.snapshot()).includes('secret'));
+});
+
+
+test('push delivery observations distinguish lowering without exposing payload or identifiers',()=>{
+ const {pushDeliveryObservation:observe}=load('src/services/identity/pushDeliveryObservation.ts');
+ const d=journal.createDiagnosticJournal(()=>1000);
+ const details=observe({sentTime:700,priority:2,originalPriority:1,data:{secret:'content'},messageId:'secret'},'background',1000);
+ d.record('push_received',details);
+ assert.deepEqual(d.snapshot().events[0],{at:1000,event:'push_received',milliseconds:300,pushPriority:2,pushOriginalPriority:1,callbackState:'background'});
+ assert(!JSON.stringify(d.snapshot()).includes('secret'));
+ for(const sentTime of [undefined,NaN,Infinity,-1,0,1001,'700'])assert.equal(observe({sentTime},null,1000).milliseconds,undefined);
+ assert.equal(observe({sentTime:1},'active',1e10).milliseconds,86400000);
+ assert.deepEqual(observe({priority:true,originalPriority:'1'},'secret',1000),{callbackState:'unknown'});
+ d.record('push_received',{pushPriority:3,pushOriginalPriority:true,callbackState:'secret'});
+ assert.deepEqual(d.snapshot().events[1],{at:1000,event:'push_received'});
+ d.record('app_active',{pushPriority:1,pushOriginalPriority:2,callbackState:'background'});
+ assert.deepEqual(d.snapshot().events[2],{at:1000,event:'app_active'});
+});
+
+
+test('FCM diagnostics identify hint-only versus inline without retaining content or trusting it as admission',()=>{
+ const {pushDeliveryObservation:observe}=load('src/services/identity/pushDeliveryObservation.ts');
+ const d=journal.createDiagnosticJournal(()=>1000);
+ d.record('push_received',observe({data:{type:'neuron_message',event:'secret'}},'background',1000));
+ d.record('push_received',observe({data:{type:'neuron_message',envelope:'secret'}},'background',1000));
+ assert.deepEqual(d.snapshot().events.map(e=>e.wakePayload),['hint_only','inline']);
+ assert(!JSON.stringify(d.snapshot()).includes('secret'));
+ d.record('push_received',{wakePayload:'secret'});d.record('app_active',{wakePayload:'inline'});
+ assert.equal(d.snapshot().events[2].wakePayload,undefined);assert.equal(d.snapshot().events[3].wakePayload,undefined);
+ assert.equal(observe({data:{type:'call',envelope:'secret'}},'background',1000).wakePayload,undefined);
+});
+
+const modular=load('src/services/moduleDiagnosticReport.ts');
+test('v2 diagnostics follow all ten modules, preserve evidence and reject accidental extra top-level data',()=>{
+ const input={schema:'axonic-diagnostic-report',capturedAt:1,network:{connected:2},context:{storage:{availableBytes:100},appState:'active'},messages:{incompleteMediaEvidence:{incoming:1}},history:{events:[]},coordinator:{},privateUnexpected:'secret'};
+ const report=modular.moduleDiagnosticReport(input,modular.summarizeCallsForReport(null));
+ assert.equal(report.schemaVersion,2);assert.equal(Object.keys(report.modules).length,10);assert.equal(report.modules.network.evidence.connected,2);assert.equal(report.modules.storage.evidence.capacity.availableBytes,100);assert.equal(report.modules.media.evidence.incomplete.incoming,1);assert(!JSON.stringify(report).includes('secret'));assert.equal(report.modules.calls.evidence.status,'idle');assert.equal(report.network,undefined);assert.equal(new Set(report.reviewContract.order).size,10);
+});
+test('call diagnostics and event journal never export participant identities or arbitrary reasons',()=>{
+ const view={id:'secret',peerName:'secret',status:'ready',media:'video',room:{descriptor:{members:['secret','other','third']},accepted:true,legs:[{status:'ready',peerUser:'secret',transport:{sdp:'secret'}},{status:'ended',reason:'secret'}]}};
+ const summary=modular.summarizeCallsForReport(view);assert.equal(summary.participants,3);assert.equal(summary.legs.ready,1);assert.equal(summary.legs.ended,1);assert(!JSON.stringify(summary).includes('secret'));
+ const j=journal.createDiagnosticJournal(()=>5);j.record('call_state_changed',{callStatus:'ready',callMedia:'video',groupCall:true,participants:3,readyLegs:2,reason:'secret',peer:'secret'});const row=j.snapshot().events[0];assert.equal(row.readyLegs,2);assert.equal(row.groupCall,true);assert(!JSON.stringify(row).includes('secret'));
 });

@@ -1,0 +1,41 @@
+Message route evidence — 2026-11-01
+
+Problem
+  Outgoing Message Info used receipt transport as its only route observation.
+  A direct receipt does not establish a direct payload transfer. Storage expiry
+  did not retain the identity of the peer that accepted custody.
+
+Contract
+  Retain acknowledged message/media storage peers separately from delivery.
+  Direct message acknowledgment records the actual payload connection.
+  A receiving device may attach sources and partial coverage to a receipt.
+  The detached Ed25519 signature is domain-separated (axonic-custody-route-v1
+  or axonic-attachment-route-v1) and binds the source list, coverage and original
+  receipt signature. Validate both signatures before using this report.
+  Relay storage preserves the validated optional report through receipt polling.
+  Existing base receipt signatures remain unchanged. Missing extensions yield
+  unknown payload routes, never an inferred route from the receipt transport.
+
+Presentation and trust
+  Private chats and each group recipient show sender/source/recipient identities.
+  Multiple sources are separate paths, not an invented ordered relay chain.
+  Storage handoffs are not final delivery proof. Internet/TURN hops are unknown.
+  A recipient signature authenticates its report, not independent proof that a
+  relay earned a reward. Trial credits, deduplication and service access are
+  unchanged; this feature must not create credit entries from UI route claims.
+  Old history cannot be reconstructed. Peers running older code may omit or drop
+  route extensions, in which case receipt-only evidence remains explicit.
+
+Implementation
+  Shared: deliveryEvidence, custodyProtocol, attachmentProtocol, attachmentCustody,
+  attachmentTransfer, rootChatLedger/types and custody couriers.
+  Platform composition passes authenticated sources and storage acknowledgments.
+  No polling, additional transport round trips or route collection service.
+
+Validation
+  Signature tampering, cross-receipt substitution, missing signatures and duplicate
+  sources rejected. Custody serialization and attachment relay receipt polling
+  preserve verified reports. Ledger storage and per-recipient UI tested.
+  Live development emulators exchanged text and a 1 MB file after runtime reload;
+  both endpoints recorded payload routes. Production apps and data unchanged.
+  Shared AoN source updated locally; live fleet rollout is a separate step.

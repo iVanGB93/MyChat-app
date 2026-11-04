@@ -1,3 +1,5 @@
+import {t} from '../../localization/language';
+import {Chrome} from '../../theme';
 import React,{useEffect,useRef} from 'react';
 import {ActivityIndicator,Animated,Easing,ScrollView,StyleSheet,Text,TouchableOpacity,View} from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -44,8 +46,7 @@ export default function IncomingCallAppearance({callerName,avatarUri,isVideo,loc
             style={{ marginRight: 6 }}
           />
           <Text style={[styles.typePillText, { color: Colors.primary }]}>
-            INCOMING {isVideo ? 'VIDEO' : 'VOICE'} CALL
-          </Text>
+            {t("INCOMING")}{' '}{isVideo ? t("VIDEO") : t("VOICE")} {t("CALL")}</Text>
         </View>
 
         {!localPreviewUrl && (
@@ -79,22 +80,22 @@ export default function IncomingCallAppearance({callerName,avatarUri,isVideo,loc
         )}
 
         <Text numberOfLines={2} ellipsizeMode="tail" style={styles.callerName}>{callerName}</Text>
-        <Text accessibilityLiveRegion="polite" style={styles.status}>{busy?'Answering…':'is calling you…'}</Text>
+        <Text accessibilityLiveRegion="polite" style={styles.status}>{busy?t("Answering…"):'is calling you…'}</Text>
         {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
       </ScrollView>
 
       <View style={styles.actions}>
         <View style={{ alignItems: 'center' }}>
-          <TouchableOpacity style={styles.rejectBtn} accessibilityRole="button" accessibilityLabel="Decline call" onPress={handleReject} activeOpacity={0.85}>
+          <TouchableOpacity style={styles.rejectBtn} accessibilityRole="button" accessibilityLabel={t("Decline call")} onPress={handleReject} activeOpacity={0.85}>
             <Ionicons name="close" size={28} color="#fff" />
           </TouchableOpacity>
-          <Text style={styles.btnLabel}>Decline</Text>
+          <Text style={styles.btnLabel}>{t("Decline")}</Text>
         </View>
         <View style={{ alignItems: 'center' }}>
-          <TouchableOpacity style={[styles.acceptBtn,busy&&{opacity:0.65}]} accessibilityRole="button" accessibilityLabel="Accept call" accessibilityState={{disabled:busy,busy}} disabled={busy} onPress={handleAccept} activeOpacity={0.85}>
+          <TouchableOpacity style={[styles.acceptBtn,busy&&{opacity:0.65}]} accessibilityRole="button" accessibilityLabel={t("Accept call")} accessibilityState={{disabled:busy,busy}} disabled={busy} onPress={handleAccept} activeOpacity={0.85}>
             {busy?<ActivityIndicator color="#021015"/>:<Ionicons name={isVideo ? 'videocam' : 'call'} size={28} color="#021015" />}
           </TouchableOpacity>
-          <Text style={styles.btnLabel}>{busy?'Answering':'Accept'}</Text>
+          <Text style={styles.btnLabel}>{busy?'Answering':t("Accept")}</Text>
         </View>
       </View>
     </View>
@@ -161,7 +162,7 @@ function makeStyles(Colors: any) {
       borderWidth: 1.5,
       borderColor: Colors.primary,
       shadowColor: Colors.primary,
-      shadowOpacity: 0.8,
+      shadowOpacity: Chrome.shadowOpacity,
       shadowRadius: 16,
       shadowOffset: { width: 0, height: 0 },
       elevation: 8,
@@ -221,7 +222,7 @@ function makeStyles(Colors: any) {
       alignItems: 'center',
       justifyContent: 'center',
       shadowColor: Colors.error,
-      shadowOpacity: 0.7,
+      shadowOpacity: Chrome.shadowOpacity,
       shadowRadius: 14,
       shadowOffset: { width: 0, height: 0 },
       elevation: 8,
@@ -234,7 +235,7 @@ function makeStyles(Colors: any) {
       alignItems: 'center',
       justifyContent: 'center',
       shadowColor: Colors.success,
-      shadowOpacity: 0.8,
+      shadowOpacity: Chrome.shadowOpacity,
       shadowRadius: 16,
       shadowOffset: { width: 0, height: 0 },
       elevation: 9,

@@ -6,11 +6,13 @@ import type { CallMediaSignal, CallMediaData } from './callMediaProtocol.ts';
 import type { IdentityPeer } from './identityClient.ts';
 import type { IdentityRecord } from './identityProtocol.ts';
 import type { CallMediaTransport } from './callMediaTransport.ts';
+import {groupCallLegId,type GroupCallRoom} from './groupCallRoom.ts';
 
 export interface NeuronCallView<Peer = number> {
   id: string; peerUser: Peer; peerName: string; outgoing: boolean; media: 'voice' | 'video';
   status: 'finding' | 'ringing' | 'connecting' | 'ready' | 'ended'; reason?: string;
   expiresAt?: number; transport?: CallMediaTransport;
+  room?: {descriptor:GroupCallRoom;name:string;accepted:boolean;anchorId?:string;legs:NeuronCallView<Peer>[]};
 }
 type ControlInput = Omit<CallControl, 'version' | 'record' | 'device' | 'signature'>;
 type MediaInput = Omit<CallMediaSignal, 'version' | 'record' | 'device' | 'signature'>;
@@ -57,7 +59,7 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     const expiresAt=['end','cancel'].includes(kind)?now+30000:Math.min(e.expiresAt,now+30000);
     if(expiresAt<=issuedAt)return false;
     const saved=await d.submit(d.sign({callId:e.callId,caller:e.caller,callee:e.callee,callerDevice:e.callerDevice,
-      media:e.media,kind,invitation:callControlDigest(e),sequence,issuedAt,expiresAt,...extra}));
+        media:e.media,kind,invitation:callControlDigest(e),sequence,issuedAt,expiresAt,...(e.room?{room:e.room}:{}),...(e.rejoin?{rejoin:e.rejoin}:{}),...extra}));
     // Start delivery before closing media; a hangup must not wait for a periodic scan.
     if(saved&&['end','cancel','reject','busy'].includes(kind))d.terminalSaved?.(e);
     return saved;
@@ -192,15 +194,15 @@ export function createNeuronCallCoordinator<Peer = number>(d: {
     });},
     diagnostics:()=>({...diagnostics}),
     snapshot:()=>view?{...view}:null,
-    async start(user:Peer,kind:'voice'|'video') {return serial(async()=>{
+    async start(user:Peer,kind:'voice'|'video',room?:GroupCallRoom,rejoin?:string) {return serial(async()=>{
       await recover();
       if(!current()||view&&view.status!=='ended'||d.busy())throw Error('Finish your current call first.');
       const target=await d.resolve(user);
       if(!target||d.blocked(target.account)||!d.contexts().some(c=>c.peer.account===target.account)&&!d.callRoute?.(target.account,''))
         throw Error('This peer is not connected for neuron calls. Keep both apps open and try again.');
       const bytes=await d.random();if(bytes.length!==32||!current())throw Error('Call interrupted');
-      const issuedAt=d.now(),raw=d.sign({callId:bytesToHex(bytes),caller:d.account,callee:target.account,callerDevice:d.device,
-        media:kind,kind:'invite',invitation:null,sequence:0,issuedAt,expiresAt:issuedAt+60000});
+      const issuedAt=d.now(),raw=d.sign({callId:room?groupCallLegId(room,d.account,target.account,rejoin):bytesToHex(bytes),caller:d.account,callee:target.account,callerDevice:d.device,
+        media:kind,kind:'invite',invitation:null,sequence:0,issuedAt,expiresAt:issuedAt+60000,...(room?{room}:{}),...(rejoin?{rejoin}:{})});
       if(!await d.submit(raw)||!current())throw Error('Could not save the call invitation.');
       declined.clear();active=JSON.parse(raw);view={id:active!.callId,expiresAt:active!.expiresAt,peerUser:user,peerName:target.name,outgoing:true,media:kind,status:'finding'};emit();return view.id;
     });},

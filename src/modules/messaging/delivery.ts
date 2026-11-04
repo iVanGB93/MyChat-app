@@ -99,12 +99,12 @@ export function createMessageDelivery(d: {
             if(!current())return;const latest=await ledger.snapshot();if(!current())return;
             // Keep the original intent and current policy authoritative after fallback.
             if(latest.contacts.some(c=>c.account===message.peer&&c.blocked)||!pendingView(latest,owner).rows.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
-            await ledger.delivered(message.peer,message.id,deliveryEvidence('receipt',now()));
+            await ledger.delivered(message.peer,message.id,deliveryEvidence('payload',now()));
             if(current()){retries.delete(message.peer+':'+message.id);d.changed?.();}
           });
         }
         lastOutcome=direct?'direct-ack':'direct-unavailable';
-        if(direct){if(current()){await ledger.delivered(message.peer,message.id,deliveryEvidence('receipt',now()));delivered=true;}}
+        if(direct){if(current()){await ledger.delivered(message.peer,message.id,deliveryEvidence('payload',now()));delivered=true;}}
         else if(current()){
           // Recheck revocation after a failed direct attempt and before custody.
           const latest=await ledger.snapshot();if(!current())return;const latestPending=pendingView(latest,owner).rows;if(!latestPending.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
@@ -144,3 +144,4 @@ export function createMessageDelivery(d: {
     stop() { stopped = true; generation++;cached=undefined;blockedState=undefined;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
   };
 }
+

@@ -2,7 +2,7 @@ import type {AttachmentDescriptor,AttachmentPhase,AttachmentJob} from './attachm
 export type {AttachmentDescriptor,AttachmentPhase,AttachmentJob} from './attachmentTypes.ts';
 import type {AttachmentTransferStorage,AttachmentTransferConnections} from './attachmentTransferPorts.ts';
 export type {AttachmentJobStore} from './attachmentTransferPorts.ts';
-import {deliveryEvidence,validDeliveryEvidence,type DeliveryEvidence} from './deliveryEvidence.ts';
+import {receiptDeliveryEvidence,validDeliveryEvidence,type DeliveryEvidence,type ReceivedRoute} from './deliveryEvidence.ts';
 import {createOrderedReadAhead} from './orderedReadAhead.ts';
 import {createAttachmentWorkSelection,createAttachmentReadinessProbe} from './attachmentSchedule.ts';
 import {attachmentRouteSnapshot,attachmentRouteCandidates,attachmentRouteNeedsSelection,selectAttachmentCustodian,
@@ -53,8 +53,8 @@ export function createAttachmentTransfer(d:{
  downloadWindow?:number;uploadWindow?:number;
  record(account:string):Promise<IdentityRecord|null>;
  allowed(peer:string):boolean;allowedJob?(job:AttachmentJob):boolean;
- signReceipt(manifest:AttachmentManifest):Promise<AttachmentReceipt>;
- stored?(job:AttachmentJob,current:()=>boolean):Promise<void>;
+ signReceipt(manifest:AttachmentManifest,route?:ReceivedRoute):Promise<AttachmentReceipt>;
+ stored?(job:AttachmentJob,current:()=>boolean,relay:string):Promise<void>;
  completed(job:AttachmentJob,current:()=>boolean):Promise<void>;
 }){
  const processing=d.measureProcessing??((_stage,work)=>work());
@@ -66,6 +66,8 @@ export function createAttachmentTransfer(d:{
  const unavailable=new Map<string,number>();
  const directWaiting=new Map<string,number>();
  const streamRetry=new Map<string,number>();
+ const confirmationRetry=new Map<string,number>();
+ const custodyWait=new Map<string,number>();
  const published=new Set<string>();
  const storedPublished=new Set<string>();
  const routes=()=>attachmentRouteSnapshot(d.connections,!!d.connections.directStream);
@@ -81,10 +83,10 @@ export function createAttachmentTransfer(d:{
  // Custody publication is durable and idempotent. Polling a held file must not
  // reread the whole chat ledger on every receipt check. Failed callbacks and
  // lifecycle changes never populate this bounded, process-local memo.
- async function publishStored(job:AttachmentJob,current:()=>boolean){
-  const key=generation+':'+job.owner+':'+job.digest;
+ async function publishStored(job:AttachmentJob,current:()=>boolean,relay:string){
+  const key=generation+':'+job.owner+':'+job.digest+':'+relay;
   if(storedPublished.has(key))return;
-  await d.stored?.(job,current);
+  await d.stored?.(job,current,relay);
   if(current()){if(storedPublished.size>=128)storedPublished.clear();storedPublished.add(key);}
  }
 
@@ -117,6 +119,7 @@ export function createAttachmentTransfer(d:{
     if(!recipient||!verifyAttachmentReceipt(job.receipt,manifest,recipient,d.now())||!await live())return;
     await publish(job,current);if(await live())await save({phase:'complete',next:0});return;
    }
+   if(job.direction==='outgoing'&&d.connections.sendingStream?.(job))return;
    if(job.direction==='outgoing'&&job.phase==='queued'&&!job.custodians.length&&d.connections.peers().includes(peer)){
     // A ready recipient pulls over authenticated DTLS, or encrypted blocks if
     // that stream is unavailable. The status response itself grants no access.
@@ -125,11 +128,29 @@ export function createAttachmentTransfer(d:{
     // A newly connected recipient can still pull the stream independently.
     const response=await readiness.read(peer,()=>request(peer,'direct-status',job));
     if(!await live())return;
-    if(response?.status==='ready'){await save({next:d.now()+2000});return;}
+    // Readiness is not byte progress. A suspended receiver can keep reporting
+    // ready indefinitely; bound its head start so custody remains available.
+    if(response?.status==='ready'){
+     if(!directWaiting.has(job.digest)){if(directWaiting.size>=128)directWaiting.clear();directWaiting.set(job.digest,d.now()+3000);}
+     if(d.now()<directWaiting.get(job.digest)!){await save({next:Math.min(d.now()+2000,directWaiting.get(job.digest)!)});return;}
+    }
     // Give the encrypted descriptor time to reach a connected recipient before creating custody.
     if(response&&!job.custodians.length&&job.cursor===0){
      if(!directWaiting.has(job.digest)){if(directWaiting.size>=128)directWaiting.clear();directWaiting.set(job.digest,d.now()+3000);}
      if(d.now()<directWaiting.get(job.digest)!){await save({next:d.now()+500});return;}
+    }
+   }
+   // Recover a lost acknowledgement from the authenticated recipient, even
+   // when the custodian is offline. A status alone never proves delivery.
+   if(job.direction==='outgoing'&&job.phase==='confirming'&&d.connections.peers().includes(peer)
+    &&(confirmationRetry.get(job.digest)??0)<=d.now()){
+    if(confirmationRetry.size>=128)confirmationRetry.clear();confirmationRetry.set(job.digest,d.now()+30000);
+    const response=await readiness.read(peer,()=>request(peer,'direct-status',job));
+    if(!await live())return;
+    const recipient=response?.status==='completed'?await d.record(manifest.recipient):null;
+    if(recipient&&verifyAttachmentReceipt(response.receipt,manifest,recipient,d.now())){
+     await save({receipt:response.receipt,delivery:receiptDeliveryEvidence(response.receipt,manifest.sender,d.now()),next:0,failures:0});
+     await publish(job,current);if(await live())await save({phase:'complete'});return;
     }
    }
    if(job.direction==='incoming'&&job.receipt){
@@ -143,10 +164,18 @@ export function createAttachmentTransfer(d:{
     if(job.relay!==relay)await save({relay});
     const r=await request(relay,relay===manifest.sender?'direct-receipt':'receipt',job,{receipt:job.receipt});if(!await live())return;
     if(r.status!=='completed')throw Error('Attachment receipt not accepted');
-    const acknowledged=[...job.acknowledged,relay];await save({acknowledged,phase:acknowledged.length===job.custodians.length?'complete':'confirming',next:0,failures:0});return;
+    // Direct delivery may win after the sender deposited only part of the file.
+    // Learn those custodians from the authenticated sender's receipt response;
+    // they still need the recipient-signed receipt to release their copies.
+    const prior=relay===manifest.sender&&Array.isArray(r.custodians)?r.custodians.filter((p:unknown)=>validAccountId(p)&&p!==job.owner).slice(0,9):[];
+    const custodians=[...new Set<string>([...job.custodians,...prior])];
+    if(custodians.length>10)throw Error('Too many attachment sources');
+    const acknowledged=[...job.acknowledged,relay];await save({custodians,acknowledged,phase:custodians.every(p=>acknowledged.includes(p))?'complete':'confirming',next:0,failures:0});return;
    }
    // Selection uses one current observation. Retry deadlines and durable route
    // transitions remain worker-owned; adapters still bind the exact device.
+   // A direct stream may have been admitted while a status request was awaited.
+   if(job.direction==='outgoing'&&!job.receipt&&d.connections.sendingStream?.(job))return;
    const observation=routes();
    const peers=attachmentRouteCandidates(job,observation,d.now(),routeCooldowns(job,observation.peers),streamRetry.get(job.digest)??0);
    if(attachmentRouteNeedsSelection(job,peers)){
@@ -164,23 +193,25 @@ export function createAttachmentTransfer(d:{
    }
    const relay=job.relay!;
    if(job.direction==='outgoing'){
+    if(d.connections.sendingStream?.(job))return;
     if(job.phase==='queued'){
      const r=await request(relay,'offer',job,{manifest});if(!await live())return;
      if(!['held','completed'].includes(r.status))throw Error('Attachment custodian refused');
      const custodians=job.custodians.includes(relay)?job.custodians:[...job.custodians,relay];
      if(custodians.length>9)throw Error('Too many attachment custodians');
      const received=Number.isSafeInteger(r.received)&&r.received>=0&&r.received<=total(job)?r.received:0;
-     if(received===total(job)&&r.status==='held')await publishStored(job,current);
+     if(received===total(job)&&r.status==='held')await publishStored(job,current,relay);
      await save({phase:r.status==='completed'||received===total(job)?'confirming':'uploading',cursor:received,custodians,failures:0,next:0});return;
     }
     if(job.phase==='uploading'&&job.cursor<total(job)){
      // Another recipient's job may already have uploaded this shared prefix.
      if(!!manifest.shared){const held=await request(relay,'status',job);if(!await live())return;
       if(held.status==='held'&&Number.isSafeInteger(held.received)&&held.received>job.cursor&&held.received<=total(job)){
-       if(held.received===total(job))await publishStored(job,current);
+       if(held.received===total(job))await publishStored(job,current,relay);
        await save({cursor:held.received,phase:held.received===total(job)?'confirming':'uploading',next:0,failures:0});return;
       }
      }
+     if(d.connections.sendingStream?.(job))return;
      if(d.connections.bulkRequest&&attachmentBlockRoute(routes(),relay,'outgoing')){
       const start=job.cursor,negotiated=1;
       if(!Number.isSafeInteger(negotiated)||negotiated<1||negotiated>ATTACHMENT_BATCH_CHUNKS)throw Error('Invalid upload batch size');
@@ -190,9 +221,11 @@ export function createAttachmentTransfer(d:{
        chunks.push(await d.storage.files.readChunk(job,start+n));
        if((n+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
       }
+      if(d.connections.sendingStream?.(job))return;
       if(chunks.length!==count)throw Error('Incomplete upload batch');
       const data=packAttachmentBatch(manifest,start,chunks,d.hashLeaf,d.encoding);
       if(!await live()||manifest.expires<=d.now())return;
+      if(d.connections.sendingStream?.(job))return;
       const raw=await d.connections.bulkRequest(relay,JSON.stringify({version:1,operation:'put-batch',digest:job.digest,index:start,count,data}));
       if(!await live())return;
       if(!raw)throw new AttachmentSourceUnavailable('Attachment upload batch unavailable');
@@ -200,17 +233,19 @@ export function createAttachmentTransfer(d:{
       if(result.status==='completed'){await save({phase:'confirming',next:0,failures:0});return;}
       if(result.status!=='held'||result.index!==start||result.count!==count||!Number.isSafeInteger(result.received)||result.received<count||result.received>total(job))throw Error('Attachment upload batch refused');
       const next=start+count;
-      if(next===total(job)){await publishStored(job,current);if(!await live())return;}
+      if(next===total(job)){await publishStored(job,current,relay);if(!await live())return;}
       await save({cursor:next,phase:next===total(job)?'confirming':'uploading',failures:0,next:0});return;
      }
      return; // No scalar upload fallback: wait for a capable block-stream peer.
     }
     const r=await request(relay,'status',job);if(!await live())return;
-    if(r.status==='held'){if(job.cursor===total(job))await publishStored(job,current);if(!await live())return;await save({next:d.now()+2000});return;}
+    // Signed direct receipts reset next to zero in receive(). Polling is only
+    // lost-receipt recovery; an offline recipient need not trigger disk/network work every 2s.
+    if(r.status==='held'){if(job.cursor===total(job))await publishStored(job,current,relay);if(!await live())return;const delay=custodyWait.get(job.digest)??2000;custodyWait.set(job.digest,Math.min(30000,delay*2));await save({next:d.now()+delay});return;}
     const recipient=await d.record(manifest.recipient);
     if(r.status!=='completed'||!recipient||!verifyAttachmentReceipt(r.receipt,manifest,recipient,d.now()))throw Error('No verified attachment receipt');
     if(!await live())return;
-    await save({receipt:r.receipt,delivery:deliveryEvidence('receipt',d.now(),relay),next:0,failures:0});
+    await save({receipt:r.receipt,delivery:receiptDeliveryEvidence(r.receipt,manifest.sender,d.now(),relay),next:0,failures:0});
     await publish(job,current);if(!await live())return;
     await save({phase:'complete'});return;
    }
@@ -296,7 +331,7 @@ export function createAttachmentTransfer(d:{
    }
    if(!job.receipt){
     await d.storage.files.commitFile(job,current);if(!await live())return;
-    const receipt=await d.signReceipt(manifest),recipient=await d.record(manifest.recipient);
+    const receipt=await d.signReceipt(manifest,job.receivedSources?.length?{sources:job.receivedSources,partial:job.sourceCoverage!==true}:undefined),recipient=await d.record(manifest.recipient);
     if(!recipient||!verifyAttachmentReceipt(receipt,manifest,recipient,d.now())||!await live())return;
     const sources=job.receivedSources??[],relays=sources.filter(p=>p!==manifest.sender);
     const delivery:DeliveryEvidence|undefined=sources.length?{version:1,scope:'payload',method:relays.length?(sources.includes(manifest.sender)?'mixed':'custody'):'peer',relays,at:d.now(),partial:job.sourceCoverage!==true}:undefined;
@@ -331,7 +366,11 @@ export function createAttachmentTransfer(d:{
     admittedJob=job;
     const m=job.descriptor.manifest,sender=await d.record(m.sender),recipient=await d.record(m.recipient);
     if(!sender||!recipient||!verifyAttachmentManifest(m,sender,d.now())||!current())return reply('rejected');
-    if(input.operation==='direct-status')return job.direction==='incoming'&&peer.account===m.sender&&peer.device===m.senderDevice&&d.device()===m.recipientDevice&&job.failures===0?reply('ready'):reply('unavailable');
+    if(input.operation==='direct-status'){
+     if(job.direction!=='incoming'||peer.account!==m.sender||peer.device!==m.senderDevice||d.device()!==m.recipientDevice)return reply('unavailable');
+     if(job.receipt&&verifyAttachmentReceipt(job.receipt,m,recipient,d.now()))return reply('completed',{receipt:job.receipt});
+     return job.failures===0?reply('ready'):reply('unavailable');
+    }
     if(job.direction!=='outgoing'||peer.account!==m.recipient||peer.device!==m.recipientDevice||d.device()!==m.senderDevice)return reply('rejected');
     if(input.operation==='direct-stream'){
      const wss=input.transport==='wss-v1'&&typeof input.id==='string'&&/^[a-f0-9]{64}$/.test(input.id);
@@ -371,8 +410,8 @@ export function createAttachmentTransfer(d:{
      admittedJob=latest;
      if(!current()||m.expires<=d.now()||latest.direction!=='outgoing'||['cancelled','expired'].includes(latest.phase)
       ||attachmentDescriptorFingerprint(latest.descriptor)!==fingerprint)return reply('unavailable');
-     if(latest.receipt)return reply('completed');
-     if(await d.storage.jobs.save({...latest,revision:latest.revision+1,receipt:input.receipt,delivery:deliveryEvidence('receipt',d.now()),next:0},latest.revision,current))return reply('completed');
+     if(latest.receipt)return reply('completed',{custodians:latest.custodians.slice(0,9)});
+     if(await d.storage.jobs.save({...latest,revision:latest.revision+1,receipt:input.receipt,delivery:receiptDeliveryEvidence(input.receipt,latest.descriptor.manifest.sender,d.now()),next:0},latest.revision,current))return reply('completed',{custodians:latest.custodians.slice(0,9)});
      const refreshed=await d.storage.jobs.get(owner,input.digest);if(!refreshed)return reply('unavailable');latest=refreshed;
     }
     return reply('unavailable');
@@ -399,6 +438,8 @@ export function createAttachmentTransfer(d:{
     // Rotate jobs within a bounded burst so a large file cannot monopolize the worker.
     for(let step=0;step<steps&&active();step++){
      const jobs=await d.storage.jobs.list(owner);if(!jobs.every(validAttachmentJob))throw Error('Invalid own attachment jobs');
+     const confirming=new Set(jobs.filter(j=>j.phase==='confirming'&&!j.receipt).map(j=>j.digest));
+     for(const digest of custodyWait.keys())if(!confirming.has(digest))custodyWait.delete(digest);
      const pending=jobs.filter(j=>!terminal(j.phase)&&j.next<=d.now()&&!idle.has(j.digest));if(!pending.length)break;
      const job=selectWork(pending)!;await run(job,epoch);if(!active())break;
      const saved=await d.storage.jobs.get(owner,job.digest);
@@ -421,6 +462,8 @@ export function createAttachmentTransfer(d:{
    unavailable.clear();directWaiting.clear();
    if(!await d.storage.jobs.save({...job,revision:job.revision+1,phase:job.receipt?'confirming':job.direction==='outgoing'?'queued':'downloading',cursor:job.direction==='outgoing'?0:job.cursor,relay:null,next:0,failures:0},job.revision,()=>!stopped&&generation===epoch&&d.owner()===owner&&d.allowed(peer)))throw Error('Transfer changed. Try again');
   },
-  invalidate(){generation++;unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},stop(){readiness.clear();stopped=true;generation++;unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},
+  invalidate(){generation++;custodyWait.clear();unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},stop(){custodyWait.clear();readiness.clear();stopped=true;generation++;unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},
  };
 }
+
+

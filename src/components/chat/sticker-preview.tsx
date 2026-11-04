@@ -1,3 +1,5 @@
+import {t} from '../../localization/language';
+import {Chrome} from '../../theme';
 import React, { useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { Image } from 'expo-image';
@@ -25,7 +27,7 @@ export default function StickerPreview({ sticker, uri, userId, onClose }: { stic
       const check = sticker ? loadStickerPreferences(userId).then((prefs) => prefs.favorites.includes(sticker.id))
         : isImportedStickerFavorite(userId, uri || '');
       check.then((value) => { if (active) setFavorite(value); })
-        .catch(() => { if (active) { setFavorite(false); setError('Could not check favorites. Please try again.'); } });
+        .catch(() => { if (active) { setFavorite(false); setError(t("Could not check favorites. Please try again.")); } });
     }
     return () => { active = false; mounted.current = false; };
   }, [userId, sticker?.id, uri]);
@@ -39,10 +41,10 @@ export default function StickerPreview({ sticker, uri, userId, onClose }: { stic
         const prefs = await loadStickerPreferences(userId);
         if (!prefs.favorites.includes(sticker.id)) await updateStickerPreferences(userId, sticker.id, 'favorite');
       } else if (uri) await importSticker(userId, uri, 'Sticker', true);
-      else throw new Error('Sticker unavailable');
+      else throw new Error(t("Sticker unavailable"));
       if (mounted.current) setFavorite(true);
     } catch {
-      if (mounted.current) setError('Could not save favorite. Please try again.');
+      if (mounted.current) setError(t("Could not save favorite. Please try again."));
     } finally {
       busy.current = false;
       if (mounted.current) setSaving(false);
@@ -50,18 +52,18 @@ export default function StickerPreview({ sticker, uri, userId, onClose }: { stic
   };
   return <Modal transparent visible animationType="fade" onRequestClose={onClose}>
     <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor:c.overlay }}>
-      <Pressable accessibilityLabel="Close sticker preview" accessibilityRole="button" onPress={onClose} style={{ position: 'absolute', inset: 0 }} />
+      <Pressable accessibilityLabel={t("Close sticker preview")} accessibilityRole="button" onPress={onClose} style={{ position: 'absolute', inset: 0 }} />
       <View accessibilityViewIsModal style={{ padding: 20, gap: 16, borderRadius: 24, backgroundColor: c.surface, borderWidth: 1, borderColor: c.neonBorder, alignItems: 'center' }}>
-        {sticker ? <StickerArt sticker={sticker} size={size} animate loop /> : <Image source={{ uri }} style={{ width: size, height: size }} contentFit="contain" accessibilityLabel="Sticker preview" />}
+        {sticker ? <StickerArt sticker={sticker} size={size} animate loop /> : <Image source={{ uri }} style={{ width: size, height: size }} contentFit="contain" accessibilityLabel={t("Sticker preview")} />}
         {!!userId && <Pressable accessibilityRole="button" accessibilityState={{ disabled: favorite === null || saving || favorite, busy: saving }}
           disabled={favorite === null || saving || favorite} onPress={() => { void addFavorite(); }}
-          style={{ padding: 12, borderRadius: 14, backgroundColor: c.background }}>
+          style={{ padding: 12, borderRadius: Chrome.controlRadius, backgroundColor: c.background }}>
           <Text accessibilityLiveRegion="polite" style={{ color: c.primary, fontWeight: '600' }}>
-            {saving ? 'Saving…' : favorite === null ? 'Checking favorites…' : favorite ? '★ In favorites' : '☆ Add to favorites'}
+            {saving ? t("Saving…") : favorite === null ? t("Checking favorites…") : favorite ? '★ In favorites' : '☆ Add to favorites'}
           </Text>
         </Pressable>}
         {!!error && <Text selectable accessibilityRole="alert" style={{ color: c.error, maxWidth: size }}>{error}</Text>}
-        <Pressable accessibilityRole="button" onPress={onClose} style={{ padding: 12,minHeight:44,justifyContent:'center' }}><Text style={{ color: c.primary }}>Close</Text></Pressable>
+        <Pressable accessibilityRole="button" onPress={onClose} style={{ padding: 12,minHeight:44,justifyContent:'center' }}><Text style={{ color: c.primary }}>{t("Close")}</Text></Pressable>
       </View>
     </View>
   </Modal>;

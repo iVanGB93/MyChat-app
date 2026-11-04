@@ -1,0 +1,26 @@
+Receipt and call-delay follow-up, October 20, 2026
+Scope: emulator-5554 and emulator-5556, com.axonic.dev only. Phones untouched.
+
+Confirmed code defects:
+1. Direct outbox timeout discarded a later successful transport acknowledgment.
+   Timeout still starts custody fallback. A late success can now settle only the
+   same pending raw message under the original active account/runtime generation,
+   after rechecking blocking/cancellation. No timer or custody acceptance is
+   considered delivery. Failed late persistence leaves retry/recovery available.
+2. Non-direct call signals depended on regular relay polling. Saved call events
+   now immediately flush to eligible relays when no direct peer is available, or
+   after the direct attempt fails. Only signed, persisted, still-pending events
+   are sent. Relay deposit is never a recipient receipt. Terminal cancellation
+   has its own bounded slot so a stalled invitation does not hold it up.
+
+Regression checks: late success, stop/account switch/block/network cancellation;
+new invitation during stalled inbox polling; cancellation during stalled invite.
+
+Emulator normal-flow observations (coarse debugger polling, not precise timings):
+Before: text delivery .354/.287s, reads .231/.222s, 18944-byte file 1.821s correct.
+After: text delivery .285/1.807s, reads .360/.261s, file 1.841s correct.
+Calls: before incoming 2.219s/cancel .228s; after incoming 2.196s/cancel 1.742s.
+These samples establish functionality, not a normal-path speedup. Deterministic
+stalled-operation tests establish bypass of the identified waits. Production
+background/FCM delay and AoN receipt timing remain unconfirmed by emulator tests.
+No production build, phone install, commit, push or AoN deployment in this pass.

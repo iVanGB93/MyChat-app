@@ -554,3 +554,10 @@ test('cancellation can bypass an invitation deposit already in flight',async()=>
  const cancel=f.event('cancel',{sequence:1});await call.receive(cancel,f.caller,now+2);
  try{await pump.flushTerminal(JSON.parse(f.invite));assert.ok(puts.some(p=>p.raw===cancel));}finally{pump.stop();release('{\"accepted\":true}');await first;}
 });
+
+test('relay expiry schedule sleeps while empty and wakes only for a changed deadline',async()=>{
+ const f=fixture(),x=courierFixture(f);let wakes=0;x.d.scheduleChanged=()=>wakes++;
+ assert.equal(x.relay.nextDeadline(),Infinity);assert.equal(await x.relay.put(f.invite,f.b.id,x.sender),true);assert.equal(wakes,1);assert.equal(x.relay.nextDeadline(),now+60000);
+ await x.relay.pending(x.recipient);await x.relay.put(f.invite,f.b.id,x.sender);assert.equal(wakes,1);
+ x.time(now+60000);x.relay.sweep();assert.equal(x.relay.nextDeadline(),Infinity);x.relay.stop();assert.equal(x.relay.nextDeadline(),Infinity);
+});

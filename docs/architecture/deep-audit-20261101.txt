@@ -1,0 +1,134 @@
+AXONIC MODULE AUDIT — NOVEMBER 1, 2026
+
+Scope and release boundary
+Reviewed the ten architecture responsibility areas, exercised two Android Dev
+emulators, checked all three deployed AoNs, and ran mobile, hosted and MCP suites.
+This is a bounded audit, not proof of every device, network or failure condition.
+No identities, messages, queues or approvals were reset. Labelled emulator test
+messages, groups and attachments were added and retained. Official phone apps
+were not used. No production build, publication or installation was performed.
+Unrelated working-tree changes were preserved.
+
+The live fleet at audit time is commit 9410758f0d12548929e59869e7dab65d00354b90,
+runtime afc205483a85c94f84828b5e6bae76ee779a48e6f7454629e4368d0c8f42caee,
+package 0.2.0. The changes below are LOCAL, uncommitted and undeployed. They are
+not included in the previously built 1.1.40 AAB. Hosted edits are isolated in
+builds/aon-call-expansion-20261101; only callControlRelay.ts was resynchronized.
+
+Implemented findings
+1. Audio interruption: RootAudioPlayer now observes account, call and recorder
+   state instead of polling permission every 250ms during playback. Recorder
+   activity is published from its existing controller; cleanup remains isolated
+   from subscriber errors. RootVoiceComposer cancels from call events, including
+   while starting. The elapsed-time display updates once a second rather than
+   four times. Recording presence renewal remains necessary for the remote TTL.
+2. Transfer presentation: a selection change while progress is being read now
+   triggers an immediate coalesced reread. Previously it unnecessarily waited
+   one second. Real read failures retain backoff; background UI does not retry.
+3. Storage error recovery: a chat write arriving during a failed read no longer
+   bypasses the retry backoff and creates an immediate failing read loop. New
+   successful-write events can still wake recovery promptly.
+4. Hosted call courier: replaced the unconditional one-second cache sweep with
+   the existing shared deadline scheduler. The shared relay exposes the earliest
+   expiry and notifies when that deadline changes; an empty cache has no expiry
+   timer. Expiration, validation and shutdown behavior are retained.
+5. Chat header animation: the infinite syncing decoration used interaction
+   animations, which can defer virtualized-list work. All wave and pause stages
+   now run natively without interaction handles. The existing component tests
+   exercise changing title length, teardown and non-interacting configuration.
+   This fixes a concrete scheduling risk; it does not establish the cause of all
+   historical scroll-lock reports.
+
+Module coverage
+Identity: account transitions, owner binding and permission boundaries covered
+by regression suites; live owner identity stayed unchanged on both emulators.
+All three AoNs returned installed owner bindings. No credentials changed.
+Connections: live peer connectivity and gateway registration inspected; both
+emulators reported three connected peers and two registered push gateways.
+Shared authentication, connection selection and transport tests pass. No new
+transport or duplicate connection manager introduced.
+Transfers: live 5 MB and 10 MB files received with verified size and checksum.
+Preparation/presentation catch-up fixed. Shared stream, retry, receipt and
+durability regressions exercised. No claim of a pure WAN throughput benchmark.
+Storage: indexed reads, mutation/recovery and state-lifecycle suites exercised;
+pre-existing history preserved in live state tests. Error-backoff defect fixed.
+Messaging: live bidirectional text, edits, reactions, read receipts, group
+creation, acceptance and group delivery verified. Indexed group assertions use
+the logical group-message ID, distinct from per-recipient delivery IDs.
+Media: recorder controller and attachment suites passed; interruption handling
+made event-driven. Real microphone quality, camera capture and photo editing
+were not exhaustively re-tested in this emulator-only pass.
+Calls: live emulator voice call reached ready/p2p on both sides; one-sided hangup
+cleared both signaling and media state. Shared relay expiry improved. This pass
+did not repeat four-device video, screen sharing or forced TURN media tests.
+Coordination: 45-second idle sample showed zero new attachment runs on both
+devices and zero message-delivery/call-worker runs. Connection maintenance still
+runs; transport counters increased 54/55 times. Authentication/discovery and
+their completion events remain active; these counts are not CPU utilization.
+UI: chat navigation, scrolling in both directions, new-content display, Games,
+Profile and Network navigation checked. Transfer read catch-up, audio polling
+and syncing animation improved. Existing native animation and reduced-motion
+handling were inspected. No new central state manager or parallel store added.
+Diagnostics/AI: hosted diagnostics, relay inventory, status and operator-memory
+routes returned 200 for all three neurons. MCP and hosted OpenClaw regressions
+passed. This does not prove live Muse/Axon/ATOMiX automatic response latency or
+subscription renewal; no AI conversation or listener state was modified.
+Scorecard/trial credits: included in hosted/mobile suites; no service restriction
+or accounting-policy changes. Visible credit badge remained available.
+
+Live evidence
+- builds/deep-audit-emulator-state.json: bidirectional delivery/index observation
+  about 1.26s each; 5,000,000-byte checksum passes; original history retained.
+- builds/deep-audit-emulators-result.json: edits/reactions/read and group delivery
+  pass; 10,000,000-byte checksum passes. 11,406ms includes source creation,
+  preparation, delivery observation and receiver checksum. Debugger observation
+  and emulator load affect timing; do not label this wire transfer duration.
+- builds/deep-audit-call-result.json: both connected p2p; hangup clears both.
+- builds/deep-audit-background.log: background text delivered, exactly one full
+  OS notification, foreground read receipt, no extra sender notification.
+  Delivery observed at 3,720ms. This is not a killed-process/Doze/FCM-only test.
+- builds/deep-audit-idle-result.json: 45-second foreground idle counters.
+- builds/deep-audit-logcat-5554.txt and -5556.txt: recent filtered JS/Android error
+  samples empty. Sampling is not an assertion that historical logs have no errors.
+- builds/deep-audit-ui-gfx.txt: mixed Dev emulator sample, 778 rendered frames,
+  221 deadline misses (28.41%), p95 31ms, p99 97ms. This overlaps debug inspection,
+  navigation, transfer and call activity. It is a performance follow-up signal,
+  NOT a release-device frame-rate benchmark or proof of improvement.
+
+Validation
+- npm run check: 1,841 passed, zero failures, three optional benchmarks skipped;
+  full mobile suite, types, cycles, module boundaries,
+  consolidation and asset references; final result in
+  builds/deep-audit-20261101-final-check.log.
+- Hosted npm test: 342 passed, zero failures.
+- MCP npm test: 46 passed, zero failures.
+- Focused audit regression suite: 72 passed before the header change; header
+  component suite: four passed after the additional animation correction.
+- Architecture reference validation: 296 references passed after adding this report.
+- Selected shared-source parity: callControlRelay.ts phone/hosted match.
+Three optional mobile performance benchmarks are disabled by default; functional
+tests are not skipped to hide failures. Prior audit harness ID/reporting mistakes
+were corrected before final evidence was accepted; test traffic was not deleted.
+
+Remaining priorities / honest limits
+1. Capture a controlled physical-phone profile for scrolling and cold chat entry.
+   The emulator's mixed frame sample still has spikes; do not certify smooth
+   production performance from it. Keep the new header fix in that next check.
+2. Repeat real screen-off/killed-process notification recovery on both phones,
+   including 5/10 MB files and network changes. A backgrounded emulator is not
+   equivalent to Android OEM battery restrictions.
+3. Profile authentication/discovery traffic separately before reducing transport
+   maintenance. Do not remove expiry, exchange timeout, lease or authentication
+   work simply to make timer counts smaller.
+4. Storage overview intentionally scans selected attachment metadata/files; it
+   is not the chat-list startup path. Large-account profiling can establish
+   whether paging/batching here is worthwhile without introducing another cache.
+5. Long-running AI reconnect/renewal tests and four-party hardware call tests are
+   outside this pass. The server integration tests and health checks cover their
+   server contracts, not their external runtimes or microphones/cameras.
+
+Timers retained intentionally
+Protocol expiry, authentication renewal, reconnect backoff, bounded exchange
+timeouts, remote typing/recording TTL renewal, elapsed-time displays and missing
+native-event fallbacks. These have time-based correctness requirements. Most
+idle message/call/attachment tasks already sleep until an event or real deadline.

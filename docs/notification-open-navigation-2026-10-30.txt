@@ -1,0 +1,8 @@
+Notification navigation delay fix (local/Dev only)
+
+Cause found in source: RootAccountNavigator always mounted Tabs first and awaited conversations().metadataSnapshot() before routing any notification, including already identified private-chat previews. That unnecessary serialized ledger read could wait behind delivery/storage work.
+
+Changes: resolve initial notification and account-checked pending destination before mounting NavigationContainer; initial stack keeps Tabs underneath the intended chat for normal Back behavior. Brief themed opening view replaces intermediate chat list while launch resolution is pending. Warm private preview navigation no longer reads ledger metadata. Known group previews validate group existence using indexed metadata only; generic hints retain exact-message lookup and deleted/unknown fallbacks. Pending target is consumed only after navigation; newer target comparison and account/unlock checks remain.
+
+Validation: TypeScript passed.20 focused tests passed, including cold private/group initial stack, no intermediate Tabs mount, changed account, generic/deleted hints, preserved newer tap, private preview no-history access, group-unavailable fallback, and existing notification actions.
+Live Axonic Dev: existing private chat opened113ms after queue invocation; existing group115ms. Both pending targets consumed. Measurements are warm handler-to-route observation, NOT OS cold-start or first message paint. No messages sent; no official app changes or data deletion. Actual killed-process OS notification tap remains unmeasured.

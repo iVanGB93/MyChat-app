@@ -5,6 +5,7 @@ function fixture(options={}){
  const coordinator={ready:async()=>{},tick:async()=>{seen.ticks++;},stop(){},diagnostics(){}};
  const exports={};
  const modules={
+  './groupCallCoordinator':{createGroupCallCoordinator:d=>d.factory(null,d.changed,()=>false)},'./groupCallRoom':{},
   './neuronCallCoordinator':{createNeuronCallCoordinator:d=>(hooks.coordinator=d,coordinator)},
   './callControlRuntime':{createCallControlRuntime:()=>({submit:async()=>options.saved!==false,drain:async(event,peer)=>{seen.drains.push({event,peer});return stalled;},stop(){}})},
   './callRetryScheduler':{createCallRetryScheduler:d=>(hooks.retry=d,{tick:()=>{seen.retry++;return stalled;},stop(){}})},
@@ -16,7 +17,7 @@ function fixture(options={}){
  const code=ts.transpileModule(fs.readFileSync('src/services/identity/rootAccountCalls.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText;
  new Function('require','exports',code)(name=>{if(!(name in modules))throw Error(name);return modules[name];},exports);
  const historical=[{callId:'old'},{callId:'new'}],pending=[historical[1]];
- const app=exports.createRootAccountCalls({identity:{status:()=>({account:'owner'}),callDevice:()=> 'device'},network:()=>({callPeers:()=>options.noDirect?[]:[{account:'remote',device:'remote-device',expiresAt:200},{account:'other',expiresAt:200},{account:'remote',expiresAt:99}]}),records:{},store:{},list:async()=>historical,listPending:async()=>pending,current:()=>true,now:()=>100,contacts:options.contacts??(async()=>[]),contactsRevision:options.contactsRevision,changed(){}});
+ const app=exports.createRootAccountCalls({identity:{status:()=>({account:'owner'}),callDevice:()=> 'device'},network:()=>({callPeers:()=>options.noDirect?[]:[{account:'remote',device:'remote-device',expiresAt:200},{account:'other',expiresAt:200},{account:'remote',expiresAt:99}]}),records:{},store:{},list:async()=>historical,listPending:async()=>pending,current:()=>true,now:()=>100,contacts:options.contacts??(async()=>[]),contactsRevision:options.contactsRevision,wakes:options.wakes,changed(){}});
  return {app,hooks,seen,release,historical,pending};
 }
 test('call recovery retains history while direct and relay retries use only pending journals',async()=>{
@@ -66,3 +67,17 @@ test('contact change during a policy read cannot install the obsolete result',as
 });
 
 test('a saved call with no direct peer submits immediately to the relay',async()=>{const f=fixture({noDirect:true});const event={kind:'invite',callId:'new',caller:'owner',callee:'remote'};await f.hooks.coordinator.submit(JSON.stringify(event));assert.deepEqual(f.seen.flushes,[event]);f.app.stop();f.release();});
+
+
+test('local signed-wake discovery is not blocked by a previous network retry',async()=>{
+ let scans=0;const f=fixture({wakes:{pending:async()=>{scans++;return [];},finish:async()=>{}}});
+ try{const network=f.app.tick();await new Promise(setImmediate);assert.equal(scans,1);assert.equal(f.seen.retry,1);
+ await f.app.recoverWakes();assert.equal(scans,2,'new wake drains before the stalled network send settles');
+ f.release();await network;}finally{f.release();f.app.stop();}
+});
+test('wake arriving during local discovery is drained again without overlapping readers',async()=>{
+ let scans=0,releaseRead;const blocked=new Promise(r=>releaseRead=r);
+ const f=fixture({wakes:{pending:async()=>{scans++;if(scans===1)await blocked;return [];},finish:async()=>{}}});
+ try{const first=f.app.recoverWakes();await new Promise(setImmediate);const next=f.app.recoverWakes();assert.equal(first,next);
+ releaseRead();await next;assert.equal(scans,2);}finally{releaseRead();f.release();f.app.stop();}
+});

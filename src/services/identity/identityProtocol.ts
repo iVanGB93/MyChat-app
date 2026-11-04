@@ -12,7 +12,7 @@ const signatureCache = new Set<string>();
 export function verifyPublicSignature(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array, _options: {zip215:false}) {
   if(signature.length!==64||publicKey.length!==32)return false;
   const key=bytesToHex(publicKey)+bytesToHex(signature)+bytesToHex(sha256(message));
-  if(signatureCache.has(key))return true;
+  if(signatureCache.has(key)){signatureCache.delete(key);signatureCache.add(key);return true;}
   if(!ed25519.verify(signature,message,publicKey,{zip215:false}))return false;
   if(signatureCache.size>=256)signatureCache.delete(signatureCache.values().next().value!);
   signatureCache.add(key);return true;

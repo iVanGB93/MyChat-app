@@ -3,16 +3,17 @@ import {subscribeChatActivity,nextChatActivityDeadline} from '../messaging';
 import {useCallback,useEffect,useState} from 'react';
 import {AppState} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
-import {peerTyping,notifyPeerTyping} from '../messaging';
+import {peerRecording,notifyPeerRecording,peerTyping,notifyPeerTyping} from '../messaging';
 
 export function useChatActivity(group?:string){
- const focused=useIsFocused(),[online,setOnline]=useState<string[]>([]),[typing,setTyping]=useState<string[]>([]);
+ const focused=useIsFocused(),[online,setOnline]=useState<string[]>([]),[typing,setTyping]=useState<string[]>([]),[recording,setRecording]=useState<string[]>([]);
  useEffect(()=>{
   if(!focused)return;
   let timer:ReturnType<typeof setTimeout>|undefined;
   const refresh=()=>{
    clearTimeout(timer);
    const peers=AppState.currentState==='active'?networkState.getState().value.liveConnections.map(c=>c.account).sort():[];
+   const recorders=peers.filter(peer=>peerRecording(peer,group));setRecording(old=>old.join()===recorders.join()?old:recorders);
    const typers=peers.filter(peer=>peerTyping(peer,group));
    setOnline(old=>old.join()===peers.join()?old:peers);setTyping(old=>old.join()===typers.join()?old:typers);
    const deadline=nextChatActivityDeadline();if(AppState.currentState==='active'&&Number.isFinite(deadline))timer=setTimeout(refresh,Math.max(0,deadline-Date.now()));
@@ -23,5 +24,6 @@ export function useChatActivity(group?:string){
   // Ephemeral hints have no offline delivery value; use the existing local session view.
   if(online.includes(peer))void notifyPeerTyping(peer,value,group).catch(()=>{});
  },[online,group]);
- return {online,typing,notify};
+ const notifyRecording=useCallback((peer:string,value:boolean)=>{if(online.includes(peer))void notifyPeerRecording(peer,value,group).catch(()=>{});},[online,group]);
+ return {online,typing,recording,notify,notifyRecording};
 }

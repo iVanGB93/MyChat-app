@@ -1,0 +1,26 @@
+Axonic 1.1.36 / Android versionCode 107 — built and validated locally
+
+Artifact: builds/Axonic-1.1.36-107.aab
+Size: 107747142 bytes
+SHA256: 35be64cf9eee1e4e85123a984ee9ed79c89bd21f284272d814f708f01d36c6cd
+Bundled source SHA256: 1bbe92a2b3136a144311c1c0325c6fb1709dd4bf8ed0189212fae0da7eb2eccf
+
+Explicitly authorized local production build. Includes the current working tree;
+unrelated work preserved, no clean-commit claim.
+
+Validation:
+- Prior readiness suite: 1760 passed, 3 skipped, no failures.
+- Architecture/assets and native stream/notification checks passed.
+- After version update: TypeScript and all 3 indexed-production tests passed.
+- Gradle bundleRelease successful in 1m 17s, four Android ABIs.
+- Bundletool validated; jarsigner verified; upload certificate matches 1.1.35.
+- Manifest: com.axonic, 1.1.36 / 107, non-debuggable, no instrumentation.
+- Bundled configuration and source fingerprint match. Previous AAB unchanged.
+- Existing production flags/signing retained; Sentry auto-upload disabled.
+
+Evidence: builds/local-production-aab-107.log, local-aab-107-validation.json,
+local-aab-107-manifest.xml and local-aab-107-signature.txt.
+
+No publication, official-app installation, commit or push performed.
+The previously documented cold/screen-off 10 MB recovery validation gap remains;
+successful compilation does not establish that live timing result.

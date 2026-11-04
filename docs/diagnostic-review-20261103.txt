@@ -1,0 +1,84 @@
+Diagnostic review — November 3, 2026
+
+Scope: read-only review of owner's fresh phone report, retained AoN report
+messages and independently authenticated live health on all three AoNs.
+No messages read-marked, sent, deleted, approvals changed, or services deployed.
+
+Phone report
+Report 476e4f9556713bbf01cfac43517a67c211972fb24846bbde7e1e30b1d1fcaab5
+Captured 2026-11-03 21:47:00.788 UTC (16:47 EST), 27,720 bytes.
+SHA-256 verified against descriptor checksum. Official 1.1.42 (113), matching
+release JS fingerprint f6eb6514c6304b567c810e3f72912f321319eee188487e1521e0e796455ebf4c.
+SecondNeuron observed descriptor 528ms and full delivery 1017ms after creation.
+These are cross-device timestamps, not independently synchronized wire timings.
+
+Priority findings
+1. Messaging/media: 13 incomplete outgoing per-recipient media rows, zero incoming.
+   Twelve expired transfer authorizations; 12 missing active jobs; one live job
+   confirming. Missing jobs can include archived completion and do not prove loss.
+   16 pending/stored rows older than an hour, 14 older than a day, oldest ~6.1 days.
+   Group rows are per recipient, not necessarily 13 different files. Preserve and
+   trace exact pending records/receipts before deciding resend versus stale status.
+2. Storage/coordination: history snapshot queue maximum 6160ms, mutation queue
+   maximum 5370ms; attachment history snapshot maximum 3519ms. Native storage
+   read 327ms; these queue durations are elapsed, may overlap and are not CPU.
+   Two foreground hint-only recoveries finished receipt_complete in 6952/6258ms,
+   no sleep or overrun. Process CPU samples 8220/7337ms cover all threads and
+   overlap; cannot sum or assign entirely to recovery. Investigate ledger queue
+   contention before claiming network throughput is the cause.
+3. Axon integration: both existing subscriptions disabled; expiry
+   2026-11-02 02:01:40 UTC (Nov 1 21:01:40 EST), cursor 2582 preserved.
+   Adapter sync ready; 90 unclassified events ahead are not 90 missed messages.
+   Latest retained N2 report Nov 2 00:39 UTC (Nov 1 19:39 EST).
+   Native refresh had extended one subscription but later refresh did not extend
+   the shared expiry. Need authenticated renewal investigation and post-renewal
+   processing proof; do not reset/replay listeners merely to obtain a green state.
+4. Push/wake: First/Second each 84 sender_record_mismatch rejection attempts,
+   Third 18 in its shorter runtime. These are repeated attempts, not unique users.
+   First 34 push registrations, Second 15, Third zero despite push configuration.
+   First/Second missing-registration lookup counters ~2,800 each, including repeats.
+   First tracked retry samples 214/214/62/64 requests; Second 204/70/62.
+   Trace persistent items and missing registration/identity pin reasons. Do not
+   infer every retry is a provider send, a wake, or a lost message.
+5. ThirdNeuron: online but only ~17 minutes uptime at inspection; latest restart
+   marked graceful. Two available peers, 2/3 replicas, honest capacity shortfall.
+   Host monitor sample missing, no retained nondeleted outgoing reports found.
+   This is a reporting/operational coverage gap; not evidence that a closed WSL
+   process should be counted as continuously available.
+6. A separate 23,833-byte report from Nov 1 / build 1.1.37 remains pending on N2.
+   Its sender c02f50af… is unaccepted/unblocked; authorization expired. Do not
+   identify this sender as the owner's wife without verification or accept it
+   based solely on receiving a diagnostic.
+
+Healthy / improved observations
+All three share clean runtime-bound source 5cafd1a5f5b88d96e98f96b67569cc1d7430a80f,
+runtime 67884f822dd4f0efeda79179c0308dea58037791a2432dce336411666889d235.
+First and Second ~49h uptime, own outgoing queues empty. First nginx/TURN/neuron
+healthy, disk 63% free; Second data filesystem 89% free. Push provider errors zero
+in current epochs (provider acceptance is not notification display).
+Current remote replicas First/Second 3/3. N2 restart count239 unchanged since its
+Nov1 deployment incident; not a fresh crash loop. Old GET /v2/axon HTTP426 entries
+predate this review and cannot alone establish failed WebSocket upgrades.
+No current partial-media rows in the reviewed relay inventory summaries; latest
+N2 report had six, but a gauge decrease does not prove delivery versus expiry.
+Relay unconfirmed recipient records: First12, Second24, Third19; not proven loss.
+Chat API p95 First19ms, Second5ms, Third2ms in bounded current samples.
+Phone initial summary read9ms, chat snapshot145ms, container layout30ms; these
+exclude parts of cold startup and do not measure actual frame painting.
+
+Evidence limits
+Phone network/capture window starts only ~12s before capture, not all-day history.
+Phone has no audio codec/route trace, RTP or completed-call media evidence.
+Yesterday's Bluetooth fix is built for Dev but still awaits live Bluetooth test;
+it is not in official1.1.42. No new audio/call health claim follows from this report.
+
+Artifacts
+builds/review-20261103-phone.json — checksum-verified diagnostic
+builds/review-20261103-first.json — health, latest reports, relay metadata
+builds/review-20261103-second.json — health, reports, adapter subscription evidence
+builds/review-20261103-third.json — health, retained chat/report metadata
+builds/review-aon-20261103.cjs — read-only inspection helper
+
+Suggested order: recover Axon's listener/reporting; trace current media/receipts
+and wake identity mismatches; reduce phone ledger contention; restore Third's
+registration/reporting coverage; validate Bluetooth playback in Dev.

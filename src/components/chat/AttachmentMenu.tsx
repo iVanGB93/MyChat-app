@@ -1,3 +1,4 @@
+import {t} from '../../localization/language';
 import React from 'react';
 import {Modal,Pressable,Text,TouchableOpacity,View} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
@@ -10,10 +11,10 @@ export default function AttachmentMenu({visible,onClose,onCamera,onMultimedia,on
 }){
  const {colors}=useTheme(),insets=useSafeAreaInsets();
  const rows=[
-  {label:'Camera',icon:'camera' as const,action:onCamera},
+  {label:t("Camera"),icon:'camera' as const,action:onCamera},
   {label:'Multimedia',icon:'images' as const,action:onMultimedia},
   {label:'Files',icon:'document-attach-outline' as const,action:onFiles},
-  {label:'Cancel',icon:'close' as const,action:onClose},
+  {label:t("Cancel"),icon:'close' as const,action:onClose},
  ];
  return <Modal visible={visible} transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
   <Pressable style={[styles.modalBackdrop,{backgroundColor:colors.overlay}]} onPress={onClose}>

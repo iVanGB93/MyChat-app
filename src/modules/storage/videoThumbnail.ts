@@ -3,6 +3,11 @@ import {requireOptionalNativeModule} from 'expo';
 import {localAccount} from '../../services/identity/localAccount';
 import {rootAttachmentFile} from '../../services/identity/rootAttachmentFiles';
 const native=Platform.OS==='android'?requireOptionalNativeModule<{videoThumbnail?(uri:string):Promise<string|null>}>('AxonicMediaStore'):null;
+/** Selected local media only; the native extractor returns a bounded in-memory frame. */
+export async function selectedVideoThumbnail(uri:string):Promise<string|null>{
+ if(!/^(file|content):\/\//.test(uri)||!native?.videoThumbnail)return null;
+ try{return await native.videoThumbnail(uri);}catch{return null;}
+}
 /** Extract a bounded preview in memory only; never export it or retain it across account locks. */
 export async function rootVideoThumbnail(owner:string,digest:string){
  const current=()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner;

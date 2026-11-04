@@ -1,0 +1,49 @@
+November 3 follow-up — Axon intentionally offline
+
+Do not renew/reset Axon's subscriptions. No live messages, permissions, identities,
+queues, or official-app data changed during this follow-up. No deployment/build
+for production, commit, push, or automatic media resend performed.
+
+Implemented locally:
+- AoN current-release worktree builds/aon-recovery-release-1101: a mismatched
+  wake sender record now requests the existing bounded signed directory recovery
+  and returns retry. Admission still verifies ancestry atomically; no pin rollback,
+  hint rewriting, or signature bypass. Redacted failure trace now includes these
+  mismatches. Tests prove forward recovery, one send, bounded repeated lookup,
+  and rejection of an attempted rollback. This fixes the stale-gateway case;
+  it does not prove all observed mismatches had that cause. A stale custodian
+  still needs to learn the current identity.
+- Host health sampler accepts explicit service names, local health URL, and data
+  directory. Existing FirstNeuron defaults unchanged. ThirdNeuron service was
+  active but no sampler unit was present; configuration/activation remains pending.
+- Phone ledger now measures waiting, scope preparation, and executing work
+  separately, including failed work. Report projection includes these metrics.
+  Old queue metrics included scope preparation and cannot be compared directly.
+  Mutation ordering and validation remain serialized.
+
+Validation:
+- AoN TypeScript build passed; 24 wake/recovery/trace/host-sampler tests passed.
+- 56 phone ledger/expired-resend/gateway-registration tests passed.
+- Dev reconnected via Metro (IPv4, USB reverse); official app untouched.
+- Two warm Dev metadata/delivery reads ~0.55ms; startup queue maximum ~1699ms,
+  mutation work maximum ~1089ms, network projection maximum ~809ms.
+  These are Dev observations, not production performance proof or fixed delays.
+- Dev reports two connected gateways, both registered. ThirdNeuron is not among
+  the connected gateways; do not infer token rejection from zero registrations.
+
+Outstanding:
+- Trace production's exact old pending media records/receipts. Twelve authorizations
+  expired; an absent active job alone does not establish loss. Do not automatically
+  resend or mark complete, extend signed grants, or alter contact approval.
+- Isolate startup mutation/storage work using the new measurements. No speedup
+  from instrumentation is claimed.
+- Deploy the tested AoN wake fix and configure ThirdNeuron's host sampler before
+  claiming live recovery/reporting repair. Keep OpenClaw group replies paused.
+- The deployed AoN ledger predates the phone indexed-history changes. A trial
+  single-file sync exposed missing dependent types; that sync was undone to the
+  exact original worktree baseline. Do not deploy a partial shared-core migration.
+- Bluetooth native routing fix from November 2 remains a separate built, uninstalled
+  Dev change, pending the Bluetooth playback test.
+
+Evidence: builds/review-dev-20261103.json and review-20261103-mobile-tests.txt.
+Read-only Dev probe: builds/review-dev-20261103.cjs.

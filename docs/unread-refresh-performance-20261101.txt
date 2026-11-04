@@ -1,0 +1,36 @@
+Unread chat refresh fix — 2026-11-01
+
+Cause: indexed action acknowledgment commits rebuilt conversation projections and
+notified UI readers even when only an action's transport status changed. Opening
+an unread chat created a read batch, followed by individual acknowledgment writes
+and repeated page reads/renders.
+
+Change: compare the selected ledger slice's presentation before/after commit.
+Contacts, groups, hidden chats, rendered messages, and action contents/identity
+(including unloaded targets) remain significant. Only action delivery status and
+nonpresentation bookkeeping can be skipped. Invisible commits still persist,
+invalidate permission caches, advance owner revision, and notify network/other
+consumers. Conversation summaries/windows ignore the explicit visible=false hint.
+Visible changes retain the existing durable dirty-index and recovery path.
+No debounce timers, polling, schema change, full-history loading, or extra store.
+
+Validation: npm run check passed: 1,874 tests, 1,871 passed, 3 skipped, 0 failures.
+Typecheck, cycles, module boundaries, consolidation and asset checks passed.
+New tests cover durable invisible commits, network notifications/revisions,
+failed writes, and presentation changes including unloaded action targets.
+
+Live: connected SM-S948U1 running com.axonic.dev and existing emulator Dev account.
+Six labeled tests (3 text, 3 small files), verified delivered before opening.
+Opening unread chat: layout 88 ms, initial page 4 ms, read-state page refresh 59 ms.
+Exactly one visible commit plus six invisible acknowledgments; one index build,
+two page reads, zero full-history reads. Phone and sender independently show all
+six messages delivered and read. No messages or files deleted.
+JS RAF sample during opening/scrolling: 1,344 samples, p95 20.85 ms, maximum119.63
+ms, 9 intervals over50 ms. This is a Dev-phone scheduling measure, not production
+GPU FPS. Do not directly compare it to earlier emulator frame timings.
+
+Artifacts: builds/unread-refresh-phone-result.json,
+builds/unread-refresh-receipts.json, builds/unread-refresh-final-check.log.
+The raw unreadSnapshot count in the first artifact includes messages with read
+actions; final read state was checked through rootChatView in receipts evidence.
+All data preserved. No official-app changes, deployment, commit, push or build.

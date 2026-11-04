@@ -115,5 +115,7 @@ export function createDirectAttachmentStream(d:DirectAttachmentStreamAdapter){
   try{current();state='waiting';if(d.role==='send')control('start',{bytes:e.bytes,checksum:e.checksum});void pump();}
   catch(error){abort(error);}return done;
  }
- return {start,receive,abort,done};
+ // Bounded metadata only: identify a stalled phase without logging file content.
+ const progress=()=>({state,offset,ack,queued,idleMs:Math.max(0,d.now()-last)});
+ return {start,receive,abort,done,progress};
 }

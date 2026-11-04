@@ -1,8 +1,11 @@
+import {useLanguage} from '../../localization/useLanguage';
+import {t,languageSnapshot} from '../../localization/language';
 import React,{useMemo,useRef} from 'react';
 import {Animated,PanResponder,useWindowDimensions,type StyleProp,type ViewStyle} from 'react-native';
 
 /** Temporary movement only: releasing or losing the gesture restores the usual corner. */
 export default function DraggableCallPreview({children,style,testID}:{children:React.ReactNode;style?:StyleProp<ViewStyle>;testID?:string}){
+ useLanguage();
  const position=useRef(new Animated.ValueXY()).current;
  const bounds=useWindowDimensions();
  const gesture=useMemo(()=>{
@@ -15,6 +18,6 @@ export default function DraggableCallPreview({children,style,testID}:{children:R
    onPanResponderRelease:reset,onPanResponderTerminate:reset,
    onPanResponderTerminationRequest:()=>true,
   });
- },[position,bounds.width,bounds.height]);
- return <Animated.View testID={testID} accessibilityLabel="Your camera preview. Drag to see underneath; release to return." {...gesture.panHandlers} style={[style,{transform:position.getTranslateTransform()}]}>{children}</Animated.View>;
+ },[position,bounds.width,bounds.height,languageSnapshot()]);
+ return <Animated.View testID={testID} accessibilityLabel={t("Your camera preview. Drag to see underneath; release to return.")} {...gesture.panHandlers} style={[style,{transform:position.getTranslateTransform()}]}>{children}</Animated.View>;
 }

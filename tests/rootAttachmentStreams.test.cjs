@@ -2,20 +2,20 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {load}=require('./helpers/attachment.cjs');
 const digest='a'.repeat(64),owner='sender',recipient='receiver',checksum=b=>crypto.createHash('sha256').update(b).digest('hex');
 function fixture(t,options={}){
- const data=new Map(),dirs=new Set(),credits=[],source=crypto.randomBytes(524287),handlers=[],managers=[];let serial=0,valid=true,requests=0,checks=0;
+ const data=new Map(),dirs=new Set(),credits=[],source=crypto.randomBytes(options.bytes??524287),handlers=[],managers=[];let serial=0,valid=true,requests=0,checks=0,changes=0,adopted=false;
  const live=async()=>{checks++;return valid;};
  function file(user,id,name='content'){
   const dir=user+'/'+id,key=dir+'/'+name;
   return {get exists(){return data.has(key);},parentDirectory:{get exists(){return dirs.has(dir);},create(){dirs.add(dir);},delete(){dirs.delete(dir);for(const k of data.keys())if(k.startsWith(dir+'/'))data.delete(k);}},
    create(){data.set(key,Buffer.alloc(0));},delete(){data.delete(key);},move(target){data.set(target.key,data.get(key));data.delete(key);},key,
-   open(){let offset=0,closed=false;return {readBytes(n){assert(!closed);const b=data.get(key).subarray(offset,offset+n);offset+=n;return new Uint8Array(b);},writeBytes(bytes){assert(!closed);data.set(key,Buffer.concat([data.get(key),Buffer.from(bytes)]));},close(){closed=true;}};}};
+   open(){let offset=0,closed=false;return {readBytes(n){assert(!closed);if(options.readFails)throw Error('private-source-location');const b=data.get(key).subarray(offset,offset+n);offset+=n;return new Uint8Array(b);},writeBytes(bytes){assert(!closed);if(options.revokeDuringWrite)valid=false;data.set(key,Buffer.concat([data.get(key),Buffer.from(bytes)]));},close(){closed=true;}};}};
  }
  const manifest={sender:owner,senderDevice:'s',recipient,recipientDevice:'r',bytes:source.length,expires:Date.now()+60000};
  const jobs=[owner,recipient].map((user,i)=>({owner:user,digest,descriptor:{manifest,checksum:checksum(source)},direction:i?'incoming':'outgoing'}));
  dirs.add(owner+'/'+digest);data.set(owner+'/'+digest+'/content',source);
  function lanes(){
-  let closed=false;const listeners=[],pair=[0,1].map(i=>({live:()=>!closed,ready:async()=>{},
-   send(value){if(options.silent)return;const deliver=()=>{if(!closed){listeners[1-i]?.[0](typeof value==='string'?value:value.slice().buffer);if(options.disconnect&&value instanceof Uint8Array)pair[i].close();}};if(options.delay)setTimeout(deliver,options.delay);else queueMicrotask(deliver);},
+  let closed=false;const listeners=[],pair=[0,1].map(i=>({live:()=>!closed,ready:async()=>{if(options.adoptBeforeRead)adopted=true;if(i===1&&options.delayedReceiverReady)await new Promise(r=>setTimeout(r,30));},
+   send(value){if(options.silent)return;const deliver=()=>{if(!closed){listeners[1-i]?.[0](options.earlyBinary&&i===0?new ArrayBuffer(1):typeof value==='string'?value:value.slice().buffer);if(options.duplicateEarly&&i===0&&typeof value==='string')listeners[1-i]?.[0](value);if(options.disconnect&&value instanceof Uint8Array)pair[i].close();}};if(options.delay)setTimeout(deliver,options.delay);else queueMicrotask(deliver);},
    async credit(value,authorize){credits.push({value,authorize});},listen(message,end){listeners[i]=[message,end];},
    close(){if(closed)return;closed=true;for(const l of listeners)l?.[1]();}}));return pair;
  }
@@ -28,14 +28,14 @@ function fixture(t,options={}){
      data.set(target,data.get(source));data.delete(source);return true;
     }})}};
    if(name==='./localAccount')return {localAccount:{status:()=>({state:'unlocked',account:i?recipient:owner})}};
-   if(name==='./rootAttachmentFiles')return {hashRootAttachmentFile:async(user,id)=>checksum(data.get(user+'/'+id+'/content')),rootAttachmentFile:file,rootAttachmentPartial:(user,id)=>file(user,id,'partial'),sweepRootStreamTemporaries(){},createRootStreamTemporary(user,id){const f=file(user,id);f.parentDirectory.create();f.create();return f;}};
+   if(name==='./rootAttachmentFiles')return {hashRootAttachmentFile:async(user,id)=>checksum(data.get(user+'/'+id+'/content')),rootAttachmentFile:(user,id)=>{const f=file(user,id);if(user!==owner)return f;if(options.adoptBeforeRead&&!adopted)return {...f,uri:"private",open(){throw Error("Source adopted");}};if(options.adoptAtOpen&&!adopted)return {...f,uri:"private",open(){adopted=true;throw Error("Source adopted");}};if(options.sourceRemoved)return {...f,uri:"private",open(){throw Error("Source removed");}};return {...f,uri:adopted?"gallery":"private"};},rootAttachmentPartial:(user,id)=>file(user,id,'partial'),sweepRootStreamTemporaries(){},createRootStreamTemporary(user,id){const f=file(user,id);f.parentDirectory.create();f.create();return f;}};
    if(name==='./directAttachmentStream')return load('directAttachmentStream');throw Error(name);
   },out);
   const network={available:()=>options.available!==false,...(options.requestUpgrade?{request:(...args)=>options.requestUpgrade(i,...args)}:{}),listen(h){handlers[i]=h;return ()=>handlers[i]=null;},open(){const pair=lanes();queueMicrotask(()=>{if(!handlers[1]?.(owner,options.wrongDevice?'wrong':'s',pair[1]))pair[1].close();});return pair[0];}};
-  managers[i]=out.createRootAttachmentStreams(network,async()=>{requests++;if(options.requestThrows)throw Error('Route changed before stream startup');return JSON.stringify({status:await managers[0].serve(jobs[0],live)?'streaming':'unavailable'});});
+  managers[i]=out.createRootAttachmentStreams(network,async()=>{requests++;if(options.requestThrows)throw Error('Route changed before stream startup');return JSON.stringify({status:await managers[0].serve(jobs[0],live)?'streaming':'unavailable'});},()=>changes++);
  }
  t.after(()=>managers.forEach(m=>m.stop()));
- return {managers,jobs,data,dirs,source,credits,get checks(){return checks;},run:()=>managers[1].pull(jobs[1],live),revoke:()=>valid=false};
+ return {managers,jobs,data,dirs,source,credits,get checks(){return checks;},get changes(){return changes;},run:()=>managers[1].pull(jobs[1],live),revoke:()=>valid=false};
 }
 
 test('delayed stream acknowledgements do not require continuous journal polling',async t=>{
@@ -43,6 +43,25 @@ test('delayed stream acknowledgements do not require continuous journal polling'
  t.diagnostic(`journal validations: ${f.checks}`);
  assert(f.checks<80,'waiting for frames must not continuously poll the durable journal');
  assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+});
+
+test('first control arriving before receiver readiness does not close the stream',async t=>{
+ const f=fixture(t,{delayedReceiverReady:true});assert.equal(await f.run(),true);
+ assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+ assert.equal(f.credits[0].authorize,true);
+});
+for(const fault of ['earlyBinary','duplicateEarly'])test(`pre-start stream rejects ${fault} without publishing`,async t=>{
+ const f=fixture(t,{delayedReceiverReady:true,[fault]:true});assert.equal(await f.run(),false);
+ assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
+ assert.deepEqual(f.data.get('sender/'+digest+'/content'),f.source);
+});
+
+test('source read failure records a fixed stage without exposing the source error',async t=>{
+ const lines=[],old=console.info;console.info=(...args)=>lines.push(args.join(' '));
+ try{const f=fixture(t,{readFails:true});assert.equal(await f.run(),false);
+  const line=lines.find(s=>s.includes('"direction":"send"')&&s.includes('"result":"fallback"'));
+  assert(line?.includes('"stage":"source-read"'));assert(!lines.join('').includes('private-source-location'));
+ }finally{console.info=old;}
 });
 
 test('silent stream still checks revocation without waiting for a remote frame',async t=>{
@@ -136,3 +155,21 @@ test('a request failure before a lane opens is retryable readiness and releases 
  options.requestThrows=false;assert.equal(await f.run(),true);
  assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
 });
+
+for(const option of ['adoptBeforeRead','adoptAtOpen'])test('gallery source handoff during '+option+' does not break the stream',async t=>{
+ const f=fixture(t,{[option]:true});assert.equal(await f.run(),true);assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+});
+test('deleted source is not recreated or retried as a different file',async t=>{
+ const f=fixture(t,{sourceRemoved:true});assert.equal(await f.run(),false);assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);
+});
+
+test('data frames do not cause a journal read per frame while credit remains bounded',async t=>{
+ const f=fixture(t,{bytes:2*1024*1024,delay:2});assert.equal(await f.run(),true);
+ assert(f.checks<85,'validations must follow credit windows, not each 16 KB frame');
+ assert.deepEqual(f.data.get('receiver/'+digest+'/partial'),f.source);
+ assert(f.credits.filter(c=>!c.authorize).length>0,'native credit still renewed');
+});
+
+test('revocation during frame processing cannot renew credit or publish the file',async t=>{const f=fixture(t,{bytes:2*1024*1024,revokeDuringWrite:true});assert.equal(await f.run(),false);assert.equal(f.credits.filter(c=>!c.authorize).length,0);assert.equal([...f.data.keys()].filter(k=>k.startsWith('receiver/')).length,0);assert.deepEqual(f.data.get('sender/'+digest+'/content'),f.source);});
+
+test('stream completion notifies custody scheduling and clears only its active sending state',async t=>{const f=fixture(t,{delay:5});assert.equal(f.managers[0].sending(f.jobs[0]),false);const done=f.run();for(let i=0;i<30&&!f.managers[0].sending(f.jobs[0]);i++)await new Promise(r=>setTimeout(r,2));assert.equal(f.managers[0].sending(f.jobs[0]),true);assert.equal(f.managers[0].sending({...f.jobs[0],digest:'other'}),false);assert.equal(await done,true);await new Promise(setImmediate);assert.equal(f.managers[0].sending(f.jobs[0]),false);assert.equal(f.changes,1);});

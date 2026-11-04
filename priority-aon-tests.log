@@ -1,0 +1,49 @@
+(node:30156) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ dashboard protects status, checks origin and logs out (HTTPS=false) (1688.0756ms)
+✔ dashboard protects status, checks origin and logs out (HTTPS=true) (464.7315ms)
+(node:38968) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ bot tokens are hashed, scoped, persistent, expiring, rate limited and revocable (23.768ms)
+✔ restart history distinguishes releases, graceful stop and unknown unclean exit (22.18ms)
+✔ metrics normalize endpoints, track error and queue state without content (0.9294ms)
+✔ queue attention separates unknown ages, expired media custody and recipient records (0.2215ms)
+✔ chat cursors page history and replay edits, receipts and removals after persistence (2.9675ms)
+✔ delta pagination has no gaps and scopes exclude other conversations (2.092ms)
+✔ monitoring UI scripts parse together (3.7038ms)
+(node:44348) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ rejection diagnostics are fixed redacted reasons and preserve generic wire replies (46.6258ms)
+✔ failure evidence distinguishes altered silence from invalid signatures without accepting either (12.1966ms)
+✔ authenticated retry replies expose remaining lease without destination or identity details (11.5298ms)
+✔ unavailable wake destinations back off, retain custody, and retry promptly through new gateways (16.5392ms)
+✔ gateway reconnect churn cannot reset backlog backoff and new gateways do not retry old ones (15.7183ms)
+✔ wake diagnostics distinguish unavailable destinations and retained retry leases without exposing identities (9.8222ms)
+✔ custody wake targets one registered device and authenticates without message content (12.0154ms)
+✔ legacy or forged envelope cannot send a notice, and invalid tokens are revoked (13.8464ms)
+✔ authenticated ordinary custodian forwards metadata with shared direct-deposit deduplication (11.8321ms)
+✔ forwarded wake rejects altered routing and retries definite failures after backoff (11.3841ms)
+✔ a full completed-wake cache does not block notifications for later messages (657.0116ms)
+✔ inline encrypted wakes are validated, bounded and deduplicated by the same message digest (8.2947ms)
+✔ ordinary stored envelopes opt into inline FCM while group hooks retain metadata-only behavior (9.6653ms)
+✔ custodian hints bind to the requesting peer and preserve encrypted inline content (6.7183ms)
+(node:29112) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ missing push registration skips identity work and new registrations are immediately visible (64.3843ms)
+✔ registration is device-bound, survives restart, replaces rotated tokens and supports revocation (26.9527ms)
+✔ unknown, expired and revoked devices cannot register or receive push (22.6098ms)
+✔ one account cannot claim another token or unregister another device (21.7427ms)
+✔ migration requires both a Django ticket and matching live neuron; conflicts and replay cannot transfer ownership (19.8213ms)
+✔ bound push uses current private registration; old installations fall back but revoked and expired bindings do not (24.676ms)
+✔ background wake lease survives 25 hours, unrelated registration and restart without granting an expired session admission (31.3888ms)
+✔ known device revocation immediately overrides the retained wake lease (19.2844ms)
+✔ legacy leases are not extended and wake retention never outlives the signed record (40.6408ms)
+✔ invalid FCM token removal survives restart and a late failure cannot erase a rotated token (24.2636ms)
+ℹ tests 33
+ℹ suites 0
+ℹ pass 33
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2236.9743

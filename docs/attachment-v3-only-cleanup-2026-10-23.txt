@@ -1,0 +1,49 @@
+Attachment new-format-only cleanup — 2026-10-23
+
+Scope
+- Mobile source: D:/Proyects/Axonic-app (unrelated staged work preserved).
+- Shared AoN source: D:/Proyects/Axonic-app/builds/aon-operator-20261022.
+- No production app installation, production build, data cleanup, or new backups.
+
+Contract
+- Only attachment manifest version 3 is admitted, signed, encrypted and decoded.
+- Files through 3,000,000 bytes use one authenticated payload; larger files use
+  3,000,000-byte blocks with an independently authenticated final tail.
+- Removed v1/v2 file formats, the 4,096-byte block constant, scalar put/get and
+  direct-get file operations, and the old Android attachmentPrepareBatch method.
+- Direct encrypted streams remain preferred. Failure may use the v3 block path;
+  it cannot downgrade to an old file format.
+- Private/shared v3 AAD, nonce derivation, ciphertext hashes and signatures are
+  unchanged. Shared group bytes are encrypted once and authorized by distinct
+  recipient grants. Only a verified recipient receipt authorizes relay cleanup.
+- Receipt/control versions, hash domain names and local store directory versions
+  are independent of the attachment version and intentionally remain unchanged.
+- Portable JavaScript preparation uses the same v3 algorithm as native Android;
+  it is not a compatibility decoder.
+
+Removed obsolete tracked experiments (recoverable from Git)
+- scripts/experiments/attachment-chunk-sizes.cjs
+- scripts/benchmark-dev-chunk-sizes.cjs
+- tests/experimentalChunkSizes.test.cjs
+No user files or messages were removed by this cleanup.
+
+Validation
+- AoN complete suite: 276 passed, 0 failed (builds/v3-only-aon-final.log).
+- Native Android: 41 tests passed, 0 failures/errors; local Dev APK build passed
+  (builds/v3-only-dev-build.log). APK package verified as com.axonic.dev.
+- Mobile TypeScript, dependency cycles, module boundaries and consolidation pass.
+- Shared attachment sources match the isolated AoN source (sync-core --check).
+- Tests cover independent encryption vectors, old-format rejection, tampering,
+  recipient authorization, sparse relay prefixes, interrupted commits, locking,
+  cancellation, signed receipts, byte-preserving group reuse, and real negotiated
+  session reconnect. AoN local file-size cases include 1/3/5/10 MB and boundary tails.
+- Full mobile final run: 1,414 passed, 0 failed, 3 optional benchmarks skipped
+  (1,417 total; builds/v3-only-mobile-final.log).
+
+Live boundary
+- ADB reports no connected devices; rebuilt Dev APK not installed or exercised
+  on the phone in this pass. Asked owner to reconnect and open Dev.
+- No AoN deployment, commit or push performed in this cleanup pass.
+- Existing live AoN release remains ea8322d; new-format-only removal is local.
+- This is correctness/regression evidence, not a transfer-speed benchmark or a
+  formal cryptographic proof.

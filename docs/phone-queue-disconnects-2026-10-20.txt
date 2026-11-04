@@ -1,0 +1,46 @@
+Receive-queue disconnect investigation, October 20, 2026 (EDT)
+
+Both phones detected and opened in com.axonic.dev; existing identities/data
+preserved. Dev identity suffixes 139b48a9 and 2b2a7feb differ from the previously
+disconnecting peer 5db9e434. Official apps were not opened, updated or changed.
+
+Read-only existing official-app process logs on iVan's phone (PID 4960) showed
+repeated chat-receive-queue-full and chat-message-rejected:unexpected-ack around
+the earlier emulator disconnect window. This is concrete remote-side evidence
+of application-triggered closes, not proof that every channel-closed event has
+the same cause. Earlier late-ACK handling already addresses the latter case.
+
+New shared persistentAxon change:
+- Keep the four-item receive admission bound.
+- Coalesce identical encrypted bodies while they are being processed/queued.
+- If full, do not ACK or enqueue additional work and do not close the transport.
+  Sender timeout/retry or custody fallback remains responsible for delivery.
+- Existing upstream byte/frame budgets, authentication, ciphertext verification,
+  durable acknowledgement and stale-session checks are retained.
+
+Tests verify one durable insertion/ACK for overlapping duplicate packets,
+connection survival and no false receipt while the queue is full, and lock
+cleanup. Full mobile check: 1436 passed, 3 skipped; type/architecture checks pass.
+AoN shared source synchronized only for persistentAxon.ts, builds successfully;
+237 hosted tests passed. This new change has NOT been deployed to hosted AoNs.
+Unrelated pending hosted changes were preserved.
+
+Device tests:
+- Both directions text/read passed on the two Dev phones.
+- Generated 18944-byte and 1036000-byte attachments passed checksum checks.
+- After the fix, 1036000 bytes observed delivered 3283 ms after enqueue returned,
+  excluding preparation. Coarse single-sample timing is not a controlled speedup.
+- Phones initially had a LAN path; subsequent direct stream use promoted their
+  connection to RTC. All four Dev apps also retained AoN WSS connections.
+- Initial observation was interrupted by intentional source Fast Refresh at
+  sample 18; do not count that as an unexplained disconnect.
+- Fresh uninterrupted observation recorded in four-dev-chat-queue-fixed.txt.
+
+Artifacts: official-receive-queue-close-evidence.txt,
+chat-queue-stability-check.txt, phone-chat-queue-media.txt,
+four-dev-chat-queue-fixed.txt (all under builds).
+
+Remaining release checks: hosted rollout of this scoped change, longer sleep/
+network-switch testing and separate-network hardware checks. No production
+build was created and the official app still needs a future approved release
+to receive these fixes.

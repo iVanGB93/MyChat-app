@@ -1,0 +1,46 @@
+AoN internal organization rollout — October 25, 2026
+
+Authorized scope: isolated tested AoN changes, commit/push/deploy all three; preserve
+messages, queues, identities and unrelated work. No mobile release requested.
+Commit: 5a7682b2017761eb4cb94ee8622f779cbd666826
+Message: Share custody maintenance and make dashboard read receipts event-driven
+Branch: codex/operator-foundations-20261022 (pushed to origin)
+
+All three nodes: version 0.2.0; sourceDirty=false; sourceMetadataStatus=runtime_bound;
+165 runtime modules; SHA256 9dbabc890e7376f661f5a037e55f04825b95392b483edac4346b155ea89c902d.
+SecondNeuron deployment fa5eb682-ce27-40ab-a1c9-0aef120d4390: SUCCESS.
+Railway source staged via scripts/stage-railway.mjs; root Dockerfile hash verified
+against deploy/Dockerfile.railway before upload. First and Third received identical
+locally compiled LF runtime archive. No schema migrations or cleanup flags.
+
+Validation already passed: 313 hosted tests, 1532 mobile tests (3 optional skips),
+and both-phone Dev checks in the preceding acceptance report. Rechecked shared
+source/hash parity and hosted TypeScript before commit. Served dashboard JS parses
+successfully and contains event-driven read scheduler; old read interval absent.
+
+Live post-deploy on each node:
+- /health successful.
+- authenticated /api/status, /api/diagnostics, /api/relay-inventory and
+  /api/operator-memory all HTTP 200; ownerStatus=installed.
+- unauthenticated operator-memory HTTP 401.
+- identity and protected-owner file hashes match baseline.
+- every baseline message key retained (First 108, Second 39, Third 2).
+- contacts 10/6/2 and groups 3/2/2 unchanged.
+- no deletion, reset, credential change, queue rewrite or phone installation.
+
+Recovery copies:
+First /var/backups/axonic-internal-5a7682b
+Second /data/operator-backups/internal-5a7682b (data/runtime; identity preserved;
+writer resumed before deployment)
+Third /var/backups/axonic-third-internal-5a7682b
+
+Reachability limitation: Windows http://127.0.0.1:8080 returned ECONNREFUSED;
+ThirdNeuron health/reporting/dashboard/authentication verified directly inside WSL.
+Existing WSL startup warning: /etc/wsl.conf line 6 expects '='. No WSL networking
+or configuration changes made during this rollout.
+
+Evidence: builds/internal-rollout-*-before.json / after.json;
+builds/internal-rollout-public-win32.json / linux.json;
+builds/backup-second-internal-result.log.
+Unrelated AoN log files remain untracked; mobile working tree remains uncommitted.
+No production AAB build, publication, normal app change or MCP/channel redeployment.

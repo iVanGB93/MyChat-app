@@ -1,0 +1,22 @@
+Block preparation, readiness and organization verification — 2026-10-25
+
+Shared AoN release: 658ecc208dbed208a29a5ab42e47666e17a317fb
+Commit: Separate shared storage and transfer policy; bound stale peer waits and event-driven work
+All three AoNs: package 0.2.0, runtime e912b7deb857305146b2a129e46b0c5a1cdd5faa1b54100f38eaaa540e7b672f, 163 modules, sourceDirty=false, runtime_bound.
+First/Second/Third authenticated status, diagnostics, relay inventory, operator memory: HTTP 200. Owner installed. Baseline identities and owner files hash-identical; all baseline message keys retained (108/39/2), contacts 10/6/2, groups 3/2/2. Cleanup flags absent.
+
+SecondNeuron rollout incident: initial upload incorrectly used generic Dockerfile and crashed on missing /run/axonic/fcm.json. Corrected using existing deploy/Dockerfile.railway bytes as staged root Dockerfile. No credential or data reset. Successful deployment f3c9caea-72a3-44ce-b4d8-749dec7adf08. Pre-update recovery backup verified contains 643e045 runtime and data archive.
+Backups: First /var/backups/axonic-organization-658ecc2; Second /data/operator-backups/organization-658ecc2; Third /var/backups/axonic-third-organization-658ecc2.
+
+Checks: mobile 1525 passed, 3 optional skipped; AoN 312 passed. Shared parity, type checks, cycles, architecture references and 81-file presentation boundary checks passed. AoN group-wake fixture corrected to use shared virtual time and intended recipient; production wake policy unchanged.
+
+Native preparation: moved exact block hash validation and existing XChaCha20Poly1305 computation to bounded Android worker. Unchanged AAD/nonces/ciphertext verified against JS on both phones at boundary sizes; changed plaintext rejected. Native failures fail closed. JS fallback retained for platforms without native helper.
+5MB relay preparation measured 715/778ms versus prior 5921–6426ms; upload 10005/11037ms. Receive observation 19741/12793ms after debugger reconnect. Both checksums passed with sender offline. Observational samples, not statistical throughput claims.
+Readiness hint: 4-second delayed response yielded at 757/762ms in Dev; late hint ignored, transport cancellation stays transport-owned.
+Direct 1/5/10MB tests both directions passed checksums; observed 4.2–5.0 / 5.2–6.6 / 7.6–8.0 seconds. Shared media publication verified; Dev voice call and hangup passed. Prior TURN screen-sharing tests passed.
+
+Organization baseline: storage responsibilities, shared selection/scheduling contracts, public calls/media/UI APIs, documentation and enforced presentation boundaries are in place. Large internal composition hooks and additional event coverage remain future refinements; do not claim every internal implementation has been split or all scheduling eliminated.
+Both Dev apps updated locally in place (com.axonic.dev, version 1.1.28/code98). Official apps untouched. No production build or publication performed. Mobile and unrelated work remain uncommitted.
+Evidence: builds/org-rollout-*-before.json and after.json; builds/native-block-equivalence.json; builds/dev-stale-readiness-results.json; builds/block-native-relay*.json; builds/block-native-direct-results.json; builds/organization-verified-check.log; aon-organization-release-verified.log.
+
+Post-deployment live Dev relay test: 5,000,000 bytes; upload 10,440ms, materialization 787ms, receive observation 22,267ms after debugger-ready. Sender offline, checksum passed, verified relay source, both Dev apps restored and history preserved. Receive variation remains unresolved; not a claim of consistently fast end-to-end transfer. Evidence builds/organization-postdeploy-relay.json.

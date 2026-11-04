@@ -1,0 +1,230 @@
+AXONIC iPHONE COMPATIBILITY AUDIT — November 1, 2026
+
+User decision / resumption notes — November 1, 2026
+iOS implementation is deferred at the user's request. Save this audit and wait
+for the user to decide whether to proceed; they will try to find a Mac. This
+document is not authorization to implement, provision services or start builds.
+Preserve Android native behavior; add separate iOS adapters and test any shared
+core/AoN changes against Android regressions in Axonic Dev. Shared changes carry
+regression risk even with separate adapters. Leave the official app untouched.
+Apple's iPhone Simulator requires macOS/Xcode and cannot run locally on this
+Windows PC. A remote Mac is an option; cloud builds require explicit approval.
+Simulator tests are useful for initial work, but real-iPhone notification,
+background-transfer, camera/audio and call tests remain required before release.
+When resumed, recheck current source/dependencies and Apple requirements; this
+audit describes the reviewed working tree, not necessarily the future version.
+
+Scope and confidence
+Static review of the current mobile working tree, all ten architecture domains,
+native module surfaces, startup/configuration, and the AoN release source under
+builds/aon-recovery-release-1101. Existing uncommitted changes are included in the
+review, not overwritten. This is a source audit, not an iOS compilation or device
+certification. No runtime code, deployments, credentials or user data changed.
+Individual dependencies still need CocoaPods/Xcode and real-device validation.
+
+Verdict
+The shared identity/network/message/transfer rules can be retained. The present
+app is NOT ready for an iPhone build with working feature parity. Its essential
+native implementation is Android-only. Generating an ios project is necessary
+but insufficient; Expo Go is not an adequate test environment for these modules.
+
+Confirmed release blockers
+1. Both local Expo modules declare platforms: [android]. AxonicNearby supplies
+   identity crypto, sockets, LAN discovery, stream processing and background jobs.
+   AxonicAppUpdate also supplies storage recovery, media, keyboard and call audio,
+   despite its update-related name. Neither has an iOS implementation.
+2. localAccount.ts explicitly refuses identity derivation/random generation when
+   identityScrypt/identityRandomBytes are absent. Messaging, attachment selection
+   and calls also call this RNG. This is a functional blocker, not just slowness.
+3. composition/neuronRuntime.ts requires axonLanStart and axonWssConnect. It also
+   gates RTC data transport/streams on Android and custom native WebRTC identity
+   and stream guards. Do not remove these gates to claim iOS support.
+4. Native file staging, hashing and encrypted stream/block processing underpin
+   the fast transfer path. Port byte-exact formats and authorization/credit gates;
+   do not introduce an iOS-specific wire protocol or weaker fallback.
+5. Background execution currently uses Android headless tasks/native job leases.
+   iOS cannot preserve that lifetime by merely adding a background-mode plist key.
+
+Module-by-module disposition
+
+IDENTITY
+Keep: canonical IDs, signatures, identity records, approval/block policies and
+recovery rules. Implement: secure random and identical scrypt parameters/output
+on iOS off the UI thread, using vetted primitives, with cross-platform vectors.
+Evidence: services/identity/localAccount.ts; modules/identity/backup.ts.
+SecureStore already provides a cross-platform API, but current device/session
+keys use WHEN_UNLOCKED_THIS_DEVICE_ONLY. Locked-phone access for notification
+decryption/recovery must be designed explicitly; do not loosen every key merely
+to make background tests pass. Review Face ID usage descriptions, biometric
+changes, reinstall/Keychain persistence, account switch and explicit deletion.
+Reset/removal currently requests Android force-stop/native process exit: replace
+that with a controlled runtime teardown/restart and resumable cleanup on iOS.
+
+NETWORK
+Keep: authenticated sessions, peer ranking, routing, receipts, reconnect and
+connection-selection policy. Implement iOS sockets/WSS and path-change events
+behind existing transport contracts, preserving native admission and backpressure.
+Evidence: composition/neuronRuntime.ts; internetAxonTransport.ts;
+mobileRecoveryDiscovery.ts; modules/axonic-nearby/android/.../AxonLan.kt.
+LAN currently discovers _axonic-id._tcp. through Android NSD. Use declared Bonjour
+service types and local-network permission on iOS; denial must leave internet
+connections usable. Current composition couples LAN availability to startup;
+separate optional LAN capability from required internet transport readiness.
+Check IPv6/NAT64, Wi-Fi/cellular transitions and TLS trust without disabling ATS.
+Use multicast entitlement only if actual raw multicast/broadcast needs it, not
+automatically for ordinary declared Bonjour browsing.
+
+TRANSFERS
+Keep: direct stream protocol, encrypted 3 MB relay blocks, checksums, descriptors,
+durable jobs, deadlines, dedup, custody and acknowledgment rules. Implement native
+file readers/writers, hashes, block crypto, stream crypto and atomic verified-file
+adoption with cancellation and account ownership checks.
+Evidence: rootAttachmentRuntime.ts, rootAttachmentStreams.ts,
+modules/axonic-nearby/index.ts and its Android Attachment* implementations.
+Foreground WSS remains useful. For transfers continuing after suspension, design
+a background URLSession HTTP(S) adapter over the SAME encrypted blocks/jobs.
+Reuse suitable authenticated AoN HTTP endpoints where available; audit their
+authorization, resume and receipt contracts before extending them. Do not claim
+current WSS streams can be handed directly to background URLSession.
+Use OS completion/path events to advance persisted jobs; bounded retry deadlines
+remain appropriate. Never equate OS task completion with recipient delivery.
+
+STORAGE
+Keep: indexed history, paged messages, summaries, ledger ownership, atomic job
+state and shared storage ports. Expo SQLite/filesystem are candidates for reuse,
+but Android native storage-recovery/check-write functions need an iOS equivalent
+or an explicit supported capability outcome. Verify file protection while locked,
+low-space recovery, interrupted transactions and file adoption.
+Notification/share/broadcast extensions require deliberate App Group access and
+concurrency boundaries. Do not let separate processes concurrently mutate shared
+queues without the same transaction guarantees; a small durable handoff inbox is
+preferable to duplicating the entire app runtime in each extension.
+
+MESSAGING
+Keep: private/group commands, approvals, replies, edits, reactions, call bubbles,
+read receipts, forwarding and conversation summaries. These do not need a second
+iOS implementation. Replace notification presentation/actions with iOS categories,
+reply/read handlers, cold-start routing and completion semantics.
+Evidence: rootBackgroundEntry.ts, rootNotificationActions.ts,
+rootNotificationRoute.ts, rootPushRegistration.ts.
+FCM can reach Apple devices through APNs after configuration; current AoN
+fcmCallSender.ts builds data + android options, with no explicit Apple payload
+policy. Implement platform-appropriate alert/background headers, expiry, token
+registration/rotation and dedup across gateways. An Android priority flag is not
+an iOS wake guarantee. For encrypted previews, assess a notification service
+extension with narrowly scoped keys and a safe generic alert when unavailable.
+
+MEDIA
+Keep: editing state, caption/selection rules, transfer preparation and deletion
+semantics. Android MediaStore is currently the permanent single-copy source;
+sharedMediaFile.ts recognizes Android content URIs, rootMediaExport.ts exits on
+iOS, and videoThumbnail.ts returns null without Android native support.
+Implement PhotoKit/Files references, bounded asset reads, thumbnails, permissions
+and deletion handling. Photos assets are not permanent directly seekable file
+paths: iCloud-only assets and edits can require temporary materialization. Keep
+one logical canonical asset and bounded disposable caches rather than promising
+zero temporary copies on every platform. Never silently recreate deleted media.
+Share extension: app.json currently allows text, one URL and one image on iOS.
+Expand/test video, multiple images and files; add signed extension/App Group
+configuration and exact-once handoff. Test stale share cleanup and account locks.
+Test camera, image editor, animated stickers, audio recording and photo formats
+(HEIC/orientation/Live Photos), video codecs and content from external providers.
+
+CALLS
+Keep: private/group/ad-hoc state machine, membership limits, signaling, join/leave,
+TURN policy and shared UI layouts. Use the supported iOS WebRTC media backend,
+but port/verify our custom data-channel guards separately.
+Incoming calls need PushKit/CallKit integration and appropriate VoIP token routing
+on AoNs. Ordinary FCM data notifications are not a dependable substitute. Keep
+VoIP pushes specific to real incoming calls, never general message/transfer wakes.
+call-audio-route.ts currently depends on AxonicAppUpdate and throws if its native
+audio methods are absent. Add AVAudioSession interruption/route handling and
+system call activation/deactivation coordination.
+Screen sharing: call-screen-capture.ts is tied to Android capability and WebRTC
+patches. Add ReplayKit broadcast integration/extension. Android floating controls
+over arbitrary other apps cannot be copied as-is; use supported system/in-app
+controls and evaluate supported picture-in-picture separately.
+
+COORDINATION / BACKGROUND
+Keep: shared event-driven pumps, persisted work, authorization freshness, leases,
+and cancellation. Replace Android job/foreground-service/headless lifetimes with
+iOS adapters. Evidence: rootBackgroundEntry.ts, backgroundMediaUploads.ts,
+rootCallLifetime.ts and useScreenShareOverlay.ts.
+iOS may delay or omit silent background pushes. Reconcile on foreground/network
+events; do not promise continuous peer serving or immediate background downloads.
+Test locked device, OS termination, user force-quit, reboot before first unlock,
+low power and background refresh disabled. Clearly distinguish these cases in
+diagnostics. Do not add polling to imitate an always-running Android service.
+
+UI
+Keep: React Native screens, Zustand presentation state, translations and Axonic
+visual style. Existing iOS keyboard branches help but are not device validation.
+Audit every route: onboarding/recovery, Social, chat/replies/info, forward/share,
+camera/editor/stickers, profile/settings, network/storage/credits, calls and Games.
+Verify safe areas/Dynamic Island/home indicator, keyboard docking and scroll,
+swipe-back vs chat gestures, accessibility text/VoiceOver, rotation and modal
+presentation. Replace Android settings/intents/file launching and unsupported
+controls with iOS actions. phoneNetworkInfo.ts currently returns null on iOS;
+show available interface/path data and honestly label unavailable OS details.
+Play in-app update/download/install UI must become an App Store update route.
+supportsTablet=true currently expands scope: either explicitly support/test iPad
+layouts or intentionally scope the first release to iPhone before signing.
+
+DIAGNOSTICS / AI / SCORECARD
+Keep: module-shaped reports, timing stages, redaction, scorecard and trial-credit
+rules. Add iOS build/device metadata, APNs/extension/URLSession/CallKit outcomes,
+lock/suspension state and native error categories. Missing iOS capability must
+be reported as unsupported, not Android failure or successful delivery.
+AoN AI tools remain the same; their transport/provider adapters gain Apple
+support. Do not make a separate iOS scorecard, ledger, AI policy or report schema.
+
+Build and distribution work
+- Define unique production and Dev bundle IDs, Apple team, build-number policy,
+  deployment target and extension IDs/provisioning. No ios directory currently;
+  Expo prebuild can generate one, but must preserve the working Android project.
+- Configure iOS Firebase plist + APNs, push/background entitlements, Bonjour,
+  App Groups and required privacy strings. Check generated configuration, not
+  only app.json: dependency plugins may add their own values.
+- Audit all CocoaPods/framework compatibility with Expo 55 / RN 0.83 and current
+  new-architecture settings. Android-only postinstall patches do not port to iOS.
+- Check privacy manifests/required-reason APIs, App Store privacy declarations and
+  encryption export-compliance answers against actual crypto. Do not blindly mark
+  custom cryptography exempt. Validate localized permissions and store metadata.
+- Local iOS compilation requires macOS/Xcode. This Windows PC can edit/test shared
+  code; use a Mac for local native builds. Cloud Mac builds are an alternative only
+  with explicit user approval. No build or paid service was started by this audit.
+
+Implementation order and acceptance gates
+1. Preserve protocols; inject iOS implementations through existing contracts.
+   Start identity + SQLite/files + foreground WSS. A real iPhone must create/unlock
+   an identity, message Android/AoNs and transfer 1/5/10 MB both directions with
+   verified checksums, real bytes, cancellation and no duplicate completion.
+2. Add Apple push + notification routing/read/reply, protected-key policy and
+   background HTTP(S) transfer. Test full/truncated notification content, locked
+   recovery, token refresh, gateway failover and interrupted-send resumption.
+3. Add CallKit/PushKit/audio, 2–4 participants, TURN, adding participants, leave/join
+   and ReplayKit. Prove incoming calls while suspended and no phantom live calls.
+4. Finish Photos/Files/share extension and UI parity; run cold chat opening,
+   paging/scroll/keyboard, frame/memory/battery tests on a physical iPhone.
+5. Run common protocol vectors and Android/AoN regressions after each shared
+   change. Then signed development/TestFlight checks before production approval.
+Do not delay basic foreground bring-up for cosmetic parity, but do not call that
+first successful launch a production-ready iPhone app.
+
+Primary platform references checked during audit
+Apple background notifications (delivery not guaranteed):
+https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app
+Apple background transfers (HTTP/HTTPS only):
+https://developer.apple.com/documentation/foundation/downloading-files-in-the-background
+Apple PushKit/CallKit:
+https://developer.apple.com/documentation/pushkit/responding-to-voip-notifications-from-pushkit
+Apple ReplayKit:
+https://developer.apple.com/documentation/replaykit
+Apple local-network privacy:
+https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy
+Firebase Apple receive paths:
+https://firebase.google.com/docs/cloud-messaging/ios/receive-messages
+Expo SecureStore iOS behavior:
+https://docs.expo.dev/versions/v55.0.0/sdk/securestore/
+Expo iOS build process:
+https://docs.expo.dev/build-reference/ios-builds/

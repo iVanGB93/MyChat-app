@@ -24,6 +24,7 @@ export function createWssAttachmentStreams(d:WssStreamNetwork&{
  crypto?:StreamRecordCrypto;
  sleep?(milliseconds:number):Promise<unknown>|undefined;
  outcome?(value:WssStreamOutcome):void;
+ changed?():void;
 }){
  type Active={binary:boolean;id:string;peer:IdentityPeer;job:AttachmentJob;role:'send'|'receive';stream:ReturnType<typeof createDirectAttachmentStream>;cipher:ReturnType<typeof createWssStreamCipher>;done:Promise<boolean>;signal():void;observe(data:boolean):void};
  const active=new Map<string,Active>(),finished=new Map<string,number>();let stopped=false;
@@ -60,11 +61,12 @@ export function createWssAttachmentStreams(d:WssStreamNetwork&{
   const report=(result:WssStreamOutcome['result'],reason:WssStreamOutcome['reason'])=>{try{d.outcome?.({role,result,reason,guard,bytes:job.descriptor.manifest.bytes,binary,native:!!d.crypto,startedAt:started,milliseconds:Math.max(0,Date.now()-started),...(firstRecordMs===undefined?{}:{firstRecordMs}),...(firstDataMs===undefined?{}:{firstDataMs})});}catch{/* Diagnostics cannot affect transfer outcome. */}};
   a.done=(async()=>{try{await stream.start();await validate();if(role==='receive')await files.commit();report('verified','none');return true;}
    catch(error){const message=error instanceof Error?error.message.toLowerCase():'';report('failed',(['revoked','timeout','checksum','disconnected','invalid'] as const).find(reason=>message.includes(reason))??'other');stream.abort('WSS stream failed');return false;}
-   finally{signal();cipher.close();active.delete(binding);finished.set(binding,Date.now()+60000);for(const [k,until]of finished)if(until<Date.now()||finished.size>32)finished.delete(k);try{files.discard();}catch{/* Cleanup must not turn a handled failure into an unhandled rejection. */}}})();
+   finally{signal();cipher.close();active.delete(binding);d.changed?.();finished.set(binding,Date.now()+60000);for(const [k,until]of finished)if(until<Date.now()||finished.size>32)finished.delete(k);try{files.discard();}catch{/* Cleanup must not turn a handled failure into an unhandled rejection. */}}})();
   // Event wake is intentionally per active stream; no global busy polling.
   return a;
  }
  return {
+  sending(job:AttachmentJob){return !stopped&&[...active.values()].some(a=>a.role==='send'&&a.job.owner===job.owner&&a.job.digest===job.digest&&d.current(job)&&d.peer(a.peer.account)?.instance===a.peer.instance);},
   receiveBinary(raw:Uint8Array,peer:IdentityPeer){
    if(stopped||raw.length<71||raw.length>32838||raw[0]!==2)return false;
    const binding=key(peer,bytesToHex(raw.subarray(1,33))),a=active.get(binding);

@@ -15,7 +15,7 @@ test('production axon entry points allow non-debug apps while retaining foregrou
   assert.match(body,/check\(transportAllowed\(\)\)/);
   assert.doesNotMatch(body,/FLAG_DEBUGGABLE|BuildConfig\.DEBUG/);
  }
- assert.match(source,/foregroundGate.allowed\(SystemClock.elapsedRealtime\(\)\) \|\| protectedCall\(\) \|\| SystemClock.elapsedRealtime\(\) < wakeUntil/);
+ assert.match(source,/foregroundGate.allowed\(SystemClock.elapsedRealtime\(\)\) \|\| AttachmentUploadJob.transportAllowed\(\) \|\| MessageRecoveryJob.transportAllowed\(\) \|\| protectedCall\(\) \|\| SystemClock.elapsedRealtime\(\) < wakeUntil/);
  assert.match(source,/require\(milliseconds in 0\.\.30000\)/);
  assert.match(source,/wakeTimer.schedule/);
  assert.match(source,/wakeTimer.shutdownNow/);

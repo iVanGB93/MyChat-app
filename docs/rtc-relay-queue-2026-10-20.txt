@@ -1,0 +1,28 @@
+RTC signaling admission follow-up, October 20, 2026
+
+Code inspection confirmed that createAxonSignaling dropped a third concurrent
+signal while two signed identity lookups were running. Persistent per-socket
+serialization alone cannot avoid this shared relay bottleneck across axons.
+
+The router now permits two active lookups and four queued packets. It checks
+frame size and connected authenticated source before queueing, rechecks source
+expiry/connection and generation on execution, and cancels queued work on clear.
+Existing signature, identity history, replay, one-hop and expiry rules remain.
+No claim that this caused the particular unresolved target's missing answer.
+
+Tests: regression validates six overlapping signed offers, bounded rejection of
+the seventh, ordered forwarding, and cancellation across clear even if current()
+still returns true. Full mobile check: 1433 passed, 3 skipped, zero failures.
+
+The exact axonSignaling source was synced to Axonic-neuron using --only, preserving
+other chats' modified files and source manifest entries. Hosted build and all 237
+tests pass. NOT deployed: AoN checkout has substantial concurrent uncommitted
+work, including shared transport changes. Integrate/review before deployment.
+
+Reloaded both emulators and verified text/read receipts both ways plus generated
+133200-byte media: checksum matched, delivery observed 1795ms after enqueue
+returned. This excludes preparation and is not a measured benefit attributable
+solely to the queue change. Phones no longer present in ADB during this step.
+
+Remaining: observe the unanswered peer at the endpoint/relay, integrate hosted
+changes for deployment, and validate real phone LAN stability before release.

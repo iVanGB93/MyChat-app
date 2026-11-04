@@ -1,0 +1,49 @@
+Internal organization and timer acceptance — October 25, 2026
+
+Completed scope: eight screens extracted from navigator (about 600 lines to about
+100); attachment selection persistence separated from transfer execution; mobile
+call-session resource ownership extracted; portable call-quality sampling split
+from React; hosted status/login page split from server entry. No new duplicate
+implementations, wire formats, storage migrations or native dependency changes.
+
+Timer review: shared custody maintenance replaces duplicate phone/AoN intervals,
+sleeps when locked and retains necessary expiry/retry deadlines. Hosted visible
+read receipts use render/viewport/lifecycle events, with retry timers only for
+failed or incomplete batches. Quality getStats retains timed sampling but serializes
+it and rejects late results. See docs/architecture/TIMER-REVIEW.txt for retained
+timers and the evidence needed before converting each remaining fallback.
+
+Validation:
+- Mobile npm run check: 1532 passed, 3 optional skipped, no failures; types,
+  dependency checks, 90-file UI boundaries, consolidation and assets passed.
+- Hosted full regression: 313 passed; check:core passed shared byte/hash parity.
+- Architecture reference validation: 277 paths passed.
+- New lifecycle tests: stopped/account-replaced call session refuses late ringing;
+  sampler never overlaps and discards obsolete results; maintenance sleeps locked,
+  coalesces lifecycle events, retries failures and never overlaps; browser read
+  checks sleep idle, wake on viewport/render events and cancel on pagehide.
+
+Live Dev evidence (both physical phones, official apps untouched):
+- Updated JavaScript modules loaded after Dev-only restart; no native rebuild needed.
+- Bidirectional text delivery and shared conversation indexing: 1.7s / 1.9s observed.
+- 5MB live attachment: size and checksum passed, shared UI transfer events observed.
+- Video: both P2P, quality good; hangup cleared signaling/media on both.
+- Sender-offline 5MB relay: checksum passed; upload observed 10.979s, source block
+  materialization .719s, receiving observed 21.913s after debugger reconnect.
+  A direct-status underlying request lasted 4.007s; its lifetime is not evidence
+  that the readiness scheduling wait exceeded its separate bounded budget.
+  Transfer speed variability remains a separate performance issue, not fixed by
+  directory moves. No new throughput improvement is claimed in this pass.
+- Final baseline preservation: 151 ->155 and 252 ->256 message records, every old
+  key retained, same owners, both calls idle. All session received files exist in
+  shared phone storage. Test traffic confined to the two approved Dev accounts.
+
+Evidence: builds/internal-organization-final-check.log,
+internal-hosted-completed.log, internal-core-check.log,
+builds/global-state-dev-result.json (see scripts/test-global-state-dev.cjs output),
+builds/internal-video-call-result.json, builds/internal-relay-results.json,
+builds/internal-dev-baseline.json, builds/internal-dev-final.json.
+
+Release status: all code remains local/uncommitted in this pass; live AoNs remain
+658ecc2. No deploy, push, production build, publication, reset or data deletion.
+Unrelated existing changes were preserved.

@@ -1,4 +1,6 @@
-import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState, useCallback, useSyncExternalStore } from 'react';
+import {subscribeLanguage,languageSnapshot,languagePreference,type LanguagePreference} from '../localization/language';
+import {initializeLanguage,setLanguagePreference,observeDeviceLanguage} from '../localization/deviceLanguage';
 import { Appearance } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LightColors, DarkColors, type ThemeColors } from '../theme';
@@ -15,6 +17,9 @@ interface ThemeContextValue {
   isDark: boolean;
   preference: ThemePreference;
   setPreference: (pref: ThemePreference) => void;
+  languagePreference: LanguagePreference;
+  setLanguagePreference: typeof setLanguagePreference;
+  languageRevision: number;
 }
 
 const ThemeContext = createContext<ThemeContextValue>({
@@ -23,6 +28,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   isDark: false,
   preference: 'system',
   setPreference: () => {},
+  languagePreference:'system',setLanguagePreference,languageRevision:0,
 });
 
 /** Reliable system scheme — Appearance.getColorScheme() is synchronous and
@@ -42,19 +48,21 @@ function useSystemScheme(): 'light' | 'dark' {
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
+  const languageRevision=useSyncExternalStore(subscribeLanguage,languageSnapshot,languageSnapshot);
+  useEffect(observeDeviceLanguage,[]);
   const systemScheme = useSystemScheme();
   const [preference, setPreferenceState] = useState<ThemePreference>('system');
   const [loaded, setLoaded] = useState(false);
 
   // Load saved preference on mount
   useEffect(() => {
-    AsyncStorage.getItem(THEME_STORAGE_KEY)
-      .then((saved) => {
+    Promise.all([AsyncStorage.getItem(THEME_STORAGE_KEY).catch(()=>null),initializeLanguage()])
+      .then(([saved]) => {
         if (saved === 'light' || saved === 'dark' || saved === 'system') {
           setPreferenceState(saved);
         }
       })
-      .finally(() => setLoaded(true));
+      .catch(()=>{}).finally(() => setLoaded(true));
   }, []);
 
   const setPreference = useCallback((pref: ThemePreference) => {
@@ -71,8 +79,9 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       isDark: resolvedMode === 'dark',
       preference,
       setPreference,
+      languagePreference:languagePreference(),setLanguagePreference,languageRevision,
     };
-  }, [systemScheme, preference, setPreference]);
+  }, [systemScheme, preference, setPreference,languageRevision]);
 
   if (!loaded) return <StartupScreen />;
 

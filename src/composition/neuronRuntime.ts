@@ -1,3 +1,11 @@
+import {mobileTrialCredits} from '../services/identity/mobileTrialCredits';
+import {trialReference} from '../services/identity/trialCredits';
+import {networkScorecard} from '../services/identity/networkScorecard';
+import {createGroupCallPresence} from '../services/identity/groupCallPresence';
+import {groupCallMembershipMatches,type GroupCallRoom} from '../services/identity/groupCallRoom';
+import {GROUP_CUSTODY_LIMITS} from '../services/identity/groupCustodyService';
+import {createReceiptConfirmation} from '../services/identity/receiptConfirmation';
+import {createIncomingMessageAdmission} from '../services/identity/incomingMessageAdmission';
 import {createCustodyMaintenance} from '../services/identity/custodyMaintenance';
 import {createMobileCallSession} from './mobileCallSession';
 import {createChangeSignal} from '../services/identity/changeSignal';
@@ -7,9 +15,11 @@ export const subscribeRelayChanges=relayChanges.subscribe;
 export const subscribeLocalNetworkChanges=networkChanges.subscribe;
 import {createCustodyEvents} from '../services/identity/custodyEvents';
 import {createNativeCallDeadline} from '../services/identity/nativeCallDeadline';
-import {createEventDeadlineTask} from '../services/identity/eventDeadlineTask';
+import {createEventDeadlineTask as createSharedEventDeadlineTask} from '../services/identity/eventDeadlineTask';
+// Native background callbacks can run while React Native frame timers are paused.
+const createEventDeadlineTask=(d:Parameters<typeof createSharedEventDeadlineTask>[0])=>createSharedEventDeadlineTask({...d,immediateEvents:true});
 import type {GroupCustodyPayload} from '../services/identity/groupCustodyProtocol';
-import {deliveryEvidence} from '../services/identity/deliveryEvidence';
+import {deliveryEvidence,receiptDeliveryEvidence} from '../services/identity/deliveryEvidence';
 import {diagnosticJournal} from '../services/diagnosticJournal';
 import {relayInventory} from '../services/identity/relayInventory';
 import type {CustodyEnvelope} from '../services/identity/custodyProtocol';
@@ -22,7 +32,6 @@ import {createRuntimeChatReads,createPeerCapabilityWriter} from '../services/ide
 import {ownChatRevision,subscribeOwnChatWrites} from '../modules/storage/chatStore';
 import {migrateSharedProfileAvatar} from '../modules/messaging/profile';
 import {createProfileRecovery} from '../services/identity/profileRecovery';
-import {knownProfileReceipt} from '../services/identity/rootProfileSharing';
 import {sharedAvatarHash} from '../modules/storage/sharedProfileStore';
 import {createChatActivity} from '../services/identity/chatActivity';
 import {createGroupRecovery} from '../services/identity/groupRecovery';
@@ -74,12 +83,21 @@ export async function resetLocalNetworkWork(confirmed:true){
  await requestLocalNetworkReset(account,confirmed);await closeForNetworkReset();
 }
 export function subscribeLocalAccountCalls(listener:(view:NeuronCallView<string>|null)=>void){callListeners.add(listener);listener(localAccountCalls()?.snapshot()??null);return()=>{callListeners.delete(listener);};}
+const groupCallPresenceChanges=createChangeSignal(0);
+let activeGroupCallPresence:ReturnType<typeof createGroupCallPresence>|null=null;
+export const subscribeGroupCallPresence=groupCallPresenceChanges.subscribe;
+export const groupCallIsActive=(id:string)=>activeGroupCallPresence?.active(id)??false;
+export const watchGroupCallPresence=(room:GroupCallRoom)=>activeGroupCallPresence?.watch(room)??(()=>{});
 const activityChanges=createChangeSignal(0);
 export const subscribeChatActivity=activityChanges.subscribe;
 export const nextChatActivityDeadline=()=>activeActivity?.nextDeadline()??Infinity;
 let activeActivity:ReturnType<typeof createChatActivity>|null=null;
+export const peerRecording=(peer:string,group?:string)=>activeActivity?.recording(peer,group)??false;
+export const notifyPeerRecording=(peer:string,value:boolean,group?:string)=>activeActivity?.notify(peer,value,group,'recording')??Promise.resolve();
 export const peerTyping=(peer:string,group?:string)=>activeActivity?.typing(peer,group)??false;
 export const notifyPeerTyping=(peer:string,value:boolean,group?:string)=>activeActivity?.notify(peer,value,group)??Promise.resolve();
+let inspectContribution:(()=>{privateRelay:ReturnType<ReturnType<typeof createCustodyService>['contribution']>|null;groupRelay:ReturnType<ReturnType<typeof createGroupCustodyService>['contribution']>|null;mediaRelay:ReturnType<ReturnType<typeof createAttachmentCustody>['contribution']>|null})|null=null;
+export function localAccountScorecard(){const n=localAccountNetworkSnapshot();return networkScorecard({state:n?.state??'unavailable',connected:n?.pool?.connections.filter(c=>c.state==='connected').length??0,error:!!n?.error,...(inspectContribution?.()??{privateRelay:null,groupRelay:null,mediaRelay:null})});}
 let activeSnapshot: (() => ReturnType<ReturnType<typeof createLanIdentityRuntime>['snapshot']>) | null = null;
 let diagnosticNetworkStartedAt:number|null=null;
 export const localAccountDiagnosticNetworkEpoch=()=>activeSnapshot?diagnosticNetworkStartedAt:null;
@@ -104,6 +122,8 @@ export async function localAccountRelayInventory(){
 /** Independent root-identity participation; no legacy user ID, JWT, or Axion session. */
 function createLocalAccountNetwork() {
   diagnosticNetworkStartedAt=Date.now();
+  const recoveryListeners=new Set<(sender:string,id:string)=>void>();
+  const receiptAccepted=(sender:string,id:string)=>{for(const listener of recoveryListeners){try{listener(sender,id);}catch{/* Independent recovery waiters. */}}};
   if (!Native?.axonLanStart || !Native?.axonWssConnect) throw Error('Network transport unavailable in this build');
   const records = createMobileIdentityRecordStore(Date.now);
   const remembered=createRememberedNeurons({now:Date.now,read:account=>AsyncStorage.getItem('@axonic_known_neurons_v1:'+account),write:(account,raw)=>AsyncStorage.setItem('@axonic_known_neurons_v1:'+account,raw)});
@@ -117,13 +137,14 @@ function createLocalAccountNetwork() {
   let calls: {account:string;runtime:ReturnType<typeof createRootAccountCalls>}|null=null;
   let stopCallNotice:(()=>void)|null=null;
   function stopCalls(){Native?.axonCallSetupWindow?.(0);stopCallNotice?.();stopCallNotice=null;push=null;inspectPush=null;if(!calls)return;const previous=calls;calls=null;if(activeCalls===previous.runtime)activeCalls=null;}
+  let lastCallDiagnostic='';
   function callService(){
     const account=owner();if(!account){stopCalls();return null;}
     if(calls?.account!==account){stopCalls();
-      const session=createMobileCallSession(account,{owner,network:()=>runtime,records:operationalRecords,chat:chatReads.read,
+      const session=createMobileCallSession(account,{owner,network:()=>runtime,records:operationalRecords,chat:metadataReads.read,
         inboxChanged:peer=>callEvents.changed(peer),wake:()=>{callClockWork.changed();callWork.changed();},
         activate:callRuntime=>{calls={account,runtime:callRuntime};activeCalls=callRuntime;},
-        changed:view=>{for(const listener of callListeners)listener(view);}});
+        changed:view=>{presence.update(view);const evidence={callStatus:view?.status??'idle',callMedia:view?.media,groupCall:!!view?.room,participants:view?.room?.descriptor.members.length??(view?2:0),readyLegs:view?.room?.legs.filter(l=>l.status==='ready').length??0,endedLegs:view?.room?.legs.filter(l=>l.status==='ended').length??0},key=JSON.stringify(evidence);if(key!==lastCallDiagnostic){lastCallDiagnostic=key;diagnosticJournal.record('call_state_changed',evidence);}for(const listener of callListeners)listener(view);}});
       push=session.push;inspectPush=push.snapshot;stopCallNotice=session.stop;
     }return calls?.runtime??null;
   }
@@ -131,16 +152,17 @@ function createLocalAccountNetwork() {
   let attachments:{owner:string;service:ReturnType<typeof createAttachmentCustody>}|null=null;
   let ownAttachments:ReturnType<typeof startRootAttachmentRuntime>|null=null;
   const owner = () => !stopped && !localAccount.status().busy && localAccount.status().state === 'unlocked' ? localAccount.status().account : null;
-  const chatReads=createRuntimeChatReads({owner,revision:ownChatRevision,read:()=>localRootChat().snapshot()});
+  const metadataReads=createRuntimeChatReads({owner,revision:ownChatRevision,read:()=>localRootChat().metadataSnapshot()});
+  const deliveryReads=createRuntimeChatReads({owner,revision:ownChatRevision,read:()=>localRootChat().deliverySnapshot()});
   const capabilities=createPeerCapabilityWriter({owner,write:async(p,t,g)=>{const ledger=localRootChat();await ledger.rememberPeerCapabilities({profileOfferPeers:runtime.profileOfferPeers(),profilePeers:p,timestampPeers:t,groupCustodyPeers:g});}});
   function service() {
     const account = owner(); if (!account) return null;
     if (custody?.owner !== account) {
       custody?.wake.stop();custody?.groupWake.stop();
       const store = createMobileCustodyStore(account),groupStore=createMobileGroupCustodyStore(account);
-      const next: NonNullable<typeof custody> = { owner: account,group:createGroupCustodyService({changed:peer=>{inboxEvents.changed(peer);next.wake.changed();next.groupWake.changed();privateWakeWork.changed();groupWakeWork.changed();},owner:account,records:operationalRecords,store:groupStore,now:Date.now,current:()=>custody===next&&owner()===account,receiveOwn:(grant,payload,relay)=>localAccount.receiveCustody(grant,operationalRecords,m=>receiveMessage(m,relay),payload)}),groupWake:createCustodyWakeForwarder({eventDriven:true,groupPayload:packet=>next.group.payloadFor(packet),custodian:account,deliverDirect:packet=>next.group.deliverDirect(packet,runtime.custodyRequest),store:groupCustodyWakeStore(groupStore),records,now:Date.now,current:()=>!stopped&&custody===next&&owner()===account,peers:()=>runtime.pushPeers(),request:(peer,raw)=>runtime.pushRequest(peer,raw)}), service: createCustodyService({ changed:peer=>{inboxEvents.changed(peer);next.wake.changed();next.groupWake.changed();privateWakeWork.changed();groupWakeWork.changed();},owner: account, records:operationalRecords,
+      const next: NonNullable<typeof custody> = { owner: account,group:createGroupCustodyService({scoreChanged:networkChanges.changed,trial:event=>{void mobileTrialCredits(account).observe(event);},changed:peer=>{inboxEvents.changed(peer);next.wake.changed();next.groupWake.changed();privateWakeWork.changed();groupWakeWork.changed();},owner:account,records:operationalRecords,store:groupStore,now:Date.now,current:()=>custody===next&&owner()===account,receiveOwn:async(grant,payload,relay)=>{const receipt=await localAccount.receiveCustody(grant,operationalRecords,m=>receiveMessage(m,relay),payload,relay);if(receipt)void receiptConfirmation.confirm(receipt,relay,payload.id);return receipt;}}),groupWake:createCustodyWakeForwarder({eventDriven:true,groupPayload:packet=>next.group.payloadFor(packet),custodian:account,deliverDirect:packet=>next.group.deliverDirect(packet,runtime.custodyRequest),store:groupCustodyWakeStore(groupStore),records,now:Date.now,current:()=>!stopped&&custody===next&&owner()===account,peers:()=>runtime.pushPeers(),request:(peer,raw)=>runtime.pushRequest(peer,raw)}), service: createCustodyService({scoreChanged:networkChanges.changed,trial:event=>{void mobileTrialCredits(account).observe(event);}, changed:peer=>{inboxEvents.changed(peer);next.wake.changed();next.groupWake.changed();privateWakeWork.changed();groupWakeWork.changed();},owner: account, records:operationalRecords,
         store, now: Date.now, current: () => custody === next && owner() === account,
-        receiveOwn:(envelope,relay)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay)) }),
+        receiveOwn:async(envelope,relay)=>{const receipt=await localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay),undefined,relay);if(receipt)void receiptConfirmation.confirm(receipt,relay);return receipt;} }),
         wake: createCustodyWakeForwarder({eventDriven:true,inlineEnvelope:true,custodian:account,store, records, now: Date.now,
           deliverDirect:packet=>next.service.deliverDirect(packet,runtime.custodyRequest),
           current: () => !stopped && custody === next && owner() === account,
@@ -150,25 +172,30 @@ function createLocalAccountNetwork() {
     return custody.service;
   }
   function attachmentService(){const account=owner();if(!account)return null;
-    if(attachments?.owner!==account)attachments={owner:account,service:createAttachmentCustody({owner:account,records,store:createMobileAttachmentStore(account),now:Date.now,current:()=>owner()===account})};
+    if(attachments?.owner!==account)attachments={owner:account,service:createAttachmentCustody({scoreChanged:networkChanges.changed,trial:event=>{void mobileTrialCredits(account).observe(event);},owner:account,records,store:createMobileAttachmentStore(account),now:Date.now,current:()=>owner()===account})};
     return attachments.service;
   }
-  const activity=createChatActivity({owner,now:Date.now,changed:activityChanges.changed,allowed:async(peer,group)=>{const s=await chatReads.read();if(s.contacts.some(c=>c.account===peer&&c.blocked))return false;return group?s.groups?.some(g=>g.id===group&&g.accepted&&!g.blocked&&g.members.includes(peer)&&g.members.includes(owner()!))===true:s.contacts.some(c=>c.account===peer&&c.accepted);},send:async(peer,raw)=>{if(AppState.currentState!=='active')return false;const id=await Native!.identityRandomBytes!(32);return runtime.sendChatMessage(peer,raw,id);}});
+  const activity=createChatActivity({owner,now:Date.now,changed:activityChanges.changed,allowed:async(peer,group)=>{const s=await metadataReads.read();if(s.contacts.some(c=>c.account===peer&&c.blocked))return false;return group?s.groups?.some(g=>g.id===group&&g.accepted&&!g.blocked&&g.members.includes(peer)&&g.members.includes(owner()!))===true:s.contacts.some(c=>c.account===peer&&c.accepted);},send:async(peer,raw)=>{if(AppState.currentState!=='active')return false;const id=await Native!.identityRandomBytes!(32);return runtime.sendChatMessage(peer,raw,id);}});
+  const presence=createGroupCallPresence({owner,now:Date.now,changed:groupCallPresenceChanges.changed,peers:()=>runtime.callPeers(),
+   allowed:async(room,peer)=>{const s=await metadataReads.read();return groupCallMembershipMatches(room,s.groups?.find(g=>g.id===room.group),owner()??'')&&!s.contacts.some(c=>c.account===peer&&c.blocked);},
+   send:async(peer,raw)=>runtime.sendChatMessage(peer,raw,await Native!.identityRandomBytes!(32))});
+  activeGroupCallPresence=presence;
   activeActivity=activity;
   const native = Native as NativeAxonLan & { axonWssConnect(host: string, account: string): Promise<string> };
-  async function receiveMessage(message:{from:string;id:string;text:string},relay?:string){
+  const receiveMessage=createIncomingMessageAdmission({owner,receive:async(message,relay)=>{
     const account=owner();if(!account)return false;
-    const ledger=localRootChat(),before=await chatReads.read();
-    const seen=[...before.messages,...(before.actions??[]),...(before.groupActions??[]),].some(m=>m.id===message.id&&m.peer===message.from&&m.direction==='incoming')||before.groupSeen?.some(m=>m.id===message.id&&m.peer===message.from)===true;
+    const began=performance.now(),ledger=localRootChat(),seen=await ledger.hasReceived(message.from,message.id),checked=performance.now();
     const accepted=await ledger.receive(message.from,message.id,message.text,deliveryEvidence('payload',Date.now(),relay));
+    const committed=performance.now();
     if(accepted&&!seen){
-      const state=rootChatView(account,await chatReads.read()),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
+      const state=rootChatView(account,await localRootChat().messageSnapshot(message.from,message.id)),m=state.messages.find(m=>m.direction==='incoming'&&m.peer===message.from&&m.id===message.id);
       const contact=state.contacts.find(c=>c.account===message.from),group=m?.group&&state.groups?.find(g=>g.id===m.group!.id);
       const preview=m?{name:group?.name||contact?.alias||shortIdentity(message.from),senderName:contact?.alias||shortIdentity(message.from),text:rootNotificationPreviewText(m),at:m.at,read:!!m.read||!!m.deleted,...(m.group?{group:m.group.id,orderId:m.group.messageId}:{})}:undefined;
       await finishRootMessageWake(account,message.from,message.id,preview).catch(()=>{});
     }
+    if(accepted&&!seen)console.info('[Axonic incoming timing]',{dedupMs:Math.round(checked-began),storeMs:Math.round(committed-checked),presentationMs:Math.round(performance.now()-committed)});
     return accepted;
-  }
+  }});
   const directory = createMobileDirectory(localAccount, records, () => !stopped, () => runtime);
   const peerResolver=createPeerIdentityResolver({wait:ms=>Native?.axonMessageWait?Native.axonMessageWait(ms):new Promise(resolve=>setTimeout(resolve,ms)),records,lookup:directory.lookup,current:()=>!!owner(),now:Date.now});
   // Relayed inbox/call traffic can be the first contact with this sender. Resolve
@@ -187,7 +214,7 @@ function createLocalAccountNetwork() {
     onCallMediaRelay:async(raw,peer)=>{try{return await callService()?.relayMedia(raw,peer)??false;}catch{return false;}},
     onRelayedCallMedia:async(raw,peer)=>{try{return await callService()?.receiveRoutedMedia(raw,peer)??false;}catch{return false;}},
     onCallMedia:async(raw,peer,instance)=>{try{return await callService()?.receiveMedia(raw,peer,instance)??false;}catch{return false;}},
-    onChatMessage: async message => { try { const hint=await activity.receive(message.from,message.text);return hint===null?await receiveMessage(message):hint; } catch { return false; } },
+    onChatMessage: async message => { try { const presenceHint=await presence.receive(message.from,message.text);if(presenceHint!==null)return presenceHint;const hint=await activity.receive(message.from,message.text);return hint===null?await receiveMessage(message):hint; } catch { return false; } },
     rtc: Platform.OS==='android'&&NativeModules.WebRTCModule?.axonicIdentityGuardVersion?.()===1?{
       mediaLane:typeof Native?.axonEnableMediaLane==='function',
       streamCredit:NativeModules.WebRTCModule?.axonicStreamGuardVersion?.()===1?async(channel,value,authorize)=>
@@ -204,31 +231,31 @@ function createLocalAccountNetwork() {
     onCustody: Object.assign(async(raw:string,peer:{account:string})=>{const notice=inboxEvents.receive(peer.account,raw);if(notice!==null)return notice;const callNotice=callEvents.receive(peer.account,raw);if(callNotice!==null)return callNotice;service();let group=false;try{group=String(JSON.parse(raw)?.operation).startsWith('group-');}catch{}try{return await (group?custody?.group.receive(peer.account,raw):custody?.service.receive(peer.account,raw))??JSON.stringify({status:'rejected'});}finally{relayChanges.changed();}},{groupCustody:true,custodyEvents:true,callInboxEvents:true}),
     internet: { peers: [...BOOTSTRAP_NEURONS], connect: createInternetAxonConnector(native, owner) } });
   const blocked=new Set<string>();
-  const courier=createCustodyCourier({owner,allowed:peer=>!blocked.has(peer),now:Date.now,records:operationalRecords,own:createOwnCustodyStore(),
+  const courier=createCustodyCourier({receiptAccepted,owner,allowed:peer=>!blocked.has(peer),now:Date.now,records:operationalRecords,own:createOwnCustodyStore(),
     relays:runtime.custodians,eventDriven:peer=>runtime.eventCustodians().includes(peer),
     request:runtime.custodyRequest,seal:(...args)=>localAccount.sealCustody(...args),
-    receive:(envelope,relay)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay)),
-    held:envelope=>localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires),
+    receive:(envelope,relay)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay),undefined,relay),
+    held:async (envelope,relay)=>{await localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires,false,relay);void mobileTrialCredits(envelope.sender).observe({kind:'relay-use',reference:trialReference(envelope.sender,envelope.id,envelope.recipient)});},
     confirmReceipt:async(receipt,current,relay)=>{
-      if(!current())return false;const ledger=localRootChat(),state=await chatReads.read();
-      if(!current()||![...state.messages,...(state.actions??[]),...(state.groupActions??[])].some(m=>m.id===receipt.id&&m.peer===receipt.recipient&&m.direction==='outgoing')&&!state.groupPackets?.some(m=>m.id===receipt.id&&m.peer===receipt.recipient)&&!knownProfileReceipt(state,owner()!,receipt.recipient,receipt.id))return false;
-      await ledger.delivered(receipt.recipient,receipt.id,deliveryEvidence('receipt',Date.now(),relay));return current();
+      if(!current())return false;const ledger=localRootChat(),known=await ledger.hasOutgoingReceipt(receipt.recipient,receipt.id);
+      if(!current()||!known)return false;
+      await ledger.delivered(receipt.recipient,receipt.id,receiptDeliveryEvidence(receipt,receipt.sender,Date.now(),relay));return current();
     },
   });
-  const groupCourier=createGroupCustodyCourier({owner,now:Date.now,records:{...operationalRecords,read:async account=>account===owner()?localAccount.publicRecord():operationalRecords.read(account)},own:createOwnCustodyStore(),
-    compatible:async peer=>(await chatReads.read()).groupCustodyPeers?.includes(peer)===true,relays:runtime.groupCustodians,eventDriven:peer=>runtime.eventCustodians().includes(peer),request:runtime.custodyRequest,allowed:peer=>!blocked.has(peer),
-    store:{read:async account=>{const raw=await AsyncStorage.getItem('@axonic_group_outbox_v1:'+account);if(raw&&raw.length>8*1024*1024)throw Error('Group outbox capacity');const rows=raw?JSON.parse(raw):[];if(!Array.isArray(rows)||rows.length>128)throw Error('Invalid group outbox');return rows;},write:(account,rows)=>AsyncStorage.setItem('@axonic_group_outbox_v1:'+account,JSON.stringify(rows))},
-    heldGroup:envelopes=>localRootChat().networkStoredGroup(envelopes),seal:localAccount.sealGroupCustody,receive:(envelope,payload,relay)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay),payload),
-    held:envelope=>localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires),
-    confirm:async(receipt,current,relay)=>{if(!current())return false;const state=await chatReads.read();if(!current()||![...state.messages,...(state.groupActions??[])].some(m=>m.direction==='outgoing'&&m.peer===receipt.recipient&&m.id===receipt.id))return false;await localRootChat().delivered(receipt.recipient,receipt.id,deliveryEvidence('receipt',Date.now(),relay));return current();}
+  const groupCourier=createGroupCustodyCourier({receiptAccepted,owner,now:Date.now,records:{...operationalRecords,read:async account=>account===owner()?localAccount.publicRecord():operationalRecords.read(account)},own:createOwnCustodyStore(),
+    compatible:async peer=>(await metadataReads.read()).groupCustodyPeers?.includes(peer)===true,relays:runtime.groupCustodians,eventDriven:peer=>runtime.eventCustodians().includes(peer),request:runtime.custodyRequest,allowed:peer=>!blocked.has(peer),
+    store:{read:async account=>{const raw=await AsyncStorage.getItem('@axonic_group_outbox_v1:'+account);if(raw&&raw.length>GROUP_CUSTODY_LIMITS.bytes)throw Error('Group outbox capacity');const rows=raw?JSON.parse(raw):[];if(!Array.isArray(rows)||rows.length>GROUP_CUSTODY_LIMITS.perSender)throw Error('Invalid group outbox');return rows;},write:(account,rows)=>AsyncStorage.setItem('@axonic_group_outbox_v1:'+account,JSON.stringify(rows))},
+    heldGroup:async (envelopes,relay)=>{await localRootChat().networkStoredGroup(envelopes,relay);for(const e of envelopes)void mobileTrialCredits(e.sender).observe({kind:'relay-use',reference:trialReference(e.sender,e.id,e.recipient)});},seal:localAccount.sealGroupCustody,receive:(envelope,payload,relay)=>localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,relay),payload,relay),
+    held:async (envelope,relay)=>{await localRootChat().networkStored(envelope.recipient,envelope.id,envelope.expires,false,relay);void mobileTrialCredits(envelope.sender).observe({kind:'relay-use',reference:trialReference(envelope.sender,envelope.id,envelope.recipient)});},
+    confirm:async(receipt,current,relay)=>{if(!current())return false;const known=await localRootChat().hasOutgoingReceipt(receipt.recipient,receipt.id,true);if(!current()||!known)return false;await localRootChat().delivered(receipt.recipient,receipt.id,receiptDeliveryEvidence(receipt,receipt.sender,Date.now(),relay));return current();}
   });
   const inboxEvents=createCustodyEvents({current:()=>!stopped&&!!owner(),now:Date.now,peers:runtime.eventCustodians,request:runtime.custodyRequest,scheduled:()=>noticeWork.changed(),reconcile:peer=>{courier.resume(peer);groupCourier.resume(peer);privateInboxWork.changed();groupInboxWork.changed();}});
   const callEvents=createCustodyEvents({operation:'call-inbox-changed',current:()=>!stopped&&!!owner(),now:Date.now,peers:runtime.eventCallPeers,request:runtime.custodyRequest,scheduled:()=>callNoticeWork.changed(),reconcile:()=>{calls?.runtime.changed();callClockWork.changed();callWork.changed();}});
-  const unsub = localAccount.subscribe(() => { if (!owner()) {chatReads.clear();capabilities.clear();activity.clear();peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();groupCourier.invalidate();profileRecovery.invalidate();}else{profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});} stateWork.changed(); });
+  const unsub = localAccount.subscribe(() => { if (!owner()) {metadataReads.clear();deliveryReads.clear();capabilities.clear();activity.clear();presence.clear();peerResolver.invalidate();delivery.invalidate();stopCalls();custody = null;blocked.clear();courier.invalidate();groupCourier.invalidate();profileRecovery.invalidate();}else{profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});} stateWork.changed(); });
   const unlimit = subscribeAllowedAxons(() => runtime.setLimit(allowedAxons()));
   void loadAllowedAxons().catch(() => {});
   void loadRecoverySettings().catch(() => {});
-  const delivery=createMessageDelivery({owner,changed:()=>deliveryWork.changed(),stableSnapshots:true,ledger:()=>({...localRootChat(),snapshot:chatReads.read}),
+  const delivery=createMessageDelivery({owner,changed:()=>deliveryWork.changed(),stableSnapshots:true,ledger:()=>({...localRootChat(),snapshot:deliveryReads.read}),
     now:Date.now,connectedPeers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),
     blocked:peers=>{blocked.clear();for(const peer of peers)blocked.add(peer);},collect:async()=>{
       // Each courier owns bounded per-relay single flights. Do not hold the
@@ -238,7 +265,7 @@ function createLocalAccountNetwork() {
     send:runtime.sendChatMessage,resolve:peerResolver.resolve,deposit:(...args)=>courier.deposit(...args),depositGroup:groupCourier.deposit});
   const unqueue=subscribeRootChatQueued((account,peer,id)=>{if(owner()===account){delivery.wake(peer,id);deliveryWork.changed();}});
   const groupRecovery=createGroupRecovery({owner,now:Date.now,peers:()=>runtime.snapshot().sessions.filter(s=>s.state==='connected'&&s.account).map(s=>s.account!),random:()=>Native!.identityRandomBytes!(32),recover:(peer,id)=>localRootChat().recoverGroupsForPeer(peer,id)});
-  const profileRecovery=createProfileRecovery({owner,state:chatReads.read,peers:runtime.profilePeers,offerPeers:runtime.profileOfferPeers,
+  const profileRecovery=createProfileRecovery({owner,state:metadataReads.read,peers:runtime.profilePeers,offerPeers:runtime.profileOfferPeers,
     remember:async(peers,offers)=>{const ledger=localRootChat();await ledger.rememberPeerCapabilities({profileOfferPeers:offers,profilePeers:peers});},
     send:runtime.sendChatMessage,known:peer=>sharedAvatarHash(owner()!,peer),request:(peer,id,known)=>localRootChat().requestProfile(peer,id,known)});
   // State-only jobs no longer run on the transport clock. Events are coalesced,
@@ -251,7 +278,7 @@ function createLocalAccountNetwork() {
   const stateWork=createEventDeadlineTask({now:Date.now,run:async()=>{
     service();callService();capabilityWork.changed();groupWork.changed();directoryWork.changed();await loadRemembered();wakeWorkers();
   }});
-  const untopology=runtime.subscribeTopology(()=>{ownAttachments?.wake();networkChanges.changed();capabilityWork.changed();groupWork.changed();directoryWork.changed();push?.connected();delivery.topologyChanged();calls?.runtime.changed();wakeWorkers();});
+  const untopology=runtime.subscribeTopology(()=>{presence.topology();ownAttachments?.wake();networkChanges.changed();capabilityWork.changed();groupWork.changed();directoryWork.changed();push?.connected();delivery.topologyChanged();calls?.runtime.changed();wakeWorkers();});
   stateWork.changed();
   const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>{profileRecovery.connected(peer);groupRecovery.connected(peer);groupWork.changed();courier.resume(peer);groupCourier.resume(peer);custody?.wake.connected(peer);custody?.groupWake.connected(peer);ownAttachments?.wake();wakeWorkers();});
   profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});
@@ -267,51 +294,58 @@ function createLocalAccountNetwork() {
   const callClockWork=createEventDeadlineTask({...callDeadline,now:Date.now,run:async()=>{await calls?.runtime.clock();return calls?.runtime.nextClockDeadline()??Infinity;}});
   const callWork=createEventDeadlineTask({...callDeadline,now:Date.now,run:async()=>{await calls?.runtime.tick();return calls?.runtime.nextDeadline()??Infinity;}});
   let policyKey='';
-  const policyWork=createEventDeadlineTask({now:Date.now,run:async()=>{if(!owner()){policyKey='';return;}const state=await chatReads.read(),key=JSON.stringify([owner(),state.contacts.map(c=>[c.account,c.blocked,c.alias])]);if(key===policyKey)return;policyKey=key;courier.resume();groupCourier.resume();privateInboxWork.changed();groupInboxWork.changed();callClockWork.changed();callWork.changed();}});
+  const policyWork=createEventDeadlineTask({now:Date.now,run:async()=>{if(!owner()){policyKey='';return;}const state=await metadataReads.read(),key=JSON.stringify([owner(),state.contacts.map(c=>[c.account,c.blocked,c.alias]),state.groups?.map(g=>[g.id,g.revision,g.accepted,g.blocked,g.recoveryPending,g.members])]);if(key===policyKey)return;policyKey=key;await presence.policyChanged();courier.resume();groupCourier.resume();privateInboxWork.changed();groupInboxWork.changed();callClockWork.changed();callWork.changed();}});
   const diagnosticWork=createEventDeadlineTask({now:Date.now,run:async()=>{if(!owner())return;const connections=runtime.snapshot().pool?.connections??[];diagnosticJournal.network(connections.filter(c=>c.state==='connected').length,connections.filter(c=>c.state==='authenticating').length);}});
   const workers=[stateWork,capabilityWork,groupWork,directoryWork,transportWork,privateInboxWork,groupInboxWork,deliveryWork,noticeWork,callNoticeWork,privateWakeWork,groupWakeWork,callClockWork,callWork,policyWork,diagnosticWork];
   inspectCoordinator=()=>Object.fromEntries(Object.entries({stateWork,capabilityWork,groupWork,directoryWork,transportWork,privateInboxWork,groupInboxWork,deliveryWork,noticeWork,callNoticeWork,privateWakeWork,groupWakeWork,callClockWork,callWork,policyWork,diagnosticWork}).map(([key,value])=>[key,value.diagnostics()]));
   function wakeWorkers(){for(const work of workers)if(work!==stateWork&&work!==capabilityWork&&work!==groupWork&&work!==directoryWork)work.changed();}
   const unchat=subscribeOwnChatWrites(account=>{if(owner()===account){deliveryWork.changed();policyWork.changed();}});
-  const uncallwake=subscribeRootCallWakes(account=>{if(owner()===account){calls?.runtime.changed();callWork.changed();}});
+  const uncallwake=subscribeRootCallWakes(account=>{if(owner()===account){void calls?.runtime.recoverWakes().catch(()=>{});calls?.runtime.changed();callWork.changed();}});
   const unjournal=subscribeCallJournalWrites(account=>{if(owner()===account){calls?.runtime.changed();callClockWork.changed();callWork.changed();}});
   // Native background wake clocks may run overdue deadlines while JS timers slept.
   // They must not turn an idle worker back into a once-per-second scan.
   const pump=()=>{for(const work of workers)work.runDue();ownAttachments?.runDue();};
   const maintenance=createCustodyMaintenance({owner,now:Date.now,sweep:async()=>{const current=service();if(current)await Promise.all([current.sweep(),custody?.group.sweep(),attachmentService()?.sweep()]);},changed:relayChanges.changed});
   const offMaintenance=localAccount.subscribe(maintenance.changed);maintenance.changed();
-  runtime.tick(); inspectDirectory = directory.snapshot; activeLookup = directory.lookup; activeSnapshot = runtime.snapshot;networkChanges.changed();
+  runtime.tick(); inspectDirectory = directory.snapshot; activeLookup = directory.lookup; activeSnapshot = runtime.snapshot;inspectContribution=()=>({privateRelay:custody?.owner===owner()?custody.service.contribution():null,groupRelay:custody?.owner===owner()?custody.group.contribution():null,mediaRelay:attachments?.owner===owner()?attachments.service.contribution():null});networkChanges.changed();
   inspectWake=()=>({private:custody?.wake.diagnostics()??null,group:custody?.groupWake.diagnostics()??null});
   const pollDiagnostics=()=>({events:inboxEvents.diagnostics(),private:courier.diagnostics(),group:groupCourier.diagnostics(),pendingDerivations:delivery.snapshot().pendingDerivations});
   inspectPolling=pollDiagnostics;
   activePeerResolver=peerResolver.resolve;
   const attachmentApi={sharedPeers:runtime.sharedAttachmentPeers,peers:runtime.attachmentPeers,request:runtime.attachmentRequest,blockStreamPeers:runtime.attachmentBlockStreamPeers,bulkPeers:runtime.attachmentBulkPeers,uploadBatchPeers:runtime.attachmentUploadBatchPeers,batchChunks:runtime.attachmentBatchChunks,batchWindow:runtime.attachmentBatchWindow,bulkRequest:runtime.attachmentBulkRequest};
   ownAttachments=startRootAttachmentRuntime({...attachmentApi,wss:{binary:runtime.supportsWssBinary,sendBinary:runtime.sendWssBinary,peer:runtime.wssStreamPeer,send:runtime.sendWssStream,request:runtime.attachmentRequest},streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
-  const inlineReceipts=new Map<string,number>();
+  const receiptConfirmation=createReceiptConfirmation({owner,now:Date.now,request:runtime.custodyRequest,accepted:receiptAccepted});
   return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot,
+    subscribeRecovery:(listener:(sender:string,id:string)=>void)=>{recoveryListeners.add(listener);return()=>{recoveryListeners.delete(listener);};},
     receiveWakeEnvelope:async(envelope:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>{
       const receipt=await localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,custodian??''),payload);
       // Hint is not authority: only send a verified recipient receipt, over an
       // already authenticated connection. Polling retries if this socket is absent.
-      if(receipt&&custodian)try{
-        const response=JSON.parse(await runtime.custodyRequest(custodian,JSON.stringify(payload?{operation:'group-receipt',id:payload.id,packet:receipt}:{operation:'receipt',packet:receipt}))??'{}');
-        if(response.status==='accepted'&&owner()===receipt.recipient){
-          if(inlineReceipts.size>=256)inlineReceipts.delete(inlineReceipts.keys().next().value!);
-          inlineReceipts.set(receipt.recipient+':'+receipt.sender+':'+receipt.id,receipt.expires);
-        }
-      }catch{}
+      // Admission is already durable. Receipt acceptance wakes recovery separately;
+      // a slow reverse request must not hold setup or delay connection resume.
+      if(receipt&&custodian)void receiptConfirmation.confirm(receipt,custodian,payload?.id);
       return receipt;
     },
     attachmentRecoveryComplete:(sender:string,id:string)=>ownAttachments?.recoveryComplete(sender,id)??Promise.resolve(true),
-    recoveryComplete:(sender:string,id:string)=>{if((inlineReceipts.get(owner()+':'+sender+':'+id)??0)>Date.now())return true;const status=delivery.snapshot();return !status.busy&&!status.collecting&&!status.queuedHints&&(courier.recoveryComplete(sender,id)||groupCourier.recoveryComplete(sender,id));},
-    resume() { stateWork.changed();runtime.resume();courier.resume();groupCourier.resume();ownAttachments?.wake();pump(); }, tick:pump, stop() { inspectCoordinator=null;unchat();unjournal();uncallwake();for(const work of workers)work.stop();stateWork.stop();capabilityWork.stop();groupWork.stop();directoryWork.stop();untopology();inboxEvents.stop();callEvents.stop();chatReads.clear();capabilities.clear();activity.clear();if(activeActivity===activity)activeActivity=null;unqueue();unprofile();unconnected();profileRecovery.stop();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();groupCourier.stop();custody?.groupWake.stop();custody?.wake.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if(inspectPolling===pollDiagnostics)inspectPolling=null; if (activeSnapshot === runtime.snapshot) {activeSnapshot = null;inspectWake=null;networkChanges.changed();} stopped = true; custody = null; offMaintenance();maintenance.stop(); unsub(); unlimit(); runtime.stop(); } };
+    recoveryComplete:(sender:string,id:string)=>{if(receiptConfirmation.complete(sender,id))return true;return courier.receiptAccepted(sender,id)||groupCourier.receiptAccepted(sender,id);},
+    resume() {
+      stateWork.changed();runtime.resume();transportWork.changed();
+      courier.resume();groupCourier.resume();
+      // Resetting the relay schedule alone leaves its coordinator asleep at
+      // Infinity after an empty event-driven inbox. A verified FCM hint is an
+      // inbox event too, even if the existing connection never reconnects.
+      privateInboxWork.changed();groupInboxWork.changed();
+      ownAttachments?.wake();pump();
+    }, tick:pump, stop() { receiptConfirmation.stop();recoveryListeners.clear();inspectCoordinator=null;unchat();unjournal();uncallwake();for(const work of workers)work.stop();stateWork.stop();capabilityWork.stop();groupWork.stop();directoryWork.stop();untopology();inboxEvents.stop();callEvents.stop();metadataReads.clear();deliveryReads.clear();capabilities.clear();activity.clear();presence.clear();if(activeActivity===activity)activeActivity=null;if(activeGroupCallPresence===presence)activeGroupCallPresence=null;unqueue();unprofile();unconnected();profileRecovery.stop();delivery.stop();ownAttachments.stop();if(activePeerResolver===peerResolver.resolve)activePeerResolver=null;peerResolver.stop();stopCalls();courier.stop();groupCourier.stop();custody?.groupWake.stop();custody?.wake.stop();directory.stop(); if (activeLookup === directory.lookup) activeLookup = null; if (inspectDirectory ===directory.snapshot) inspectDirectory = null; if(inspectPolling===pollDiagnostics)inspectPolling=null; if (activeSnapshot === runtime.snapshot) {activeSnapshot = null;inspectContribution=null;inspectWake=null;networkChanges.changed();} stopped = true; custody = null; offMaintenance();maintenance.stop(); unsub(); unlimit(); runtime.stop(); } };
 }
 
 // Foreground UI and a headless wake share one transport; each releases only its own lease.
 let sharedNetwork:{runtime:ReturnType<typeof createLocalAccountNetwork>;references:number}|null=null;
 export function startLocalAccountNetwork(){
  const shared=sharedNetwork??={runtime:createLocalAccountNetwork(),references:0};shared.references++;
- let released=false;return {receiveWakeEnvelope:shared.runtime.receiveWakeEnvelope,snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,recoveryComplete:shared.runtime.recoveryComplete,attachmentRecoveryComplete:shared.runtime.attachmentRecoveryComplete,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
+ let released=false;return {subscribeRecovery:shared.runtime.subscribeRecovery,receiveWakeEnvelope:shared.runtime.receiveWakeEnvelope,snapshot:shared.runtime.snapshot,recoveryStatus:shared.runtime.recoveryStatus,recoveryComplete:shared.runtime.recoveryComplete,attachmentRecoveryComplete:shared.runtime.attachmentRecoveryComplete,resume:shared.runtime.resume,tick:shared.runtime.tick,stop(){if(released)return;released=true;if(--shared.references===0){if(sharedNetwork===shared)sharedNetwork=null;shared.runtime.stop();}}};
 }
+
+
 
 

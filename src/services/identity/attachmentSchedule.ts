@@ -1,3 +1,5 @@
+/** Bound unfinished transfer work independently of retained message history. */
+export const ATTACHMENT_ACTIVE_JOB_LIMIT=1024;
 import type {AttachmentJob} from './attachmentTypes.ts';
 /** Active byte movement gets three turns per background receipt lookup.
  * Separate cursors keep both lanes fair even when jobs enter/leave the queue. */

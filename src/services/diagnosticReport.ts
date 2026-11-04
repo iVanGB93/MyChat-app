@@ -1,10 +1,36 @@
 import {rootMessageStatus} from './identity/rootMessageStatus';
 import type {RootChatState} from './identity/rootChatTypes';
+import type {AttachmentJob} from './identity/attachmentTypes';
 export const REPORT_MAX_BYTES=65536;
+export function diagnosticReportSendError(error:unknown){
+ const message=error instanceof Error?error.message:'';
+ if(message==='Invalid diagnostic attachment')return 'This app could not queue the diagnostic file format. Update Axonic and try again.';
+ if(message==='The selected neuron is blocked')return 'The selected neuron is blocked. Unblock it or capture a new report for another neuron.';
+ if(message==='Finish or remove a pending attachment first')return 'The attachment preparation queue is full. Finish or remove a pending attachment, then retry this same report preview.';
+ if(['This preview expired. Capture a new report','Report changed. Capture a new report','This report was deleted. Capture a new report'].includes(message))return 'This report preview is no longer valid. Capture a new report.';
+ return 'Could not confirm the report was queued. Retry this same preview to avoid duplicates, or check the chat. A blocked neuron or full attachment queue may need attention.';
+}
 export const REPORT_ISSUES=['delivery','notifications','slow_chats','connections','media','general'] as const;
 export type ReportIssue=typeof REPORT_ISSUES[number];
 export const REPORT_WHEN=['now','last_5_minutes','last_30_minutes','earlier'] as const;
 export type ReportWhen=typeof REPORT_WHEN[number];
+/** Aggregate correlation only: never export job IDs, recipients or file paths. */
+export function summarizePendingMedia(state:RootChatState,jobs:AttachmentJob[]|null,connected:readonly string[],now:number){
+ const result={available:jobs!==null,pending:0,peerConnected:0,peerNotConnected:0,peerBlocked:0,activeJobAbsent:0,retrying:0,retryScheduled:0,receiptRecorded:0,expiredAuthorization:0,liveAuthorization:0,confirmingConnectedWithoutReceipt:0,maximumRetryWaitMs:0,
+  phases:{queued:0,uploading:0,downloading:0,confirming:0,complete:0,expired:0,cancelled:0}};
+ const peers=new Set(connected),blocked=new Set(state.contacts.filter(c=>c.blocked).map(c=>c.account));
+ const index=new Map((jobs??[]).map(j=>[JSON.stringify([j.direction,j.descriptor.manifest.id,j.direction==='outgoing'?j.descriptor.manifest.recipient:j.descriptor.manifest.sender]),j]));
+ for(const m of state.messages){
+  if(m.deleted||!m.attachment||!['pending','stored'].includes(rootMessageStatus(m,now)))continue;
+  result.pending++;if(Number.isFinite(m.attachment.manifest.expires)){if(m.attachment.manifest.expires<=now)result.expiredAuthorization++;else result.liveAuthorization++;}if(peers.has(m.peer))result.peerConnected++;else result.peerNotConnected++;if(blocked.has(m.peer))result.peerBlocked++;
+  if(jobs===null)continue;
+  const j=index.get(JSON.stringify([m.direction,m.attachment.manifest.id,m.peer]));if(!j){result.activeJobAbsent++;continue;}
+  if(j.phase==='confirming'&&!j.receipt&&peers.has(m.peer))result.confirmingConnectedWithoutReceipt++;
+  if(Number.isFinite(j.next))result.maximumRetryWaitMs=Math.max(result.maximumRetryWaitMs,Math.max(0,j.next-now));
+  result.phases[j.phase]++;if(j.failures>0)result.retrying++;if(j.next>now)result.retryScheduled++;if(j.receipt)result.receiptRecorded++;
+ }
+ return {...result,scope:'Per-recipient pending media rows at capture. Connectivity is not delivery or permission. Missing active jobs can include archived completed jobs; absence does not prove loss. Categories overlap; no IDs, paths or content.'};
+}
 export function numericProjection(value:unknown,keys:readonly string[]){const input=value as Record<string,unknown>|null,result:Record<string,number>={};for(const key of keys){const n=input?.[key];if(typeof n==='number'&&Number.isFinite(n)&&n>=0)result[key]=n;}return result;}
 export function summarizeReportMessages(state:RootChatState,now:number){
  const result={networkResetAt:state.networkResetAt??null,private:{incoming:{pending:0,stored:0,delivered:0,read:0,cancelled:0,unavailable:0},outgoing:{pending:0,stored:0,delivered:0,read:0,cancelled:0,unavailable:0}},group:{incoming:{pending:0,stored:0,delivered:0,read:0,cancelled:0,unavailable:0},outgoing:{pending:0,stored:0,delivered:0,read:0,cancelled:0,unavailable:0}},incompleteMedia:0,descriptorReceivedIncompleteMedia:0,oldestOwnPendingSeconds:null as number|null};

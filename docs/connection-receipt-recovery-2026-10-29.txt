@@ -1,0 +1,40 @@
+Connection timeout and receipt recovery follow-up (2026-10-29)
+
+Scope: Axonic Dev only; no AoN deployment, production build, messages sent,
+history deletion, queue reset, or official app installation.
+
+Findings and changes
+- Authenticated directory requests were excluded from the existing control
+  request grace period. They now share its 15-second maximum, capped by the
+  authenticated peer expiry. Initial handshake and timeout closure remain intact.
+- Accepted incoming relay receipts updated completion state after the chat commit
+  without a completion event. Private, group, and inline acceptance now emit a
+  targeted sender/message event. Root recovery subscribes before admission,
+  filters its target, and disposes on exit. Observer failures cannot undo receipt
+  acceptance. No additional timer; the existing bounded safety check remains.
+- Inbox presence alone still does not count as receipt acceptance; attachment
+  completion remains separately required.
+
+Validation
+- npm run check: 1,709 tests passed, 3 skipped, zero failures; TypeScript,
+  dependency cycles, module boundaries, consolidation and asset checks passed.
+- Paired-session regression: an authenticated directory request remains connected
+  beyond 4 seconds, accepts a late response, and still closes at the 15-second
+  bound if unanswered.
+- Recovery regression: unrelated receipt does not complete recovery; matching
+  accepted receipt wakes it at simulated 100 ms without resolving the native
+  safety timer. Subscriptions are removed afterward.
+- Courier regressions cover accepted-only events and throwing observers.
+- Physical Dev refreshed to load the new code after checking no active call or
+  transfer. Receipt subscription API verified. Existing FirstNeuron lookup
+  returned found in 69 ms. Both hosted neuron sessions connected with no recorded
+  failures or close reason in that snapshot; directory round-trip maxima were
+  103 ms (FirstNeuron) and 97 ms (SecondNeuron).
+
+Limits
+This does not reproduce or fully explain the historical 20,103 ms receipt
+deadline. Event delivery removes the avoidable safety-timer wait after acceptance,
+not the time required to obtain a missing receipt. Delayed-response and receipt
+fault tests are local controlled regressions, not a new live FCM delivery test.
+No claim that all connection timeouts are eliminated. Live measurements are a
+single foreground observation, not a sustained/background latency benchmark.

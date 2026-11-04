@@ -1,0 +1,57 @@
+Recovery deployment and follow-up — November 3, 2026
+
+Authorized: deploy tested AoN changes and investigate remaining issues.
+Source commit: 5776d15fe8241d307a34ee8f69bf81c753408b88
+Branch: codex/aon-recovery-20261101, pushed to MyChat-neuron.
+All three AoNs: package 0.2.0, clean runtime-bound commit above.
+Runtime SHA256: 97df4913e6567e0f307fbdbc8838b17b401aaa3c52afc0b07374dddead26be57
+SecondNeuron deployment: c1d9af1c-c9fd-4ebf-bb62-3523c7177226 SUCCESS.
+First/Third installer verified health and unchanged identity hashes. Persistent
+volumes/data were not changed or deleted. No MCP adapter deployment, listener
+renewal, AI group-policy change, normal phone install, or production build.
+
+Host findings:
+- ThirdNeuron repeatedly restarted as WSL went idle. Restored previously authorized
+  hidden scripts/keep-thirdneuron-running.ps1 (PID10936 at launch). Verified later
+  uptime advanced to 91 seconds rather than resetting to one. Session-local only.
+- Third host sampler installed with the committed script, actual service name,
+  data directory and service-accessible /usr/bin/node. First retained its existing
+  configuration and also received the committed sampler script. Third's first
+  attempt used an inaccessible home-directory Node executable; corrected before
+  verification. Health sample now available, services healthy, disk85% free.
+- A WSL config parser warning mentions GPU lines; those unrelated settings were
+  inspected but not changed. Do not claim that warning was fixed.
+- Dev registers with both directly connected AoN gateways. Third remains zero
+  registrations and two peers; no evidence it rejected this phone's registration.
+- No wake rejections in short post-deploy epoch on the three AoNs. Counters reset
+  on restart; this does NOT prove the historical mismatches all recovered.
+
+Additional phone changes, Dev only:
+1. Canonical history writes no longer eagerly rebuild display pages in foreground.
+   Existing durable dirty-room markers and UI read events handle reconstruction;
+   no new timer, queue, or worker. 99 paging/indexed-history/ledger tests passed.
+2. Outgoing media completion wrongly required the sender's local source to exist
+   even after a verified recipient receipt. Removed that outgoing requirement.
+   Incoming still requires local file; both directions still require ledger receipt
+   verification. 111 transfer/runtime tests passed, one optional benchmark skipped.
+   New regression drives the real runtime completion callback for deleted source,
+   incoming missing file, invalid/missing receipt, and locked lifecycle.
+3. Prior-turn ledger timing separates queue wait, scope preparation and work.
+   Dev remained responsive, both available gateways registered. Warm metadata and
+   delivery reads ~0.5–3ms. Startup still includes ~1s mutations and ~2s queue
+   waits across reloads; no controlled overall speed improvement claimed.
+
+Remaining evidence gaps:
+- Exact historical official-app files are not proven affected by the deleted-source
+  bug. Twelve expired authorizations cannot be silently extended or resent; archived
+  job absence is not proof of loss. No retroactive completion was invented.
+- Further startup storage profiling needed. Display deferral removes redundant
+  eager work but has not eliminated all startup queue contention.
+- Bluetooth patch from Nov2 still not installed/tested natively on the phone.
+
+Artifacts:
+builds/verified-wake-first-1103.json, verified-wake-third-1103.json
+builds/verified-wake-fleet-1103.txt
+builds/review-dev-20261103.json
+builds/ledger-deferral-1103-tests.txt
+builds/receipt-source-1103-tests.txt

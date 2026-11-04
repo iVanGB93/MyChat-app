@@ -29,5 +29,7 @@ export interface AttachmentTransferStorage {jobs:AttachmentJobStore;files:Attach
  * receipt. They must respect the supplied lease and discard partial files. */
 export interface AttachmentTransferConnections extends AttachmentRequests {
  directStream?(job:AttachmentJob,live:()=>Promise<boolean>,expected:DirectAttachmentExpectation):Promise<boolean|'unavailable'>;
+ /** Local admitted stream only; readiness hints must never suppress custody. */
+ sendingStream?(job:AttachmentJob):boolean;
  serveStream?(job:AttachmentJob,live:()=>Promise<boolean>,wssId?:string):Promise<boolean>;
 }

@@ -1,0 +1,45 @@
+Production release 1.1.29 (100) — locally built, not published or installed
+
+Artifact: builds/Axonic-1.1.29-100.aab
+SHA256: 27cf4159cdb300c4040ee5f78eec01e389a3681d9dc7ef388f005da074b8b857
+Size: 107648408 bytes
+Embedded JS source fingerprint: 676d00e073a96d55c7c075e6a1e088bd331b50c2e521edbbf87ab80884c53fb7
+
+Includes the current mobile organization and relay/storage/transport improvements
+in the working tree, plus saved sender avatars in message notifications/toasts
+and Play update download progress/ready-to-install UI. No commit or push performed.
+
+Notification avatars use locally saved profile JPEGs. Temporary cache files are
+removed after display; unavailable/invalid avatars fall back to text notifications.
+The existing lock, mute, read and sender checks remain in place.
+
+Play install events now include downloaded/total bytes. The controller preserves
+newer native state over stale checks, and the app shows download progress (when
+known), ready-to-install and installing states. Installation remains explicit and
+respects existing call/recording/transfer safety checks. Foreground recovery and
+bounded active-update polling supplement native events.
+
+Validation:
+- npm run check: 1554 passed, 3 skipped, 0 failed; TypeScript, dependency cycles,
+  module boundaries, consolidation and asset checks passed.
+- Separate com.axonic.dev native APK built and updated on main test phone with
+  install -r. No uninstall/reset; normal com.axonic app untouched.
+- Dev UI simulation verified 45% download and ready-to-install button visually.
+  Simulated update state restored afterward. Install was not pressed.
+- Android notification displayed a saved avatar using the production cache helper
+  and Notifee rendering; inspected visually. Synthetic notification then removed.
+  No messages sent for this test and no contacts/profile/history changed.
+- Local Gradle release bundle built successfully for all four Android ABIs.
+- Bundletool validation, release manifest, signature continuity against code 99,
+  embedded config and JS fingerprint checks passed. Previous AAB unchanged.
+
+Limits:
+- Real Google Play download/install distribution flow requires an eligible
+  Play-installed release and was not exercised through Dev.
+- Relay transfer variability and cold storage waits remain measured performance
+  work; this release does not claim they are eliminated.
+- No AoN deployment performed in this release-preparation turn.
+
+Evidence: builds/release-100-checks.log, release-100-dev-build.log,
+local-production-aab-100.log, local-aab-100-validation.json,
+release-100-ui-2.png, release-100-ui-11.png, release-100-avatar.png.

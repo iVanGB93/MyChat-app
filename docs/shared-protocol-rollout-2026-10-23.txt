@@ -1,0 +1,33 @@
+Shared protocol rollout — 2026-10-23
+
+AoN commit pushed to origin/codex/operator-foundations-20261022:
+2a35d9557de6b4833492c6bce1acdab7bab2fcc1
+Unify shared protocol and event-driven AoN scheduling while preserving operator safeguards
+
+All three live AoNs verified at package 0.2.0, clean/runtime_bound source 2a35d95,
+runtime SHA256 5138f5887a92287feaff9d54e0b1bc2492e3df655c1c6dcc9291e77f4b22bba7.
+FirstNeuron and ThirdNeuron: service active; health, authenticated status, chat,
+operator-memory and diagnostics passed. Protected owner binding remains installed.
+SecondNeuron: Railway deployment d298e803-485f-4c60-a954-5d95d7d5bdf2 SUCCESS;
+public HTTPS health and authenticated MCP status/diagnostics verified. Status
+reported active network, 3 connected peers and guidance v5. Post-deploy SSH timed
+out; verification used the working MCP/API path, not a claimed SSH inspection.
+Existing server enforcement setting remains off; no approval policy was changed.
+
+Recovery copies preserved:
+First/Third: /var/backups/shared-2a35d95 (data.tar, runtime.tar, previous dist).
+Second: /data/operator-backups/shared-2a35d95/data.tar (159037440 bytes), excluding
+only the pre-existing backup directory. Writer resumed after the bounded snapshot.
+No messages, media, queues, identities, credentials or listener cursors were reset.
+No MCP adapter or OpenClaw integration deployment was performed in this rollout.
+
+Preflight: 288 AoN tests passed, check:core/TypeScript and whitespace checks passed.
+Previous mobile check: 1453 passed, 3 skipped. No physical-phone tests this turn.
+AoN worktree is clean. Older dirty Axonic-neuron worktree and mobile pending work
+remain preserved; this commit is the AoN source, not a mobile release commit.
+No app installations, production builds or publications. Phone Dev acceptance is
+next: messages, direct/relay media, reconnect, chat smoothness, calls/screen sharing.
+
+Incidental existing warnings: WSL reports malformed /etc/wsl.conf line 6 but the
+ThirdNeuron service starts; Railway warns its config-as-code format is deprecated.
+Neither configuration was changed as part of this rollout.

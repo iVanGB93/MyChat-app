@@ -1,0 +1,70 @@
+GROUP CALLS: REUSE EXISTING WEBRTC PEERS
+Audit date: 2026-10-31. Design only; no runtime changes or deployment.
+
+Existing foundation
+- rtcAxonTransport.borrowCall leases an authenticated, connected peer connection
+  pinned to the remote device. One active call lease is allowed per peer.
+- sharedRtcCall defines borrower ownership: release media use, never close the
+  network connection. Existing data channels and attachment streams remain.
+- callPeerSelection prefers this shared connection with a 1,500 ms grace period,
+  then creates a dedicated call connection. Answers follow the signed mode.
+- validAxonSdp rejects TURN relay candidates on the network RTC path. Preserve
+  dedicated TURN fallback; direct network connectivity cannot be assumed.
+- A WSS connection to an AoN is not a WebRTC media peer connection.
+
+Three-person topology
+Each participant needs a connection to each of the other two: three pairs total.
+Reuse each existing authenticated WebRTC connection where available. Establish
+missing pairs through existing signaling and keep TURN fallback for failed direct
+paths. One participant's phone should not become the other participants' relay.
+For N participants a mesh has N*(N-1)/2 pairs and N-1 outgoing media destinations
+per phone. Measure bandwidth, CPU, thermal behavior and battery before claiming
+larger-room capacity. An SFU is a future scaling option, not required for a
+three-person prototype. TURN supplies connectivity, not SFU fan-out.
+
+Required boundaries
+1. Shared room coordinator/protocol: signed room identity, group/membership
+   binding, invitations, acceptance and selected device per participant, join,
+   leave, end and expiry. Keep pair leg IDs distinct from the room ID. Define
+   authorization for new joins and room termination; do not equate group
+   membership with consent to capture. Validate blocks and membership changes.
+   Current callControlProtocol and neuronCallCoordinator have one caller/callee
+   and one active call; removing the busy guard alone is not group calling.
+2. Phone room media owner: capture microphone/camera once and own OS/audio focus,
+   screen sharing and call notification once. useWebRTCCore currently has one
+   peer, one remote stream and cleanup that stops local tracks. Instantiating it
+   for each participant would give each leg authority over shared capture.
+3. Pair media legs: own senders, remote tracks, negotiation, ICE recovery and
+   statistics separately. One participant leaving must release only that leg.
+   Screen-share replacement must update every accepted leg. Coordinate SDP glare
+   and ICE restart ownership with the borrowed network connection.
+4. Connection admission: reserve/pin active call peers against ordinary pool
+   eviction, account for available slots, and release reservations on departure.
+   Sharing a connection also shares network capacity: test large file transfers
+   during calls and adapt bulk sending to protect audio/video quality.
+5. UI: participant collection/grid and individual connection state instead of
+   RootAccountCallScreen's single remote peer. Existing group call buttons are
+   disabled; room history and incoming notification semantics need definition.
+
+Event-driven implementation
+Use room events, peer topology, tracks, ICE state and app lifecycle events as
+triggers. Replace commands.ts readiness polling with subscription plus deadline.
+Keep legitimate invitation/lease/recovery deadlines and getStats sampling; those
+are not redundant idle polling. Shared protocol/state belongs in the common core;
+native capture and phone UI remain platform adapters. Shared core support does
+not automatically give an AoN AI real-time audio/video participation.
+
+Acceptance order
+- Preserve private voice/video, shared-PC release and dedicated TURN behavior.
+- Three-person voice with shared peers, missing peers and mixed direct/TURN legs.
+- Join/decline/leave, initiator disconnect, simultaneous invitations, blocks,
+  membership changes, stale events, process restart and network handover.
+- Three-person video and screen-share start/stop without stopping other tracks.
+- Concurrent files/messages, screen-off recovery, route/audio focus and teardown.
+- Measure per-leg route, setup delay, loss/jitter, media throughput and CPU.
+
+Audit validation
+node --test tests/callPeerSelection.test.cjs tests/webRtcTransport.test.cjs
+  tests/callControlProtocol.test.cjs tests/neuronCallCoordinator.test.cjs
+58 passed, 0 failed. Existing private-call regressions only; no group-call or
+physical-device validation was performed by this audit.

@@ -1,0 +1,70 @@
+Encrypted relay stream rollout and live acceptance — 2026-10-23
+
+Source / release
+Committed and pushed only the six isolated AoN files to
+codex/operator-foundations-20261022 in iVanGB93/MyChat-neuron.
+Commit: 643e045ac5491a5424de35feff33bacb71ae1923
+Message: Stream encrypted relay blocks over authenticated WSS with bounded flow control
+FirstNeuron and SecondNeuron: package 0.2.0, runtime 3067d934974f
+Full runtime SHA256: 3067d934974f8b7c2f6a67d260fe5ec6e3aa5f16160cffec66638c69b64d1f18
+Both report sourceDirty=false and sourceMetadataStatus=runtime_bound.
+SecondNeuron deployment: 229e4cdb-18f4-4a13-b08a-b44119399fdc, SUCCESS.
+ThirdNeuron and SecondNeuron MCP were not changed.
+
+Safety / reporting
+309 AoN regression tests passed immediately before commit/deployment.
+First recovery: /var/backups/axonic-wss-643e045ac549 (data.tar + previous dist).
+Second recovery: /data/operator-backups/relay-643e045 (data.tar + runtime.tar).
+Second snapshot: 160235520 data bytes; 1187840 runtime bytes; writer resumed.
+Identity checks passed on both. Public HTTPS /health passed after tests.
+Authenticated /api/status, /api/diagnostics, /api/relay-inventory and
+/api/operator-memory returned 200 on both; ownerStatus=installed.
+Backup-to-live comparison: First 64 messages, 10 contacts, 3 groups preserved;
+Second 5 messages, 6 contacts, 2 groups preserved. Protected owner records unchanged.
+The first preservation helper looked at the outer history wrapper and returned
+zero counts; those results were rejected, the nested state schema was validated,
+and the actual comparisons above were rerun. A transient Railway SSH timeout
+was retried successfully after the transfer tests.
+
+Live test configuration
+Phone com.axonic.dev on R3GYC0H7PMY and approved com.axonic.dev emulator-5554.
+Normal com.axonic untouched; its version/update metadata unchanged.
+Current Dev JS was reloaded, not an official-app installation or production build.
+One run per size and direction; decimal MB = 1000000 bytes.
+Deterministic synthetic binary fixtures, no messages to real user contacts.
+Receiver Dev force-stopped until full custody confirmed. Sender Dev then
+force-stopped while receiver downloaded: no direct endpoint stream could pass.
+Routing was not overridden. Actual custody/source identity and relay-block-stream
+traffic were required, as well as checksum equality and signed delivery receipt.
+Both Dev apps restored and all baseline message keys/identities preserved.
+Only newly created temporary fixture files were removed; no history/queue reset.
+
+Observed timings (milliseconds)
+Size | Sender -> receiver | Relay | Upload to custody | Download incl startup
+1 MB | Phone -> emulator  | First | 7371              | 13879
+1 MB | Emulator -> phone  | Second| 7071              | 17408
+5 MB | Phone -> emulator  | Second| 18243             | 37294
+5 MB | Emulator -> phone  | Second| 17653             | 24840
+10 MB| Phone -> emulator  | Second| 36241             | 44266
+10 MB| Emulator -> phone  | Second| 33067             | 41044
+Blocks per file: 1 / 2 / 4. All six passed checksum and signed receipt checks.
+Observed download stream frames per file: 168 / 837 / 1674.
+
+Timing contract / limitations
+Upload timer: enqueue invocation through observed complete relay custody; includes
+preparation, encryption, scheduling, upload, persistence and polling, but excludes
+synthetic fixture creation. Download timer: receiver launch through observed
+verified file; includes startup, reconnect, discovery, download, decryption,
+publication, polling and the diagnostic file-hash check. The deliberate offline
+gap and subsequent sender restart/receipt check are not in either timer.
+These are functional diagnostic observations, not raw network throughput, paired
+before/after results or statistically established speedups. The 3 MB encrypted
+block still materializes for existing verification/storage. Performance remains
+slow and needs further profiling; no speed improvement is claimed here.
+
+Evidence
+builds/relay-stream-release-tests.log
+builds/live-relay-streams-run.log
+builds/live-relay-streams-1792791073684.json
+scripts/test-live-relay-streams.cjs
+Mobile/backend unrelated changes were preserved and not committed in this rollout.

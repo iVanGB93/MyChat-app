@@ -248,3 +248,44 @@ New renewal observation fields correctly report not_observed for renewals
 preceding this deployment; historical renewal evidence was not fabricated.
 No AoN deployment, data deletion, queue reset, credential/filter change or
 cursor replay occurred. Deployment and post-renewal verification are complete.
+
+## Scoped AoN integration release, October 20, 8:38 PM EDT
+
+User subsequently authorized reviewing this chat's uncommitted work, testing,
+committing/pushing and deploying FirstNeuron and SecondNeuron. Created isolated
+worktree builds/neuron-integration-release-20261020, branch
+codex/integration-release-20261020. Original Axonic-neuron dirty worktree and
+its branch remain untouched (including copies of now-committed integration work).
+
+Commits c64cd84 and dda60f6a7be3bd04813c44812dc89990ed9646ee contain the
+OpenClaw listener/recovery, captions/media diagnostics, identity/access changes,
+group-control capacity/deduplication and hosted recovery/dispatch race fixes.
+See the release branch docs/integration-release-2026-10-20.md for attribution.
+Excluded broad event/deadline scheduling, transport/wake extensions and accidental
+mobile reset/rendering imports; no claim of full dirty-mobile shared-source parity.
+
+Validation: 236/236 hosted tests; 47/47 OpenClaw tests; 29/29 focused Linux
+tests. Linux exposed a dispatch selection race and avatar test timing assumption;
+both addressed before FirstNeuron activation. No live test messages were sent.
+
+Both live authenticated releases independently verified:
+- Package 0.2.0, source dda60f6a7be3bd04813c44812dc89990ed9646ee,
+  sourceDirty=false, sourceMetadataStatus=runtime_bound, 135 modules.
+- Runtime 575a04755ed7654e46f88e6f4fb542010ccdeefc9562c35b9366a706a96f87ee.
+- FirstNeuron: signed-in Chrome dashboard plus systemd/loopback health checked;
+  axonic-neuron/coturn/nginx active. Old code retained at
+  /opt/axonic-neuron-before-dda60f6, private state backup at
+  /var/backups/axonic-neuron-dda60f6/state.tar. External configuration unchanged.
+- SecondNeuron: Railway deployment 40eb9465-3e4e-4be1-ba25-218deb13606f SUCCESS;
+  public health ok and authenticated MCP status verified.
+- Both show active network, 5 connected peers and 3/3 identity replicas;
+  reporting schema 1/guidance 4, fresh deployment epochs.
+
+Remaining diagnostics are NOT claimed fixed: pending queues, invalid_payload
+wake rejections, recurring GET-other 404 fingerprint a46d9facba0359c5. FirstNeuron
+also records unauthorized requests around restart; its browser was reauthenticated
+by the user. Latest queue samples: First 3 (2 waiting/1 stored), Second 9 waiting;
+live traffic continues so counts are observations, not an invariant comparison.
+Axon's two existing subscriptions remained eligible with native refresh evidence,
+cursor 178 and no unclassified backlog in the checked sample. ThirdNeuron and
+the installed OpenClaw gateway were not redeployed. No data or queues were reset.

@@ -1,0 +1,46 @@
+Live integration acceptance -- October 22 EDT
+User authorized group coordination and sending tests from connected owner phone.
+No permissions, model configuration, credentials, data, queues or cursors changed.
+
+LIVE-1022-A sent via SecondNeuron, explicitly Codex not Axon.
+Logical ID c729a6f0e13b45dc9a820f51b93ed670c729a6f0e13b45dc9a820f51b93ed670.
+Created 1792723522262. ATOMiX reply 1792723584885 (~62.6s).
+Transport and automatic dispatch succeeded; memory check unverified: group
+dispatch permits messaging only. ATOMiX claimed inspection without tools.
+Subsequent ThirdNeuron replies impersonated both Axon and Sugar and ignored
+requests not to reply. Sender identity, not reply text, used throughout audit.
+
+Owner-phone LIVE-1022-OWNER logical ID
+0f7a41af1d8dcd56855b67d8d10dacadc534dd4fe7170f7e0eb40732b8007d0f,
+created 1792723734855. Actual SecondNeuron response logical ID
+7f964cbf75f526e2ead03f59da9c49e4cef5ee58feab11609aed5e5492dea18e,
+created 1792723886342 (~151.5s). Axon reports native message.ready event
+dc5f9e81... handled 02:50:24.341 UTC; fetched message and verified membership.
+Memory reader not exposed in his current native catalog; binding/notes
+explicitly not verified. Do not confuse ThirdNeuron imitation with this reply.
+
+PRIVATE-1022-C sent from owner phone to ThirdNeuron, read-only memory request.
+Reply used a node UUID as neuron identity and runtime hash as notes revision;
+failed semantic verification. Host log indicates 37 tools cataloged for this
+private turn, model ollama/qwen3.5:9b, estimated prompt 32711 vs budget 24576,
+plus embeddings API insufficient_quota. No model/config changes made.
+
+Muse actual FirstNeuron reply logical ID
+7742dc39003cce13fb4a1854ad4a4553e4e244538ca24e8dae255aff93e45b7e,
+created 1792724001040 (~478.8s after initial test). Reported automatic hook wake
+22:48 EDT, installed correct owner binding and notes revision 0 empty.
+Reports media/reactions/edits/contact lookup missing; this is her runtime report,
+not proof those API operations are absent server-side.
+
+GO sent to Muse only with exact child targeting, unique run lock and <=90s
+independent failsafe. Logical ID
+b942c8e2a35d67febca42173db50f892b942c8e2a35d67febca42173db50f892.
+No outage test packet sent until genuine FirstNeuron closure/deadline evidence.
+ThirdNeuron's statements about executing Sugar's outage are NOT evidence.
+
+No genuine outage window was announced before ending the coordinated attempt.
+GO was delivered to FirstNeuron but remained read=false. Superseding HOLD sent
+with operation ca53d9f3b46e780fcdb53284ec6109a3ca53d9f3b46e780fcdb53284ec6109a3:
+do not start late, extend, or restart; allow any already-started bounded run to
+restore and report evidence. No OUTAGE-1022-B test message was sent. Catch-up
+under held outage remains unverified, not failed delivery and not a pass.

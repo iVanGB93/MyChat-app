@@ -21,7 +21,7 @@ function render(width = 412, height = 915) {
     '../theme': theme,
     '../../assets/icon.png': 'app-icon',
   };
-  const sandbox = { exports: {}, require(name) {
+  const sandbox = { exports: {}, require(name) { const locale=require('./helpers/localization.cjs')(name);if(locale)return locale;
     assert.ok(name in adapters, `Unexpected dependency ${name}`);
     return adapters[name];
   } };

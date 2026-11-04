@@ -69,6 +69,25 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
     assert.equal((await inventory(owner)).length,1);
     assert.deepEqual(await history(owner),[{id,peer:other,outgoing:true,media:'voice',at:1}]);
     assert.deepEqual(await history(other),[]);
+    const room={id:'fe'.repeat(32),group:'ef'.repeat(32),creator:owner,members:[owner,other]};
+    const groupJournal=JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify({...first,room})}]});
+    assert.equal(await store.compareAndSet(owner,id,journal,groupJournal),true);
+    assert.deepEqual(await history(owner,other),[],'group legs must not appear as private calls');
+    const duplicateId='ed'.repeat(32);
+    database.prepare('INSERT INTO call_history(owner,call_id,data,archived_at) VALUES(?,?,?,?)').run(owner,duplicateId,JSON.stringify({owner,callId:duplicateId,entries:[{raw:JSON.stringify({...first,callId:duplicateId,issuedAt:2,room})}]}),2);
+    assert.deepEqual(await history(owner,undefined,room.group),[{id:room.id,peer:owner,outgoing:true,media:'voice',at:1,group:room.group,members:room.members,room}],'mesh legs collapse into one group call');
+    assert.deepEqual(await history(owner,undefined,'ee'.repeat(32)),[]);
+    database.prepare('DELETE FROM call_history WHERE call_id=?').run(duplicateId);
+    assert.equal((await inventory(owner)).length,1,'group signaling journal remains available');
+    assert.equal(await store.compareAndSet(owner,id,groupJournal,journal),true);
+    assert.deepEqual(await history(owner,other),[{id,peer:other,outgoing:true,media:'voice',at:1}]);
+    const third='axonic:1:'+'12'.repeat(32);assert.deepEqual(await history(owner,third),[]);
+    await assert.rejects(history(owner,owner),/Invalid call peer/);
+    for(let n=1;n<=105;n++){const extra=n.toString(16).padStart(64,'0'),event={...first,callId:extra,callee:third,issuedAt:n+10};database.prepare('INSERT INTO call_history(owner,call_id,data,archived_at) VALUES(?,?,?,?)').run(owner,extra,JSON.stringify({owner,callId:extra,entries:[{raw:JSON.stringify(event)}]}),n+10);}
+    assert.equal((await history(owner,third)).length,105,'private chat retains all peer calls beyond global tab limit');
+    assert.equal((await history(owner,other)).length,1,'unrelated recent calls cannot hide this peer');
+    database.prepare('DELETE FROM call_history').run();
+
     assert.equal((await inventory(owner,10)).length,0,'expired history must not consume retry slots');
     const ending=JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify(first)},{raw:JSON.stringify({...first,kind:'end',expiresAt:30})}]});
     assert.equal(await store.compareAndSet(owner,id,journal,ending),true);
@@ -87,7 +106,7 @@ test('mobile journal SQL preserves CAS, ownership and state across database reop
       JSON.stringify({owner,callId:id,entries:[{raw:'invalid'}]}),
       JSON.stringify({owner,callId:id,entries:[{raw:JSON.stringify(first)}],padding:'x'.repeat(800001)})]){
       database.prepare('UPDATE call_journal SET data=? WHERE owner=? AND call_id=?').run(invalid,owner,id);
-      await assert.rejects(history(owner));
+      await assert.rejects(history(owner));await assert.rejects(history(owner,other));
     }
     database.prepare('UPDATE call_journal SET data=? WHERE owner=? AND call_id=?').run(ending,owner,id);
     assert.equal((await history(owner)).length,1,'external updates must be visible without stale caches');

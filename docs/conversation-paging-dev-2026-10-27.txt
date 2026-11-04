@@ -1,0 +1,28 @@
+Conversation summary and paging acceptance — October 27, 2026
+
+Scope: Axonic Dev only, phone R3GYC0H7PMY. Official app unchanged; no install,
+production build, commit/push or server deployment. Existing messages/media kept.
+
+Read-only store comparison against existing Dev history: 382 canonical messages,
+6 rooms, largest room 256 records. Summary index about 28.6 KB versus canonical
+JSON about 3.1 MB (string lengths; not wire-transfer byte measurements).
+Two live passes: index read 1.79 / 5.10 ms, no source or page reads. Latest 50 and
+100 matched canonical derived views exactly; no source reads for paging. Page
+reads varied: 16.5 / 478.3 ms for first window, 13.4 / 247.4 ms for 100. These
+include async storage/queue waits and do not establish constant UI latency.
+Native builder 21.3 / 34.4 ms, versus earlier pure-JS hashing builder 765 ms.
+Write-side indexing remains work; do not claim the authoritative ledger is indexed.
+
+Live UI: opened existing Second Phone Dev chat, viewed recent text/photo rows,
+scrolled to older records. Observed readWindow request 100 returning all 71 rows,
+hasMore=false; sourceReads stayed zero. No message sent. Opening the existing chat
+performed its normal read acknowledgment. Larger room paging was checked through
+the same storage API without opening its conversation. Temporary in-memory paging
+observer removed by Dev JS reload; Dev returned to its chat list.
+
+Regression coverage: cold persisted summary reads, isolated room pages, older
+quotes, edits/deletes/read counts, coalesced group copies, dirty-write recovery,
+failed canonical writes, corrupt cache recovery, source-read failures, owner-scoped
+cleanup, Unicode/emoji with ASCII native hash, old-index upgrade, >5000 history,
+shared observer lifecycle, background suspension, lock and late-result rejection.
+Full check results: see builds/conversation-pages-final-check.log.

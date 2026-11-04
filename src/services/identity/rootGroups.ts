@@ -8,7 +8,6 @@ export const ROOT_GROUP_MAX_MEMBERS=10;
 // Pending delivery and retained replay/conflict evidence are different budgets.
 // Preserve existing records; never evict pending work or old receipt evidence.
 export const ROOT_GROUP_MAX_PENDING_PACKETS=4096;
-export const ROOT_GROUP_MAX_CONTROL_HISTORY=20000;
 export const ROOT_GROUP_MAX_CONTROL_BYTES=16*1024*1024;
 export const ROOT_GROUP_MAX_PACKET_BYTES=2048;
 const hex=(v:unknown):v is string=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
@@ -17,7 +16,7 @@ const bytes=(v:string)=>new TextEncoder().encode(v).length;
 export const rootGroupDeliveryId=(logical:string,recipient:string,kind='message')=>bytesToHex(sha256(utf8ToBytes(JSON.stringify(['axonic-group-delivery-v1',kind,logical,recipient]))));
 export function validGroupContext(v:unknown):v is RootGroupContext{const g=v as RootGroupContext;return !!g&&Object.keys(g).sort().join(',')==='id,messageId,revision'&&hex(g.id)&&hex(g.messageId)&&Number.isSafeInteger(g.revision)&&g.revision>=1&&g.revision<=1000000;}
 export function validGroupMembership(v:unknown):v is RootGroupMembership{const g=v as RootGroupMembership;return !!g&&hex(g.id)&&validAccountId(g.admin)&&typeof g.name==='string'&&!!g.name.trim()&&bytes(g.name)<=80&&Number.isSafeInteger(g.revision)&&g.revision>=1&&g.revision<=1000000&&Array.isArray(g.members)&&g.members.length>=1&&g.members.length<=ROOT_GROUP_MAX_MEMBERS&&g.members.every(validAccountId)&&new Set(g.members).size===g.members.length&&g.members.includes(g.admin)&&(g.photo===undefined||g.photo===null||hex(g.photo));}
-export function validGroupStorage(s:RootChatState,owner:string){return (s.groups===undefined||Array.isArray(s.groups)&&s.groups.length<=64&&s.groups.every(g=>validGroupMembership(g)&&typeof g.accepted==='boolean'&&typeof g.blocked==='boolean'&&(g.muted===undefined||typeof g.muted==='boolean'))&&new Set(s.groups.map(g=>g.id)).size===s.groups.length)&&(s.groupPackets===undefined||Array.isArray(s.groupPackets)&&s.groupPackets.length<=ROOT_GROUP_MAX_CONTROL_HISTORY&&s.groupPackets.every(p=>!!p&&hex(p.id)&&validAccountId(p.peer)&&p.peer!==owner&&typeof p.raw==='string'&&bytes(p.raw)<=ROOT_GROUP_MAX_PACKET_BYTES&&['pending','delivered'].includes(p.status)));}
+export function validGroupStorage(s:RootChatState,owner:string){return (s.groups===undefined||Array.isArray(s.groups)&&s.groups.length<=64&&s.groups.every(g=>validGroupMembership(g)&&typeof g.accepted==='boolean'&&typeof g.blocked==='boolean'&&(g.muted===undefined||typeof g.muted==='boolean'))&&new Set(s.groups.map(g=>g.id)).size===s.groups.length)&&(s.groupPackets===undefined||Array.isArray(s.groupPackets)&&s.groupPackets.every(p=>!!p&&hex(p.id)&&validAccountId(p.peer)&&p.peer!==owner&&typeof p.raw==='string'&&bytes(p.raw)<=ROOT_GROUP_MAX_PACKET_BYTES&&['pending','delivered'].includes(p.status)));}
 const membership=(g:RootGroup):RootGroupMembership=>({id:g.id,admin:g.admin,name:g.name,revision:g.revision,members:[...g.members],...(g.photo!==undefined?{photo:g.photo}:{})});
 const same=(a:RootGroupMembership,b:RootGroupMembership)=>JSON.stringify(membership(a as RootGroup))===JSON.stringify(membership(b as RootGroup));
 const backupBody=(g:RootGroupMembership)=>utf8ToBytes(JSON.stringify(['axonic-group-backup-v1',g.id,g.admin,g.name,g.revision,g.members,g.photo??null]));
@@ -69,8 +68,7 @@ function queue(s:RootChatState,owner:string,id:string,recipients:string[],tag:st
  }));
  if(!additions.length)return;
  if(rows.filter(p=>p.status==='pending').length+additions.length>ROOT_GROUP_MAX_PENDING_PACKETS)throw Error('Group pending-delivery queue is full; existing work is preserved');
- if(rows.length+additions.length>ROOT_GROUP_MAX_CONTROL_HISTORY)throw Error('Group control history capacity reached; existing history is preserved');
- if([...rows,...additions].reduce((n,p)=>n+bytes(p.raw),0)>ROOT_GROUP_MAX_CONTROL_BYTES)throw Error('Group control history byte capacity reached; existing history is preserved');
+ if([...rows.filter(p=>p.status==='pending'),...additions].reduce((n,p)=>n+bytes(p.raw),0)>ROOT_GROUP_MAX_CONTROL_BYTES)throw Error('Group pending-delivery byte capacity reached; existing history is preserved');
  (s.groupPackets??=[]).push(...additions);
 }
 export function changeRootGroup(s:RootChatState,owner:string,id:string,packetId:string,name:string,members:string[],photo?:string|null){

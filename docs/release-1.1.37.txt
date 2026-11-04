@@ -1,0 +1,14 @@
+Axonic 1.1.37 / Android versionCode 108 — built and validated locally
+
+Artifact: builds/Axonic-1.1.37-108.aab
+Size: 107747456 bytes
+SHA256: b152ccedadd12ab6cf42d1e8a313f29de450dfd9833c0c7b483c171dff785bf3
+Source SHA256: 2cfd863e390d464534c657f81e2d95d9ba20da14d9a919fc4cbd6052a00155c0
+
+Includes current working-tree fixes: notification/background recovery, multi-gateway registration (both Dev phones verified with FirstNeuron and SecondNeuron), input-button alignment, animated big-head robot stickers, compact sticker creation preview, three-column sticker bottom sheet, and imported-sticker notification labeling.
+
+Validation: readiness suite 1774 passed / 3 skipped / zero failures before final sticker edits. After final edits: TypeScript, 12 sticker/notification tests and 3 indexed-production tests passed. Gradle bundleRelease completed for all four ABIs. Bundletool validation and jarsigner verification passed; upload certificate matches 1.1.36. Manifest is com.axonic, 1.1.37/108, non-debuggable and without instrumentation; includes MessageRecoveryJob. Bundled configuration/source hash verified. Previous release artifact unchanged.
+
+Existing release flags and signing preserved. Sentry automatic upload disabled. No publication, official-app installation, commit or push. Includes existing working-tree changes; no clean-commit claim.
+
+Evidence: builds/local-production-aab-108.log and builds/local-aab-108-{validation.json,manifest.xml,signature.txt}.

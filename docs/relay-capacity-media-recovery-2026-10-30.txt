@@ -1,0 +1,17 @@
+Relay admission recovery, October 30, 2026 UTC
+
+Official phone 1.1.35 (106), R3GYC0H7PMY: outgoing 625 KiB photo created 02:21:47 UTC and sticker showed Retry transfer now, zero payload progress. Text delivery worked. No official app install, data reset, deletion or manual resend.
+
+Owner report 1ecdec25e6116247cc88ed2a1b07c56d9785c2502f025ba1407e4bc8a5a57100 retrieved from FirstNeuron and SHA256 verified. Capture 02:35:06 UTC: 19 pending recipient records, 10 queued/retrying, 8 confirming, no directly connected recipients. Existing diagnostics do not retain the individual relay refusal reason.
+
+Root cause: shared attachmentCustody admitted only four distinct retained contents per sender, sixteen total. FirstNeuron read-only SQLite inspection showed ownerFiles=4, reserved=12, rows=33, reservedBytes=114708126 against 536870912 bytes. SecondNeuron metadata also showed four retained owner contents. Group fanout can retain a shared reservation while another recipient remains offline. Retry did not bypass the cap.
+
+Fix: shared core metadata limits 256 contents/sender, 1024 contents total, 4096 manifest records. Existing byte budget unchanged. Full responses now distinguish sender/content/record/byte capacity. Existing grants remain idempotently accessible at capacity; no cleanup needed.
+
+Validation: mobile custody 10/10 tests including 20 same-sender offers, byte-budget rejection, restart retry preserving all rows, sender-limit rejection. Hosted attachment/stream regressions 53/53 and full hosted suite 323/323. Windows sandbox initially blocked test atomic renames; same suite passed outside sandbox. Whole-repository check:core still references previously removed normalChatProtocol.ts; scoped attachmentCustody source parity and hosted TypeScript build passed. Unrelated legacy sync configuration left unchanged.
+
+Dev-only 640000-byte synthetic file to existing Second Phone Dev identity uploaded to FirstNeuron, one block, zero failures; bulk request 671ms. Test retained, no personal media sent.
+
+AoN commit pushed: 56d9342b9ac1208922547f1f5151ddfbee2d9581. FirstNeuron and SecondNeuron authenticated live release both sourceDirty=false, runtime a26ec37e63612d5006555b0ddd064bf34ed1e9ee4d99f63fa4e713e0d23cef44. SecondNeuron deployment 62e26da9-dec0-445a-b119-7ceabe9ea1e6 SUCCESS. Both healthy with connected peers. ThirdNeuron not updated: user closed WSL; do not reopen without resuming that work.
+
+Live recovery confirmed: FirstNeuron has original photo ID 45466c20692461c7144e665fc7ce1418e010e30984a6b40a97b64877e575a751, 640032 bytes, received=1. Several original sticker grants also uploaded automatically. Official phone UI now shows Stored on Axonic network for photo and sticker, no retry buttons. Recipient remains not directly connected and receipt not yet recorded: custody confirmed, delivery not claimed. No new phone build required for this server-side recovery. Mobile shared source/tests remain uncommitted alongside unrelated work.

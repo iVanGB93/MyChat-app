@@ -1,0 +1,53 @@
+RTC endpoint distinction and isolated AoN rollout — October 20, 2026
+
+Root cause found:
+The repeatedly unanswered target ending 5c8e364d is ThirdNeuron (confirmed from
+its saved authenticated status and the live SecondNeuron peer list). Hosted
+network code relays signed RTC signals but its local receive callback is a no-op:
+the host accepts WSS, not RTC. Signaling support was mistaken for RTC endpoint
+support by introductions.
+
+Fix:
+The hello now distinguishes rtcEndpoint=0 (relay only) and rtcEndpoint=1 (endpoint).
+The capability is exposed only after identity authentication. Introduction lists
+exclude explicitly relay-only sessions; existing signed introduction format and
+WSS connectivity are unchanged. Legacy unspecified capability remains unknown
+for compatibility. Mobile and hosted implementations use the same transport core.
+
+Release isolation:
+Created worktree builds/aon-rtc-stability-20261020 from deployed commit dda60f6,
+without deploying the main checkout's unrelated unfinished work. Reviewed the
+shared transport additions: optional event/stream capabilities remain disabled
+unless their owning hosted handlers opt in. Dependencies are unchanged from
+ThirdNeuron's previous 95ca6c3 release. Current shared AoN checkout also receives
+the scoped fixes without overwriting its other changes.
+
+Committed/pushed branch codex/rtc-stability-20261020:
+84c14888da60e0634369183867925d86fc2cc557
+Runtime SHA256:
+b452441c086c07fd82a8dba310d7047add6ceb0b0c2423802066c330da1ed14d
+135 modules, sourceDirty=false, runtime-bound source metadata.
+This branch is not merged into the concurrently modified main checkout.
+
+Validation and deployment:
+- Mobile full check: 1434 passed, 3 skipped, zero failures.
+- Canonical Linux source build: 237 hosted tests passed. New real WebSocket test
+  verifies signed discovery omits a relay-only host but includes an RTC endpoint.
+- FirstNeuron: deployed dist, service active, health {ok:true}, exact release verified.
+- SecondNeuron: Railway deployment 47ceeb0f-914e-4cee-b2b1-9fba4bc0a67f SUCCESS;
+  authenticated MCP status independently verified the exact release hash/source.
+- ThirdNeuron: deployed dist, service active, exact release verified.
+- First/Third rollback copies: dist-before-84c1488 under their respective /opt
+  service directories. Identity/data directories and credentials were untouched.
+- Live emulator discovery stopped advertising ThirdNeuron, while direct RTC
+  between the emulators remained open. Observation log: rtc-after-fleet-deploy.txt.
+
+No phone production build/install. Physical phone LAN and private-network
+validation still cannot be inferred from emulator or AoN checks.
+
+Final live checks: forty samples over more than two minutes retained three
+connected peers per emulator, one working RTC link per emulator, zero detected
+established-session resets, and no new ThirdNeuron RTC attempts. Bidirectional
+text/read tests passed. A generated 1,036,000-byte file completed in 3451ms after
+enqueue returned, checksum matched. Preparation excluded; sampling is not proof
+against arbitrarily brief between-sample reconnects or long-duration failures.

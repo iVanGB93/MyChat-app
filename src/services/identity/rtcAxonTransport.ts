@@ -82,7 +82,10 @@ export function createRtcAxonTransport(d: {
     let streamLane:RtcAttachmentLane|null=null;
     const diagnosticId = ++diagnosticSequence;
     const trace = (event: string, details: object = {}) => console.info('[Axonic RTC lifecycle]', JSON.stringify({connection:diagnosticId,peer:account.slice(-8),via:via.slice(-8),event,initiator,...details}));
-    const originalSession = session;
+    // Each recovery binds to the immediately preceding signed session. A real
+    // reconnection rearms recovery for the next outage without admitting replay
+    // of an earlier offer or repeated restarts during the same outage.
+    let restartBinding = session;
     let authenticated = false, restartUsed = false, restarting = false;
     let callLease:SharedRtcCallLease|null=null;
     let retainedMedia=false;
@@ -184,7 +187,7 @@ export function createRtcAxonTransport(d: {
         if(disconnectTimer===undefined)disconnectTimer=setTimeout(()=>stop('disconnect-timeout'),callLease?30000:8000);
         if(!callLease&&initiator && authenticated && answered && !restartUsed) void restart();
       }else{
-        if(pc.connectionState==='connected'&&disconnectTimer!==undefined){clearTimeout(disconnectTimer);disconnectTimer=undefined;}
+        if(pc.connectionState==='connected'){if(disconnectTimer!==undefined){clearTimeout(disconnectTimer);disconnectTimer=undefined;}if(!restarting)restartUsed=false;}
         if(['failed','closed'].includes(pc.connectionState))stop('connection-'+pc.connectionState);
       }
     });
@@ -223,13 +226,13 @@ export function createRtcAxonTransport(d: {
       if (dead) return;
       let sdp = pc.localDescription?.sdp;
       // This binding is inside the existing signed SDP, so old relays need no changes.
-      if(sdp && recovery)sdp += `${sdp.endsWith('\n')?'':'\r\n'}a=x-axonic-restart:${originalSession}\r\n`;
+      if(sdp && recovery)sdp += `${sdp.endsWith('\n')?'':'\r\n'}a=x-axonic-restart:${restartBinding}\r\n`;
       if (!sdp || !validAxonSdp(sdp,recovery&&retainedMedia)) { stop('invalid-local-sdp'); return; }
       if (!d.send(via, d.sign(account, session, kind, sdp))) { stop('signal-send-failed'); return; }
       trace('signal-sent',{kind,candidates:sdp.split(/\r?\n/).filter(line=>line.startsWith('a=candidate:')).length});
     }
     function beginRestart() {
-      restartUsed=true;restarting=true;
+      restartBinding=session;restartUsed=true;restarting=true;
       trace('restart-started');
       restartDeadline=setTimeout(()=>stop('restart-timeout'),8000);
     }
@@ -238,7 +241,7 @@ export function createRtcAxonTransport(d: {
       try {
         const fresh=await d.random();
         if(dead)return;
-        if(!/^[0-9a-f]{64}$/.test(fresh)||fresh===originalSession){stop('restart-session');return;}
+        if(!/^[0-9a-f]{64}$/.test(fresh)||fresh===restartBinding){stop('restart-session');return;}
         session=fresh;entry.session=fresh;answered=false;
         await describe('offer',true);
       }catch{stop('restart-failed');}
@@ -246,7 +249,7 @@ export function createRtcAxonTransport(d: {
     function sameRemote(signal: AxonSignal) {
       return signal.device===remoteDevice && fingerprints(signal.sdp)===remoteFingerprint;
     }
-    function finishRestart(){if(restarting)trace('restart-negotiated');restarting=false;if(restartDeadline!==undefined)clearTimeout(restartDeadline);}
+    function finishRestart(){if(restarting)trace('restart-negotiated');restarting=false;if(restartDeadline!==undefined)clearTimeout(restartDeadline);if(pc.connectionState==='connected')restartUsed=false;}
     const entry: Entry = { account, session, via, stop, open: () => opened,
       diagnostics:()=>({initiator,answered,state:pc.connectionState,call:!!callLease,nativeConnectionId:pc._pcId}),
       borrow(device,id){
@@ -265,7 +268,7 @@ export function createRtcAxonTransport(d: {
       stream(device){if(!entry.canStream(device))throw Error('RTC stream unavailable');return adoptStream(pc.createDataChannel('axonic-stream-v1',{ordered:true,protocol:'axonic-stream-v1'}));},
       async answer(signal) {
         if (dead || !initiator || answered || !validAxonSdp(signal.sdp,restarting&&retainedMedia)) return;
-        if(restarting && (restartParent(signal.sdp)!==originalSession || !sameRemote(signal)))return;
+        if(restarting && (restartParent(signal.sdp)!==restartBinding || !sameRemote(signal)))return;
         if(!restarting && restartParent(signal.sdp))return;
         answered = true;trace('answer-received');
         remoteDevice=signal.device;remoteFingerprint=fingerprints(signal.sdp);
@@ -273,7 +276,7 @@ export function createRtcAxonTransport(d: {
       },
       async restart(signal) {
         if(dead || callLease || initiator || !authenticated || !opened || restartUsed || !sameRemote(signal)
-          || signal.session===originalSession || restartParent(signal.sdp)!==originalSession || !validAxonSdp(signal.sdp,retainedMedia))return;
+          || signal.session===session || restartParent(signal.sdp)!==session || !validAxonSdp(signal.sdp,retainedMedia))return;
         beginRestart();session=signal.session;entry.session=session;
         try{
           await pc.setRemoteDescription({type:'offer',sdp:signal.sdp});

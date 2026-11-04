@@ -24,3 +24,8 @@ export function nextVoicePlaybackRate(currentRate: number): VoicePlaybackRate {
   if (currentIndex < 0) return 1;
   return VOICE_PLAYBACK_RATES[(currentIndex + 1) % VOICE_PLAYBACK_RATES.length];
 }
+
+/** Vertical and uncertain diagonal drags belong to the conversation list. */
+export function isAudioSeekGesture(dx:number,dy:number):boolean {
+ return Number.isFinite(dx)&&Number.isFinite(dy)&&Math.abs(dx)>8&&Math.abs(dx)>Math.abs(dy)*1.5;
+}

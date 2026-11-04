@@ -18,6 +18,8 @@ Guide: diagnostics-ai.txt
 Guide: AUDIT.txt
 Guide: SHARED-CORE.txt
 Guide: STORAGE-TRANSFER-EXTRACTION.txt
+Guide: deep-audit-20261101.txt
+Guide: ios-compatibility-audit-20261101.txt
 
 These are ten responsibility areas, NOT ten newly extracted packages. Existing
 public facades live in src/modules; many implementations remain under
@@ -94,6 +96,10 @@ Completion definition
   opportunities, explicitly listed in each guide; this is not a claim that every
   implementation has been physically moved or every deadline converted to events.
   Local organization and live fleet rollout are separate acceptance gates.
+
+Guide: message-route-evidence-20261101.txt
+  Message Info route evidence, signed recipient source reports, separate storage
+  handoffs, compatibility limits and the boundary with trial credits.
 
 Guide: TIMER-REVIEW.txt
 Internal organization follow-up: screen implementations, selection persistence, mobile call-session resources and call-quality sampling now have dedicated owners. Hosted page construction is separate from server entry. Shared expiry maintenance and event-driven browser visibility checks are implemented; TIMER-REVIEW records retained timers and why.

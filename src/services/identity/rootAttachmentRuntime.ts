@@ -1,3 +1,4 @@
+import {assertAttachmentFits} from './rootChatLedger';
 import {selections,changeSelections,subscribeAttachmentSelections} from './rootAttachmentSelections';
 import {createWssAttachmentStreams,type WssStreamNetwork,type WssStreamOutcome} from './wssAttachmentStreams';
 import {hexToBytes,bytesToHex} from '@noble/hashes/utils.js';
@@ -26,6 +27,8 @@ import {AppState} from 'react-native';
 let activeTimings:(()=>{startedAt:number;observedAt:number;stages:ReturnType<ReturnType<typeof createAttachmentTiming>['snapshot']>})|null=null;
 let streamOutcomes:WssStreamOutcome[]=[];
 export const rootAttachmentStreamDiagnostics=()=>localAccount.status().state==='unlocked'?streamOutcomes.map(row=>({...row})):[];
+let preparationDiagnostics={prepared:0,invalidated:0,rejected:0,stateWriteErrors:0};
+export const rootAttachmentPreparationDiagnostics=()=>({...preparationDiagnostics});
 let inspectScheduler:(()=>ReturnType<ReturnType<typeof createWorkPump>['snapshot']>)|null=null;
 export const rootAttachmentSchedulerDiagnostics=()=>inspectScheduler?.()??null;
 /** Local aggregate diagnostics; no identities, paths or payloads. */
@@ -37,8 +40,9 @@ export async function controlRootAttachment(digest:string,action:'pause'|'retry'
 }
 /** Own transfer jobs are separate from the temporary ciphertext this device holds for other people. */
 export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssStreamNetwork;streams?:AttachmentStreams;lookup?(peer:string):Promise<unknown>}){
- const timingEnabled=(typeof __DEV__!=='undefined'&&__DEV__)||process.env.EXPO_PUBLIC_ATTACHMENT_TIMING==='1',timing=createAttachmentTiming(timingEnabled);
+ const timingEnabled=true,timing=createAttachmentTiming(timingEnabled);
  streamOutcomes=[];const outcomes=streamOutcomes;
+ preparationDiagnostics={prepared:0,invalidated:0,rejected:0,stateWriteErrors:0};
  const timingStarted=Date.now(),snapshotTimings=()=>({startedAt:timingStarted,observedAt:Date.now(),stages:timing.snapshot()});
  if(timingEnabled)activeTimings=snapshotTimings;
  const records=createMobileIdentityRecordStore(Date.now),journal=createMobileAttachmentJobs(Date.now,timing.measure);
@@ -47,7 +51,7 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
  const accepted=new Set<string>();const owner=()=>!stopped&&localAccount.status().state==='unlocked'&&!localAccount.status().busy?localAccount.status().account:null;
  let allowedJob:(job:AttachmentJob)=>boolean=()=>false;
  const snapshots=createAttachmentSnapshot({owner,revision:ownChatRevision,read:()=>localRootChat().snapshot(),
-  readVersioned:()=>{const account=owner();return account?localRootChat().revisionSnapshot(()=>ownChatRevision(account)):Promise.resolve(null);}});
+  readVersioned:()=>{const account=owner();return account?localRootChat().attachmentRevisionSnapshot(()=>ownChatRevision(account)):Promise.resolve(null);}});
  let policyRevision=-1;
  function applyPolicy(snapshot:Awaited<ReturnType<ReturnType<typeof localRootChat>['snapshot']>>,account:string,revision:number){
   allowedJob=indexAttachmentPolicy(snapshot,account);accepted.clear();for(const c of snapshot.contacts)if(c.accepted&&!c.blocked)accepted.add(c.account);
@@ -55,14 +59,14 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
   policyRevision=revision;
  }
  const streamLease=(job:AttachmentJob,live:()=>Promise<boolean>)=>async()=>{
-  const deny=(reason:string)=>{if(timingEnabled)console.info('[Axonic stream lease]',reason);return false;};
+  const deny=(reason:string)=>{if(typeof __DEV__!=='undefined'&&__DEV__)console.info('[Axonic stream lease]',reason);return false;};
   if(owner()!==job.owner)return deny('owner-context');const revision=ownChatRevision(job.owner);
   if(revision!==policyRevision){const generation=epoch,snapshot=await readAttachmentAdmissionSnapshot(snapshots.read,()=>owner()===job.owner&&epoch===generation);if(!snapshot)return deny('snapshot-invalidated');applyPolicy(snapshot.state,job.owner,snapshot.revision);}
   if(!allowedJob(job)||!accepted.has(job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient))return deny('policy');
   return await live()||deny('job-lease');
  };
- const streams=network.streams?createRootAttachmentStreams(network.streams,(...args)=>timing.measure('streamControl',()=>network.request(...args))):undefined;
- const wss=network.wss&&Native?.identityRandomBytes&&Native?.attachmentFileSha256&&Native?.attachmentStageStream?createWssAttachmentStreams({...network.wss,timing,random:async n=>hexToBytes(await Native!.identityRandomBytes!(n)),
+ const streams=network.streams?createRootAttachmentStreams(network.streams,(...args)=>timing.measure('streamControl',()=>network.request(...args)),wake):undefined;
+ const wss=network.wss&&Native?.identityRandomBytes&&Native?.attachmentFileSha256&&Native?.attachmentStageStream?createWssAttachmentStreams({...network.wss,timing,changed:wake,random:async n=>hexToBytes(await Native!.identityRandomBytes!(n)),
   crypto:Native.attachmentStreamSeal&&Native.attachmentStreamOpen?{
    seal:(key,nonce,aad,plain)=>Native!.attachmentStreamSeal!(key,nonce,aad,plain),
    open:(key,nonce,aad,ciphertext)=>Native!.attachmentStreamOpen!(key,nonce,aad,ciphertext),
@@ -78,6 +82,7 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
     discard(){if(temporary?.parentDirectory.exists)temporary.parentDirectory.delete();}};
   }}):undefined;
  // Updated peers pipeline the bounded window; older peers serialize it safely.
+ const sendingStream=(job:AttachmentJob)=>streams?.sending(job)===true||wss?.sending(job)===true;
  const worker=createAttachmentTransfer({
  measureProcessing:timing.measureSync,
  decryptBlock:Native?.attachmentDecryptBlock?(ciphertext,key,aad)=>timing.measure('decryptBlock',()=>Native!.attachmentDecryptBlock!(ciphertext,bytesToHex(key),aad)):undefined,downloadWindow:4,
@@ -89,10 +94,13 @@ hashLeaf:Native?.attachmentSha256?value=>Native!.attachmentSha256!(value):undefi
 record:async account=>timing.measure('jobIdentity',async()=>account===owner()?localAccount.publicRecord():records.read(account)),
 allowed:peer=>accepted.has(peer),
 allowedJob:job=>allowedJob(job),
-signReceipt:async manifest=>timing.measure('receipt',async()=>localAccount.signAttachmentReceipt(manifest)),
-stored:async(job,current)=>{if(current())await localRootChat().networkStored(job.descriptor.manifest.recipient,job.descriptor.manifest.id,job.descriptor.manifest.expires,true);},
+signReceipt:async (manifest,route)=>timing.measure('receipt',async()=>localAccount.signAttachmentReceipt(manifest,route)),
+stored:async(job,current,relay)=>{if(current())await localRootChat().networkStored(job.descriptor.manifest.recipient,job.descriptor.manifest.id,job.descriptor.manifest.expires,true,relay);},
 completed:async(job:AttachmentJob,current)=>{if(!current())throw Error('Account locked');
-   if(!rootAttachmentFile(job.owner,job.digest).exists)throw Error('Own attachment unavailable');
+   // A verified recipient receipt completes an outgoing transfer even if the
+   // sender removed its local source after upload. Incoming completion still
+   // requires our own durable file; the ledger verifies the signed receipt below.
+   if(job.direction==='incoming'&&!rootAttachmentFile(job.owner,job.digest).exists)throw Error('Own attachment unavailable');
    const peer=job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient;
    if(!job.receipt||!await timing.measure('chat',()=>localRootChat().attachmentComplete(peer,job.descriptor.manifest.id,job.direction,job.receipt!,job.delivery)))throw Error('Attachment chat receipt unavailable');
    mediaExport.wake();
@@ -102,7 +110,7 @@ readChunks:(...args)=>timing.measure('readFile',()=>readRootAttachmentChunks(...
 writeChunk:(...args)=>timing.measure('writeFile',()=>writeRootAttachmentChunk(...args)),
 writeChunks:(...args)=>timing.measure('writeFile',()=>writeRootAttachmentChunks(...args)),
 commitFile:(...args)=>timing.measure('verifyFile',()=>commitRootAttachmentFile(...args))}},
- connections:{sharedPeers:network.sharedPeers,
+ connections:{sharedPeers:network.sharedPeers,sendingStream,
 directStream:(job,live)=>timing.measure('directStream',async()=>{
  const lease=streamLease(job,live),m=job.descriptor.manifest;
  // Prefer an already open RTC lane. Otherwise use the authenticated WSS
@@ -137,43 +145,56 @@ request:(...args)=>{
  const unsubscribe=localAccount.subscribe(()=>{epoch++;snapshots.clear();worker.invalidate();accepted.clear();allowedJob=()=>false;policyRevision=-1;reconciliation.clear();wake();});
  let preparing=false;
  const lookupAfter=new Map<string,number>();
+ const lookingUp=new Set<string>();
  async function prepareSelection(account:string,snapshot:Awaited<ReturnType<ReturnType<typeof localRootChat>['snapshot']>>,current:()=>boolean){
    const ledger=localRootChat();
    const queued=await selections(account);if(!current())return;const removed=queued.filter(s=>snapshot.hiddenChats?.includes(s.group?'group:'+s.group.id:s.peer));
    if(removed.length){await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(removed.some(r=>r.id===rows[i].id))rows.splice(i,1);});for(const row of removed)removeRootAttachmentSource(account,row.id);for(const id of new Set(removed.map(r=>r.shared?.id).filter((id):id is string=>!!id)))if(!queued.some(r=>!removed.includes(r)&&r.shared?.id===id))removeRootAttachmentSource(account,id);}
    for(const peer of lookupAfter.keys())if(!queued.some(s=>s.peer===peer))lookupAfter.delete(peer);
+   const blocked=queued.filter(s=>!s.failed&&snapshot.contacts.some(c=>c.account===s.peer&&c.blocked));
+   if(blocked.length){await changeSelections(account,rows=>{for(const row of rows)if(blocked.some(b=>b.id===row.id||b.shared&&b.shared.id===row.shared?.id)){row.failed=true;row.reason='audience';}});return true;}
    const eligible=queued.filter(s=>!removed.includes(s)&&!s.failed&&!snapshot.contacts.find(c=>c.account===s.peer)?.blocked);
    const pending=eligible.length?eligible[selectionCursor++%eligible.length]:null;
    if(pending){
     const batch=pending.shared?eligible.filter(s=>s.shared?.id===pending.shared!.id):[pending];
     // Do not publish a partial audience while another grant is failed or blocked.
-    if(pending.shared&&batch.length!==queued.filter(s=>s.shared?.id===pending.shared!.id).length)return;
+    if(pending.shared&&batch.length!==queued.filter(s=>s.shared?.id===pending.shared!.id).length){
+     await changeSelections(account,rows=>{for(const row of rows)if(row.shared?.id===pending.shared!.id){row.failed=true;row.reason='audience';}});return;
+    }
     try{
      const prepared=[];
      for(const row of batch){
       const record=await records.read(row.peer);if(!current())return;
       if(!record||!verifyRecord(record,Date.now())){
-       if((lookupAfter.get(row.peer)??0)<=Date.now()){
+       if(row.reason!=='identity')await changeSelections(account,rows=>{for(const item of rows)if(batch.some(b=>b.id===item.id))item.reason='identity';});
+       if(!lookingUp.has(row.peer)&&(lookupAfter.get(row.peer)??0)<=Date.now()){
         lookupAfter.set(row.peer,Date.now()+5000);
-        try{await network.lookup?.(row.peer);}finally{if(current())lookupAfter.set(row.peer,Date.now()+5000);}
+        lookingUp.add(row.peer);
+        void Promise.resolve().then(()=>network.lookup?.(row.peer)).catch(()=>{}).finally(()=>{
+         lookingUp.delete(row.peer);if(current()){lookupAfter.set(row.peer,Date.now()+5000);wake();}
+        });
        }return;
       }
       if(row.group&&(!rootGroupAllowed(snapshot,account,row.peer,row.group)||!snapshot.groups?.find(g=>g.id===row.group!.id)?.accepted))throw Error('Group membership changed');
-      const input=await timing.measure('prepare',()=>prepareRootAttachment({...row,recipient:record,current}));if(!current())return;
+      const input=await timing.measure('prepare',()=>prepareRootAttachment({...row,recipient:record,current}));preparationDiagnostics.prepared++;if(!current()){preparationDiagnostics.invalidated++;return;}
       prepared.push({input,reply:row.reply,group:row.group,selectedAt:row.createdAt});
      }
      // A connected recipient can request bytes as soon as the descriptor is
      // published. Persist every serving job before making the audience visible.
+     for(const item of prepared)assertAttachmentFits(item.input,item.reply,item.group);
      for(const item of prepared){await worker.enqueue(item.input,'outgoing');if(!current())return;}
      if(batch.length===1)await ledger.enqueueAttachment(prepared[0].input,pending.reply,pending.group,pending.createdAt);
      else await ledger.enqueueAttachments(prepared);
      if(!current())return;
      const ids=new Set(batch.map(s=>s.id));
-     await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(ids.has(rows[i].id))rows.splice(i,1);});
+     await changeSelections(account,rows=>{for(let i=rows.length-1;i>=0;i--)if(ids.has(rows[i].id))rows.splice(i,1);},batch);
      for(const row of batch)removeRootAttachmentSource(account,row.id);
      if(pending.shared)removeRootAttachmentSource(account,pending.shared.id);
      return true;
-    }catch{if(current())await changeSelections(account,rows=>{for(const row of rows)if(batch.some(s=>s.id===row.id))row.failed=true;});}
+    }catch(error){preparationDiagnostics.rejected++;
+     const reason=error instanceof Error&&error.message==='Attachment description is too large; shorten the caption'?'caption' as const:'preparation' as const;
+     if(current())await changeSelections(account,rows=>{for(const row of rows)if(batch.some(s=>s.id===row.id)){row.failed=true;row.reason=reason;}});
+    }
    }
 
  }
@@ -186,7 +207,7 @@ request:(...args)=>{
    // and local encryption must not hold the download/receipt worker hostage.
    if(!preparing){preparing=true;void prepareSelection(account,snapshot,current)
     .then(progressed=>{if(progressed&&current())wake();})
-    .catch(()=>{/* Durable selections remain retryable. */}).finally(()=>{preparing=false;});}
+    .catch(()=>{preparationDiagnostics.stateWriteErrors++;/* Durable selections remain retryable. */}).finally(()=>{preparing=false;});}
    // A changed ledger wakes us immediately. Periodic reconciliation can restore
    // a missing checkpoint, without revalidating every descriptor on every burst.
    if(reconciliation.needed(cached.revision,Date.now())){
@@ -205,7 +226,7 @@ request:(...args)=>{
   // Idle stores sleep. Pending jobs retain bounded retries; disconnected jobs
   // wake on topology changes or their expiry, rather than querying empty routes.
   const routes=attachmentRouteSnapshot(network,!!streams||!!wss);
-  let next=attachmentWorkDelay(jobs,now,job=>allowedJob(job)&&attachmentCanAdvance(job,routes,now));
+  let next=attachmentWorkDelay(jobs,now,job=>allowedJob(job)&&(!sendingStream(job)||!!job.receipt)&&attachmentCanAdvance(job,routes,now));
   if((await selections(account)).some(s=>!s.failed))next=Math.min(next,15000);
   return next;
  }});
@@ -235,4 +256,6 @@ request:(...args)=>{
   const result=await worker.receive(...args);wake();return result;
  }),stop(){if(inspectScheduler===pump.snapshot)inspectScheduler=null;if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===controls)activeControls=null;stopped=true;snapshots.clear();streams?.stop();wss?.stop();mediaExport.stop();epoch++;pump.stop();offWrites();offSelections();offCommitted();unsubscribe();worker.stop();},cancel:controls.cancel};
 }
+
+
 

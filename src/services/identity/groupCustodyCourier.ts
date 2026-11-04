@@ -1,3 +1,4 @@
+import {GROUP_CUSTODY_LIMITS} from './groupCustodyService.ts';
 import {validAccountId} from './identityProtocol.ts';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,utf8ToBytes} from '@noble/hashes/utils.js';
@@ -11,7 +12,7 @@ import {createRelayPollSchedule} from './relayPollSchedule.ts';
 export interface GroupOutboxEntry {job:GroupCustodyJob;relay:string|null;consumed:string[]}
 export interface GroupOutboxStore {read(owner:string):Promise<GroupOutboxEntry[]>;write(owner:string,rows:GroupOutboxEntry[]):Promise<void>}
 export function validateGroupOutbox(rows:GroupOutboxEntry[],owner:string){
- if(!Array.isArray(rows)||rows.length>128||JSON.stringify(rows).length>8*1024*1024)throw Error('Invalid shared outbox');
+ if(!Array.isArray(rows)||rows.length>GROUP_CUSTODY_LIMITS.perSender||JSON.stringify(rows).length>GROUP_CUSTODY_LIMITS.bytes)throw Error('Invalid shared outbox');
  const ids=new Set<string>();
  for(const r of rows){
   const p=r?.job?.payload;
@@ -21,10 +22,10 @@ export function validateGroupOutbox(rows:GroupOutboxEntry[],owner:string){
 }
 /** One durable ciphertext per logical group message. Normal ledger IDs remain
  * per recipient, preserving deduplication and the existing receipt UI. */
-export function createGroupCustodyCourier(d:{owner():string|null;now():number;records:IdentityRecordStore;own:OwnCustodyStore;store:GroupOutboxStore;eventDriven?(peer:string):boolean;
+export function createGroupCustodyCourier(d:{owner():string|null;now():number;records:IdentityRecordStore;own:OwnCustodyStore;store:GroupOutboxStore;eventDriven?(peer:string):boolean;receiptAccepted?(sender:string,id:string):void;
  compatible(peer:string):Promise<boolean>;relays():string[];request(peer:string,raw:string):Promise<string|null>;allowed(peer:string):boolean;
  seal(id:string,text:string,recipients:Parameters<typeof sealGroupCustody>[0]['recipients']):Promise<GroupCustodyJob>;
- receive(e:CustodyEnvelope,p:GroupCustodyPayload,relay:string):Promise<CustodyReceipt|null>;held(e:CustodyEnvelope):Promise<void>;heldGroup?(envelopes:CustodyEnvelope[]):Promise<void>;confirm(r:CustodyReceipt,current:()=>boolean,relay:string):Promise<boolean>}){
+ receive(e:CustodyEnvelope,p:GroupCustodyPayload,relay:string):Promise<CustodyReceipt|null>;held(e:CustodyEnvelope,relay:string):Promise<void>;heldGroup?(envelopes:CustodyEnvelope[],relay:string):Promise<void>;confirm(r:CustodyReceipt,current:()=>boolean,relay:string):Promise<boolean>}){
  let epoch=0,stopped=false,depositing=false,pollCursor=0;let writes:Promise<unknown>=Promise.resolve();
  const polls=createRelayPollSchedule(d.now,3,d.eventDriven);
  const lease=()=>{const owner=d.owner(),version=epoch;return {owner,current:()=>!!owner&&!stopped&&epoch===version&&d.owner()===owner};};
@@ -35,6 +36,7 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
  const rejected=new Map<string,{until:number;attempts:number}>(),acknowledged=new Set<string>(),drained=new Set<string>();
  return {
   diagnostics:polls.diagnostics,
+  receiptAccepted:(sender:string,id:string)=>!stopped&&acknowledged.has(sender+':'+id),
     nextDeadline:()=>stopped||!d.owner()?Infinity:polls.nextDeadline(d.relays()),
   recoveryComplete(sender:string,id:string){return !stopped&&!polls.busy()&&!depositing&&acknowledged.has(sender+':'+id)&&d.relays().length>0&&d.relays().every(p=>drained.has(p));},
   async deposit(messages:{peer:string;id:string;raw:string}[],selected:{peer:string;id:string;raw:string}):Promise<boolean|undefined>{
@@ -49,7 +51,7 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
      if(!d.relays().some(p=>p!==l.owner&&!matching.some(m=>m.peer===p)))return 'legacy' as const;
      for(const m of matching)if(!await d.compatible(m.peer))return 'legacy' as const;
      if(matching.length<2||matching.length>9||new TextEncoder().encode(common.text).length>2048)return 'legacy' as const;
-     if(rows.length>=128)return null;
+     if(rows.length>=GROUP_CUSTODY_LIMITS.perSender)return null;
      // Never mix an already-sealed legacy delivery with a shared grant under the same ID.
      for(const m of matching)if(await d.own.get(l.owner!,m.id))return 'legacy' as const;
      const recipients:Parameters<typeof sealGroupCustody>[0]['recipients']=[];
@@ -81,7 +83,7 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
      }
      if(held&&l.current()){
       await change(l.owner!,l.current,rows=>{const r=rows.find(r=>r.job.payload.id===id);if(r)r.relay=peer;});
-      if(d.heldGroup)await d.heldGroup(entry.job.grants);else for(const e of entry.job.grants)if(l.current())await d.held(e);return l.current();
+      if(d.heldGroup)await d.heldGroup(entry.job.grants,peer);else for(const e of entry.job.grants)if(l.current())await d.held(e,peer);return l.current();
      }
     }return false;
    }finally{depositing=false;}
@@ -115,7 +117,7 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
        if(accepted&&l.current())await change(l.owner!,l.current,rows=>{const r=rows.find(r=>r.job.payload.id===response.job);if(r&&!r.consumed.includes(packet.id))r.consumed.push(packet.id);for(let n=rows.length-1;n>=0;n--)if(rows[n].consumed.length===rows[n].job.grants.length)rows.splice(n,1);});
       }
      }
-     if(accepted&&packet.kind==='envelope'&&l.current()){if(acknowledged.size>=256)acknowledged.delete(acknowledged.values().next().value!);acknowledged.add(packet.sender+':'+packet.id);}
+     if(accepted&&packet.kind==='envelope'&&l.current()){if(acknowledged.size>=256)acknowledged.delete(acknowledged.values().next().value!);acknowledged.add(packet.sender+':'+packet.id);try{d.receiptAccepted?.(packet.sender,packet.id);}catch{/* Observers cannot undo acceptance. */}}
      const key=relay+":"+packet.id;if(accepted)rejected.delete(key);else {const attempts=(rejected.get(key)?.attempts??0)+1;if(!rejected.has(key)&&rejected.size>=1240)rejected.delete(rejected.keys().next().value!);rejected.set(key,{attempts,until:d.now()+Math.min(300000,15000*2**Math.min(attempts-1,5))});}
     }
    }catch{/* This peer's failure cannot abort another relay's pass. */}finally{passSchedule.finish({...outcome,settled:drained.has(relay)});}
@@ -124,3 +126,4 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
   resume(peer?:string){polls.resume(peer);drained.clear();},invalidate(){epoch++;rejected.clear();acknowledged.clear();drained.clear();polls.resume();},stop(){stopped=true;epoch++;rejected.clear();acknowledged.clear();drained.clear();}
  };
 }
+

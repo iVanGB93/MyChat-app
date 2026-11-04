@@ -1,5 +1,15 @@
 import { requireOptionalNativeModule } from 'expo';
 interface NearbyModule {
+  messageRecoveryEnqueue?(message:string,highPriority:boolean):boolean;
+  messageRecoveryCurrent?(token:string):boolean;
+  messageRecoveryComplete?(token:string):void;
+  attachmentUploadDisarm?(owner:string):void;
+  attachmentUploadSchedule?(owner:string):boolean;
+  attachmentUploadScheduled?(owner:string):boolean;
+  attachmentUploadCurrent?(token:string):boolean;
+  attachmentUploadState?(token:string,count:number,percent:number,state:string):void;
+  attachmentUploadProgress?(token:string,count:number,percent:number):void;
+  attachmentUploadComplete?(token:string,outcome:string):void;
   attachmentStreamSeal?(key:Uint8Array,nonce:Uint8Array,aad:Uint8Array,plain:Uint8Array):Uint8Array;
   attachmentStreamOpen?(key:Uint8Array,nonce:Uint8Array,aad:Uint8Array,ciphertext:Uint8Array):Uint8Array;
   notificationCallStyle?(id:string,name:string,video:boolean):Promise<boolean>;

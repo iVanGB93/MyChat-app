@@ -9,14 +9,14 @@ function setup(){let owner=a,raw=null,counter=0,fail=false,random=async()=> (++c
  const commands=createMessagingCommands({owner:()=>owner,ledger:()=>ledger,randomId:()=>random()});
  return {ledger,commands,owner:()=>owner,setOwner:v=>owner=v,setRandom:v=>random=v,setFail:v=>fail=v};
 }
-function delivery(f,overrides={}){const events=[];const worker=createMessageDelivery({owner:f.owner,ledger:()=>f.ledger,
+function delivery(f,overrides={}){const events=[];const worker=createMessageDelivery({owner:f.owner,ledger:()=>({...f.ledger,snapshot:f.ledger.deliverySnapshot}),
  connectedPeers:()=>[b,c],blocked:peers=>events.push(['blocked',peers]),collect:async()=>events.push(['collect']),send:async(...args)=>{events.push(['send',...args]);return false;},
  resolve:async peer=>events.push(['resolve',peer]),deposit:async(...args)=>events.push(['deposit',...args]),...overrides});return {worker,events};}
 
 test('revision-cached outbox derives once while idle and invalidates on block, enqueue and delivery',async()=>{
  let raw=null,revision=0,now=10000,send=async()=>true;
  const ledger=createRootChatLedger({owner:a,current:()=>true,now:()=>now,read:async()=>raw,write:async v=>{raw=v;revision++;}});
- const reads=load('runtimeChatReads').createRuntimeChatReads({owner:()=>a,revision:()=>revision,read:ledger.snapshot});
+ const reads=load('runtimeChatReads').createRuntimeChatReads({owner:()=>a,revision:()=>revision,read:ledger.deliverySnapshot});
  const d=delivery({owner:()=>a,ledger},{stableSnapshots:true,ledger:()=>({...ledger,snapshot:reads.read}),now:()=>now,send:(...args)=>send(...args)});
  for(let i=0;i<60;i++)await d.worker.tick();assert.equal(d.worker.snapshot().pendingDerivations,1);
  assert.equal(d.events.filter(e=>e[0]==='blocked').length,1);
@@ -121,6 +121,17 @@ test('switching accounts while waiting for a connection cancels call startup',as
 });
 test('call permission remains UI supplied while readiness belongs to messaging',async()=>{const f=callFixture();let permission=false;assert.equal(await f.calls.start(b,'video',async()=>{permission=true;}),'call');assert.ok(permission);assert.equal(f.started(),1);});
 test('denied permission and missing axon cannot start a call',async()=>{const f=callFixture();await assert.rejects(f.calls.start(b,'voice',async()=>{throw Error('denied');}),/denied/);f.setConnected(false);await assert.rejects(f.calls.start(b,'voice',async()=>{}),/active axon/);assert.equal(f.started(),0);});
+test('call readiness uses a subscription and detaches after a connection event',async()=>{
+ let connected=false,listener,removed=0,started=0;
+ const session={start:async()=>{started++;return 'call';}};
+ const calls=createCallCommands({owner:()=>a,calls:()=>session,connected:()=>connected,resolve:async()=>({status:'found'}),subscribeReady:f=>{listener=f;return()=>removed++;},wait:async()=>{throw Error('Polling must not run');}});
+ const pending=calls.start(b,'voice',async()=>{});await new Promise(setImmediate);assert.equal(started,0);connected=true;listener();assert.equal(await pending,'call');assert.equal(removed,1);
+});
+test('account changes during an event-driven readiness wait revoke startup',async()=>{
+ let owner=a,listener,removed=0;
+ const calls=createCallCommands({owner:()=>owner,calls:()=>null,connected:()=>false,resolve:async()=>({status:'found'}),subscribeReady:f=>{listener=f;return()=>removed++;}});
+ const pending=calls.start(b,'voice',async()=>{});await new Promise(setImmediate);owner=c;listener();await assert.rejects(pending,/Account changed/);assert.equal(removed,1);
+});
 test('account or call runtime changes while resolving keys cancel initiation',async()=>{for(const mode of ['owner','runtime']){const f=callFixture();f.setResolve(async()=>{mode==='owner'?f.setOwner(c):f.setCalls(null);return {status:'found'};});await assert.rejects(f.calls.start(b,'video',async()=>{}),/Unlock/);assert.equal(f.started(),0);}});
 test('invalid signed peer identity never starts a call',async()=>{const f=callFixture();f.setResolve(async()=>({status:'conflict'}));await assert.rejects(f.calls.start(b,'voice',async()=>{}),/signed identity/);assert.equal(f.started(),0);});
 test('inbox polling continues while an unrelated outgoing custody deposit is stalled',async()=>{

@@ -36,3 +36,8 @@ test('account switch and same-account relock cannot publish stale private histor
 test('unrelated account writes do not schedule UI reads',async t=>{
  const f=fixture();t.after(()=>f.refresh.stop());await f.advance(0);f.refresh.wake('other');await f.advance(1);assert.equal(f.shown.length,1);
 });
+
+test('a write during a failing read retains backoff rather than creating a zero-delay retry loop',async()=>{
+ const f=fixture();let release;f.block(new Promise(r=>release=r));f.fail(true);await f.advance(0);f.write(2);release();await f.flush();f.block(null);
+ assert.equal(f.reads(),1);await f.advance(1999);assert.equal(f.reads(),1);await f.advance(1);assert.equal(f.reads(),2);f.refresh.stop();
+});

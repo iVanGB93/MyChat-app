@@ -21,7 +21,7 @@ function load(file, extras = {}) {
     useEffect: (fn) => fn(),
   };
   const adapters = { react, '../components/ui/ConfirmModal': 'ConfirmModal', ...extras };
-  const context = { exports: {}, require: (key) => {
+  const context = { exports: {}, require: (key) => { const locale=require('./helpers/localization.cjs')(key);if(locale)return locale;
     assert.ok(key in adapters, `Unexpected module ${key}`);
     return adapters[key];
   } };
@@ -64,7 +64,7 @@ test('rapid confirmation taps run the action and close only once', () => {
     },
     '@expo/vector-icons': { Ionicons: 'Icon' },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ bottom: 0 }) },
-    '../../theme': { Font: { size: {} }, Radius: {}, Spacing: {} },
+    '../../theme': require('./helpers/theme.cjs'),
     '../../contexts/ThemeContext': { useTheme: () => ({ colors: {} }) },
   });
   let closed = 0, actions = 0;

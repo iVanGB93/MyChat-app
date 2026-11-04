@@ -1,3 +1,5 @@
+import {t} from '../localization/language';
+import {Chrome} from '../theme';
 import {useAccountState,useNetworkState} from '../modules/ui/liveState';
 import RenderBoundary from '../components/ui/RenderBoundary';
 import {requestInitialNotificationPermission} from '../services/notificationPermission';
@@ -36,7 +38,7 @@ import RecoveryWordsInput from '../components/ui/RecoveryWordsInput';
 
 import Button from '../components/ui/Button';
 
-import { Font, Spacing, Radius } from '../theme';
+import { Font, Spacing } from '../theme';
 
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -49,6 +51,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
 import { startLocalAccountNetwork } from '../modules/network';
+import {createForegroundNetworkLease} from '../services/foregroundNetworkLease';
 
 
 /** Application shell for local identities and the neuron network. */
@@ -118,7 +121,7 @@ function LocalAccountContent() {
 
     try { await work(); }
 
-    catch (e) { if (restoring && !setup) { closeRecovery(); } if (generation.current === own) setError(e instanceof Error ? e.message : 'Unable to complete this action'); }
+    catch (e) { if (restoring && !setup) { closeRecovery(); } if (generation.current === own) setError(e instanceof Error ? e.message : t("Unable to complete this action")); }
 
     finally { if (generation.current === own && !setup) { setPassword(''); setRepeat('');setNewPassword('');setNewRepeat(''); } actionRunning.current = false; setBusy(false); }
 
@@ -137,20 +140,20 @@ function LocalAccountContent() {
   useEffect(() => {
 
 
-    const stopCallState=subscribeLocalAccountCalls(view=>{if(autoLockRef.current&&AppState.currentState==='background'&&(!view||view.status==='ended'))biometrics.lock();});
+    const network=createForegroundNetworkLease(startLocalAccountNetwork);
+    const stopCallState=subscribeLocalAccountCalls(view=>{network.call(!!view&&view.status!=='ended');if(autoLockRef.current&&AppState.currentState==='background'&&(!view||view.status==='ended'))biometrics.lock();});
 
-    void inspect().catch(() => setError('Unable to read local account storage. Retry without creating a replacement account.'));
+    void inspect().catch(() => setError(t("Unable to read local account storage. Retry without creating a replacement account.")));
 
-    let runtime: ReturnType<typeof startLocalAccountNetwork> | null = null;
-
-    try { runtime = startLocalAccountNetwork(); } catch { setError('Network transport unavailable in this build.'); }
+    try { network.activity(AppState.currentState==='active'); } catch { setError(t("Network transport unavailable in this build.")); }
 
 
 
     const state = AppState.addEventListener('change', next => {
 
       setForeground(next === 'active');
-      if (next === 'active') runtime?.resume();
+      // Ignore transient inactive states (permission prompts); background is definitive.
+      if(next==='active'||next==='background')try{network.activity(next==='active');}catch{setError(t("Network transport unavailable in this build."));}
 
       // iOS biometric prompts briefly make the app inactive;
 
@@ -160,61 +163,61 @@ function LocalAccountContent() {
 
     });
 
-    return () => { generation.current++; state.remove(); stopCallState(); recovery.current?.stop(); recovery.current = null; runtime?.stop(); biometrics.lock(); };
+    return () => { generation.current++; state.remove(); stopCallState(); recovery.current?.stop(); recovery.current = null; network.stop(); biometrics.lock(); };
 
   }, []);
 
   const button = (label:string,onPress:()=>void,extraDisabled=false)=><Button title={label.toUpperCase()} onPress={onPress} loading={busy} disabled={disabled||extraDisabled}/>;
-  const passwordInput=<Input accessibilityLabel="Local password" label="CURRENT PASSWORD" placeholder="Current local password" isPassword autoCapitalize="none" autoCorrect={false} textContentType="none" autoComplete="off" maxLength={256} value={password} onChangeText={setPassword} editable={!disabled}/>;
+  const passwordInput=<Input accessibilityLabel={t("Local password")} label={t("CURRENT PASSWORD")} placeholder={t("Current local password")} isPassword autoCapitalize="none" autoCorrect={false} textContentType="none" autoComplete="off" maxLength={256} value={password} onChangeText={setPassword} editable={!disabled}/>;
 
-  const confirmPassword = () => { if (password.length < 6) throw Error('Password must contain at least 6 characters.'); if (password.length > 256) throw Error('Password must contain no more than 256 characters.'); if (password !== repeat) throw Error('Passwords do not match. Enter the same password in both fields.'); };
+  const confirmPassword = () => { if (password.length < 6) throw Error(t("Password must contain at least 6 characters.")); if (password.length > 256) throw Error(t("Password must contain no more than 256 characters.")); if (password !== repeat) throw Error(t("Passwords do not match. Enter the same password in both fields.")); };
 
   if(status.removalPending)return <SafeAreaView style={styles.root}><View style={styles.card}>
-    <Text style={styles.heading}>Finish removing this account</Text>
-    <Text style={styles.text}>Your account is locked. Close Axonic below, then reopen it to finish removing this device’s identity, chats and private files. Saved gallery media and other people’s messages stay unchanged.</Text>
+    <Text style={styles.heading}>{t("Finish removing this account")}</Text>
+    <Text style={styles.text}>{t("Your account is locked. Close Axonic below, then reopen it to finish removing this device’s identity, chats and private files. Saved gallery media and other people’s messages stay unchanged.")}</Text>
     {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-    <Button title="CLOSE AXONIC" onPress={()=>void closeForDeviceRemoval().catch(e=>setError(e instanceof Error?e.message:'Unable to close Axonic'))}/>
+    <Button title={t("CLOSE AXONIC")} onPress={()=>void closeForDeviceRemoval().catch(e=>setError(e instanceof Error?e.message:t("Unable to close Axonic")))}/>
   </View></SafeAreaView>;
 
   if(ready&&!locked&&!setup)return <View style={styles.root}><RenderBoundary scope="screens"><RootAccountNavigator profile={<RootProfileScreen account={status.account!} loginName={loginName} connected={connections}>
 
     {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}{!!notice&&<Text style={styles.text}>{notice}</Text>}
 
-          <View style={styles.row}><View style={{flex:1}}><Text style={styles.heading}>Lock when leaving app</Text><Text style={styles.text}>Off by default. Keep this device signed in, or require your password or biometrics when you return.</Text></View><Switch accessibilityLabel="Lock when leaving app" value={autoLock} disabled={disabled} onValueChange={value=>void action(async()=>{if(value)autoLockRef.current=true;try {await localAccountSession.setAutoLock(value,password);} finally {autoLockRef.current=localAccountSession.autoLock();setAutoLock(autoLockRef.current);}})}/></View>
-          {autoLock&&<Text style={styles.text}>To turn locking off, enter your current password below, then turn the switch off.</Text>}
-          {button('Enable notifications',()=>void action(async()=>{const settings=await notifee.requestPermission();setNotice(settings.authorizationStatus>=AuthorizationStatus.AUTHORIZED?'Notifications enabled.':'Notifications are disabled in system settings.');}))}
+          <View style={styles.row}><View style={{flex:1}}><Text style={styles.heading}>{t("Lock when leaving app")}</Text><Text style={styles.text}>{t("Off by default. Keep this device signed in, or require your password or biometrics when you return.")}</Text></View><Switch accessibilityLabel={t("Lock when leaving app")} value={autoLock} disabled={disabled} onValueChange={value=>void action(async()=>{if(value)autoLockRef.current=true;try {await localAccountSession.setAutoLock(value,password);} finally {autoLockRef.current=localAccountSession.autoLock();setAutoLock(autoLockRef.current);}})}/></View>
+          {autoLock&&<Text style={styles.text}>{t("To turn locking off, enter your current password below, then turn the switch off.")}</Text>}
+          {button(t("Enable notifications"),()=>void action(async()=>{const settings=await notifee.requestPermission();setNotice(settings.authorizationStatus>=AuthorizationStatus.AUTHORIZED?t("Notifications enabled."):t("Notifications are disabled in system settings."));}))}
 
-          {button('Save public recovery record', () => void action(async () => { await Share.share({ message: localAccount.recoveryRecord() }); }))}
+          {button(t("Save public recovery record"), () => void action(async () => { await Share.share({ message: localAccount.recoveryRecord() }); }))}
 
-          <Text style={styles.text}>Your recovery words restore your identity through its signed network record. Keep a public record as an optional extra backup.</Text>
+          <Text style={styles.text}>{t("Your recovery words restore your identity through its signed network record. Keep a public record as an optional extra backup.")}</Text>
 
-          <Text style={styles.heading}>Unlock preferences</Text>
+          <Text style={styles.heading}>{t("Unlock preferences")}</Text>
 
-          {biometrics.available() && <>{passwordInput}{button('Enable biometric unlock', () => void action(async () => { await biometrics.enroll(password); setNotice('Biometric unlock enabled on this device.'); }))}</>}
+          {biometrics.available() && <>{passwordInput}{button(t("Enable biometric unlock"), () => void action(async () => { await biometrics.enroll(password); setNotice(t("Biometric unlock enabled on this device.")); }))}</>}
 
-          <Text style={styles.heading}>Local login</Text>
-          <Text style={styles.text}>Change your login on this device. Your public identity and chats stay the same.</Text>
-          <Input label="Local username" accessibilityLabel="New local username" value={username} onChangeText={setUsername} maxLength={80} placeholder={loginName??'Choose a username'} editable={!disabled}/>
+          <Text style={styles.heading}>{t("Local login")}</Text>
+          <Text style={styles.text}>{t("Change your login on this device. Your public identity and chats stay the same.")}</Text>
+          <Input label={t("Local username")} accessibilityLabel={t("New local username")} value={username} onChangeText={setUsername} maxLength={80} placeholder={loginName??t("Choose a username")} editable={!disabled}/>
           {passwordInput}
-          {button('Save local username',()=>void action(async()=>{if(!username.trim())throw Error('Choose a username.');await localAccount.unlock(password);await localAccountUsername.write(status.account!,username);setLoginName(username.trim());setNotice('Local username saved.');}))}
-          <Input label="New password" accessibilityLabel="New local password" value={newPassword} onChangeText={setNewPassword} isPassword maxLength={256} autoComplete="off" textContentType="none" editable={!disabled}/>
-          <Input label="Confirm new password" accessibilityLabel="Confirm new local password" value={newRepeat} onChangeText={setNewRepeat} isPassword maxLength={256} autoComplete="off" textContentType="none" editable={!disabled}/>
-          {button('Change local password',()=>void action(async()=>{
-            if(newPassword.length<6)throw Error('New password must contain at least 6 characters.');
-            if(newPassword!==newRepeat)throw Error('New passwords do not match. Enter the same password in both fields.');
+          {button(t("Save local username"),()=>void action(async()=>{if(!username.trim())throw Error(t("Choose a username."));await localAccount.unlock(password);await localAccountUsername.write(status.account!,username);setLoginName(username.trim());setNotice(t("Local username saved."));}))}
+          <Input label={t("New password")} accessibilityLabel={t("New local password")} value={newPassword} onChangeText={setNewPassword} isPassword maxLength={256} autoComplete="off" textContentType="none" editable={!disabled}/>
+          <Input label={t("Confirm new password")} accessibilityLabel={t("Confirm new local password")} value={newRepeat} onChangeText={setNewRepeat} isPassword maxLength={256} autoComplete="off" textContentType="none" editable={!disabled}/>
+          {button(t("Change local password"),()=>void action(async()=>{
+            if(newPassword.length<6)throw Error(t("New password must contain at least 6 characters."));
+            if(newPassword!==newRepeat)throw Error(t("New passwords do not match. Enter the same password in both fields."));
             await localAccount.unlock(password);await biometrics.disable();await localAccountSession.forget(); await localAccount.changePassword(password,newPassword); await localAccountSession.remember(newPassword);
-            setNotice('Password changed. Enable biometric unlock again with your new password if you want to use it.');
+            setNotice(t("Password changed. Enable biometric unlock again with your new password if you want to use it."));
           }))}
-          {button('Remove account from this device',()=>confirm({title:'Remove from this device?',message:'This removes your local identity, password, chats, call history and app-private media after you close and reopen Axonic. Your 12 recovery words can restore your identity, but not these chats. Gallery copies, the network identity and other people’s messages are not deleted. Enter your current password above before continuing.',buttons:[{text:'Cancel',style:'cancel'},{text:'Remove from device',style:'destructive',onPress:()=>void action(async()=>{await removeAccountFromDevice({account:status.account!,password,confirmed:true});clearSecrets();})}]}))}
-          {button('Disable biometric unlock', () => void action(async () => { await biometrics.disable(); setNotice('Biometric unlock disabled.'); }))}
+          {button(t("Remove account from this device"),()=>confirm({title:t("Remove from this device?"),message:t("This removes your local identity, password, chats, call history and app-private media after you close and reopen Axonic. Your 12 recovery words can restore your identity, but not these chats. Gallery copies, the network identity and other people’s messages are not deleted. Enter your current password above before continuing."),buttons:[{text:t("Cancel"),style:'cancel'},{text:t("Remove from device"),style:'destructive',onPress:()=>void action(async()=>{await removeAccountFromDevice({account:status.account!,password,confirmed:true});clearSecrets();})}]}))}
+          {button(t("Disable biometric unlock"), () => void action(async () => { await biometrics.disable(); setNotice(t("Biometric unlock disabled.")); }))}
 
-          {button('Lock account', () => void action(async () => { generation.current++; await localAccountSession.lock(); clearSecrets(); setNotice(''); }))}
+          {button(t("Lock account"), () => void action(async () => { generation.current++; await localAccountSession.lock(); clearSecrets(); setNotice(''); }))}
 
   </RootProfileScreen>} network={<LiveNetworkPanel/>}/></RenderBoundary><RenderBoundary scope="calls"><RootAccountCallScreen/></RenderBoundary></View>;
 
   const cancelSetup = () => { generation.current++; biometrics.lock(); clearSecrets(); setRestoring(false); setUsername(''); };
 
-  const usernameInput = <Input label="Username" accessibilityLabel="Local username" placeholder="Username on this device"
+  const usernameInput = <Input label={t("Username")} accessibilityLabel={t("Local username")} placeholder={t("Username on this device")}
 
     autoCorrect={false} autoComplete="username" maxLength={80} value={username} onChangeText={setUsername} editable={!disabled}/>;
 
@@ -224,7 +227,7 @@ function LocalAccountContent() {
 
   return <SafeAreaView style={styles.root}>
 
-    {!foreground ? <View style={styles.card}><Text style={styles.title}>Axonic is locked</Text></View> :
+    {!foreground ? <View style={styles.card}><Text style={styles.title}>{t("Axonic is locked")}</Text></View> :
 
     <KeyboardFormScrollView contentContainerStyle={styles.content}>
 
@@ -232,9 +235,9 @@ function LocalAccountContent() {
 
           <View style={styles.logoMark}><Image source={require('../../assets/logo.png')} style={{width:46,height:46}} resizeMode="contain"/></View>
 
-          <Text style={styles.title}>AXONIC</Text><View style={styles.underline}/>
+          <Text style={styles.title}>{t("AXONIC")}</Text><View style={styles.underline}/>
 
-          <Text style={styles.subtitle}>SECURE COMMUNICATION NETWORK</Text>
+          <Text style={styles.subtitle}>{t("SECURE COMMUNICATION NETWORK")}</Text>
 
         </View>
 
@@ -242,19 +245,19 @@ function LocalAccountContent() {
 
         {!!notice && <Text style={styles.text}>{notice}</Text>}
 
-        {!ready && <Text style={styles.text}>Opening local account…</Text>}
+        {!ready && <Text style={styles.text}>{t("Opening local account…")}</Text>}
 
-        {!ready && <Button title="RETRY" onPress={() => void action(inspect)} loading={busy} disabled={busy||status.busy}/>}
+        {!ready && <Button title={t("RETRY")} onPress={() => void action(inspect)} loading={busy} disabled={busy||status.busy}/>}
 
         {ready && status.state === 'empty' && !restoring && <View style={styles.card}>
 
-          <Text style={styles.heading}>Your identity starts here</Text>
+          <Text style={styles.heading}>{t("Your identity starts here")}</Text>
 
-          <Text style={styles.text}>Create an identity or recover yours with your private recovery words.</Text>
+          <Text style={styles.text}>{t("Create an identity or recover yours with your private recovery words.")}</Text>
 
-          {authButton('CREATE IDENTITY', () => void action(async () => { const created = await localAccount.beginCreate(); const selected = await backupWordPositions(created.split(' ').length); if (localAccount.status().state === 'backup') {setPhrase(created);setPositions(selected);setAnswers(['','']);} }))}
+          {authButton(t("CREATE IDENTITY"), () => void action(async () => { const created = await localAccount.beginCreate(); const selected = await backupWordPositions(created.split(' ').length); if (localAccount.status().state === 'backup') {setPhrase(created);setPositions(selected);setAnswers(['','']);} }))}
 
-          {authButton('RECOVER IDENTITY', () => {setRestoring(true);setError('');})}
+          {authButton(t("RECOVER IDENTITY"), () => {setRestoring(true);setError('');})}
 
         </View>}
 
@@ -262,22 +265,22 @@ function LocalAccountContent() {
 
           {!setup ? <>
 
-            <Text style={styles.heading}>{restoring ? 'Recover your identity' : 'Save your 12 recovery words'}</Text>
+            <Text style={styles.heading}>{restoring ? t("Recover your identity") : t("Save your 12 recovery words")}</Text>
 
             <Text style={styles.text}>{restoring
 
-              ? 'Enter your 12 recovery words in their original order, separated by spaces. Do not type numbers or punctuation. If your original backup has 24 words, enter all 24 instead. Recovery replaces previous devices; it does not restore messages stored only on a lost phone.'
+              ? t("Enter your 12 recovery words in their original order, separated by spaces. Do not type numbers or punctuation. If your original backup has 24 words, enter all 24 instead. Recovery replaces previous devices; it does not restore messages stored only on a lost phone.")
 
-              : 'Write these words down in order and keep them somewhere safe. Anyone with these words can control your identity.'}</Text>
+              : t("Write these words down in order and keep them somewhere safe. Anyone with these words can control your identity.")}</Text>
 
             {!!phrase && <View style={styles.wordGrid}>{phrase.split(' ').map((word,index)=><Text key={index} style={styles.word}>{index+1}. {word}</Text>)}</View>}
 
             {restoring ? <RecoveryWordsInput value={words} onChangeText={setWords} editable={!disabled}/> : <>
-              <Text style={styles.text}>Confirm two words from your backup.</Text>
-              {positions.map((position,index)=><Input key={position} label={`Word #${position+1}`} accessibilityLabel={`Confirm word ${position+1}`} placeholder={`Enter word #${position+1}`} autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" maxLength={32} value={answers[index]} onChangeText={value=>setAnswers(old=>index===0?[value,old[1]]:[old[0],value])} editable={!disabled}/>)}
+              <Text style={styles.text}>{t("Confirm two words from your backup.")}</Text>
+              {positions.map((position,index)=><Input key={position} label={`Word #${position+1}`} accessibilityLabel={t("Confirm word {0}",{0:position+1})} placeholder={t("Enter word #{0}",{0:position+1})} autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" maxLength={32} value={answers[index]} onChangeText={value=>setAnswers(old=>index===0?[value,old[1]]:[old[0],value])} editable={!disabled}/>)}
             </>}
 
-            {authButton('CONTINUE', () => void action(async () => {
+            {authButton(t("CONTINUE"), () => void action(async () => {
 
               const own = generation.current;
 
@@ -291,7 +294,7 @@ function LocalAccountContent() {
 
                 setRecord(raw);setCheckedRecord(raw);
 
-              } else { if (!checkBackupWords(phrase,positions,answers)) throw Error('The two words do not match. Check their numbers in your backup.'); setWords(phrase); }
+              } else { if (!checkBackupWords(phrase,positions,answers)) throw Error(t("The two words do not match. Check their numbers in your backup.")); setWords(phrase); }
 
               setSetup(true);
 
@@ -299,33 +302,33 @@ function LocalAccountContent() {
 
           </> : <>
 
-            <Text style={styles.heading}>Set up local login</Text>
+            <Text style={styles.heading}>{t("Set up local login")}</Text>
 
-            <Text style={styles.text}>Your username and password unlock this phone. They stay on this device.</Text>
+            <Text style={styles.text}>{t("Your username and password unlock this phone. They stay on this device.")}</Text>
 
             {usernameInput}
 
-            <Input label="Password" accessibilityLabel="Local password" placeholder="At least 6 characters" isPassword
+            <Input label={t("Password")} accessibilityLabel={t("Local password")} placeholder={t("At least 6 characters")} isPassword
 
               autoCorrect={false} autoComplete="off" textContentType="none" maxLength={256} value={password} onChangeText={setPassword} editable={!disabled}/>
 
-            <Input label="Confirm password" accessibilityLabel="Confirm local password" placeholder="Repeat your password" isPassword
+            <Input label={t("Confirm password")} accessibilityLabel={t("Confirm local password")} placeholder={t("Repeat your password")} isPassword
 
               autoCorrect={false} autoComplete="off" textContentType="none" maxLength={256} value={repeat} onChangeText={setRepeat} editable={!disabled}/>
 
             {!!error && <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.error}>{error}</Text>}
 
-            <View style={styles.row}><Text style={styles.text}>Enable biometric login</Text><Switch accessibilityLabel="Enable biometric login"
+            <View style={styles.row}><Text style={styles.text}>{t("Enable biometric login")}</Text><Switch accessibilityLabel={t("Enable biometric login")}
 
               value={enableBiometrics} onValueChange={setEnableBiometrics} disabled={disabled || !biometrics.available()}/></View>
 
-            {!biometrics.available() && <Text style={styles.text}>Set up biometrics in your phone settings to enable this option.</Text>}
+            {!biometrics.available() && <Text style={styles.text}>{t("Set up biometrics in your phone settings to enable this option.")}</Text>}
 
-            {authButton(saved ? 'FINISH SETUP' : 'CONNECT', () => void action(async () => {
+            {authButton(saved ? t("FINISH SETUP") : t("CONNECT"), () => void action(async () => {
 
               confirmPassword();
 
-              if (!username.trim()) throw Error('Choose a local username.');
+              if (!username.trim()) throw Error(t("Choose a local username."));
 
               const own = generation.current, secret = password;
 
@@ -343,7 +346,7 @@ function LocalAccountContent() {
 
                 if (restoring) {
 
-                  if (!checkedRecord || checkedRecord !== record || !recovery.current) throw Error('Look up your identity again.');
+                  if (!checkedRecord || checkedRecord !== record || !recovery.current) throw Error(t("Look up your identity again."));
 
                   const discovery = recovery.current;
 
@@ -359,7 +362,7 @@ function LocalAccountContent() {
 
               const account = localAccount.status().account;
 
-              if (!account || account !== expectedAccount) throw Error('Local identity unavailable.');
+              if (!account || account !== expectedAccount) throw Error(t("Local identity unavailable."));
 
               await localAccountUsername.write(account, username);
 
@@ -381,32 +384,32 @@ function LocalAccountContent() {
 
           </>}
 
-          {authButton('CANCEL', cancelSetup)}
+          {authButton(t("CANCEL"), cancelSetup)}
 
         </View>}
 
         {ready && status.state === 'locked' && !setup && <View style={styles.card}>
 
-          <Text style={styles.heading}>Welcome back</Text>
+          <Text style={styles.heading}>{t("Welcome back")}</Text>
 
           {loginName !== null && usernameInput}
 
-          <Input label="Password" accessibilityLabel="Local password" placeholder="Enter your password" isPassword autoCorrect={false}
+          <Input label={t("Password")} accessibilityLabel={t("Local password")} placeholder={t("Enter your password")} isPassword autoCorrect={false}
 
             autoComplete="off" textContentType="none" maxLength={256} value={password} onChangeText={setPassword} editable={!disabled}/>
 
-          {authButton('CONNECT', () => void action(async () => {
+          {authButton(t("CONNECT"), () => void action(async () => {
 
-            if (loginName !== null && username.trim() !== loginName) throw Error('Check your local username and password.');
+            if (loginName !== null && username.trim() !== loginName) throw Error(t("Check your local username and password."));
 
             await localAccount.unlock(password);
             await localAccountSession.remember(password);
 
           }))}
 
-          {biometrics.available() && authButton('USE BIOMETRICS', () => void action(() => biometrics.unlock()))}
+          {biometrics.available() && authButton(t("USE BIOMETRICS"), () => void action(() => biometrics.unlock()))}
 
-          <Text style={styles.text}>Your password unlocks this device. It is never sent to another neuron.</Text>
+          <Text style={styles.text}>{t("Your password unlocks this device. It is never sent to another neuron.")}</Text>
 
         </View>}
 
@@ -422,19 +425,19 @@ const makeLocalStyles = (colors:ReturnType<typeof useTheme>['colors'])=>StyleShe
 
   title: { fontSize: Font.size.title, fontWeight: '800', letterSpacing:8, color: colors.primary }, subtitle: { fontSize: Font.size.xs, letterSpacing:2, color: colors.textSecondary },
 
-  header:{alignItems:'center',marginBottom:Spacing.lg},logoMark:{width:72,height:72,borderRadius:12,borderWidth:2,borderColor:colors.primary,alignItems:'center',justifyContent:'center',marginBottom:Spacing.lg,shadowColor:colors.primary,shadowOpacity:0.6,shadowRadius:16,elevation:8},underline:{width:48,height:2,backgroundColor:colors.accent,marginTop:6,marginBottom:Spacing.sm},
+  header:{alignItems:'center',marginBottom:Spacing.lg},logoMark:{width:72,height:72,borderRadius:Chrome.cardRadius,borderWidth:2,borderColor:colors.primary,alignItems:'center',justifyContent:'center',marginBottom:Spacing.lg,shadowColor:colors.primary,shadowOpacity:Chrome.shadowOpacity,shadowRadius:16,elevation:8},underline:{width:48,height:2,backgroundColor:colors.accent,marginTop:6,marginBottom:Spacing.sm},
 
   wordGrid:{flexDirection:'row',flexWrap:'wrap',gap:8},word:{width:'46%',padding:8,color:colors.text,fontSize:16},
 
-  heading: { fontSize: 21, fontWeight: '600', color: colors.text }, card: { gap:16, padding:Spacing.xl, backgroundColor:colors.surface,borderColor:colors.neonBorder,borderWidth:1,borderRadius:Radius.lg,shadowColor:colors.primary,shadowOpacity:0.15,shadowRadius:20,elevation:6 },
+  heading: { fontSize: 21, fontWeight: '600', color: colors.text }, card: { gap:16, padding:Spacing.xl, backgroundColor:colors.surface,borderColor:colors.neonBorder,borderWidth:1,borderRadius:Chrome.cardRadius,shadowColor:colors.primary,shadowOpacity:0.15,shadowRadius:20,elevation:6 },
 
   text: { fontSize: 15, lineHeight: 23, color: colors.textSecondary }, error: { color: colors.error, fontSize: 15 },
 
-  words: { fontSize: 18, lineHeight: 29, color: colors.text, backgroundColor: colors.surface, padding: 16, borderRadius: 12 },
+  words: { fontSize: 18, lineHeight: 29, color: colors.text, backgroundColor: colors.surface, padding: 16, borderRadius: Chrome.controlRadius },
 
-  input: { color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: 12, padding: 14, fontSize: 16 },
+  input: { color: colors.text, borderColor: colors.border, borderWidth: 1, borderRadius: Chrome.controlRadius, padding: 14, fontSize: 16 },
 
-  button: { backgroundColor: colors.primary, padding: 15, borderRadius: 12, alignItems: 'center' },
+  button: { backgroundColor: colors.primary, padding: 15, borderRadius: Chrome.controlRadius, alignItems: 'center' },
 
   buttonText: { color: colors.textInverse, fontSize: 16, fontWeight: '600' }, disabled: { opacity: 0.4 },
 

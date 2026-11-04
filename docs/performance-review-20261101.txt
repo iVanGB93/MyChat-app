@@ -1,0 +1,96 @@
+Pre-build performance review — 2026-11-01
+
+Scope: two existing Android Dev emulators, identities/data preserved. No physical
+phone, production build, commit, push, deployment, or official app modification.
+Existing unrelated worktree changes preserved.
+
+Changes made during this review:
+- RTC data frames no longer wake the idle lease-check pump individually. Native
+  credit replenishment and final verification still validate authorization.
+- A revoked RTC lease cannot become valid again through a late async check.
+- Actual locally admitted RTC/WSS sending streams suppress redundant relay
+  materialization/upload. Remote readiness alone cannot suppress custody.
+- Stream completion/failure wakes the existing transfer pump. Receipt processing
+  remains eligible; no durable hold or additional retry schedule was introduced.
+- Recheck stream admission after file preparation and immediately before bulk
+  dispatch to avoid a stream starting during preparation racing relay upload.
+
+Evidence (fresh bytes; receiver byte length and SHA256 checked):
+Baseline 1/5/10 MB: 4.479 / 7.084 / 18.311 seconds. Baseline 10 MB performed three
+redundant bulk uploads while direct transfer ran. Intermediate updated run:
+4.366 / 6.723 / 18.157 seconds; later admission-race guards also added.
+Final clean-runtime 10 MB repeats: direction 0 58.446 seconds, direction 1 11.868
+seconds. Both checksums passed. Direction 0 direct sender timed out after 28.245
+seconds and receiver closed after 29.275 seconds; fallback completed delivery.
+Direction 1 RTC stream verified in about 7.4 seconds. Asymmetry is NOT resolved.
+Do not present the intermediate run as a proven overall speed improvement.
+Aggregated stage timings overlap and must not be summed as wall-clock duration.
+
+Cold list checks: persisted index read 45 ms / 225 ms, source-history reads zero.
+Observed Dev-launch readiness 11.1 / 12.4 seconds includes launcher/Metro and is
+not a production startup benchmark.
+Initial chat UI sample: layout 155 ms; first page 22 ms, followed by five refreshes
+of 238–291 ms. RAF p95 235 ms. Warm/no-transfer repeat: layout 80 ms, page 9 ms,
+one page refresh, RAF p95 44.8 ms, maximum 218 ms, 10 samples above 50 ms.
+RAF measures JS scheduling on a debug emulator, not native frame drops or
+production FPS. Warm performance is better; stalls remain. The initial extra
+refresh cause was not established (read-receipt writes are a hypothesis).
+
+Validation: npm run check exited 0; 1,869 tests total, 1,866 passed, 3 skipped,
+zero failures. Typecheck, cycles, module boundaries, consolidation, assets pass.
+Tests cover stream activity, failure wake, admission during preparation,
+revocation, bounded validation and integrity. Final check includes new tests.
+
+Artifacts under builds/:
+performance-before.json, performance-stream-aware.json,
+performance-repeat-before-cold.json, performance-current.json (final 10 MB pair),
+performance-cold-restart.log, performance-ui-first.json, performance-ui.json,
+performance-final-check.log.
+
+Release recommendation: investigate the repeatable directional RTC timeout before
+calling performance cleared. Keep fallback and integrity checks intact. Obtain
+explicit authorization before starting the next production build.
+
+Follow-up fixes and verification (same day)
+-----------------------------------------
+Fixed a startup race in rootAttachmentStreams: a first control frame may arrive
+before lane.ready's continuation initializes the stream. Hold exactly one bounded
+control until start; reject binary/duplicate early frames. Added behavioral tests
+with delayed receiver readiness, duplicates and early binary data.
+
+The longer repeats also exposed actual ICE outages. The transport previously
+allowed only one restart over the entire connection lifetime. Recovery now rearms
+after reconnection, keeping one bounded attempt during an outage. Each new signed
+restart binds to the immediately preceding session, so an older offer/answer cannot
+authorize a later recovery. Existing identity, device and certificate checks remain.
+Tests exercise a second outage, old-parent/old-answer rejection, preservation of
+the original data channels and the unchanged disconnect deadline.
+
+Added bounded stream-progress failure diagnostics: protocol state, byte offset,
+acknowledged offset, queued bytes and idle duration; no payload or paths.
+
+Final fresh-byte Dev run, two directions, milliseconds end-to-end:
+1 MB: 4791 / 4728
+5 MB: 16098 / 6947
+10 MB: 20338 / 20662
+All six verified exact byte count and SHA256; all used direct RTC without bulk
+fallback. Same connection ID 1 recovered at 15:00:58 and again at 15:01:34 local
+log time, with streams preserved. This proves repeated recovery in this run, not
+constant throughput or the absence of future network failures. The emulator
+network still has outages; do not claim uniform fast transfers.
+
+Intermediate clean startup-only 10 MB pair was 15568 / 11471 ms, both direct.
+Its following six-transfer repeat had a 5 MB fallback (32440 ms), leading to the
+separate recovery fix. Preserve this failed intermediate evidence.
+Artifacts: performance-startup-fixed.json, performance-before-recovery-six.json,
+performance-startup-six.json (final six), performance-recovery-six.log,
+performance-repeated-recovery-tests.log, performance-startup-race-tests.log.
+No deployment, production build, commit, push, data wipe or official-app change.
+
+Final validation after follow-up: npm run check exited 0; 1,872 tests total,
+1,869 passed, 3 skipped, zero failures; typecheck and all structural checks passed.
+Opening unread media during the final UI probe produced repeated 350–674 ms page
+refreshes and RAF p95 445 ms. Warm repeat: layout 101 ms, page 12 ms, single page
+refresh, RAF p95 65.6 ms, maximum 193 ms. These are debug-emulator JS samples;
+unread refresh/receipt work still needs profiling before a full UI performance
+clearance. Transfer reliability fixes are verified independently of that issue.

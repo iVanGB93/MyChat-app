@@ -1,0 +1,32 @@
+Whole-app floating style audit — 2026-10-28
+
+Design contract
+- Floating navigation and modal headers: 28dp corners, 12dp gutters, thin cyan outline, restrained shadow.
+- Cards: 24dp corners; form/action controls: 22dp corners. Central Chrome tokens in src/theme/index.ts.
+- Social, private/group conversations and Profile allow content behind floating navigation with explicit scroll clearance.
+- Functional media geometry is separate: QR quiet zones, video surface clipping, photo aspect ratios, message/reply geometry, scan targets and native Android system surfaces are intentionally retained.
+- Buttons retain semantic danger/disabled/selected states and existing behavior. No networking, permissions or storage behavior changes.
+
+Screen/surface coverage (source audit)
+- Navigation: Social, Games, Profile and every registered stack route use FloatingHeader; Games keeps its Coming soon empty state.
+- Identity: LocalAccountApp setup/create/restore/unlock/security/removal forms use updated cards/buttons/inputs; startup branding retained. RecoveryWordsInput updated; individual numbered word chips retained for readability.
+- Contacts: new chat, QR scan entry/overlay, contact details/nickname/profile, blocked users use shared controls/header and updated detail cards. QR images retain white margins.
+- Groups: create, room, information, rename, member/photo pickers, group message info use shared header/forms and updated styles. Existing group call buttons remain unavailable; styling does not implement group calls.
+- Conversations: private/group floating headers and composers retained; attachment menu, message actions/reactions, avatar action sheet, notification toast updated. Existing message bubble/media layout retained.
+- Media: recipient selection (forward/external share), review-before-send/captions, photo editor/crop/text controls, sticker picker/preview/studio/crop all use shared floating headers and rounded controls. Fullscreen image viewer already uses floating close/hint controls; black media canvas retained.
+- Profile: identity card, connection status, account/security, storage, received-media settings, appearance, account controls, enlarged QR all reviewed; common cards/controls updated. Profile scrolls behind header and bottom tabs with clearance.
+- Network: overview, connected axons, connection limits, diagnostics, identity lookup, recovery settings, relay inventory, diagnostic review/share updated through cards, buttons and modal header. No diagnostics sent or settings changed.
+- Calls: outgoing confirmation now a detached rounded sheet; incoming/active voice/video controls have reduced glow; options panel/control corners aligned. Self-camera native clipping geometry, capture controls, and destructive colors retained. No calls placed in this pass.
+- Shared overlays: confirmation/alert sheets float above the bottom safe area, scroll long content, retain double-tap protection; update progress/install banner rounded; error boundary retry button rounded.
+- OS-owned pickers, permissions, keyboard, share sheet, installer and Android notification UI remain system-native.
+
+Validation
+- Source inventory: src/screens, src/components, navigator routes and modal entry points.
+- Physical Dev phone screenshots inspected: Social, Profile, group conversation, group information and sticker modal. Other auth/destructive/call flows source-reviewed and covered by existing behavior tests rather than executed on the user's live account.
+- TypeScript, module boundaries, dependency cycles, consolidation and assets pass.
+- First full suite: 1671 passed, 12 failed, 3 skipped. Eleven failures were fixtures missing Chrome tokens; one incorrectly mocked the new animated face as the voice recorder.
+- Updated fixtures use production theme tokens; affected 32 tests pass. Final scroll/confirmation/rendering subset: 8/8.
+- Full-suite rerun recorded in builds/style-check-final-20261028.log.
+- No messages sent, calls placed, settings changed, data removed, production app updated, commit or build made by this style pass.
+
+Final full-suite result: 1,683 passed, 3 skipped, 0 failed (1,686 total).

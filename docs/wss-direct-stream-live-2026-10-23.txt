@@ -1,0 +1,42 @@
+Existing-WSS direct own-file streaming: completed on phone Dev and FirstNeuron.
+
+AoN source commit: cafed6f70f21d61b0a43ac5d2a3abc6e0ba3a60b (pushed).
+FirstNeuron package 0.2.0, runtime 0f1d6fde9584, clean/runtime-bound.
+Only FirstNeuron deployed. SecondNeuron, ThirdNeuron and official phone app unchanged.
+Official phone app: versionCode 98, lastUpdateTime 2026-10-23 10:11:19 unchanged.
+Recovery: /var/backups/axonic-wss-cafed6f70f21-retry1 (data.tar and prior dist).
+Initial snapshot attempt aborted on changing directory; previous service restored.
+Retry paused/restored the health sampler, produced a stable snapshot, verified
+identity unchanged and public HTTPS health ok. Health timer is active again.
+
+Tests: mobile check 1476 passed / 3 optional skips; server 292 passed.
+Existing group-wake test had a frozen virtual-clock race; corrected its test clock
+and reran all server tests successfully. No product wake-policy change was made.
+New coverage: authenticated socket negotiation/session binding, AEAD reflection,
+replay/tampering/wrong bindings, disconnect without partial publication, real
+host file publication and signed receipts for 1/5/10 decimal MB without relay reads.
+
+Live files use MiB (1,048,576 bytes), one sample each direction/size:
+                   phone -> FirstNeuron            FirstNeuron -> phone
+size MiB           after enqueue / full harness    after enqueue / full harness
+1                  3.016s / 4.073s                 2.978s / 3.287s
+5                  8.589s / 14.268s                7.038s / 7.797s
+10                 13.798s / 22.828s               12.341s / 14.132s
+Prior post-enqueue baseline: outbound 4.451/12.452/21.785s;
+inbound 5.879/9.486/17.681s. Approximate reductions 26-49%, not a statistical claim.
+Full harness includes synthetic fixture generation/hash, preparation, API/CDP and
+polling, not just application/network transfer time. Phone fixture overhead is
+especially large. Inbound stream stage measured 1.014/4.725/10.145s.
+All six checksum checks and signed sender delivery confirmations passed.
+All baseline history keys preserved: phone 62 -> 68; FirstNeuron 27 -> 33.
+Same-socket wss-stream traffic observed. No relay block fallback reads in inbound
+phone timing deltas; no new RTC connection needed for FirstNeuron.
+
+Implementation: negotiated E2E-encrypted bounded JSON/base64 transport records on
+the existing WSS, not native binary WebSocket frames. Relay format stays encrypted
+3,000,000-byte blocks. Remaining room: JSON/base64/JS costs, flow-control window,
+preparation and durable state work; these measurements are not raw link speed.
+
+Evidence: builds/transfer-scaling-1792788682981.json,
+builds/wss-phone-first-live.log, builds/wss-stream-wire-evidence.json,
+builds/wss-aon-tests-final.log.

@@ -1,4 +1,11 @@
+import {t,languageSnapshot} from '../../localization/language';
+import CallOptions from './CallOptions';
+import {useCallAudioSession} from './useCallAudioSession';
+import CallSessionScreen,{CallControls,MinimizedCall,type CallParticipant} from './CallSessionScreen';
 import {subscribeRootCallNotificationAction,takeRootCallNotificationAction} from '../../modules/messaging/notifications';
+import RootGroupCallMedia,{GroupLeg,type CallExpansionLink} from './RootGroupCallMedia';
+import GroupCallPicker from './GroupCallPicker';
+import {calling,MAX_GROUP_CALL_PARTICIPANTS,type GroupCallRoom} from '../../modules/calls';
 import {useChatContacts} from '../../modules/ui/useChatSnapshot';
 import {useCallState,beginCallMediaState} from '../../modules/ui/liveState';
 import {callScreenCaptureAvailable} from '../../services/call-screen-capture';
@@ -7,9 +14,9 @@ import {readSharedAvatar,subscribeSharedAvatars} from '../../modules/storage';
 import {readRootNotificationPreferences} from '../../modules/messaging/notifications';
 import {localAccount} from '../../modules/identity';
 import {shortIdentity} from '../../modules/identity';
-import {startRootCallLease,stopRootCallLease,markRootCallConnected} from '../../modules/calls';
+import {markRootCallConnected} from '../../modules/calls';
 import React,{useCallback,useEffect,useRef,useState} from 'react';
-import {AppState,Dimensions,Modal,Platform,Text,View,Pressable,StyleSheet,ScrollView,TouchableOpacity} from 'react-native';
+import {AppState,Dimensions,Modal,Platform,Text,View,Pressable,StyleSheet} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {StatusBar} from 'expo-status-bar';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -17,22 +24,19 @@ import {CallLayout,EndButton} from './CallStage';
 import DraggableCallPreview from './DraggableCallPreview';
 import IncomingCallAppearance from './IncomingCallAppearance';
 import {playLooping,stopLooping} from '../../services/soundService';
-import type {VideoQualityMode} from '../../services/video-quality';
 import {RTCView} from 'react-native-webrtc';
 import {AudioModule} from 'expo-audio';
 import * as ImagePicker from 'expo-image-picker';
-import {useKeepAwake} from 'expo-keep-awake';
 import {localAccountCalls} from '../../modules/calls';
 import type {NeuronCallView} from '../../modules/calls';
 import useWebRTCCore from '../../hooks/useWebRTCCore';
 import useRingingCameraPreview from '../../hooks/useRingingCameraPreview';
 import {useTheme} from '../../contexts/ThemeContext';
 import {ActionButton,makeStyles} from './CallAppearance';
-import {startCallAudio,getCallAudioRoutes,selectCallAudioRoute,observeCallAudioRoutes,restoreCallAudio,type CallAudioRoutes} from '../../services/call-audio-route';
 
 export async function ensureRootCallPermissions(kind:'voice'|'video'){
- if(!(await AudioModule.getRecordingPermissionsAsync()).granted&&!(await AudioModule.requestRecordingPermissionsAsync()).granted)throw Error('Allow microphone access to make or answer calls.');
- if(kind==='video'&&!(await ImagePicker.getCameraPermissionsAsync()).granted&&!(await ImagePicker.requestCameraPermissionsAsync()).granted)throw Error('Allow camera access for video calls.');
+ if(!(await AudioModule.getRecordingPermissionsAsync()).granted&&!(await AudioModule.requestRecordingPermissionsAsync()).granted)throw Error(t("Allow microphone access to make or answer calls."));
+ if(kind==='video'&&!(await ImagePicker.getCameraPermissionsAsync()).granted&&!(await ImagePicker.requestCameraPermissionsAsync()).granted)throw Error(t("Allow camera access for video calls."));
 }
 export default function RootAccountCallScreen(){
  const currentCall=useCallState(),[dismissed,setDismissed]=useState<string|null>(null),call=currentCall?.id===dismissed?null:currentCall,[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -40,7 +44,7 @@ export default function RootAccountCallScreen(){
  const [avatarUri,setAvatarUri]=useState<string|null>(null);
  useEffect(()=>{let active=true;setAvatarUri(null);const owner=localAccount.status().account,peer=call?.peerUser;const refresh=async()=>{if(!owner||!peer)return;const uri=await readSharedAvatar(owner,peer);if(active)setAvatarUri(uri);};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[call?.peerUser]);
  const running=useRef(false),{colors}=useTheme(),[minimizedId,setMinimizedId]=useState<string|null>(null);
- const {contacts}=useChatContacts(!!call),name=call?contacts.find(c=>c.account===call.peerUser)?.alias||shortIdentity(call.peerUser):'';
+ const {contacts}=useChatContacts(!!call),name=call?.room?.name??(call?contacts.find(c=>c.account===call.peerUser)?.alias||shortIdentity(call.peerUser):'');
  useEffect(()=>{
   if(call?.status!=='ringing')return;let active=true,generation=0;
   const sync=()=>{const own=++generation;void stopLooping();if(AppState.currentState!=='active'||(call.expiresAt??Infinity)<=Date.now())return;
@@ -62,18 +66,18 @@ export default function RootAccountCallScreen(){
   const timer=setTimeout(()=>setDismissed(id),3000);
   return()=>clearTimeout(timer);
  },[call?.id,call?.status]);
- const end=()=>{if(call)void localAccountCalls()?.end(call.id).catch(()=>setError('Call ended locally; peer notification is pending.'));};
+ const end=()=>{if(call)void localAccountCalls()?.end(call.id).catch(()=>setError(t("Call ended locally; peer notification is pending.")));};
  const answer=async()=>{
   if(!call||running.current)return;running.current=true;setBusy(true);setError('');
   const calls=localAccountCalls();
-  try{await ensureRootCallPermissions(call.media);if(calls!==localAccountCalls()||!await calls?.accept(call.id))throw Error('This call is no longer available.');}
-  catch(e){setError(e instanceof Error?e.message:'Unable to answer');}finally{running.current=false;setBusy(false);}
+  try{await ensureRootCallPermissions(call.media);if(calls!==localAccountCalls()||!await calls?.accept(call.id))throw Error(t("This call is no longer available."));}
+  catch(e){setError(e instanceof Error?e.message:t("Unable to answer"));}finally{running.current=false;setBusy(false);}
  };
  useEffect(()=>{
   if(!call||call.outgoing||call.status!=='ringing')return;
-  let active=true,pending=false;
-  const act=async()=>{if(!active||pending||AppState.currentState!=='active')return;const owner=localAccount.status().account;if(!owner)return;pending=true;
-   try{const action=await takeRootCallNotificationAction(owner,call.id);if(!active)return;if(action==='root-call-decline')end();else if(action==='root-call-answer')await answer();}catch{setError('Unable to complete notification action. Use the call controls.');}finally{pending=false;}};
+  let active=true,pending=false,again=false;
+  const act=async()=>{if(pending){again=true;return;}if(!active||AppState.currentState!=='active')return;const owner=localAccount.status().account;if(!owner)return;pending=true;again=false;
+   try{const action=await takeRootCallNotificationAction(owner,call.id);if(!active)return;if(action)setMinimizedId(null);if(action==='root-call-decline')end();else if(action==='root-call-answer')await answer();}catch{setError(t("Unable to complete notification action. Use the call controls."));}finally{pending=false;if(again&&active)void act();}};
   void act();const off=subscribeRootCallNotificationAction(()=>void act()),state=AppState.addEventListener('change',()=>void act());return()=>{active=false;off();state.remove();};
  },[call?.id,call?.outgoing,call?.status]);
  const previewUrl=useRingingCameraPreview(call?.id,call?.media==='video'&&['ringing','connecting'].includes(call.status)&&minimizedId!==call.id);
@@ -83,10 +87,11 @@ export default function RootAccountCallScreen(){
  if(call.outgoing&&call.status==='ended'&&confirmationCall.current===call.id)return null;
  confirmationCall.current=null;
  const ended=call.status==='ended';
- const status=ended?call.reason??'Call ended':call.status==='finding'?'Finding…':call.status==='connecting'?'Connecting…':call.outgoing?'Ringing…':'Incoming '+call.media+' call';
+ const status=ended?call.reason??t("Call ended"):call.status==='finding'?t("Finding…"):call.status==='connecting'?t("Connecting…"):call.outgoing?t("Ringing…"):'Incoming '+call.media+' call';
  const minimized=minimizedId===call.id,minimize=()=>setMinimizedId(call.id),restore=()=>setMinimizedId(null);
  // Media owns its own presentation so closing the full-screen Modal never unmounts WebRTC.
- if(call.status==='ready'&&call.transport)return <RootMedia avatarUri={avatarUri} key={call.id} call={call} name={name} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
+ if(call.room&&!call.room.anchorId&&call.status==='ready')return <RootGroupCallMedia key={call.id} call={call} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
+ if(call.status==='ready'&&(call.transport||call.room?.anchorId))return <RootMedia avatarUri={avatarUri} key={call.id} call={call} name={name} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
  if(minimized)return ended?null:<MinimizedCall name={name} status={status} video={call.media==='video'} restore={restore} end={end}/>;
  return <Modal visible animationType="slide" onRequestClose={()=>ended?setDismissed(call.id):minimize()}>
   <StatusBar style="light"/>
@@ -97,32 +102,44 @@ export default function RootAccountCallScreen(){
  </Modal>;
 }
 
-function MinimizedCall({name,status,video,stream,restore,end}:{name:string;status:string;video:boolean;stream?:string;restore():void;end():void}){
- const insets=useSafeAreaInsets(),{colors}=useTheme();
- return <View testID="axonic-minimized-call" style={{position:'absolute',top:insets.top+12,right:insets.right+12,width:156,borderRadius:16,backgroundColor:colors.surface,borderWidth:1,borderColor:colors.primary,overflow:'hidden',elevation:12,zIndex:100}}>
-  <View style={{height:video?196:124}}>
-   <Pressable accessible={false} onPress={restore} style={StyleSheet.absoluteFill}>
-    <View pointerEvents="none" style={{flex:1,alignItems:'center',justifyContent:'center'}}>{video&&stream?<RTCView streamURL={stream} objectFit="cover" style={StyleSheet.absoluteFill} zOrder={0}/>:<Ionicons name={video?'videocam':'call'} size={24} color={colors.primary}/>}</View>
-   </Pressable>
-   <Pressable accessibilityRole="button" accessibilityLabel="Return to call" onPress={restore} style={{position:'absolute',top:4,left:4,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="arrow-back" size={24} color="#fff"/></Pressable>
-   <Pressable accessibilityRole="button" accessibilityLabel="End call" onPress={end} style={{position:'absolute',bottom:8,alignSelf:'center',width:44,height:44,borderRadius:22,alignItems:'center',justifyContent:'center',backgroundColor:colors.error}}><Ionicons name="call" size={22} color="#fff" style={{transform:[{rotate:'135deg'}]}}/></Pressable>
-  </View>
-  <Pressable accessibilityRole="button" accessibilityLabel="Return to call details" onPress={restore}>
-   <View style={{paddingHorizontal:10,paddingVertical:8}}><Text numberOfLines={1} style={{color:colors.text,fontWeight:'600'}}>{name}</Text><Text numberOfLines={1} style={{color:colors.textSecondary,fontSize:12}}>{status}</Text></View>
-  </Pressable>
- </View>;
-}
 
 function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:NeuronCallView<string>;name:string;avatarUri?:string|null;end:()=>void;minimized:boolean;minimize():void;restore():void}){
- useKeepAwake('root-account-call');
- const {colors}=useTheme(),styles=makeStyles(colors),[connected,setConnected]=useState(false),[audioRoutes,setAudioRoutes]=useState<CallAudioRoutes|null>(null),[error,setError]=useState('');
- const started=useRef(false),audioBusy=useRef(false),connectedAt=useRef<number|null>(null);
- const insets=useSafeAreaInsets(),[seconds,setSeconds]=useState(0),[controls,setControls]=useState(true),[options,setOptions]=useState(false),[foreground,setForeground]=useState(AppState.currentState==='active');
- useEffect(()=>{const listener=AppState.addEventListener('change',state=>setForeground(state==='active'));return()=>listener.remove();},[]);
+ const anchor=useRef(call).current,currentCall=useRef(call);currentCall.current=call;
+ const {contacts}=useChatContacts(true),owner=localAccount.status().account;
+ const [adding,setAdding]=useState(false);
+ const [expansionLinks,setExpansionLinks]=useState<Record<string,CallExpansionLink>>({});
+ const registerExpansion=useCallback((peer:string,link:CallExpansionLink|null)=>setExpansionLinks(old=>{const next={...old};if(link)next[peer]=link;else delete next[peer];return next;}),[]);
+ const [extraRemote,setExtraRemote]=useState<Record<string,{url?:string;status:string;connected:boolean}>>({});
+ const [speakers,setSpeakers]=useState<Record<string,{local:boolean;remote:boolean}>>({});
+ const updateRemote=useCallback((peer:string,value:{url?:string;status:string;connected:boolean}|null)=>setExtraRemote(old=>{const next={...old};if(value)next[peer]=value;else delete next[peer];return next;}),[languageSnapshot()]);
+ const speaking=useCallback((peer:string,local:boolean,remote:boolean)=>setSpeakers(old=>old[peer]?.local===local&&old[peer]?.remote===remote?old:{...old,[peer]:{local,remote}}),[languageSnapshot()]);
+ const anchorSpeaking=useCallback((local:boolean,remote:boolean)=>speaking(anchor.peerUser,local,remote),[anchor.peerUser,speaking,languageSnapshot()]);
+ const expansionAllowed=useRef(true);
+ const adopt=useCallback((room:GroupCallRoom)=>expansionAllowed.current?localAccountCalls()?.adoptExpansion(anchor.id,room,anchor.peerUser)??Promise.resolve(false):Promise.resolve(false),[anchor.id,anchor.peerUser,languageSnapshot()]);
+ const commitExpansion=useCallback((room:GroupCallRoom)=>owner?localAccountCalls()?.adoptExpansion(anchor.id,room,owner)??Promise.resolve(false):Promise.resolve(false),[anchor.id,owner,languageSnapshot()]);
+ const {audioRoutes,routeAudio,audioError,foreground}=useCallAudioSession(call.id,call.media==='video');
+ const {colors}=useTheme(),styles=makeStyles(colors),[connected,setConnected]=useState(false),[error,setError]=useState('');
+ const started=useRef(false),connectedAt=useRef<number|null>(null);
+ const insets=useSafeAreaInsets(),[seconds,setSeconds]=useState(0),[controls,setControls]=useState(true),[options,setOptions]=useState(false);
  useEffect(()=>{if(!connected)return;const timer=setInterval(()=>setSeconds(Math.floor((Date.now()-connectedAt.current!)/1000)),1000);return()=>clearInterval(timer);},[connected]);
- const onConnected=useCallback(()=>{connectedAt.current??=Date.now();setConnected(true);markRootCallConnected(call.id);},[call.id]);
- const endRef=useRef(end);endRef.current=end;const onDisconnected=useCallback(()=>endRef.current(),[]);
- const rtc=useWebRTCCore({callId:call.id,callType:call.media,peerUserId:call.peerUser,isOutgoing:call.outgoing,mediaTransport:call.transport,onConnected,onDisconnected});
+ const onConnected=useCallback(()=>{connectedAt.current??=Date.now();setConnected(true);markRootCallConnected(call.id);},[call.id,languageSnapshot()]);
+ const endRef=useRef(end);endRef.current=end;const onDisconnected=useCallback(()=>{if(currentCall.current.room)void localAccountCalls()?.endParticipant(anchor.id);else endRef.current();},[anchor.id,languageSnapshot()]);
+ const rtc=useWebRTCCore({callId:anchor.id,callType:anchor.media,peerUserId:anchor.peerUser,isOutgoing:anchor.outgoing,mediaTransport:anchor.transport,onExpandCall:adopt,onExpansionAccepted:commitExpansion,onSpeaking:anchorSpeaking,onConnected,onDisconnected});
+ expansionAllowed.current=!rtc.isScreenSharing&&!rtc.remoteScreenSharing&&!rtc.screenShareBusy;
+ const invite=async(ids:string[])=>{
+  const calls=localAccountCalls();
+  if(!calls||rtc.isScreenSharing||rtc.remoteScreenSharing)throw Error(t("Adding people is unavailable in this call right now."));
+  const room=await calling.prepareExpansion(anchor.id,ids);
+  // Confirm the new audience with added participants first; the original leg's
+  // acknowledgment then commits locally through the existing expansion path.
+  for(const peer of currentCall.current.room?.descriptor.members??[]){
+   if(peer===owner||peer===anchor.peerUser)continue;
+   const link=expansionLinks[peer];
+   if(!link?.available||!await link.request(room))throw Error(t("The invitation was not confirmed. Your current call stays connected."));
+  }
+  if(!await rtc.expandCall(room))throw Error(t("The invitation was not confirmed. Your current call stays connected."));
+
+ };
  const presentation=useRef<ReturnType<typeof beginCallMediaState>|null>(null);
  useEffect(()=>{const lease=beginCallMediaState(call.id);presentation.current=lease;return()=>{lease.stop();if(presentation.current===lease)presentation.current=null;};},[call.id]);
  useEffect(()=>{presentation.current?.update({connection:rtc.connectionType,recovering:rtc.recovering,muted:rtc.isMuted,cameraOff:rtc.isCameraOff,sharing:rtc.isScreenSharing,remoteSharing:rtc.remoteScreenSharing,sharingBusy:rtc.screenShareBusy,quality:rtc.callQuality.level});},[call.id,rtc.connectionType,rtc.recovering,rtc.isMuted,rtc.isCameraOff,rtc.isScreenSharing,rtc.remoteScreenSharing,rtc.screenShareBusy,rtc.callQuality.level]);
@@ -138,11 +155,11 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
   try{
    const granted=await allowScreenShareOverlay();if(!request.active)return;
    if(granted){setError('');await rtc.startScreenSharing();}
-   else setError('Display over other apps permission is required for sharing controls.');
-  }catch{if(request.active)setError('Unable to open screen-sharing controls.');}
+   else setError(t("Display over other apps permission is required for sharing controls."));
+  }catch{if(request.active)setError(t("Unable to open screen-sharing controls."));}
   finally{request.pending=false;}
  };
- useEffect(()=>{let current=true;setExcludedFraction(null);if(rtc.isScreenSharing&&!nativeShareControls)void rtc.setScreenControlsExcluded(foreground?barFraction:0).then(()=>{if(current)setExcludedFraction(foreground?barFraction:0);}).catch(()=>{if(current)setError('Unable to exclude sharing controls. Stop sharing using Android’s screen-capture notification.');});return()=>{current=false;};},[rtc.isScreenSharing,rtc.setScreenControlsExcluded,foreground,barFraction,nativeShareControls]);
+ useEffect(()=>{let current=true;setExcludedFraction(null);if(rtc.isScreenSharing&&!nativeShareControls)void rtc.setScreenControlsExcluded(foreground?barFraction:0).then(()=>{if(current)setExcludedFraction(foreground?barFraction:0);}).catch(()=>{if(current)setError(t("Unable to exclude sharing controls. Stop sharing using Android’s screen-capture notification."));});return()=>{current=false;};},[rtc.isScreenSharing,rtc.setScreenControlsExcluded,foreground,barFraction,nativeShareControls]);
  const minimizeRef=useRef(minimize);minimizeRef.current=minimize;
  // Once capture succeeds, expose the app instead of recursively sharing the call view.
  useEffect(()=>{if(rtc.isScreenSharing){setOptions(false);minimizeRef.current();}},[rtc.isScreenSharing]);
@@ -151,99 +168,62 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  useEffect(()=>{if(rtc.remoteScreenSharing){setOptions(false);setControls(true);}},[rtc.remoteScreenSharing]);
  useEffect(()=>{if(call.outgoing&&!started.current){started.current=true;void rtc.startAsOfferer();}},[call.outgoing,rtc.startAsOfferer]);
  useEffect(()=>{if(connected)return;const timer=setTimeout(end,45000);return()=>clearTimeout(timer);},[connected,call.id]);
- useEffect(()=>{void startRootCallLease(call.id,call.media);return()=>{stopRootCallLease(call.id);restoreCallAudio();};},[call.id,call.media]);
- useEffect(()=>{
-  let mounted=true;
-  const update=(routes:CallAudioRoutes)=>{if(mounted)setAudioRoutes(routes);};
-  const listener=observeCallAudioRoutes(update);
-  void startCallAudio(call.media==='video').then(update).catch(error=>{if(mounted)setError(error instanceof Error?error.message:'Unable to select audio output.');});
-  const active=AppState.addEventListener('change',state=>{if(state==='active')void getCallAudioRoutes().then(routes=>{if(routes)update(routes);}).catch(()=>{});});
-  return()=>{mounted=false;listener.remove();active.remove();};
- },[call.id,call.media]);
- const routeAudio=async(id:string)=>{if(audioBusy.current)return;audioBusy.current=true;setError('');try{setAudioRoutes(await selectCallAudioRoute(id));}catch(error){setError(error instanceof Error?error.message:'Unable to change audio output.');}finally{audioBusy.current=false;}};
  const remote=rtc.remoteStream?.toURL(),local=rtc.localStream?.toURL(),video=call.media==='video',localVisible=rtc.isCameraOff&&!rtc.isScreenSharing?undefined:local;
  const sharing=video&&rtc.isScreenSharing;
  const showControls=sharing||!video||controls;
  const quality=rtc.callQuality;
  const background=video&&<>
   {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit={(remote?rtc.remoteScreenSharing:rtc.isScreenSharing)?"contain":"cover"} mirror={!remote&&!rtc.isScreenSharing} style={styles.fullVideo} zOrder={0}/>}
-  <Pressable accessibilityRole="button" accessibilityLabel={controls?'Hide call controls':'Show call controls'} onPress={()=>setControls(v=>!v)} style={StyleSheet.absoluteFill}/>
+  <Pressable accessibilityRole="button" accessibilityLabel={controls?t("Hide call controls"):t("Show call controls")} onPress={()=>setControls(v=>!v)} style={StyleSheet.absoluteFill}/>
   {remote&&foreground&&(!rtc.remoteScreenSharing||showControls)&&<DraggableCallPreview testID="axonic-call-self-view" style={[styles.selfView,{top:insets.top+16,right:insets.right+16}]}>
-   <View style={styles.pipWrap}><View style={styles.pip}>{rtc.isCameraOff&&!rtc.isScreenSharing||!local?<View style={{flex:1,alignItems:'center',justifyContent:'center',gap:8}}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>{rtc.isCameraOff?'Camera off':'No preview'}</Text></View>:<RTCView streamURL={local} objectFit={rtc.isScreenSharing?"contain":"cover"} mirror={!rtc.isScreenSharing} style={{flex:1}} zOrder={1}/>}</View></View>
-   {showControls&&rtc.isScreenSharing&&<Text style={[styles.quality,{color:colors.primary,fontSize:11,textAlign:'center'}]}>Sharing screen</Text>}
+   <View style={styles.pipWrap}><View style={styles.pip}>{rtc.isCameraOff&&!rtc.isScreenSharing||!local?<View style={{flex:1,alignItems:'center',justifyContent:'center',gap:8}}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>{rtc.isCameraOff?t("Camera off"):t("No preview")}</Text></View>:<RTCView streamURL={local} objectFit={rtc.isScreenSharing?"contain":"cover"} mirror={!rtc.isScreenSharing} style={{flex:1}} zOrder={1}/>}</View></View>
+   {showControls&&rtc.isScreenSharing&&<Text style={[styles.quality,{color:colors.primary,fontSize:11,textAlign:'center'}]}>{t("Sharing screen")}</Text>}
    {showControls&&quality.level!=='unknown'&&<View testID="axonic-call-connection-quality" style={styles.quality}><Text style={{textAlign:'center',fontSize:11,fontWeight:'700',color:quality.level==='good'?colors.success:quality.level==='fair'?colors.warning:colors.error}}>{quality.level.toUpperCase()}</Text>{(quality.roundTripTimeMs!=null||quality.packetLossPercent!=null)&&<Text style={{color:'#fff',fontSize:10,textAlign:'center'}}>{quality.roundTripTimeMs!=null?`${quality.roundTripTimeMs} ms`:''}{quality.roundTripTimeMs!=null&&quality.packetLossPercent!=null?' · ':''}{quality.packetLossPercent!=null?`${quality.packetLossPercent}% loss`:''}</Text>}</View>}
   </DraggableCallPreview>}
  </>;
- const status=rtc.recovering?'Reconnecting…':connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):'Connecting…';
+ const participantName=(peer:string)=>contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer);
+ const audience=call.room?.descriptor.members??[owner,anchor.peerUser];
+ const canInvite=audience.length<MAX_GROUP_CALL_PARTICIPANTS&&(!call.room||call.room.descriptor.adHoc&&call.room.descriptor.creator===owner);
+ const audienceReady=audience.every(peer=>peer===owner||peer===anchor.peerUser||!!expansionLinks[peer!]?.available);
+ const participants:CallParticipant[]|undefined=call.room?.descriptor.members.map(peer=>{
+  const own=peer===owner,leg=call.room!.legs.find(l=>l.peerUser===peer),original=peer===anchor.peerUser;
+  return {id:peer,name:own?t("You"):participantName(peer),local:own,connected:own||(leg?.status==='ready'&&(original?!rtc.recovering&&(rtc.connectionType==='p2p'||rtc.connectionType==='relayed'):extraRemote[peer]?.connected===true)),stream:own?localVisible:leg?.status==='ready'?(original?remote:extraRemote[peer]?.url):undefined,cameraOff:own&&rtc.isCameraOff,
+   status:own?rtc.isMuted?t("Muted"):t("You"):leg?.status==='ended'?leg.reason??'Left':original?t("Connected"):extraRemote[peer]?.status??leg?.status??'Waiting',
+   speaking:own?!rtc.isMuted&&Object.values(speakers).some(s=>s.local):leg?.status==='ready'&&!!speakers[peer]?.remote};
+ });
+ const status=rtc.recovering?t("Reconnecting…"):connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):t("Connecting…");
  const minimizeMedia=()=>{setOptions(false);minimize();};
  const homeWindow=Platform.OS==='android'&&!foreground;
  const shareBar=<View testID="axonic-screen-share-controls" onLayout={event=>setBarFraction(event.nativeEvent.layout.height/Dimensions.get('screen').height)} pointerEvents={excludedFraction===barFraction&&barFraction>0?'auto':'none'} style={{opacity:excludedFraction===barFraction&&barFraction>0?1:0,backgroundColor:'#071426',paddingTop:12,paddingBottom:Math.max(insets.bottom,12),paddingLeft:insets.left+12,paddingRight:insets.right+12}}>
-  <Text numberOfLines={1} style={{color:'#9cc4d5',textAlign:'center',marginBottom:8}}>{rtc.isScreenSharing?'You are sharing your screen':`${name} is sharing`} · {status}</Text>
+  <Text numberOfLines={1} style={{color:'#9cc4d5',textAlign:'center',marginBottom:8}}>{rtc.isScreenSharing?t("You are sharing your screen"):`${name} is sharing`} · {status}</Text>
   <View style={{flexDirection:'row',justifyContent:'space-evenly',alignItems:'center'}}>
-   <ActionButton size={52} icon={rtc.isMuted?'mic-off':'mic'} label={rtc.isMuted?'Unmute':'Mute'} active={rtc.isMuted} onPress={rtc.toggleMute} Colors={colors}/>
-   {rtc.isScreenSharing?<ActionButton size={52} icon="stop-circle-outline" label="Stop sharing" active onPress={()=>void rtc.stopScreenSharing()} Colors={colors}/>:<View accessibilityLabel="Only the person sharing can stop their screen share" style={{alignItems:'center',opacity:0.65}}><Ionicons name="desktop-outline" size={28} color={colors.primary}/><Text style={{color:'#fff',marginTop:8}}>Viewing screen</Text></View>}
+   <ActionButton size={52} icon={rtc.isMuted?'mic-off':'mic'} label={rtc.isMuted?t("Unmute"):t("Mute")} active={rtc.isMuted} onPress={rtc.toggleMute} Colors={colors}/>
+   {rtc.isScreenSharing?<ActionButton size={52} icon="stop-circle-outline" label={t("Stop sharing")} active onPress={()=>void rtc.stopScreenSharing()} Colors={colors}/>:<View accessibilityLabel={t("Only the person sharing can stop their screen share")} style={{alignItems:'center',opacity:0.65}}><Ionicons name="desktop-outline" size={28} color={colors.primary}/><Text style={{color:'#fff',marginTop:8}}>{t("Viewing screen")}</Text></View>}
    <EndButton video onPress={hangup}/>
   </View>
   {!!rtc.screenShareError&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{rtc.screenShareError}</Text>}
  </View>;
  return <>
- {homeWindow&&!rtc.isScreenSharing&&<View testID="axonic-system-call-window" pointerEvents="none" style={[StyleSheet.absoluteFill,{backgroundColor:'#020413',zIndex:100,elevation:20,alignItems:'center',justifyContent:'center',gap:8}]}>
-  {video&&(remote||localVisible)?<RTCView streamURL={(remote||localVisible)!} objectFit="contain" mirror={!remote&&!rtc.isScreenSharing} style={StyleSheet.absoluteFill} zOrder={0}/>:<><Ionicons name={video?'videocam':'call'} size={36} color={colors.primary}/><Text numberOfLines={2} style={{color:'#fff',fontSize:16,textAlign:'center',paddingHorizontal:8}}>{name}</Text><Text style={{color:'#fff',fontSize:14}}>{status}</Text></>}
- </View>}
- {!homeWindow&&minimized&&(rtc.isScreenSharing?(!nativeShareControls&&<View testID="axonic-sharing-bottom-bar" style={{position:'absolute',bottom:0,left:0,right:0,zIndex:100,elevation:20}}>{shareBar}</View>):<MinimizedCall name={name} status={status} video={video} stream={remote||localVisible} restore={restore} end={hangup}/>)}
- <Modal visible={!homeWindow&&!minimized} animationType="slide" onRequestClose={minimizeMedia}>
- {sharing?<View testID="axonic-screen-share-stage" style={{flex:1,backgroundColor:'#000',paddingTop:insets.top}}>
+ {call.room&&rtc.localStream&&call.room.legs.filter(l=>l.id!==anchor.id&&l.status==='ready'&&l.transport).map(leg=><GroupLeg key={leg.id} leg={leg} stream={rtc.localStream!} update={updateRemote} connected={onConnected} speaking={speaking} expansion={registerExpansion}/>)}
+ <CallSessionScreen participants={participants} name={name} status={status} video={video} avatarUri={avatarUri} avatar={!video||(!remote&&!localVisible)} background={background} show={showControls}
+ minimized={minimized} homeWindow={homeWindow} hideHome={rtc.isScreenSharing} homeStream={remote||localVisible} homeMirror={!remote&&!rtc.isScreenSharing} restore={restore} minimize={minimizeMedia} end={hangup}
+ minimizedContent={rtc.isScreenSharing?(!nativeShareControls?<View testID="axonic-sharing-bottom-bar" style={{position:'absolute',bottom:0,left:0,right:0,zIndex:100,elevation:20}}>{shareBar}</View>:null):undefined}
+ specialStage={sharing?<View testID="axonic-screen-share-stage" style={{flex:1,backgroundColor:'#000',paddingTop:insets.top}}>
   <StatusBar style="light"/>
   <View style={{flex:1,marginLeft:insets.left,marginRight:insets.right}}>
    {(rtc.remoteScreenSharing?remote:localVisible)&&<RTCView streamURL={(rtc.remoteScreenSharing?remote:localVisible)!} objectFit="contain" mirror={false} style={StyleSheet.absoluteFill} zOrder={0}/>}
   </View>
   {rtc.isScreenSharing&&!nativeShareControls&&shareBar}
- </View>:<CallLayout avatarUri={avatarUri} name={name} video={video} status={status} background={background} show={showControls} avatar={!video||(!remote&&!localVisible)}>
-  {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
-  {!!rtc.screenShareError&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{rtc.screenShareError}</Text>}
+ </View>:undefined}>
+ {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
+ {!!rtc.screenShareError&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{rtc.screenShareError}</Text>}
+ <CallControls video={video} muted={rtc.isMuted} mute={rtc.toggleMute} cameraOff={rtc.isCameraOff} sharing={rtc.isScreenSharing} camera={rtc.isScreenSharing?()=>void rtc.stopScreenSharing():rtc.toggleCamera} flip={rtc.switchCamera} options={()=>setOptions(true)} audioBluetooth={audioRoutes?.devices.find(d=>d.id===audioRoutes.selectedId)?.kind==='bluetooth'} end={hangup}/>
+ </CallSessionScreen>
+ <CallOptions visible={!homeWindow&&!minimized&&options} video={video} close={()=>setOptions(false)} audioRoutes={audioRoutes} routeAudio={routeAudio} error={error||audioError}
+ addPeople={canInvite?{available:connected&&rtc.canExpandCall&&audienceReady&&!rtc.recovering&&!rtc.isScreenSharing&&!rtc.remoteScreenSharing,open:()=>setAdding(true)}:undefined}
+ sharing={call.room?undefined:{active:rtc.isScreenSharing,busy:rtc.screenShareBusy,available:callScreenCaptureAvailable,toggle:()=>{if(rtc.isScreenSharing)void rtc.stopScreenSharing();else void startSharing();}}}
+ quality={{mode:rtc.videoQualityMode,select:rtc.selectVideoQuality,error:rtc.videoQualityError}}/>
+ {adding&&canInvite&&<GroupCallPicker name="Keep your current call connected" existingCount={audience.length} initialKind={call.media} members={contacts.filter(c=>!audience.includes(c.account)).map(c=>({id:c.account,name:c.alias||shortIdentity(c.account),blocked:c.blocked}))} onClose={()=>setAdding(false)} onCall={ids=>invite(ids)}/>}
 
-  <View style={[styles.actions,video&&{paddingHorizontal:8}]}>
-   <ActionButton size={video?52:64} icon={rtc.isMuted?'mic-off':'mic'} label={rtc.isMuted?'Unmute':'Mute'} active={rtc.isMuted} onPress={rtc.toggleMute} Colors={colors}/>
-   {video&&<ActionButton size={52} icon={rtc.isScreenSharing?'stop-circle-outline':rtc.isCameraOff?'videocam-off':'videocam'} label={rtc.isScreenSharing?'Stop share':rtc.isCameraOff?'Cam On':'Cam Off'} active={rtc.isScreenSharing||rtc.isCameraOff} onPress={rtc.isScreenSharing?()=>void rtc.stopScreenSharing():rtc.toggleCamera} Colors={colors}/>}
-   <EndButton video={video} onPress={hangup}/>
-   {video&&!rtc.isScreenSharing&&<ActionButton size={52} icon="camera-reverse-outline" label="Flip" onPress={rtc.switchCamera} Colors={colors}/>}
-   {video?<ActionButton size={52} icon="options-outline" label="Options" onPress={()=>setOptions(true)} Colors={colors}/>:<ActionButton icon={audioRoutes?.devices.find(d=>d.id===audioRoutes.selectedId)?.kind==='bluetooth'?'bluetooth':'volume-high-outline'} label="Audio" onPress={()=>setOptions(true)} Colors={colors}/>}
-  </View>
- </CallLayout>}
- {showControls&&!sharing&&<Pressable accessibilityRole="button" accessibilityLabel="Minimize call" testID="axonic-minimize-call" onPress={minimizeMedia} style={{position:'absolute',top:insets.top+12,left:insets.left+12,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="chevron-forward" size={28} color="#fff"/></Pressable>}
- </Modal>
- <Modal visible={!homeWindow&&!minimized&&options} transparent animationType="fade" onRequestClose={()=>setOptions(false)}>
-  <View style={[styles.optionsBackdrop,{paddingTop:insets.top+12,paddingBottom:Math.max(insets.bottom,12),paddingLeft:insets.left+12,paddingRight:insets.right+12}]}>
-   <Pressable accessibilityLabel="Close call options" onPress={()=>setOptions(false)} style={StyleSheet.absoluteFill}/>
-   <View testID="axonic-call-options" style={styles.optionsPanel}>
-    <View style={styles.optionsHeader}><Ionicons name={video?'options-outline':'volume-high-outline'} size={18} color={colors.primary}/><Text accessibilityRole="header" style={styles.optionsTitle}>{video?'Call options':'Audio output'}</Text><Pressable accessibilityRole="button" accessibilityLabel="Close options" onPress={()=>setOptions(false)} style={styles.optionsClose}><Ionicons name="close" size={22} color="#fff"/></Pressable></View>
-    <ScrollView style={{flexShrink:1}} contentContainerStyle={styles.optionsContent}>
-     {video&&<>
-      <TouchableOpacity accessibilityRole="button" accessibilityLabel={rtc.isScreenSharing?'Stop sharing screen':'Share screen'} disabled={rtc.screenShareBusy||!callScreenCaptureAvailable} onPress={()=>{setOptions(false);if(rtc.isScreenSharing)void rtc.stopScreenSharing();else void startSharing();}} style={[styles.audioChoice,styles.audioChoiceSelected,{marginBottom:12,opacity:rtc.screenShareBusy||!callScreenCaptureAvailable?0.5:1}]}>
-       <Ionicons name={rtc.isScreenSharing?'stop-circle-outline':'desktop-outline'} size={20} color={colors.primary}/><View style={{flex:1}}><Text style={styles.optionText}>{rtc.screenShareBusy?'Switching video…':rtc.isScreenSharing?'Stop sharing':'Share screen'}</Text><Text style={styles.optionDetail}>{!callScreenCaptureAvailable?'Update the Android app to share':rtc.isScreenSharing?'Return to your camera':'Show your screen instead of your camera'}</Text></View>
-      </TouchableOpacity>
-      <Text accessibilityRole="header" style={styles.optionsSection}>VIDEO QUALITY</Text>
-      <View style={styles.qualityChoices}>{([
-       ['automatic','Auto'],['low','Low'],['medium','Medium'],['high','High'],
-      ] as [VideoQualityMode,string][]).map(([mode,label])=><TouchableOpacity key={mode} testID={`axonic-video-quality-${mode}`} accessibilityRole="radio" accessibilityLabel={`${mode==='automatic'?'Automatic':label} video quality`} accessibilityState={{checked:rtc.videoQualityMode===mode}} onPress={()=>rtc.selectVideoQuality(mode)} style={[styles.qualityChoice,rtc.videoQualityMode===mode&&styles.qualityChoiceSelected]}><Text style={[styles.optionText,rtc.videoQualityMode===mode&&{color:colors.primary,fontWeight:'700'}]}>{label}</Text></TouchableOpacity>)}</View>
-      {!!rtc.videoQualityError&&<Text accessibilityRole="alert" style={styles.optionError}>{rtc.videoQualityError}</Text>}
-     </>}
-     {video&&<Text accessibilityRole="header" style={[styles.optionsSection,{marginTop:16}]}>AUDIO OUTPUT</Text>}
-     {!!error&&<Text accessibilityRole="alert" style={styles.optionError}>{error}</Text>}
-     {audioRoutes&&[{id:'automatic',label:'Automatic',name:'',kind:'other' as const},...audioRoutes.devices].map(device=>{
-      const selected=device.id==='automatic'?audioRoutes.automatic:!audioRoutes.automatic&&device.id===audioRoutes.selectedId;
-      const inUse=device.id===audioRoutes.selectedId;
-      const icon=device.kind==='bluetooth'?'bluetooth':device.kind==='speaker'?'volume-high-outline':device.kind==='phone'?'phone-portrait-outline':device.kind==='wired'||device.kind==='usb'?'headset-outline':'sync-outline';
-      return <TouchableOpacity key={device.id} accessibilityRole="radio" accessibilityLabel={device.name?`${device.label}: ${device.name}`:device.label} accessibilityState={{checked:selected}} onPress={()=>void routeAudio(device.id)} style={[styles.audioChoice,selected&&styles.audioChoiceSelected]}>
-       <Ionicons name={icon} size={20} color={selected?colors.primary:'rgba(255,255,255,0.7)'}/>
-       <View style={{flex:1}}><Text style={styles.optionText}>{device.label}</Text>{!!device.name&&<Text numberOfLines={1} style={styles.optionDetail}>{device.name}</Text>}</View>
-       {inUse&&<Text style={styles.routeInUse}>In use</Text>}
-       {selected&&<Ionicons name="checkmark" size={18} color={colors.primary}/>}
-      </TouchableOpacity>;
-     })}
-    </ScrollView>
-   </View>
-  </View>
- </Modal>
  </>;
 }

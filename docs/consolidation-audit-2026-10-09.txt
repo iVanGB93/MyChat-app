@@ -1,3 +1,5 @@
+Historical audit; retired numeric-account mailbox/binding support and its test adapters were removed on 2026-10-28. See current-system-cleanup-2026-10-28.md.
+
 AXONIC CONSOLIDATION AUDIT — OCTOBER 9, 2026
 
 Outcome

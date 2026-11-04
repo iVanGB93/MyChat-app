@@ -1,0 +1,11 @@
+Floating navigation — 2026-10-28
+
+Social / Games / Profile visible labels; internal Chats/Game route keys preserved for notification routing. Bottom tabs use a rounded dark surface, cyan outline, active icon highlight and a safe-area-aware lower margin. Bar remains in layout (not a content overlay), so list and profile scroll content retain their full reachable viewport. It remains absent in conversation routes.
+
+Shared FloatingHeader surface applied to tab and native-stack headers. Uses navigation Header for back semantics, titles, existing custom contact identity and action controls; system top inset stays outside the rounded surface. Call modal still has no header. No blur dependency/native rebuild.
+
+Verified in Axonic Dev on connected R3GYC0H7PMY: Social labels and floating surfaces render, private contact header retains avatar/name/mute/video/voice actions, latest message/composer unobscured. TypeScript, module boundaries, and service-cycle checks pass. No data deletion, production build, install, push or AoN change.
+
+Follow-up: Social now scrolls behind the top header and absolute-positioned bottom pill. Transparent header surroundings expose the list; first/last rows have scroll padding. Selection/unread/error bars stay reachable below the header. New-chat action moved above the pill. Profile gets bottom scroll clearance. Selected tabs change color only (no icon background, scale or fill change).
+
+Chat follow-up: connection status colors the header bottom border with no inset gap; private/group headers overlay conversation content. Composer/typing/reply/edit/preparation stack now overlays the list, measured on layout; the inverted-list spacer reserves its actual height plus pull-reveal space. This allows history to pass behind the input while newest messages remain reachable above it. Dev phone visually verified with keyboard open and older history scrolled behind the pill; no message sent. TypeScript, module boundaries and six scroll/render tests pass.

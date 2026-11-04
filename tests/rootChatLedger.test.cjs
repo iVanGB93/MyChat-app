@@ -2,6 +2,25 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const out=require('./helpers/attachment.cjs').load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),id='1'.repeat(64);
 
+test('ledger work diagnostics record failed work and queue continues without losing later writes',async()=>{
+ let raw=null,fail=true;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async value=>{if(fail)throw Error('fixture write');raw=value;}});
+ await assert.rejects(ledger.configure(b,{accepted:true}),/fixture write/);
+ fail=false;await ledger.configure(b,{accepted:true});
+ assert.equal((await ledger.snapshot()).contacts[0].accepted,true);
+ const d=ledger.diagnostics();assert.equal(d.mutationWork.calls,2);assert.equal(d.mutationQueue.calls,2);assert.equal(d.snapshotWork.calls,1);assert.equal(d.scopePreparation.calls,3);
+ for(const key of ['mutationWork','snapshotWork','scopePreparation'])assert(d[key].milliseconds>=0);
+});
+
+test('confirmed storage relay persists separately from the final payload route and deduplicates retries',async()=>{
+ const f=fixture(),relay='axonic:1:'+'c'.repeat(64),other='axonic:1:'+'d'.repeat(64);
+ await f.ledger.enqueue(b,id,'route');await f.ledger.networkStored(b,id,200000,false,relay);await f.ledger.networkStored(b,id,200000,false,relay);
+ await f.ledger.networkStored(b,id,200000,false,other);
+ let m=(await f.ledger.snapshot()).messages[0];assert.deepEqual(m.messageStorageRelays,[relay,other]);assert.equal(m.messageDelivery,undefined);
+ const proof={version:1,method:'custody',scope:'payload',relays:[other],at:100000,partial:false};await f.ledger.delivered(b,id,proof);
+ m=(await f.ledger.snapshot()).messages[0];assert.deepEqual(m.messageDelivery,proof);assert.deepEqual(m.messageStorageRelays,[relay,other]);assert(!out.encodeRootMessage(m).includes('messageStorageRelays'));
+});
+
 test('revision cache reuses persisted bytes but not mutable snapshots or external updates',async()=>{
  let raw=null,revision=0,reads=0,active=true;
  const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,revision:()=>revision,read:async()=>{reads++;return raw;},write:async value=>{raw=value;revision++;}});
@@ -286,3 +305,76 @@ test('incoming admission uses one history read per serialized operation and keep
  assert.equal(await ledger.receive(b,id,out.encodeRootChat(a,id,'conflict')),false);assert.equal(reads,3);assert.equal(writes,1);
  assert.equal(JSON.parse(raw).messages[0].text,'hello');
 });
+
+
+test('network projections exclude delivered history and reuse validated views without decoding it',async()=>{
+ const messages=Array.from({length:500},(_,i)=>({id:i.toString(16).padStart(64,'0'),peer:b,direction:'outgoing',text:'history '+i,at:1000,status:'delivered'}));messages.push({...messages[0],id:'f'.repeat(64),status:'pending'});
+ let raw=JSON.stringify({version:1,contacts:[{account:b,alias:'Peer',accepted:true,blocked:false}],messages}),revision=0,reads=0;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,revision:()=>revision,read:async()=>{reads++;return raw;},write:async value=>{raw=value;revision++;}});
+ const meta=await ledger.metadataSnapshot(),delivery=await ledger.deliverySnapshot();assert.equal(meta.messages.length,0);assert.equal(delivery.messages.length,1);
+ assert.deepEqual(out.pendingRootChat(delivery,a),out.pendingRootChat(await ledger.snapshot(),a));
+ const decodes=ledger.diagnostics().historyDecode.calls;meta.contacts[0].blocked=true;delivery.messages[0].text='changed by caller';
+ for(let i=0;i<20;i++){assert.equal((await ledger.metadataSnapshot()).contacts[0].blocked,false);assert.equal((await ledger.deliverySnapshot()).messages[0].text,'history 0');}
+ assert.equal(ledger.diagnostics().historyDecode.calls,decodes);assert.equal(reads,1);
+ await ledger.configure(b,{blocked:true});const afterCommit=ledger.diagnostics().historyDecode.calls;
+ assert.equal((await ledger.metadataSnapshot()).contacts[0].blocked,true);assert.equal(out.pendingRootChat(await ledger.deliverySnapshot(),a).length,0);assert.equal(ledger.diagnostics().historyDecode.calls,afterCommit);
+});
+
+test('network views invalidate on external revision, failed write and explicit lock cleanup',async()=>{
+ let raw=null,revision=0,active=true,fail=false;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,revision:()=>revision,read:async()=>raw,write:async v=>{raw=v;if(fail)throw Error('uncertain');revision++;}});
+ await ledger.configure(b,{accepted:true});await ledger.metadataSnapshot();let state=JSON.parse(raw);state.contacts[0].blocked=true;raw=JSON.stringify(state);revision++;
+ assert.equal((await ledger.metadataSnapshot()).contacts[0].blocked,true);
+ fail=true;await assert.rejects(ledger.configure(b,{blocked:false}),/uncertain/);assert.equal((await ledger.metadataSnapshot()).contacts[0].blocked,false);
+ active=false;ledger.invalidateReadCache();await assert.rejects(ledger.metadataSnapshot(),/Unlock/);await assert.rejects(ledger.deliverySnapshot(),/Unlock/);
+ active=true;raw='invalid';await assert.rejects(ledger.metadataSnapshot());
+});
+
+test('network read rejects revision changes during cold read instead of caching stale policy',async()=>{
+ let revision=0,release;const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,revision:()=>revision,read:()=>new Promise(r=>release=r),write:async()=>{}});
+ const p=ledger.metadataSnapshot();await new Promise(r=>setImmediate(r));revision++;release(null);await assert.rejects(p,/Chat changed/);
+});
+
+test('network projection without revision never assumes an unchanged store',async()=>{
+ let raw=null,reads=0;const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>{reads++;return raw;},write:async v=>{raw=v;}});
+ await ledger.metadataSnapshot();await ledger.metadataSnapshot();assert.equal(reads,2);
+});
+
+test('delivery projection retains pending group controls and actions with current policy',async()=>{
+ let raw=null,rev=0;const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,revision:()=>rev,read:async()=>raw,write:async v=>{raw=v;rev++;}});
+ await ledger.configure(b,{accepted:true});await ledger.enqueue(b,id,'original');await ledger.delivered(b,id);await ledger.act(b,'2'.repeat(64),{id,author:a},'edit','edited');
+ await ledger.createGroup('3'.repeat(64),'4'.repeat(64),'Group',[a,b]);await ledger.enqueueGroup('3'.repeat(64),'5'.repeat(64),'group text');
+ assert.deepEqual(out.pendingRootChat(await ledger.deliverySnapshot(),a),out.pendingRootChat(await ledger.snapshot(),a));
+ await ledger.cancelNetworkWork(100000);assert.deepEqual(out.pendingRootChat(await ledger.deliverySnapshot(),a),[]);
+});
+
+
+test('network receipt and incoming indexes preserve exact peer, direction and control membership',async()=>{
+ let raw=null,rev=0;const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,revision:()=>rev,read:async()=>raw,write:async v=>{raw=v;rev++;}});
+ await ledger.configure(b,{accepted:true});await ledger.enqueue(b,id,'outgoing');await ledger.delivered(b,id);
+ assert.equal(await ledger.hasOutgoingReceipt(b,id),true);assert.equal(await ledger.hasOutgoingReceipt(a,id),false);assert.equal(await ledger.hasReceived(b,id),false);
+ const incoming='9'.repeat(64);await ledger.receive(b,incoming,out.encodeRootChat(a,incoming,'incoming'));
+ const before=ledger.diagnostics().historyDecode.calls;assert.equal(await ledger.hasReceived(b,incoming),true);assert.equal(await ledger.hasOutgoingReceipt(b,incoming),false);assert.equal(await ledger.hasReceived(a,incoming),false);assert.equal(ledger.diagnostics().historyDecode.calls,before);
+ await ledger.act(b,'2'.repeat(64),{id,author:a},'edit','new');assert.equal(await ledger.hasOutgoingReceipt(b,'2'.repeat(64)),true);assert.equal(await ledger.hasOutgoingReceipt(b,'2'.repeat(64),true),false);
+ await ledger.createGroup('3'.repeat(64),'4'.repeat(64),'Group',[a,b]);const full=await ledger.snapshot();for(const packet of full.groupPackets??[])assert.equal(await ledger.hasOutgoingReceipt(packet.peer,packet.id),true);
+});
+
+
+
+test('locking during a warm queued network query prevents its cached result escaping',async()=>{
+ for(const method of ['metadataSnapshot','deliverySnapshot','hasReceived','hasOutgoingReceipt']){
+  let active=true;const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>active,revision:()=>0,read:async()=>null,write:async()=>{}});await ledger.metadataSnapshot();
+  const pending=ledger[method](b,id);await Promise.resolve();active=false;await assert.rejects(pending,/Unlock/);
+ }
+});
+
+ test('removing a saved contact preserves group membership and refuses a reopened chat',async()=>{
+ let raw=null;const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async v=>{raw=v;}});
+ await ledger.configure(b,{alias:'Saved',accepted:true});
+ await assert.rejects(ledger.removeSavedContact(b),/Clear that chat first/);
+ await ledger.deleteChats([b]);
+ const before=await ledger.snapshot();await ledger.removeSavedContact(b);
+ const after=await ledger.snapshot();assert.equal(after.contacts.length,0);assert.deepEqual(after.groups,before.groups);assert.deepEqual(after.removedMessages,before.removedMessages);assert.deepEqual(after.messages,before.messages);
+ await ledger.removeSavedContact(b);
+ await ledger.configure(b,{accepted:true});await ledger.deleteChats([b]);await ledger.configure(b,{accepted:true});await assert.rejects(ledger.removeSavedContact(b),/Clear that chat first/);assert.equal((await ledger.snapshot()).contacts.length,1);
+ });

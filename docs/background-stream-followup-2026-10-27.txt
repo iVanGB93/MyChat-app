@@ -1,0 +1,29 @@
+Follow-up investigation — October 27, 2026
+
+Direct-stream source handoff fix
+- Reproduced a real adapter race in controlled tests against the original committed adapter: both adoption-during-admission and adoption-at-open fail.
+- Sender previously cached a File object before waiting for channel admission. Gallery adoption can delete that private path and install its canonical media reference during the await.
+- Resolve immediately before opening. If open fails, retry only if canonical URI changed; otherwise retain the original failure. No file recreation, no bypass of policy or final checksum.
+- Updated adapter passes both races and deleted-source refusal. 20 adapter tests pass; diagnostic tests also pass (32 combined).
+- This is a verified code defect, but the production 8.8 MB abort remains historically uncorrelated to the exact failure stage.
+
+CPU measurement
+- Both Dev apps backgrounded for about 50.6 seconds, then foregrounded.
+- Wife Dev: process CPU +245ms over 50,572ms elapsed (~0.484% of one core).
+- Main Dev: +226ms over 50,574ms (~0.447% of one core).
+- Both runtime snapshots null throughout sampled background checks. Measurement includes debugger overhead; screens remained on. This is not a Doze/overnight test or proof that Android will never stop the processes.
+
+Pending-media investigation
+- Added bounded read-only active-job summary to diagnostic export: phases, retries, receipt presence, connected/blocked recipient counts and absent active job count. Exact descriptor ID/direction/recipient used internally; no IDs, file names, paths or contents exported. Unavailable read reports unavailable, not an empty queue.
+- Verified summary generation locally in both Dev apps; no diagnostic message sent.
+- Three pending entries in wife Dev had no active job. Individual read-only get found all three archived as expired, without receipts; no data changed. These are historical Dev fixtures, NOT wife's production records. Her production report's 14 media authorizations were still live and cannot be explained by this Dev expiry finding.
+- Production aggregate report cannot identify which recipients/jobs are pending. Exact live backlog attribution remains open; new diagnostic fields require a future build before they are available from the official app.
+
+Live follow-up transfers
+- Two 5,322,979-byte gallery test sends through normal picker staging between approved Dev identities; both received checksum verified.
+- Overall observed completion: 12,570ms and 5,119ms (includes setup and test polling).
+- Latest direct sender 2,262ms; receiver 2,252ms; zero prior verified blocks.
+- No production phone installation, state clearing, message deletion, commit, push, AoN deployment or production build.
+
+Evidence: review-1130-background-cpu.json; review-original-stream-regression.log; review-1130-stream-race-tests.log; review-1130-followup-tests.log; review-1130-followup-check.log, under builds/.
+Validation: full npm run check passed (typecheck, unit tests, service cycles, module boundaries, consolidation and assets); git diff --check passed.

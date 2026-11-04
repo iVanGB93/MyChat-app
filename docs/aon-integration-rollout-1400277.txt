@@ -1,0 +1,49 @@
+AoN integration rollout verification (2026-10-23 UTC / October 22 EDT)
+
+Authorization: deploy tested server fix to all three AoNs and update SecondNeuron
+MCP and ATOMiX OpenClaw after backups. Preserve all live data and keep server
+enforcement off. No phone installation, reset, or message deletion performed.
+
+Pushed on codex/operator-foundations-20261022:
+14002773969378e81c0edb81b833cde6bf9d0f01
+  fix(chat): validate encoded group reply size and expose actionable errors
+0f1c5d4
+  fix(openclaw): keep plugin admission config stable and declare operator tools
+Unrelated dirty Axonic-neuron main worktree was not modified.
+
+All three AoN servers: package 0.2.0, source 1400277, clean/runtime_bound,
+runtime 692b587f5852b7111b3f737cc10dd40818fa2dc777b1920977882e0d9a814b01.
+Authenticated status/owner binding/policy checks passed. Enforcement remains off.
+Group fix preflights actual encoded per-recipient quoted packets and reports
+message_packet_too_large instead of generic group_not_completed. It does not
+increase the protocol packet limit or split messages automatically.
+
+FirstNeuron backup: /var/backups/integration-1400277 on DigitalOcean.
+ThirdNeuron backup: /var/backups/integration-1400277 inside WSL.
+SecondNeuron backup: /data/operator-backups/integration-1400277/data.tar.
+SecondNeuron deployment: 60213fcc-a3f5-4fb8-96b5-0089fb8a8528 SUCCESS.
+MCP backup: /var/lib/axonic-mcp/backups/integration-1400277.
+MCP deployment: 193df762-d929-43ef-9246-be9f2052a7ed SUCCESS.
+OpenClaw backup: /var/backups/openclaw-integration-1400277 inside WSL.
+
+Regression tests: server 266/266, MCP 42/42, OpenClaw 51/51 against installed SDK.
+OpenClaw deployed channel includes source 1400277 plus manifest fix 0f1c5d4.
+Windows-copy permissions initially caused plugin admission failure; original
+plugin alone was restored (no state rollback), replacement permissions corrected,
+declared tool capabilities accepted, and replacement reactivated successfully.
+Gateway final check: active/running, NRestarts=0. Axonic ready/connected, SSE
+connected, no lastError, incremental sync, no pending work. Existing channel
+cursor ...815 and 70 handled IDs preserved at rollout verification.
+Authenticated channel operator-memory read returned installed correct binding.
+
+MCP final check 02:42 UTC: sync ready, resetRecovery=false, existing two listener
+IDs retained, cursors advanced from 377 to 380. Both show native_refresh renewal
+to expiresAt 1792724320000; accepted diagnostic webhook after deployment.
+Processing declarations increased to 71. These counters alone do not prove
+that Axon processed a particular new group acceptance test.
+
+Not yet proven: end-to-end parity of all new operator tools in each AI runtime,
+held-outage message catch-up on Muse's live listener, invocation-ID correlation,
+and low response latency. Previous automatic Muse test was ~103 seconds; prior
+reconnection was proven but test message arrived after reconnect, not during
+a held outage. Do not label full integration complete or enforcement active.

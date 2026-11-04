@@ -1,0 +1,15 @@
+Background media investigation — October 29, 2026
+
+Scope: production report/Android evidence reviewed separately in diagnostic-review-1134-2026-10-29.txt. This work changes source and the separate Dev client only. No messages/jobs/grants deleted, no forced completion, no official installation, production build, commit or AoN deployment.
+
+Changes:
+- Notification state separates preparation, sending and waiting for confirmation/connection. Initial native admission says checking pending media. Waiting is indeterminate rather than a misleading zero-percent upload. Pending work remains durable; the notification may legitimately remain while Android owns that background job.
+- Cached work is refreshed at the earliest unresolved grant expiry even without a progress event. Existing event subscriptions still drive queue reads; the existing native OS-stop/deadline watchdog remains. No extra polling loop added.
+- Group recipient records reuse one scoped message snapshot per message ID during each observation instead of reopening it for every recipient.
+- Shared attachment worker retains fast initial custody receipt checks, then backs off repeated unchanged held responses: 2,4,8,16,30 seconds maximum. Direct signed-receipt events reset durable eligibility to zero, bypassing the fallback delay. Receipt verification and successful custody publication remain required. Backoff is transient, cleared on lifecycle invalidation and pruned when jobs leave confirmation. No file-size, grant-duration or recipient limits changed; no new forced inactivity timeout.
+
+Validation: final npm run check passed 1,706 tests, 3 optional benchmark skips, zero failures; TypeScript, dependency cycles, module boundaries, consolidation and asset references passed. Regression coverage includes phase-only notification updates, group snapshot sharing, expiry refresh without events, custody backoff bypass by signed receipt, fast initial completion, failed publication and durable-state preservation. Kotlin compilation and local Dev APK assembly passed. The phone check caught a native rendering call still using the old text; corrected before final Dev validation.
+
+Physical phone validation: com.axonic.dev updated using install -r. Dev identity and existing pending job digest preserved; no new messages or files sent. With the existing queued job (cursor 0), background notification now reads "Waiting for transfer confirmation or connection · 1 transfer". Foreground return removes the Dev media notification. Official com.axonic version/update timestamp unchanged. Artifacts: upload-dev-before.json, upload-dev-after.json, upload-state-dev-build.log, background-review-check-final-20261029.log (under ignored builds).
+
+Limitations: this does not establish the cause of every historical transfer or the 20-second recovery receipt timeout. Waiting notification does not prove bytes moving. Existing Android execution budget is retained. General connection-control contention and relay-to-sender push notification support need separate end-to-end investigation; polling fallback remains intentionally available for missed receipts.

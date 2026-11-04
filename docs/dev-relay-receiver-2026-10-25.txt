@@ -1,0 +1,67 @@
+Relay receiver investigation — 2026-10-25
+
+Scope
+- Two physical com.axonic.dev clients updated locally with install -r.
+- Normal apps untouched. No history, identity, queues or messages deleted/reset.
+- No commit/push, AoN deployment or production build.
+- Shared canonical sources synchronized into builds/aon-operator-20261022 only.
+
+Changes
+1. attachmentBatch: validate exact base64 padding and zero unused bits instead
+   of re-encoding a complete 3 MB block to check canonical spelling. Signature
+   verification and AEAD remain mandatory; decoded data alone is not trusted.
+2. attachmentProtocol/Transfer: optional asynchronous platform decrypt primitive.
+   Shared code verifies sender signature and requested block identity before the
+   primitive, checks returned length, and retains final file checksum/receipt rules.
+   Native failures never fall back. Lock/cancel after await prevents writes and
+   publication; plaintext/key buffers are cleared. Portable JS remains for hosts
+   without the optional primitive.
+3. Android AttachmentBlockEncryption: bounded native XChaCha20-Poly1305 decrypt
+   on existing bounded worker. Same canonical AAD, SHA256-derived 24-byte nonce,
+   key and ciphertext/tag as v4. Checks lengths/encoding; failed plaintext erased.
+4. Fixed-stage diagnostics separate decode, synchronous verification/portable
+   decryption, and asynchronous native decryption. No content/keys/paths logged.
+
+Measurements (decimal MB, sender offline during receive, FirstNeuron custody)
+- Baseline 5 MB main receiver: 19,776 ms observed.
+- Canonical-codec change only: 19,186 ms; verify/decrypt 4,783 ms,
+  decode 998 ms, cumulative bulk request time 6,734 ms.
+- Native 5 MB main receiver: 17,834 ms; verify 357 + decrypt 361 ms,
+  decode 934 ms, cumulative bulk request time 10,084 ms.
+- Native 5 MB reverse/second receiver: 7,541 ms; verify 281 + decrypt 287 ms.
+- Native 10 MB main receiver: 27,235 ms; verify 817 + decrypt 1,314 ms,
+  decode 2,349 ms, cumulative bulk request time 21,076 ms,
+  writes 26 ms and final checksum 14 ms.
+- Receive observation starts AFTER the Dev debugger reconnects/unlocks, not at
+  file creation or receiver launch. Requests overlap; aggregate stages cannot
+  be summed to explain wall time. Single runs and different phones do not prove
+  a stable throughput improvement. Processing improvement is measured separately.
+- All file hashes matched and receivedSources proved relay delivery with sender
+  offline. Both Dev clients restored and pre-test identities/message keys retained.
+
+Validation
+- Mobile full suite: 1537 passed, 3 skipped, 0 failed.
+- Additional async-native lock/cancel regression tests: both passed.
+- Hosted suite: 313 passed; shared source parity and hosted typecheck passed.
+- Mobile typecheck, module boundaries (90 UI files), dependency cycles passed.
+- Native Dev build succeeded, package com.axonic.dev/versionCode98 checked.
+- Native equivalence tested on BOTH phones: 1 byte, 1 MB, 3 MB, final partial
+  block, shared AAD; wrong key/ciphertext/AAD rejected. Isolated in-memory tests.
+
+Remaining investigation
+- Network/source preparation and startup waits still vary, dominating full receive.
+- relayBlockStream currently uses 8 x 8000-byte records (64 KB outstanding),
+  credit every four. Larger bounded window is a candidate, not a measured fix.
+  Download improvement there needs tested AoN sender changes and authorization
+  before deployment. No flow-control/window change made in this pass.
+
+Evidence
+builds/relay-receive-baseline.json
+builds/relay-receive-codec.json
+builds/relay-receive-native.json
+builds/relay-receive-native-reverse5.json
+builds/relay-receive-native10.json
+builds/native-decrypt-equivalence.json
+builds/relay-receiver-all-tests.log
+builds/relay-receiver-hosted-tests.log
+builds/relay-receiver-dev-build.log

@@ -1,0 +1,24 @@
+Group membership/recovery and read-marking - Dev acceptance, October 27
+
+Implemented portable indexed scopes for create/update/leave/configure membership,
+owner recovery confirmation, recoverGroupsForPeer, inbound membership/recovery,
+and markGroupRead. Legacy adapters retain their existing behavior. Dev-only SQLite
+rollout remains in place; no official-app installation or AoN deployment.
+
+Live read-only comparison on Dev: complete ledger 2,960 records. Control query
+returned 864 outgoing packet records, zero chat bodies and zero replay bodies in
+36.89 ms. Existing groups/packet history matched the full-state baseline exactly.
+The selected group had no unread messages/actions: query completed in 7.44 ms.
+Both queries performed zero full-history reads. No real group writes/receipts.
+
+An isolated in-memory database on the same phone exercised group creation,
+incoming delivery, repeated mark-read and repeated recovery using synthetic
+records, with no network hooks. All 201 messages preserved, exactly one read
+receipt, four rows read during measured operations, zero full-history reads.
+
+Regression coverage includes full-ledger parity, incoming replay conflicts,
+private-history packet collisions, read-receipt rollback, deleted-message read
+semantics, signed recovery/confirmation, and global unseen replay limits at
+20,000 records and 16 MiB (including multibyte Unicode). No data reset or deletion.
+Control scopes retain outgoing control history for retry/dedup semantics; this
+work does not claim that those records are bounded by the pending queue alone.

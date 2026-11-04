@@ -1,0 +1,89 @@
+Physical Dev acceptance — 2026-10-23 (in progress)
+
+Phone R3GYC0H7PMY / SM-S948U1; emulator-5554 Dev peer.
+Locally built arm64 debug APK, verified com.axonic.dev, installed with -r.
+Dev advanced from 1.1.26/code97 to 1.1.27/code98. Identity unchanged.
+Official com.axonic remains 1.1.27/code98, lastUpdateTime 2026-10-23 10:11:19.
+No production build, normal-app installation, data reset or history deletion.
+
+Passed live:
+- Bidirectional text and read receipts; corrected small-file helper passes 18,944-byte checksum.
+- Shared chat index and transfer subscriptions: both owners match, prior messages preserved.
+- 5,000,000-byte checksum, canonical MediaStore storage on both endpoints.
+- Forwarding on physical phone reuses the received content URI.
+- 1,000,000 and 10,000,000-byte files both directions: exact byte size and checksum.
+- Dev force-stop/reopen: queued incoming message arrives exactly once; identity/history retained.
+- Voice call: direct P2P ready both endpoints; hang-up clears signal/media projections on both.
+- Video: connected direct host/prflx candidate path, phone 720p30 received at emulator;
+  first sample zero packet loss, dropped frames or freezes. Emulator camera about 8fps.
+- In-memory custody event tests in all three Dev runtimes: 1,000 idle cycles, ACK,
+  event resumes work, 100 state changes coalesce to one run. Not a live relay proof.
+
+Performance finding (single observations, decimal MB; includes fixture preparation,
+enqueue/CDP and completion polling; excludes subsequent checksum and media export):
+1 MB phone->emulator 19,582ms; emulator->phone 2,289ms.
+10 MB phone->emulator 6,842ms; emulator->phone 41,112ms.
+Integrity passes, latency consistency does NOT. Transport was not attributed per file.
+10 MB incoming initially reported private storage at delivery; later confirmed canonical
+MediaStore export completed. Do not interpret the initial sample as a permanent duplicate.
+
+Rendering: cumulative Dev gfxinfo before reconnect showed 522 frames, 75 janky (14.37%),
+median5ms/p95 17ms/p99 34ms. Includes startup, instrumentation and calls; not a controlled
+scroll benchmark or production FPS assessment.
+
+Test helper repairs only: use hashRootAttachmentFile for File/SharedMediaFile; explicit
+Dev target-pair selection for existing emulator harnesses. No app behavior fix claimed.
+
+Evidence: builds/phone-acceptance-baseline-20261023.json,
+builds/phone-global-state-result-20261023.json,
+builds/phone-single-copy-result-20261023.json,
+builds/phone-acceptance-20261023.json,
+builds/phone-acceptance-transfer-diagnostics-20261023.json.
+
+Screen-share follow-up: user approved capture and scrolled; confirmed screen-capture
+track 738x1598 at a 15fps cap, direct host/prflx connection. Five samples showed receiver
+decoded frames rising 834->1024, zero packet loss/dropped frames, instantaneous fps5-15.
+Freeze count increased24->34 (duration49.303->59.329s): pauses are recorded, cause not
+isolated from static-screen cadence/emulator behavior. User reports working fine.
+Evidence: builds/phone-screen-share-samples-20261023.json. No cross-device clock subtraction.
+After Stop sharing, phone camera resumed1280x720/30fps and emulator received30fps.
+Ended only the instrumented Dev call, restored test instrumentation, baseline history
+preserved on both endpoints. This proves functional capture/stop, not remote TURN performance.
+
+Still pending: controlled phone scrolling, original photo-picker/voice/video media UI flow, live forced
+relay/background notification tests and per-transfer slow-path attribution.
+Video test call is now ended.
+Do not mark all changes or production readiness verified yet.
+
+Follow-up checks and scoped fix
+------------------------------
+Added a <=1.5s readiness window only after an eligible authenticated RTC promotion
+was requested and the first stream request returned unavailable. Lease checks continue
+every100ms; unsupported peers skip the wait; no opened lane is restarted. Relay format,
+DTLS protection, checksums, authorization and receipt rules unchanged. Added successful
+stream elapsed-time diagnostics (metadata only). This addresses a startup race, not all
+observed latency. No AoN deployment or production build performed.
+Regression tests: late route promotion succeeds; revocation during promotion stays closed.
+Focused stream tests37/37; full suite1455pass/3skip; typecheck/cycles/modules/consolidation/
+assets passed. Existing unrelated working-tree changes preserved.
+
+Before modification, warm direct-stream repeat: 1MB2.493/3.599s; 10MB6.964/8.042s
+(phone->emulator / reverse). Logs confirm direct streams. This was not a fix speedup.
+After restart with fix: 1MB11.095/3.687s; 10MB5.818/23.280s. All checksums pass.
+First cold send still materialized fallback (readFile4.896s); slow reverse10MB accumulated
+10.463s in sender network calls. No stable performance gain established; no claim that
+the 41s problem is fully fixed. Per-file timing deltas saved in builds/phone-transfer-*.json.
+
+Background phone delivery passed: one OS preview, no generic notification, read receipt
+adds no sender notification; observed delivery6.602s.
+User-selected photo5,322,979bytes delivered; checksum and decoder2240x4000 on both sides;
+sender's canonical URI equals selected original (no permanent duplicate).
+Live relay-only5MB passed: phone offline during upload, sender force-stopped before phone
+download; sourceCoverage true, receivedSources contains AoN77fe994d...df0df0fa, not sender;
+checksum verified, receive observation10.522s. Both Dev apps restored and history retained.
+First harness attempt queried during startup unlock; fixed harness readiness, repeated.
+Controlled chat scroll: eight swipes,485frames,2janky(0.412%); Dev debug sample, not release.
+
+Remaining: explain transfer latency variance/network waits and fallback materialization;
+screen-capture pause attribution; voice-note/video attachment UI flows not covered by the
+photo/file tests. Normal app untouched, no test history deleted, no release sign-off.

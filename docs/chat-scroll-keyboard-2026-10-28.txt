@@ -1,0 +1,5 @@
+Chat keyboard and scroll follow-up — 2026-10-28
+
+Private and group lists share useChatScroll. Keep offset 56 at rest over a 56dp inverted-list header; dragging toward newest reveals temporary room above the floating sticker control, then settles back on release. Follow viewport/content changes only near newest and outside active dragging. Older message anchoring remains native; the spacer is excluded as an anchor (minIndexForVisible 1). No timers/polling added; pending animation frames cancel on scope cleanup.
+
+Validation: TypeScript passes; six focused scroll/render tests pass; module boundaries pass. On R3GYC0H7PMY Axonic Dev, opened Second Phone Dev, opened keyboard, typed and sent one Layout check test message to that Dev identity. New bubble and timestamp visible above composer/keyboard after settling; temporary pull gesture exercised. Returned to chat list with draft empty. Official app, stored history and release AAB unchanged. No release rebuild or deployment.

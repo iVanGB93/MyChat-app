@@ -1,5 +1,6 @@
 import Native from '../../modules/axonic-nearby';
 import {AppState} from 'react-native';
+import {GROUP_CALLS_ENABLED} from '../modules/calls/features';
 import {hexToBytes} from '@noble/hashes/utils.js';
 import {localAccount} from '../services/identity/localAccount';
 import {createRootAccountCalls} from '../services/identity/rootAccountCalls';
@@ -23,7 +24,7 @@ export function createMobileCallSession(account:string,d:{
         store:createMobileCallJournalStore(),list:()=>listMobileCallJournals(account),
         listPending:()=>listMobileCallJournals(account,Date.now()),current,
         now:Date.now,random:async()=>hexToBytes(await Native!.identityRandomBytes!(32)),
-        contacts:async()=>(await d.chat()).contacts,
+        contacts:async()=>(await d.chat()).contacts,groups:async()=>GROUP_CALLS_ENABLED?(await d.chat()).groups??[]:[],
         contactsRevision:()=>ownChatRevision(account),eventCallPeer:peer=>d.network().eventCallPeers().includes(peer),inboxChanged:peer=>d.inboxChanged(peer),
         wakes:{pending:()=>pendingRootCallWakes(account),finish:id=>{
           const view=callRuntime.coordinator.snapshot();
@@ -31,10 +32,10 @@ export function createMobileCallSession(account:string,d:{
         }},
         changed:view=>{if(!current())return;Native?.axonCallSetupWindow?.(view&&view.status!=='ready'&&view.status!=='ended'?Math.max(0,Math.min(65000,(view.expiresAt??Date.now())-Date.now())):view?.status==='ended'?5000:0);d.wake();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&current())return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});d.changed(view);}});
       d.activate(callRuntime);
-      const noticeLifecycle=AppState.addEventListener('change',()=>{if(!current())return;d.wake();const view=callRuntime.coordinator.snapshot();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&current())return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});});
+      const noticeLifecycle=AppState.addEventListener('change',()=>{if(!current())return;if(AppState.currentState==='active')void callRuntime.recoverWakes().catch(()=>{});d.wake();const view=callRuntime.coordinator.snapshot();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&current())return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});});
       const stopNotice=()=>noticeLifecycle.remove();
       const device=localAccount.callDevice()!;
-      const push=startRootPushRegistration(current,(peer,raw)=>d.network().pushRequest(peer,raw));
+      const push=startRootPushRegistration(current,(peer,raw)=>d.network().pushRequest(peer,raw),()=>d.network().pushPeers());
       
       void registerRootCallWakeOwner(account,device).catch(()=>{});
 

@@ -120,6 +120,13 @@ export function stageRootAttachmentSource(owner:string,id:string,uri:string,shar
  else {const target=rootAttachmentSource(owner,id);if(target.exists)throw Error('Attachment already staged');source.copy(target);}
  const origin=new File(uri+'.axonic-origin.json');if(origin.exists){const value=JSON.parse(origin.textSync());if(typeof value.uri==='string'&&isSharedMediaUri(value.uri))new File(sharedId?folder(owner,sharedId,true):directory,'origin.json').write(JSON.stringify({uri:value.uri}));}
 }
+/** Restaging a rejected description retains the original gallery reference. */
+export function restageRootAttachmentSource(owner:string,id:string,previousId:string,sharedId?:string){
+ stageRootAttachmentSource(owner,id,rootAttachmentSource(owner,previousId).uri,sharedId);
+ const previous=folder(owner,previousId,true),previousShared=sharedReference(previous);
+ const origin=new File(previousShared?folder(owner,previousShared,true):previous,'origin.json');
+ if(origin.exists)origin.copy(new File(folder(owner,sharedId??id,true),'origin.json'));
+}
 function check(current:()=>boolean){if(!current())throw Error('Unlock your account to continue');}
 /** Streams bounded chunks; original file names never become filesystem paths. */
 export async function prepareRootAttachment(input:{id:string;name:string;mime:string;caption?:string;recipient:IdentityRecord;shared?:AttachmentManifest['shared'];current():boolean}):Promise<AttachmentDescriptor>{

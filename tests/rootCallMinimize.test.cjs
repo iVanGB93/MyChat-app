@@ -9,9 +9,9 @@ function fixture(status='ready'){
  react.useState=initial=>{const own=current,i=index++;if(!(i in own))own[i]=initial;return [own[i],value=>own[i]=typeof value==='function'?value(own[i]):value];};
  const rtc={remoteStream:{toURL:()=> 'remote'},localStream:{toURL:()=> 'local'},callQuality:{level:'unknown'}};
  const imports={'../../services/call-screen-capture':{callScreenCaptureAvailable:true},'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
-  '../../modules/identity':{shortIdentity:()=> 'Peer'},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},
+  '../../modules/identity':{localAccount:{status:()=>({account:'owner'})},shortIdentity:()=> 'Peer'},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},
   '../../modules/ui/liveState':{useCallState:()=>call},'../../modules/ui/useChatSnapshot':{useChatContacts:()=>({contacts:[]})},
-  '../../modules/calls':{localAccountCalls:()=>({end:()=>{ended++;return Promise.resolve();}})},
+  '../../modules/calls':{MAX_GROUP_CALL_PARTICIPANTS:4,localAccountCalls:()=>({end:()=>{ended++;return Promise.resolve();}})},
   './CallStage':{CallLayout:'CallLayout',EndButton:'EndButton'},'./CallAppearance':{makeStyles:()=>({}),ActionButton:'ActionButton'},
   'expo-keep-awake':{useKeepAwake:()=>{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,right:0,bottom:0,left:0})},
   '../../hooks/useWebRTCCore':{default:()=>rtc},
@@ -20,8 +20,12 @@ function fixture(status='ready'){
   observeCallAudioRoutes:fn=>{routeListener=fn;return {remove(){}};},selectCallAudioRoute:async id=>{chosen.push(id);return {...routes,automatic:id==='automatic',selectedId:id==='automatic'?'bt':id};}};
  let permission=async()=>true;
  imports['../../hooks/useScreenShareOverlay']={hasScreenShareOverlay:()=>false,allowScreenShareOverlay:()=>permission(),useScreenShareOverlay:()=>{}};
- const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>imports[n]??{});
- function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;return type(props);}
+ imports['../../modules/calls'].startRootCallLease=async()=>{};imports['../../modules/calls'].stopRootCallLease=()=>{};imports['../../services/call-audio-route'].restoreCallAudio=()=>{};
+ for(const name of ['useCallAudioSession','CallSessionScreen','CallOptions']){const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/'+name+(name==='useCallAudioSession'?'.ts':'.tsx'),'utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(mod,n=>(require('./helpers/localization.cjs')(n)??(imports[n]??{})));imports['./'+name]=mod;}
+ const shared=new Set([imports['./CallSessionScreen'].default,imports['./CallSessionScreen'].CallControls,imports['./CallOptions'].default]);
+ function expand(tree){if(Array.isArray(tree))return tree.map(expand);if(!tree||typeof tree!=='object')return tree;if(shared.has(tree.type))return expand(tree.type(tree.props));return {...tree,props:{...tree.props,children:expand(tree.props?.children)}};}
+ const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>(require('./helpers/localization.cjs')(n)??(imports[n]??{})));
+ function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;const tree=type(props);return type===out.default?tree:expand(tree);}
  const screen=()=>render(out.default);
  return {call,rtc,render,screen,setPermission:fn=>permission=fn,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
 }
@@ -76,7 +80,7 @@ test('voice and video options select connected audio outputs and remove disconne
  for(const media of ['voice','video']){
   const f=fixture();f.call.media=media;const owner=f.screen();let tree=f.render(owner.type,owner.props);
   f.audioListen();await Promise.resolve();await Promise.resolve();tree=f.render(owner.type,owner.props);
-  const button=find(tree,n=>n.props.label===(media==='voice'?'Audio':'Options'));assert(button);button.props.onPress();
+  const button=find(tree,n=>n.props.label==='Options');assert(button);button.props.onPress();
   tree=f.render(owner.type,owner.props);assert(find(tree,n=>n.type==='Modal'&&n.props.visible&&n.props.transparent));
   const bluetooth=find(tree,n=>n.props.accessibilityLabel==='Bluetooth: Test headset');assert(bluetooth);
   await bluetooth.props.onPress();await Promise.resolve();await Promise.resolve();tree=f.render(owner.type,owner.props);
@@ -109,8 +113,8 @@ test('connection quality sits beneath self-view and never above video call butto
 });
 
 test('native video rectangle stays within the rounded self-view frame even without surface clipping',()=>{
- const out={},theme={Radius:{lg:16},Spacing:{md:16,lg:24},Font:{size:{xs:12}}};
- new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/CallAppearance.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>n==='react-native'?{Platform:{OS:'android'},StyleSheet:{create:x=>x,absoluteFillObject:{}}}:n==='../../theme'?theme:{});
+ const out={},theme=require('./helpers/theme.cjs');
+ new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/CallAppearance.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>(require('./helpers/localization.cjs')(n)??(n==='react-native'?{Platform:{OS:'android'},StyleSheet:{create:x=>x,absoluteFillObject:{}}}:n==='../../theme'?theme:{})));
  const styles=out.makeStyles({}),frame=styles.pipWrap,inset=frame.padding+frame.borderWidth,radius=frame.borderRadius;
  assert(2*(radius-inset)**2<=radius**2,'each rectangular video corner is inside the rounded border');
  assert.equal(styles.pip.overflow,'hidden');assert.equal(frame.overflow,'hidden');assert.equal(frame.position,undefined,'only the whole self-view group is positioned');
@@ -148,4 +152,27 @@ test('denied overlay permission does not start capture',async()=>{
  const f=fixture();let started=0;f.setPermission(async()=>false);f.rtc.startScreenSharing=async()=>{started++;};
  const owner=f.screen(),tree=f.render(owner.type,owner.props);find(tree,n=>n.props.accessibilityLabel==='Share screen').props.onPress();
  await Promise.resolve();await Promise.resolve();assert.equal(started,0);
+});
+
+test('incoming group video uses the permission-gated local ringing preview',()=>{
+ const f=fixture('ringing');f.call.outgoing=false;f.call.room={name:'Group',descriptor:{members:['self','peer']}};f.setPreview('local-group-preview');
+ assert(find(f.screen(),n=>n.props.localPreviewUrl==='local-group-preview'));
+ f.call.media='voice';assert(!find(f.screen(),n=>n.props.localPreviewUrl==='local-group-preview'));
+});
+
+test('expansion retains the mounted media owner and original hook transport',()=>{
+ const f=fixture(),before=f.screen();const original=f.call.transport;
+ f.call.room={anchorId:f.call.id,name:'Call',descriptor:{members:['owner','peer','third']},legs:[{...f.call}]};
+ const after=f.screen();assert.equal(after.type,before.type);assert.equal(after.props.key,before.props.key);
+ f.render(after.type,after.props);f.call.transport=undefined;
+ assert.equal(f.screen().type,before.type,'anchor departure must not unmount the capture owner');
+ assert(original);
+});
+
+test('Add people remains visible after the first addition and hides at four',()=>{
+ const f=fixture(),owner=f.screen();let tree=f.render(owner.type,owner.props);
+ assert(find(tree,n=>n.props.accessibilityLabel==='Add people'));
+ f.call.room={anchorId:'one',descriptor:{adHoc:true,creator:'owner',members:['owner','peer','third']},legs:[]};
+ tree=f.render(owner.type,owner.props);assert(find(tree,n=>n.props.accessibilityLabel==='Add people'),'three-person call retains the option');
+ f.call.room.descriptor.members.push('fourth');tree=f.render(owner.type,owner.props);assert(!find(tree,n=>n.props.accessibilityLabel==='Add people'),'maximum audience has no further invitation option');
 });

@@ -1,0 +1,93 @@
+AoN operator foundation rollout — October 22 local / October 23 UTC, 2026
+
+Final pushed source: 644d6456a09c7a27bcc67b70a8018c0171315611
+Foundation commit: 1d0f78aea8ba21bbc81d8a2faf7ac85a190a69b4
+Branch: codex/operator-foundations-20261022
+Isolated checkout: builds/aon-operator-20261022; unrelated main checkouts preserved.
+All three authenticated APIs report package 0.2.0, 141 modules,
+runtime 886ab46a50dbf832ead60a3a6f25e7fefeccf7ece64c33c190da04bfd63f817d,
+sourceDirty=false and sourceMetadataStatus=runtime_bound.
+
+Tests: 261 AoN tests, 42 MCP tests, 25 selected OpenClaw tests, 2 proxy
+route tests; external Muse round-6 full source independently passed 43 tests.
+Mobile app untouched. Protocol profileRecovery has a documented optional
+hosted admission hook; mobile/shared-source parity is not claimed.
+
+Private recovery backups, not committed or copied into repository:
+First: /var/backups/axonic-operator-1d0f78a/data.tar (587704320 bytes),
+runtime.tar, SHA256SUMS, old dist and original nginx configuration.
+Third (WSL): /var/backups/axonic-third-operator-1d0f78a/data.tar,
+runtime.tar, SHA256SUMS and old dist.
+Second: /data/operator-backups/operator-1d0f78a/data.tar (216535040 bytes).
+Backups were made with the AoN writer stopped/paused and then resumed.
+No message/history/queue/relay store resets or deletions occurred.
+
+Protected owner installed separately on each existing neuron, without
+overwriting identities or contacts. Owner is canonical e6d1eea5...5db9e434,
+initial nickname iVan. Authenticated API confirms ownerStatus=installed and
+the expected canonical neuron identity on all three. Enforcement remains OFF
+(interactionPolicy.enabled=false) pending live integration acceptance.
+Verified contact/group counts: First 10/3; Second 6/2; Third 2/2.
+
+First public HTTPS memory initially returned nginx 404 despite working on
+loopback. Exact operator-memory and operator-approvals routes were added,
+preserving existing call/push/peer routes, rate limits and authentication.
+nginx -t passed; authenticated public HTTPS memory/status/chat checks pass;
+unauthenticated memory returns 401. Standard Linux CA/IP TLS verification
+passes without -k. Let's Encrypt YE1 certificate has IP SAN 143.198.121.2,
+valid Oct 22 09:30:19 to Oct 29 01:30:18 UTC. snap.certbot.renew.timer is active.
+
+Second first attempted deployment e2734392-c7fb-4167-827a-103d54ed9599
+selected the generic root Dockerfile, omitted the Railway startup helper,
+and crashed on missing /run/axonic/fcm.json. This caused a service interruption.
+No credential was changed: the correct Railway helper recreates the protected
+runtime file from the existing environment. Corrected packaging placed the
+committed Railway-specific Dockerfile at provider-selected root Dockerfile.
+86ae4c3e-1e0c-4d84-83b5-e0dff0f5d970 restored service; final proxy-fix
+deployment 5b524192-d246-4319-b675-9ff1353cd9eb is SUCCESS. Public health and
+authenticated HTTPS binding/status/chat checks pass on final deployment.
+Always use Railway-specific packaging; railway.toml was not sufficient to
+override the service's root Dockerfile selection in this deployment.
+
+Server upgrade only: existing SecondNeuron MCP subscriptions and ThirdNeuron
+OpenClaw runtime/channel state were not replaced or reset during this rollout.
+Their new integration source is pushed but activation/deployment is separate.
+
+Muse coordination: user relayed initial preflight; Muse correctly held v2 on
+public memory 404, with backup hidden_files/backup-pre-v3-20261022-2057/.
+Her reported copy-only migration preserved 322 handled keys and cursor,
+with no live items/pending payloads. After public route fix, user was asked
+to relay go-ahead for backed-up, single-worker round-6 v3 activation.
+Awaiting Muse's independent activation/catch-up evidence and one owner test.
+Do not claim live catch-up or duplicate-free replies verified yet.
+
+Subsequent owner-relayed Muse activation report: v3 live, v2 stopped before
+start, one listener process; backup refreshed at swap; v2->v3 migrated in
+place. Cursor unchanged (624627840040b2ed...1584); all 322 handled keys
+preserved, zero live items/pending payloads and zero startup-reconcile items.
+Muse independently verified public memory, canonical owner/neuron binding,
+TLS mode system, fresh policy with 10 contacts and healthy open SSE stream.
+This is Muse-reported VM evidence, not direct Codex inspection. Empty startup
+catch-up is not proof of recovering a real backlog. Owner message test pending.
+
+Owner test subsequently verified directly via authenticated FirstNeuron HTTPS
+chat export (read-only; no message or receipt writes): one matching incoming
+message 30855af9... at 1792717646390, read=true; one matching outgoing reply
+b771510d... at 1792717768026, text "V3 owner test received.", delivered/read,
+reply.id exactly the incoming ID and reply.author the protected owner ID.
+User independently confirmed receipt. No duplicate matching reply observed.
+Recorded message timestamps are 121636 ms apart (~2m2s); this is not an
+attributed network latency measurement. Muse's event/claim/model/send timing
+is still needed to establish automatic trigger and explain the delay.
+Real-backlog/reconnect recovery remains untested by this empty-start scenario.
+
+Automatic wake test checked directly at 2026-10-23T01:44:17.872Z using
+authenticated public HTTPS chat export; only login/logout writes occurred.
+Incoming 79ab19e69eff70b8639dc899a3aeaa01fa5895791b32bd0605913c951ad27e3c
+at 1792719676920, delivered/read; exactly one quoted outgoing reply observed:
+49779f03c6e5aab11ef6953f5071d8a4e6f6ac4e0762bffee0e78127f32edca4,
+at 1792719780393, delivered/read, correct reply ID and protected-owner author.
+Recorded timestamp difference: 103473 ms. Export contained 6 messages.
+This proves the observed quoted reply and receipts, not automatic worker
+invocation. Muse's VM listener/hook/worker phase logs remain required to
+attribute triggering and elapsed time. No live connection interruption run.

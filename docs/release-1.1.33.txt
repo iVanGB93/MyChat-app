@@ -1,0 +1,39 @@
+Axonic 1.1.33 / Android versionCode 104 — built and validated locally
+Date: 2026-10-28
+
+Artifact: builds/Axonic-1.1.33-104.aab
+Size: 107733636 bytes
+SHA256: 9d4f31f909b371acf64dd958c1335524ae7d6f4e95815dbf642726d4259bd335
+Bundled source SHA256: c86a573f646e51540dadc65a8a92426c6a6329db6318a53f5baf2b297c8fb412
+
+Includes current working-tree changes: Android14+ background media uploads, floating chat controls, voice/video swipe confirmations, indexed message info with reactions first and compact metadata, chat UI fixes and updated update presentation. Production indexed history retained. Existing unrelated work preserved; working-tree build, not a clean-commit claim.
+
+Validation:
+- Full readiness check:1714 passed,3 skipped,0 failures. TypeScript, cycles, module boundaries, consolidation and assets passed.
+- Following final Message Info layout/version changes: TypeScript and 6 indexed-production/message-details tests passed.
+- Native identity guards and notification completion tests passed.
+- Gradle bundleRelease completed locally, four Android ABIs, no EAS cloud build.
+- bundletool validated; jarsigner verified; upload certificate matches1.1.32.
+- com.axonic,1.1.33/code104,non-debuggable,no instrumentation.
+- Manifest contains upload job service/user-initiated job permission and screen-share permissions.
+- Bundled Expo configuration and source fingerprint match. Previous1.1.32 artifact unchanged.
+- Prior live Dev evidence: docs/ui-readiness-2026-10-28.txt and docs/background-media-uploads-2026-10-28.txt.
+
+Limits:
+- No production installation/runtime test for this artifact yet.
+- Long Doze/vendor battery behavior and live account locking not proven by short upload tests. Android below14 retains foreground/reopen behavior.
+- Actual Play update eligibility/install cannot be verified in Dev.
+- Sentry automatic artifact uploads disabled for this local build, consistent with prior releases; no source-map upload claimed.
+
+Evidence/commands:
+node builds/build-local-production-104.cjs --approved-1.1.33
+node builds/validate-production-104.cjs
+builds/local-production-aab-104.log
+builds/local-aab-104-validation.json
+builds/local-aab-104-manifest.xml
+builds/local-aab-104-signature.txt
+builds/release-104-final-tests.log
+builds/release-104-native-guards.log
+builds/release-104-native-notification.log
+
+User explicitly authorized this local production build. No publication, phone installation, data deletion/reset, commit or push performed.

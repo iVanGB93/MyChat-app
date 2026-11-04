@@ -1,0 +1,41 @@
+Axonic 1.1.42 / Android versionCode 113 — local production build
+User approved this build explicitly after the four-device sequential call test.
+Build from current working tree; no claim of a clean committed revision.
+No publication, official-app installation, commit/push, reset or deletion.
+
+Changes since 1.1.41 include the right-facing minimize arrow, dynamic video-call
+layout without speaking outlines, incoming-call notification/wake handling, and
+sequential private-call participant additions up to four total.
+
+Live acceptance: both Dev phones plus two updated test emulators. Video call
+2 -> 3 -> 4 retained original connections, exchanged audio/video on all edges,
+kept Add people available at three and removed it at four. Participant departures
+and final remote hangup cleaned up all call media and both phone cameras.
+See docs/architecture/calls.txt and builds/sequential-call-*.json.
+
+Separate unresolved investigation: mother's screen-share/audio interruption;
+her report did not capture the failure. This release does not claim to fix it.
+
+Validation and artifact details to follow after the local release gate/build.
+
+Completed: local Gradle bundleRelease succeeded.
+Automated gate: 1885 passed, 3 skipped, zero failed (1888 total); service cycles
+passed. Corrected a type-only UI import through the public calls API after the
+module-boundary gate flagged it, then reran TypeScript, module boundaries,
+consolidation and asset checks successfully. No runtime behavior changed by it.
+Evidence: builds/release-113-checks.log; builds/release-113-final-gates.log.
+
+Artifact: D:/Proyects/Axonic-app/builds/Axonic-1.1.42-113.aab
+Bytes: 107828264
+SHA256: 9970a03918139ea3f8632e4375edc26a73cc6a51d3210aa51954ead1f8e25d20
+Packaged JS source fingerprint:
+f6eb6514c6304b567c810e3f72912f321319eee188487e1521e0e796455ebf4c
+
+Bundletool validation and jarsigner verification passed. Upload certificate
+matches 1.1.41. Verified com.axonic, 1.1.42/113, non-debuggable, four ABIs,
+groupCallsEnabled, background recovery/upload and screen-capture declarations,
+packaged configuration and matching source fingerprint. Previous AAB unchanged.
+Compilation stayed local; automatic Sentry artifact upload disabled as before.
+Evidence: builds/local-production-aab-113.log; builds/local-aab-113-validation.json,
+local-aab-113-manifest.xml and local-aab-113-signature.txt.
+No publication, installation, commit or push performed.

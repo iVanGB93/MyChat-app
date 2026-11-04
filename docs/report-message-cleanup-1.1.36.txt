@@ -1,0 +1,18 @@
+Report-message cleanup after owner installed 1.1.36
+
+Explicit owner instruction: delete reports for everyone for the new build.
+FirstNeuron: 18 periodic FirstNeuron health reports selected and deleted through
+the authenticated message-action API. All selected records absent from active
+history afterward; every non-target message and its text preserved.
+SecondNeuron: 19 periodic reports plus 2 phone-diagnostic analyses deleted via
+MCP. Exact operations approved through the existing host approve.mjs command
+using matching operation IDs, hashes and target author/message IDs. All 21
+targets verified deleted; all non-target records unchanged.
+ThirdNeuron: reviewed current outgoing history (153 logical messages), no
+periodic health/diagnostic reports identified. Ordinary discussion retained.
+
+39 delete-for-everyone actions accepted in total. Recipient delivery/screens
+not independently verified; initially returned pending. Offline recipients
+apply deletion after network delivery. No claim of remote physical erasure.
+No diagnostic-log reset, listener reset, account changes, user attachment
+deletion, or wholesale chat clear. Test files and scorecard discussion retained.

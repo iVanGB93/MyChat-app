@@ -38,7 +38,7 @@ function pump(network:ReturnType<typeof startLocalAccountNetwork>,events=false){
 function clockSnapshot(){try{return Native?.axonClockSnapshot?.();}catch{return undefined;}}
 const pending=new Map<string,{work:Promise<void>;envelope?:CustodyEnvelope;listeners:Set<(milestone:string)=>void>}>();
 /** Only verified wakes reach this bounded recovery path; locked-account policy is preserved. */
-export function recoverRootMessage(account:string,_sender:string,_id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload){
+export function recoverRootMessage(account:string,_sender:string,_id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload,jobToken?:string){
  const key=JSON.stringify([account,_sender,_id]),previous=pending.get(key);
  // Repeated hints share work, but an inline payload arriving after a metadata-only
  // hint still gets its own admission opportunity. No durable receipt is skipped.
@@ -54,10 +54,13 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
   if(expires<=Date.now())return;
   if(localAccount.status().account!==account)return;
   if(localAccount.status().state!=='unlocked'||localAccount.status().account!==account)return;
+  const currentJob=()=>!jobToken||Native?.messageRecoveryCurrent?.(jobToken)===true;
+  if(!currentJob())return;
   notify('account-ready');
   const background=AppState.currentState!=='active';if(background&&!Native?.axonMessageWake)return;
-  const started=Date.now(),until=Math.min(expires,started+20000),clocks=clockSnapshot();
-  let setupMs=0,waitLagMs=0,reason='error';
+  const budgetMs=jobToken?120000:20000;
+  const started=Date.now(),until=Math.min(expires,started+budgetMs),clocks=clockSnapshot();
+  let setupMs=0,waitLagMs=0,reason='error',waitReason='setup';
   let network:ReturnType<typeof startLocalAccountNetwork>|undefined,releaseLease:(()=>void)|undefined;
   const offEvents:(()=>void)[]=[];
   const events=typeof subscribeRootChatCommitted==='function'&&typeof subscribeAttachmentJobProgress==='function';
@@ -72,6 +75,7 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    // Grant it now rather than relying on the app state captured before recovery.
    console.info('[Axonic recovery] grant');releaseLease=acquireMessageWakeLease();console.info('[Axonic recovery] granted');
    network=startLocalAccountNetwork();
+   if(network.subscribeRecovery)offEvents.push(network.subscribeRecovery((sender,id)=>{if(sender===_sender&&id===_id)recoveryChanged();}));
    // Persist and notify through the normal verified inbox before waiting for a connection.
    // Relay polling still performs the signed receipt exchange, including after a restart.
    let inlinePersisted=false;
@@ -82,19 +86,24 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    setupMs=Math.max(0,Date.now()-started);
    // Inline persistence is not interrupted. It consumes this recovery budget,
    // rather than granting another 20 seconds after a slow storage transaction.
-   if(Date.now()<until){network.resume();console.info('[Axonic recovery] resumed');}
+   if(Date.now()<until&&currentJob()){network.resume();console.info('[Axonic recovery] resumed');}
    reason='deadline';
-   while(Date.now()<until&&localAccount.status().state==='unlocked'&&localAccount.status().account===account){
+   while(Date.now()<until&&currentJob()&&localAccount.status().state==='unlocked'&&localAccount.status().account===account){
     // Only authenticated sessions count; dialing/retries are not progress.
     for(const session of network.snapshot?.().sessions??[])if(session.state==='connected'&&session.account)notify('connected:'+session.account);
-    // Inbox persistence precedes the signed receipt exchange. Keep the bounded
-    // lease alive so the courier can finish that exchange and drain queued mail.
-    // Only a completed relay receipt exchange and drained poll can end recovery.
+    // Inbox persistence precedes the signed receipt exchange. This wake owns a
+    // lease for its target, not for unrelated relay inboxes or outgoing work.
+    // Other wakes retain their own leases; target media still gates completion.
     // Unknown/older runtimes retain the existing bounded fallback.
-    if(network.recoveryComplete?.(_sender,_id)&&await (network.attachmentRecoveryComplete?.(_sender,_id)??true)){reason='receipt_complete';break;}
+    waitReason='receipt';
+    if(network.recoveryComplete?.(_sender,_id)){
+     waitReason='attachment';
+     if(await (network.attachmentRecoveryComplete?.(_sender,_id)??true)){reason='receipt_complete';break;}
+    }
     waitLagMs=Math.max(waitLagMs,await pump(network,events));
    }
    if(localAccount.status().state!=='unlocked'||localAccount.status().account!==account)reason='account_changed';
+   else if(!currentJob())reason='job_stopped';
   }catch(error){reason='error';throw error;}
   finally{
    for(const off of offEvents)off();
@@ -103,7 +112,8 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    try{network?.stop();}finally{releaseLease?.();}
    try{
     const end=clockSnapshot(),milliseconds=clocks&&end?Math.max(0,end.elapsedMs-clocks.elapsedMs):Math.max(0,Date.now()-started);
-    deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished',{milliseconds,setupMs,waitLagMs,overrunMs:Math.max(0,milliseconds-20000),reason,
+    console.info('[Axonic recovery timing]',{milliseconds,setupMs,waitLagMs,reason,...(reason==='deadline'?{waitReason}:{})});
+    deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished',{milliseconds,setupMs,waitLagMs,budgetMs,overrunMs:Math.max(0,milliseconds-budgetMs),reason,...(reason==='deadline'?{waitReason}:{}),
      ...(clocks&&end?{sleepMs:Math.max(0,milliseconds-(end.uptimeMs-clocks.uptimeMs)),processCpuMs:Math.max(0,end.processCpuMs-clocks.processCpuMs)}:{})});
    }catch{/* Diagnostics cannot change delivery or cleanup. */}
   }

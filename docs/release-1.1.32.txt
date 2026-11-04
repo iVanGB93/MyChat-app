@@ -1,0 +1,53 @@
+Axonic 1.1.32 / Android versionCode 103 — built and validated locally
+Date: 2026-10-28
+
+Artifact: builds/Axonic-1.1.32-103.aab
+Size: 107715075 bytes
+SHA256: c0c61e20864cacfc61cd4dc574d3c699c3d3e5b010291fbf454e133709089b42
+Bundled source SHA256: 240e64cfe674b00662767be237b15a2838752f5de1c34ab31ce5380b30f802f5
+
+Includes current working-tree visual updates, media preview/editor improvements,
+network presentation and wake-recovery/diagnostic fixes. Indexed production
+history remains enabled. Existing unrelated source work is preserved; this
+release is a working-tree build, not a claim of a clean committed mobile tree.
+
+Validation:
+- Latest full npm run check: 1697 passed, 3 optional skips, zero failures;
+  TypeScript, cycles, module boundaries, consolidation and assets passed.
+- Native identity/stream guards and notification completion checks passed.
+- Dev background message: 6916ms creation-to-delivery, 6726ms recovery.
+- Dev screen-off message: 5666ms creation-to-delivery, 5490ms recovery;
+  Android reported Dozing. Original/effective alert priorities both HIGH.
+- Local Gradle bundleRelease: successful, four Android ABIs, no EAS build.
+- bundletool validation and jarsigner passed; com.axonic, 1.1.32/code103,
+  non-debuggable, no instrumentation, capture/overlay permissions retained.
+- Upload certificate matches 1.1.31; bundled source/config fingerprints match.
+- Previous 1.1.31 AAB hash unchanged.
+
+Known limits:
+- Earlier delayed pushes were not priority-instrumented; their cause remains
+  unproven. Two fresh successful tests do not prove every background condition.
+- A silent control wake hit a 20s receipt wait; the repeat completed in 10.4s.
+  Acknowledgment behavior was preserved rather than bypassed.
+- Axon's cloud reporting prompt still requires its own runtime update; server
+  guidance and operational notes are current.
+- No post-install production runtime test has been performed for this AAB.
+- Sentry automatic artifact upload was disabled for this local build, as in
+  the prior local-release workflow; no source-map upload is claimed.
+
+Commands:
+node builds/build-local-production-103.cjs --approved-1.1.32
+node builds/validate-production-103.cjs
+
+Evidence:
+builds/local-production-aab-103.log
+builds/local-aab-103-validation.json
+builds/local-aab-103-manifest.xml
+builds/local-aab-103-signature.txt
+builds/release-103-native-guards.log
+builds/release-103-native-notification.log
+builds/priority-followup-mobile-check-final.log
+builds/push-wake-followup-20261028.json
+
+No publication, official-app installation, data reset/deletion, mobile commit
+or push performed. User explicitly approved this local build in this chat.

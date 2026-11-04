@@ -5,11 +5,11 @@ function fixture(file,extra={}){
   useState:initial=>{const i=index++;if(!(i in slots))slots[i]=initial;return [slots[i],value=>slots[i]=typeof value==='function'?value(slots[i]):value];},
   useRef:initial=>{const i=index++;return slots[i]??={current:initial};},useEffect:fn=>effects.push(fn)};
  const keyboard={};
- const imports={react:{default:react,...react},'react-native':{View:'View',Text:'Text',Pressable:'Pressable',FlatList:'FlatList',Modal:'Modal',ActivityIndicator:'Spinner',StyleSheet:{create:x=>x},Keyboard:{addListener:(event,fn)=>{keyboard[event]=fn;return {remove(){}};}}},
+ const imports={'../../modules/ui/useChatSnapshot':{useConversationIndex:()=>({index:null})},'../../theme':require('./helpers/theme.cjs'),react:{default:react,...react},'react-native':{View:'View',Text:'Text',Pressable:'Pressable',FlatList:'FlatList',Modal:'Modal',ActivityIndicator:'Spinner',StyleSheet:{create:x=>x},Keyboard:{addListener:(event,fn)=>{keyboard[event]=fn;return {remove(){}};}}},
   '@expo/vector-icons':{Ionicons:'Icon'},'expo-status-bar':{StatusBar:'StatusBar'},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:24,bottom:20,left:0,right:0})},
   '../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../modules/identity':{localAccount:{status:()=>({account:'owner',state:'unlocked'})},shortIdentity:x=>x},
   '../../modules/storage':{readSharedAvatar:async()=>null,subscribeSharedAvatars:()=>()=>{}},'../ui/Avatar':{default:'Avatar'},'../ui/KeyboardForm':{KeyboardAvoidingScreen:'KeyboardScreen',KeyboardAwareTextInput:'Input'},'./ConversationRecipientPicker':{default:'Picker'},...extra};
- const exports={};new Function('exports','require',ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(exports,name=>imports[name]??{});
+ const exports={};new Function('exports','require',ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(exports,name=>(require('./helpers/localization.cjs')(name)??(imports[name]??{})));
  return {render:props=>{index=0;effects.length=0;return exports.default(props);},effects,keyboard};
 }
 function find(tree,predicate){if(!tree||typeof tree!=='object')return;if(predicate(tree))return tree;for(const child of tree.props?.children??[]){const found=Array.isArray(child)?child.map(x=>find(x,predicate)).find(Boolean):find(child,predicate);if(found)return found;}}
@@ -40,3 +40,4 @@ test('forwarding selects first, confirms once, excludes blocked destinations and
  picker=f.render(props);picker.props.onSubmit();await new Promise(r=>setImmediate(r));picker=f.render(props);assert.equal(picker.props.error,'offline');assert.equal(closed,0);
  fail=false;picker.props.onSubmit();picker.props.onSubmit();await new Promise(r=>setImmediate(r));assert.deepEqual(sent,['peer','peer']);assert.equal(f.render(props).props.busy,true);release();await new Promise(r=>setImmediate(r));assert.equal(closed,1);
 });
+

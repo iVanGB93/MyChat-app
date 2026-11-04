@@ -1,3 +1,4 @@
+import {t} from '../../localization/language';
 import ScreenHeader from '../../components/ui/ScreenHeader';
 import React,{useEffect,useRef,useState} from 'react';
 import {AppState,Modal,Text,View} from 'react-native';
@@ -25,30 +26,30 @@ export default function RecoveryWordsReveal({account,visible}:{account:string;vi
   running.current=true;const own=generation.current;setBusy(true);setError('');
   try{
    const words=useBiometrics?await biometrics.authenticate(secret=>{
-    if(!mounted.current||generation.current!==own||AppState.currentState!=='active')throw Error('Authentication interrupted');
+    if(!mounted.current||generation.current!==own||AppState.currentState!=='active')throw Error(t("Authentication interrupted"));
     return localAccount.revealRecoveryWords(secret,account);
    }):await localAccount.revealRecoveryWords(password,account);
    const status=localAccount.status();
    if(mounted.current&&generation.current===own&&status.state==='unlocked'&&status.account===account&&AppState.currentState==='active'){setPassword('');setPhrase(words);}
-  }catch{if(mounted.current&&generation.current===own)setError('Authentication failed. Check your password or try biometrics again.');}
+  }catch{if(mounted.current&&generation.current===own)setError(t("Authentication failed. Check your password or try biometrics again."));}
   finally{running.current=false;if(mounted.current){setBusy(false);setPassword('');}}
  }
  return <>
-  <Button title="SHOW RECOVERY WORDS" onPress={()=>{close();setOpen(true);}}/>
+  <Button title={t("SHOW RECOVERY WORDS")} onPress={()=>{close();setOpen(true);}}/>
   <Modal visible={visible&&open} animationType="slide" onRequestClose={close}>
    <View style={{flex:1,backgroundColor:colors.background}}>
-    <ScreenHeader title="Recovery words" backLabel="Close recovery words" onBack={close}/>
+    <ScreenHeader title={t("Recovery words")} backLabel="Close recovery words" onBack={close}/>
     <KeyboardFormScrollView contentContainerStyle={{padding:20,paddingBottom:insets.bottom+24,gap:16}}>
      {phrase?<>
-      <Text style={{color:colors.text,fontSize:18,fontWeight:'600'}}>Your {phrase.split(' ').length} recovery words</Text>
-      <Text style={{color:colors.textSecondary,lineHeight:22}}>Write these words down in order and keep them somewhere safe. Anyone with these words can control your identity.</Text>
+      <Text style={{color:colors.text,fontSize:18,fontWeight:'600'}}>{t("Your")}{' '}{phrase.split(' ').length} {t("recovery words")}</Text>
+      <Text style={{color:colors.textSecondary,lineHeight:22}}>{t("Write these words down in order and keep them somewhere safe. Anyone with these words can control your identity.")}</Text>
       <View style={{flexDirection:'row',flexWrap:'wrap',gap:8}}>{phrase.split(' ').map((word,index)=><View key={index} style={{width:'47%',flexDirection:'row',alignItems:'center',gap:10,padding:12,borderRadius:12,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:colors.surface}}><Text style={{color:colors.textTertiary,fontSize:12}}>{index+1}</Text><Text style={{color:colors.text,fontSize:16}}>{word}</Text></View>)}</View>
-      <Button title="HIDE WORDS" onPress={close}/>
+      <Button title={t("HIDE WORDS")} onPress={close}/>
      </>:<>
-      <Text style={{color:colors.textSecondary,lineHeight:22}}>Use your account password or biometric unlock to view your recovery words.</Text>
-      <Input label="CURRENT PASSWORD" accessibilityLabel="Password to reveal recovery words" value={password} onChangeText={setPassword} isPassword autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" maxLength={256} editable={!busy}/>
-      <Button title="SHOW WITH PASSWORD" loading={busy} disabled={!password} onPress={()=>void reveal(false)}/>
-      {biometrics.available()&&<Button title="USE BIOMETRICS" variant="outline" disabled={busy} onPress={()=>void reveal(true)}/>}
+      <Text style={{color:colors.textSecondary,lineHeight:22}}>{t("Use your account password or biometric unlock to view your recovery words.")}</Text>
+      <Input label={t("CURRENT PASSWORD")} accessibilityLabel={t("Password to reveal recovery words")} value={password} onChangeText={setPassword} isPassword autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" maxLength={256} editable={!busy}/>
+      <Button title={t("SHOW WITH PASSWORD")} loading={busy} disabled={!password} onPress={()=>void reveal(false)}/>
+      {biometrics.available()&&<Button title={t("USE BIOMETRICS")} variant="outline" disabled={busy} onPress={()=>void reveal(true)}/>}
       {!!error&&<Text accessibilityRole="alert" style={{color:colors.error}}>{error}</Text>}
      </>}
     </KeyboardFormScrollView>

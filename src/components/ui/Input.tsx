@@ -1,3 +1,4 @@
+import {Chrome} from '../../theme';
 import {KeyboardAwareTextInput as TextInput} from './KeyboardForm';
 /* ------------------------------------------------------------------ */
 /*  Input — styled text input with label                               */
@@ -5,7 +6,7 @@ import {KeyboardAwareTextInput as TextInput} from './KeyboardForm';
 
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, TextInputProps, TouchableOpacity, type StyleProp, type ViewStyle } from 'react-native';
-import { Font, Radius, Spacing } from '../../theme';
+import { Font, Spacing } from '../../theme';
 import { useTheme } from '../../contexts/ThemeContext';
 
 interface Props extends TextInputProps {
@@ -63,9 +64,9 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: Radius.md,
-    borderWidth: 1.5,
-    shadowOpacity: 0.25,
+    borderRadius: Chrome.controlRadius,
+    borderWidth: 1,
+    shadowOpacity: 0,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
   },

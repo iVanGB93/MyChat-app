@@ -1,0 +1,32 @@
+Incoming-call notification investigation — November 1, 2026
+
+Report: repeated taps and long delay opening/connecting an incoming video call.
+The original occurrence was not present in the phone's retained log sample.
+
+Confirmed source issues and changes:
+- rootAccountCalls.tick tied local signed-wake discovery to the same single-flight
+  promise as network retry/relay work. Added an independent, coalesced recoverWakes
+  entry using the same signature, current-account, block-policy and journal checks.
+  New wake events and foreground transitions invoke it immediately, even while
+  network retry work is pending. No periodic task or protocol change added.
+- Notification PRESS events only attempted message navigation; root-call-open
+  wasn't a recognized queued call action. Handle it explicitly to restore the
+  incoming call screen, without treating opening as permission to answer.
+- Serialize notification action writes/consumption. A later open event cannot
+  overwrite a recent explicit answer/decline. Overlapping consumers cannot take
+  the same stored action twice, and a new write cannot be erased by an older read.
+  The screen retries event-driven consumption when an action arrives mid-handler.
+
+Validation: TypeScript passed; 52 focused tests passed across rootCallScheduling,
+rootCallNotificationAction, rootCallWake, rootCallMinimize and mobileCallSession.
+New regressions cover blocked retry vs local discovery, wake during discovery,
+open vs answer precedence, concurrent consumption and write/read interleaving.
+
+Live status: phone R3GYC0H7PMY connected; PC ADB hung and was restarted without
+altering app data. Metro started and served the Dev bundle. Dev is foreground,
+but Metro /json/list still exposes no debugger target. No real incoming-call
+one-tap answer, cold-start or connection latency measurement completed yet.
+Do not claim the reported device failure fully resolved until that test passes.
+The installed Dev native version reports 1.1.36; verify required native capability
+parity before a live call test. No reinstall, official-app change, data deletion,
+commit, push, deployment or production build performed.

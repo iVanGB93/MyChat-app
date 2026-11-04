@@ -1,0 +1,12 @@
+Spanish and English presentation (2026-11-01)
+
+src/localization/language.ts holds the in-memory language revision and English-keyed Spanish catalog lookup. src/localization/deviceLanguage.ts detects the native phone locale and persists the system/en/es preference in AsyncStorage. Spanish regional locales select Spanish; other unsupported languages fall back to English. Profile exposes Device default, English and Español beside the existing appearance settings.
+
+ThemeProvider loads language and theme together before opening app screens. Theme context / useLanguage subscribers update presentation in place; language is never a navigation key. Foreground events refresh the device-default choice; there is no language polling timer. Explicit language selections override the phone locale and survive restarts.
+
+Use t only for app-authored UI text. Never translate identities, nicknames, user messages/captions, filenames, recovery words, protocol payloads, diagnostic codes or database values. Interpolate these values as parameters. Keep shared core transport/storage independent of localization. Native Android permission dialogs and system-owned screens follow Android's language.
+
+When adding a label, add its Spanish translation to es.json. Translate constant-map labels at render time. Include languageSnapshot in memoized presentation dependencies where needed; subscribe memoized components using useLanguage or useTheme. Do not restart jobs/calls or remount screens for a language change.
+
+Validation: tests/localization.test.cjs checks regional fallback, overrides, subscriptions, interpolation preservation, catalog coverage/placeholder parity, saved preference and serialized writes, foreground refresh. Existing UI fixtures use tests/helpers/localization.cjs for English defaults. Live emulator Profile switching verified in both directions with scroll position retained; conversation content and contact names remain unchanged.
+Cold-restart check: the emulator retained explicit Spanish despite its en_US device locale and rendered Juegos/Perfil. Restored its original Device default preference afterward. Official phone apps were not installed, changed or cleared.

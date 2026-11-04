@@ -10,15 +10,17 @@ type Row = Route & ({ event: CallControl; raw: string; receipt: null } | { event
 
 /** Optional ordinary-neuron courier. No identity authority, media, or durable foreign history.
  * A restart drops this short-lived cache; the endpoints retain their own retry journals.
- * Call sweep periodically even while idle. No FCM payload is admitted by this service.
+ * Schedule sweep at nextDeadline; empty caches need no timer. No FCM payload is admitted here.
  */
 export function createCallControlRelay(d: {
   changed?(peer:string):void;
+  scheduleChanged?():void;
   records: Pick<IdentityRecordStore, 'read'>; now(): number; current(): boolean; blocked(account: string): boolean;
 }) {
   const rows = new Map<string, Row>();
   let busy = false, stopped = false;
   const live = () => !stopped && d.current();
+  const nextDeadline=()=>live()?Math.min(Infinity,...[...rows.values()].map(row=>row.expiresAt)):Infinity;
   const active = (peer: IdentityPeer) => live() && peer.expiresAt > d.now() && !d.blocked(peer.account);
   const sweep = () => { for (const [key, row] of rows) if (row.expiresAt <= d.now()) rows.delete(key); };
   async function record(account: string, device: string) {
@@ -28,13 +30,13 @@ export function createCallControlRelay(d: {
   // Reject excess work rather than letting untrusted traffic grow a promise queue.
   async function run<T>(peer: IdentityPeer, fallback: T, work: () => Promise<T>): Promise<T> {
     if (busy || !active(peer)) return fallback;
-    busy = true;
+    busy = true;const before=nextDeadline();
     try {
       sweep();
       if (!await record(peer.account, peer.device) || !active(peer)) return fallback;
       return await work();
     } catch { return fallback; }
-    finally { busy = false; }
+    finally { busy = false;if(before!==nextDeadline())try{d.scheduleChanged?.();}catch{/* The next request still sweeps expired rows. */} }
   }
   return {
     metadata(owner:string){return !live()?[]:[...rows].filter(([,r])=>r.sender!==owner&&r.target!==owner).map(([key,r])=>({key:'call:'+key,kind:r.receipt?'call-control receipt':'call-control event',state:r.receipt?'receipt held':'held',storage:'memory' as const,id:key.split(':')[0],sender:r.sender,recipient:r.target,expiresAt:r.expiresAt}));},
@@ -110,6 +112,7 @@ export function createCallControlRelay(d: {
       });
     },
     sweep,
+    nextDeadline,
     stop() { stopped = true; rows.clear(); },
   };
 }

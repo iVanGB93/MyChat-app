@@ -403,7 +403,7 @@ network-wide discovery and replication remain separate future work.
 
 The next development slice is now implemented in the isolated mailbox protocol,
 SQLite store, composition, and Android crypto extension. See
-[mailbox-prototype.md](mailbox-prototype.md) for the exact protocol, trust model,
+the retired mailbox prototype (removed; see current-system-cleanup-2026-10-28.md) for the exact protocol, trust model,
 limits, artifacts and pending four-device procedure. The earlier paragraph above
 describes the state before this implementation; live device validation is still
 pending explicit permission to install the prepared native development updates.
@@ -421,7 +421,7 @@ User approved installation and all four development apps were updated in place.
 The encrypted mailbox test passed: offline recipient, durable custodian restart,
 delivery while sender was stopped, signed receipt forwarded after recipient was
 stopped, wrong-device decryption rejection, forged-receipt rejection and duplicate
-suppression. See mailbox-prototype.md for the exact topology and evidence. Both
+suppression. See the retired mailbox prototype notes for the exact topology and evidence. Both
 phones remained cellular, all databases passed integrity checks, and all apps were
 restored to signed-in foreground chat lists with Axion connected. Test mailbox
 participation is stopped. This supersedes the pending-installation status above;
@@ -434,7 +434,7 @@ direct P2P first, encrypted custody next, Axion fallback last. Custody retains t
 pending bubble; recipient-signed receipts update it to delivered. The actual phone
 Send-button test passed through sender/recipient restarts with the original ID and
 timestamp. 395 mobile tests and all eight device database checks pass. See
-mailbox-prototype.md for evidence and remaining limitations. This supersedes the
+the retired mailbox prototype notes for evidence and remaining limitations. This supersedes the
 previous paragraph's Send-button status; general discovery and serverless bootstrap
 are still future work.
 
@@ -444,7 +444,7 @@ FirstNeuron (user 34) now runs the same mailbox engine in a restricted Node 22
 service. The optional pinned hosted transport supports normal outbox custody and
 signed recipient receipts without an Axion chat/signaling route to the custodian.
 Emulator tests passed with each endpoint stopped in turn and the host restarted.
-398 mobile tests and six hosted tests pass. See mailbox-prototype.md.
+398 mobile tests and six hosted tests pass. See the retired mailbox prototype notes.
 
 This test uses an SSH development tunnel, so public discovery/reachability is still
 unimplemented. The next deployment step is a public HTTPS peer endpoint; general

@@ -1,3 +1,5 @@
+import {trialReference,type TrialObservation} from './trialCredits.ts';
+import {createContributionMeter,type ContributionEvent} from './networkScorecard.ts';
 import type {AttachmentTransaction,AttachmentStore} from './relayStorage.ts';
 export type {AttachmentCustodyRow,AttachmentTransaction,AttachmentStore} from './relayStorage.ts';
 import {retiredAttachment} from './retiredAttachment.ts';
@@ -8,21 +10,26 @@ import type {IdentityRecordStore} from './identityAdmission.ts';
 import type {IdentityPeer} from './identityClient.ts';
 import {ATTACHMENT_STREAM_FRAME_BYTES,isAttachmentUploadBatchRequest,unpackAttachmentBatch,packAttachmentBatch,validAttachmentRange} from './attachmentBatch.ts';
 import type {AttachmentEncoding} from './attachmentEncoding.ts';
-export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;records:IdentityRecordStore;now():number;current():boolean;maxBytes?:number;encoding?:AttachmentEncoding}){
+// Counts bound metadata work, not ordinary sharing. Byte reservations remain
+// the primary storage budget; group recipients share one content reservation.
+export const ATTACHMENT_CUSTODY_LIMITS={records:4096,contents:1024,senderContents:256} as const;
+export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;records:IdentityRecordStore;now():number;current():boolean;maxBytes?:number;encoding?:AttachmentEncoding;scoreChanged?():void;trial?(event:TrialObservation):void}){
+ const meter=createContributionMeter(d.now,d.scoreChanged);
  let queued=0,bulkQueued=0;const maxBytes=d.maxBytes??64*1024*1024;
  if(!Number.isSafeInteger(maxBytes)||maxBytes<1)throw Error('Invalid attachment capacity');
  const reply=(value:unknown)=>JSON.stringify(value);
  async function prune(tx:AttachmentTransaction){const rows=(await tx.rows()).filter(r=>!retiredAttachment(r)),seen=new Set<string>();
-  if(rows.length>128)throw Error('Invalid attachment store');
+  if(rows.length>ATTACHMENT_CUSTODY_LIMITS.records)throw Error('Invalid attachment store');
   for(const r of rows){if(!r||!validAttachmentManifest(r.manifest,r.manifest?.expires-1)||r.digest!==attachmentDigest(r.manifest)||seen.has(r.digest)
     ||!Number.isSafeInteger(r.received)||r.received<0||r.received>Math.ceil(r.manifest.bytes/attachmentBlockBytes(r.manifest)))throw Error('Invalid attachment store');seen.add(r.digest);}
   for(const r of rows)if(r.manifest.expires<=d.now()){await tx.eraseChunks(attachmentContentDigest(r.manifest));await tx.erase(r.digest);}return rows.filter(r=>r.manifest.expires>d.now());}
  async function prefix(tx:AttachmentTransaction,m:AttachmentManifest){const key=attachmentContentDigest(m),total=Math.ceil(m.bytes/attachmentBlockBytes(m));let n=Math.max(0,...(await tx.rows()).filter(r=>!retiredAttachment(r)&&attachmentContentDigest(r.manifest)===key).map(r=>r.received));while(n<total&&await tx.chunk(key,n))n++;return n;}
  async function handle(raw:string,peer:IdentityPeer){
   const current=()=>d.current()&&peer.expiresAt>d.now()&&peer.account!==d.owner;
-  const transaction=<T>(work:(tx:AttachmentTransaction)=>Promise<T>)=>d.store.transaction(async tx=>{
+  const delta:Partial<Record<ContributionEvent,number>>={};let credit:TrialObservation|undefined;
+  const transaction=async<T>(work:(tx:AttachmentTransaction)=>Promise<T>)=>{const result=await d.store.transaction(async tx=>{
    if(!current())throw Error('Attachment session ended');const value=await work(tx);if(!current())throw Error('Attachment session ended');return value;
-  });
+  });meter.commit(delta);if(credit)try{d.trial?.(credit);}catch{}return result;};
   if(!current())return reply({status:'rejected'});
   const request=JSON.parse(raw);if(request.version!==1)return reply({status:'rejected'});
   if(request.operation==='put-batch'&&!isAttachmentUploadBatchRequest(raw))return reply({status:'rejected'});
@@ -43,9 +50,14 @@ export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;re
     const reserved=new Map(held.map(r=>[attachmentContentDigest(r.manifest),r.manifest]));
     // A completed grant can still reserve shared bytes for not-yet-offered slots.
     for(const r of rows)if(!!r.manifest.shared&&rows.filter(v=>attachmentContentDigest(v.manifest)===attachmentContentDigest(r.manifest)&&v.receipt).length<r.manifest.shared!.count)reserved.set(attachmentContentDigest(r.manifest),r.manifest);
-    if(rows.length>=128||!reserved.has(content)&&(reserved.size>=16||[...reserved.values()].filter(m=>m.sender===sender).length>=4||[...reserved.values()].reduce((n,m)=>n+m.bytes,bytes)>maxBytes))return reply({status:'full'});
+    if(rows.length>=ATTACHMENT_CUSTODY_LIMITS.records)return reply({status:'full',reason:'record_capacity'});
+    if(!reserved.has(content)){
+     if(reserved.size>=ATTACHMENT_CUSTODY_LIMITS.contents)return reply({status:'full',reason:'content_capacity'});
+     if([...reserved.values()].filter(m=>m.sender===sender).length>=ATTACHMENT_CUSTODY_LIMITS.senderContents)return reply({status:'full',reason:'sender_capacity'});
+     if([...reserved.values()].reduce((n,m)=>n+m.bytes,bytes)>maxBytes)return reply({status:'full',reason:'byte_capacity'});
+    }
     const received=!!m.shared?await prefix(tx,m):0;
-    await tx.save({manifest,digest,received,receipt:null});return reply({status:'held',received});
+    await tx.save({manifest,digest,received,receipt:null});delta.attachmentGrantsHeld=1;return reply({status:'held',received});
    });
   }
   if(typeof request.digest!=='string'||!/^[a-f0-9]{64}$/.test(request.digest))return reply({status:'rejected'});
@@ -67,9 +79,9 @@ export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;re
     let added=0;
     for(const chunk of chunks){
      if(!current()||m.expires<=d.now())throw Error('Attachment session ended');
-     if(!await tx.chunk(content,chunk.index)){await tx.saveChunk(content,chunk);added++;}
+     if(!await tx.chunk(content,chunk.index)){await tx.saveChunk(content,chunk);added++;delta.ciphertextBytesStored=(delta.ciphertextBytesStored??0)+chunk.ciphertext.length*3/4-(chunk.ciphertext.endsWith('==')?2:chunk.ciphertext.endsWith('=')?1:0);}
     }
-    if(added){
+    if(added){delta.blocksStored=added;
      const received=await prefix(tx,m);for(const sibling of rows.filter(r=>attachmentContentDigest(r.manifest)===content)){sibling.received=received;await tx.save(sibling);}
     }
     if(m.expires<=d.now())throw Error('Attachment expired');
@@ -90,8 +102,9 @@ export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;re
    }
    if(request.operation==='receipt'&&to&&verifyAttachmentReceipt(request.receipt,m,record,d.now())){
     // Recipient receipt authorizes deletion even if it obtained some chunks from another neuron.
-    const {version,id,digest,recipient,device,expires,signature}=request.receipt as AttachmentReceipt;
-    row.receipt={version,id,digest,recipient,device,expires,signature};await tx.save(row);
+    const {version,id,digest,recipient,device,expires,signature,route,routeSignature}=request.receipt as AttachmentReceipt;
+    credit={kind:'media-receipt',reference:trialReference(m.sender,m.id,m.recipient)};if(!row.receipt)delta.attachmentReceipts=1;
+    row.receipt={version,id,digest,recipient,device,expires,signature,...(route?{route:{sources:[...route.sources],partial:route.partial},routeSignature}:{})};await tx.save(row);
     if(!m.shared||rows.filter(r=>attachmentContentDigest(r.manifest)===content&&r.receipt).length===m.shared!.count)await tx.eraseChunks(content);
     return reply({status:'completed'});
    }
@@ -99,6 +112,7 @@ export function createAttachmentCustody(d:{owner:string;store:AttachmentStore;re
   });
  }
  return {
+  contribution:meter.snapshot,
   async receive(raw:string,peer:IdentityPeer){
    if(typeof raw!=='string'||raw.length>ATTACHMENT_STREAM_FRAME_BYTES-1024||queued>=8)return reply({status:'rejected'});
    const bulk=isAttachmentUploadBatchRequest(raw);

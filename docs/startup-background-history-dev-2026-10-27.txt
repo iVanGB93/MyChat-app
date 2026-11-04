@@ -1,0 +1,26 @@
+Startup/background history audit and acceptance - October 27, 2026
+
+Fixed automatic media maintenance, OS notification actions and notification-open
+navigation, external share policy checks, bulk unread selection, batched storage
+confirmations and relationship imports. Unsupported packets reject before reads.
+Existing delivery worker uses pending-only reads; no change was needed there.
+
+Dev phone checks:
+- Fresh JavaScript startup: indexed fullReads=0, migrations=0 before test snapshots.
+- Media view: 280 media messages + 293 related actions; full-read delta zero.
+  Rendered media/deletion state and removal tombstones matched complete history.
+- Initial correlated-query sample: 242.97 ms; indexed-join sample: 84.47 ms.
+  These are query samples, not an app-launch benchmark or statistical speed claim.
+- 68.009-second background interval: full-read delta zero, network-read delta zero.
+  This was a quiet interval, not a sustained traffic/screens-off delivery test.
+- Dev returned to foreground. No messages/calls sent; no real read actions invoked.
+
+Validation: full npm run check passed 1,667 tests with 3 intentional skips.
+After the final query/public API changes, 85 targeted tests, TypeScript and module
+checks passed. Media export/link/deletion, receipt idempotence, denied notification
+actions, group membership, exact delivery grants and original aliases preserved.
+Normal app, AoNs, identities and existing history untouched. No release/deployment.
+
+Remaining full reads are documented in docs/architecture/storage.txt; mainly
+explicit diagnostics, group-info/storage UI, forwarding/selection checks and
+one-time migration/projection repair. Dev-only indexed rollout remains unchanged.

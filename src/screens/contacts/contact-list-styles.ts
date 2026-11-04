@@ -1,5 +1,6 @@
+import {Chrome} from '../../theme';
 import {StyleSheet} from 'react-native';
-import {Font,Spacing,Radius} from '../../theme';
+import {Font,Spacing} from '../../theme';
 export const contactListStyles = StyleSheet.create({
   container: { flex: 1 },
   list: { paddingBottom: Spacing.md },
@@ -16,7 +17,7 @@ export const contactListStyles = StyleSheet.create({
   scanBtn: {
     width: 48,
     minHeight: 48,
-    borderRadius: Radius.md,
+    borderRadius: Chrome.controlRadius,
     borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',

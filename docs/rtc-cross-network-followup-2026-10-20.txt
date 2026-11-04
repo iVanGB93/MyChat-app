@@ -1,0 +1,15 @@
+Cross-network RTC follow-up — October 20, 2026
+
+Changes in mobile working tree (no production build):
+- Authenticated ICE failed state gets the same single bounded restart opportunity as disconnected, including responder wait. Unauthenticated failure still closes.
+- RTC setup now allows 20 seconds to open its channel. The local identity wire and connection pool allow 25 seconds for RTC only; ordinary wires retain 10 seconds. Signed signaling expiry and peer proof expiry are unchanged.
+- New direct media streams require connected native RTC and an open control channel; an authenticated but recovering connection is not sufficient.
+- RTC lifecycle logs include short peer/relay suffixes for correlation, never SDP or candidate addresses.
+
+Validation: npm run check passed: 1438 passed, 3 skipped, 0 failures; typecheck, module boundaries, cycles and consolidation passed. Tests cover failed-state recovery, duplicate failure events, delayed answer at 12 seconds, bounded unanswered setup, and refusing a stream during disconnection without closing the identity session.
+
+Live Dev test: iVan on mobile data, Leidiana on Wi-Fi. Before the later setup-window/stream-selection changes, a 1 MiB transfer completed in 29.936 seconds after enqueue (31.106 including enqueue), SHA256 and length correct. Sender still pending at observation. The 5 MiB run lost the direct connection during identity renewal; driver stopped, queued work preserved. 10 MiB was not run. Do not claim direct cross-network stability or speed success.
+
+Remaining evidence: mobile-side ICE candidate pair RTT reached 2.504 seconds with repeated loss of connectivity; AoN request response times also reached several seconds. Even with aligned setup windows, some ICE connections report connected before the data channel opens, then fail. Renewal timeouts also close connections. This does not establish whether the remaining cause is solely carrier/NAT behavior; more investigation needed. Wi-Fi remained disabled on iVan at last observation. No AoN deployment this turn; these are mobile RTC lifecycle changes (plus backward-compatible optional local wire timeout).
+
+User raised sharing one RTCPeerConnection for data and calls. Current call hook owns a separate connection and network SDP validator accepts data-only. Explained feasibility and need for renegotiation, separate call lifecycle and media priority; no unified-connection migration performed.

@@ -1,0 +1,34 @@
+Group photo and screen-off follow-up — October 27, 2026
+
+Scope
+- Official apps and existing messages preserved. User identified Family as the affected group; no test was sent there.
+- All live sends used the existing group containing only the two Dev identities.
+
+Verified defects / changes
+- Encoded attachment descriptors must fit the existing 2,048-byte packet budget including 17 bytes reserved for timestamp overhead. The caption editor's 1,600-byte input allowance alone cannot guarantee this; group, filename, signature and reply overhead also count.
+- Extracted the actual wire-size check. Oversize is no longer reported as an identity-verification failure. Mobile preflights all descriptors before persisting outgoing jobs or publishing the audience.
+- Failed caption selections expose a caption editor and Retry. Retry preserves the photo, uses new transfer/group message IDs, and never changes an already persisted descriptor. Existing staged source is retained for uncertain storage outcomes.
+- Missing identity lookup now has a durable waiting reason and per-peer single flight; it no longer occupies the global preparation slot while waiting on a remote peer. Completion wakes processing, with the existing retry cooldown retained.
+- Blocked or partially failed shared audiences become explicit preparation failures, never partial group sends.
+- A live Hermes test caught a new deferred catch-binding failure in the first implementation. Classifying the error before the deferred write fixes it; aggregate counters confirmed one rejection, zero state-write errors on retry of the exact retained selection. This development finding does not identify the historical Family failure's exact cause.
+
+Live Dev evidence
+- A 1,300-byte group caption was rejected without publishing the message.
+- The same retained photo was retried with a short caption. Received 5,322,979 bytes in 4,690 ms including test polling, checksum matched.
+- Evidence: builds/review-1130-caption-live.json. No Family group message was sent.
+
+Background evidence
+- Initial five-minute debugger-based test was inconclusive: Dev inspector disconnected. Both native processes remained alive; no new wife-Dev exit was recorded.
+- Six-minute follow-up uses /proc/PID/stat (CLK_TCK verified as 100), preserving PID/start time and checking Android wakefulness at each sample. No inspector polling or code changes during this measurement. Result recorded separately in builds/review-1130-screen-off-native.json.
+
+Remaining limits
+- Wife's original official-app report had 14 live incomplete outgoing authorizations. It lacks individual job/recipient correlation; Dev fixtures are not substitutes for those official records.
+- SecondNeuron contact is accepted and unblocked at the latest read-only check. This does not diagnose the other Family recipients.
+- Exact production caption length and the specific pending jobs remain unverified. No production build, installation, deployment, commit, push, reset or history deletion performed.
+
+Final validation
+- Six-minute screen-off sample completed: Ivan Dev same PID/start time, 150 ms CPU / 360,467 ms elapsed (~0.0416% of one core); wife Dev same PID/start time, 70 ms / 360,477 ms (~0.0194%). Both samples reported Android mWakefulness=Dozing. USB connected; this does not establish deep device-idle/overnight performance.
+- Final caption regression repeated after preserving gallery-origin metadata during restaging: rejected in 306 ms observed, not published; retry received 5,322,979 bytes in 12,127 ms including polling, checksum matched. The earlier run was 4,690 ms; these are live completion observations, not a controlled speed comparison.
+- Screen-off notification recovery passed: delivery observed in 5,597 ms, one OS preview, zero generic duplicates, foreground read receipt did not add another notification.
+- Final npm run check passed; targeted preparation/queue/ledger tests 71/71; typecheck, cycles, module boundaries, consolidation, assets and git diff --check passed.
+- Both Dev screens restored. No official app install or data reset.

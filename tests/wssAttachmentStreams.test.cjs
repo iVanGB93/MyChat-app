@@ -43,17 +43,17 @@ test('WSS rejects reflection, tampering, replay and out of order without advanci
 });
 function fixture(t,size,mode){
  const source=crypto.randomBytes(size),digest=hex(),descriptor={key:hex(),checksum:hash(source),manifest:{sender:'a',recipient:'b',senderDevice:'da',recipientDevice:'db',expires:Date.now()+60000,bytes:size}};
- const peers=[{account:'a',device:'da',instance:'ia'},{account:'b',device:'db',instance:'ib'}];let managers=[],committed=null,commits=0,active=true,frames=0;const outcomes=[[],[]],checks=[0,0],timings=[load('attachmentTiming').createAttachmentTiming(true),load('attachmentTiming').createAttachmentTiming(true)];
+ const peers=[{account:'a',device:'da',instance:'ia'},{account:'b',device:'db',instance:'ib'}];let managers=[],committed=null,commits=0,active=true,frames=0;const changes=[0,0],outcomes=[[],[]],checks=[0,0],timings=[load('attachmentTiming').createAttachmentTiming(true),load('attachmentTiming').createAttachmentTiming(true)];
  const lease=async side=>{checks[side]++;if(mode==='revoke'&&side===1&&checks[side]>=5)active=false;return active;};
  const jobs=[{owner:'a',digest,descriptor},{owner:'b',digest,descriptor}];
  for(let side=0;side<2;side++)managers[side]=create({
-  outcome:v=>outcomes[side].push(v),timing:timings[side],random:async n=>random(n),current:()=>active,peer:account=>peers.find(p=>p.account===account),
+  changed:()=>changes[side]++,outcome:v=>outcomes[side].push(v),timing:timings[side],random:async n=>random(n),current:()=>active,peer:account=>peers.find(p=>p.account===account),
   send(account,instance,raw){assert.equal(instance,peers[1-side].instance);frames++;if(mode==='disconnect'&&frames===4){active=false;return false;}if(mode==='tamper'&&side===0&&frames===4){const outer=JSON.parse(raw),record=JSON.parse(outer.data);record.data=(record.data[0]==='A'?'B':'A')+record.data.slice(1);outer.data=JSON.stringify(record);raw=JSON.stringify(outer);}
    queueMicrotask(()=>{const accepted=managers[1-side].receive(raw,peers[side]);if(!mode&&active)assert.equal(accepted,true);if(mode==='tamper'&&frames>=4){active=false;}});return true;},
   request:async(account,raw)=>{const r=JSON.parse(raw);assert.equal(r.transport,'wss-v1');return JSON.stringify({status:await managers[0].serve(jobs[0],()=>lease(0),r.id)?'streaming':'unavailable'});},
   files(job,id,role){let pos=0,parts=[];return {reader:()=>({read:n=>{const v=new Uint8Array(source.subarray(pos,pos+n));pos+=v.length;return v;},close(){}}),writer:()=>({write:v=>parts.push(Buffer.from(v)),close(){}}),hash:async()=>hash(Buffer.concat(parts)),commit:async()=>{committed=Buffer.concat(parts);commits++;},discard(){parts=[];}};}
  });
- t.after(()=>managers.forEach(m=>m.stop()));return {outcomes,checks,timings,run:()=>managers[1].pull(jobs[1],()=>lease(1)),verify(){assert.equal(commits,1);assert.deepEqual(committed,source);},empty(){assert.equal(commits,0);assert.equal(committed,null);}};
+ t.after(()=>managers.forEach(m=>m.stop()));return {managers,jobs,changes,outcomes,checks,timings,run:()=>managers[1].pull(jobs[1],()=>lease(1)),verify(){assert.equal(commits,1);assert.deepEqual(committed,source);},empty(){assert.equal(commits,0);assert.equal(committed,null);}};
 }
 for(const size of [1_000_000,5_000_000,10_000_000])test(`existing WSS encrypted stream verifies ${size} bytes`,async t=>{const f=fixture(t,size);assert.equal(await f.run(),true);f.verify();});
 for(const mode of ['disconnect','tamper','revoke'])test(`WSS ${mode} never publishes partial file`,async t=>{const f=fixture(t,1_000_000,mode);assert.equal(await f.run(),false);f.empty();});
@@ -71,3 +71,5 @@ test('stream phase diagnostics record bounded aggregates without changing verifi
   assert.equal(value.errors,0);assert(value.milliseconds>=0);
  }
 });
+
+for(const mode of [undefined,'disconnect'])test('WSS completion wakes fallback and releases its sending hold: '+(mode??'verified'),async t=>{const f=fixture(t,1000000,mode);await f.run();await new Promise(setImmediate);assert.equal(f.managers[0].sending(f.jobs[0]),false);assert.equal(f.changes[0],1);if(mode)f.empty();else f.verify();});

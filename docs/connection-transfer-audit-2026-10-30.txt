@@ -1,0 +1,42 @@
+Connection and transfer audit — 2026-10-30
+
+Scope reviewed
+- Connection ownership, authentication, close/abort cleanup, pool reservations and retry deadlines: neuronConnections, identityNetwork, persistentAxon, nativeAxonTransport, lanIdentityRuntime and RTC transport.
+- Direct/WSS versus encrypted relay routing, capability freshness, stream wake/credit, durable checkpoints, verified receipts, cancellation and retry: attachmentConnections, attachmentRouteSelection, attachmentTransfer, wssAttachmentStreams, streamWake, attachmentSchedule, mobile/hosted attachment stores.
+- Composition, custody inboxes, background recovery and scheduler boundaries: neuronRuntime, eventDeadlineTask, workPump, private/group couriers and their adapters.
+This is a code/regression audit of these paths, not a claim that every possible physical-network or Android lifecycle condition has been proven.
+
+Changes
+1. Shared eventDeadlineTask offers immediate event dispatch; phone composition opts in to coalesced microtasks instead of zero-delay frame timers. Node retains its existing injected timers, which do not depend on display frames. Changes arriving during asynchronous work survive. Deadlines remain timers. A self-generated event burst yields after eight passes, preserving I/O fairness. stop cancels queued work; failures retain their retry deadline. Canonical source synced into local AoN checkout.
+2. Phone group outbox adapter now reads up to the shared per-sender/byte budgets, matching the courier validator (1024 entries/64 MiB). Its former independent 128-entry/8 MiB limit could reject a durable queue written under newer shared rules. Existing content is preserved; invalid/over-limit storage still fails explicitly.
+3. Moved active attachment-job capacity from attachmentTypes to attachmentSchedule. Phone and hosted adapters import the same runtime policy; the types-only boundary now passes again. No capacity or on-disk format change in this move.
+4. Previous FCM resume fix retained: reset the underlying poll schedule AND wake its coordinator. An idle deadline of Infinity cannot be advanced by an unrelated safety tick alone.
+
+Timers retained deliberately
+- Authentication/request timeouts, session/manifest expiry and failed-route backoff.
+- Remote receipt/status retry when no usable event arrived; a connected peer is not delivery proof.
+- Stream burst yields and bounded idle safety waits; avoid an unbounded microtask stream monopolizing the JS thread.
+- Native/RTC platform fallbacks (LAN accept-null retry, bounded ICE gathering wait). Native accept normally blocks; the null path is not automatically a continuous idle poll. Replacing these needs adapter-specific lifecycle testing, not removal of timeout guards.
+
+Follow-up opportunities / limits
+- Productive attachment bursts still yield through platform scheduling; changing this should use a native-yield adapter with measured responsiveness, not simply spin via Promise microtasks.
+- Bounded ICE gathering can use a platform event plus a deadline, with tests for stop/restart and partially gathered candidates. It is connection setup work, not an idle repeating job.
+- Prior live FCM background test lost its debugger; 5 MiB checksum succeeded after foreground return, but cold/screen-off timing and 10 MiB completion remain unverified. The test harness's narrow lookup disagreed with the full message view and must be resolved before trusting its timing output.
+
+Live Dev check
+Explicit recovery with two connected relays: private inbox passes 4 -> 6, group passes 3 -> 5. Both returned to two event-idle peers, zero active passes. No new messages were sent for this coordinator check.
+
+Validation logs
+builds/network-transfer-audit-mobile-20261030.log
+network-transfer-audit-hosted-20261030.log
+network-transfer-audit-hosted-build-20261030.log
+TypeScript, dependency cycles, module boundaries and consolidation checked.
+No commit/push/deployment/production build or official-app installation. Existing data retained.
+
+Final validation: mobile 1,749 passed, 3 skipped, 0 failed; hosted 324 passed,
+0 failed. Focused final scheduling/capacity/recovery tests 11/11. Mobile and
+hosted TypeScript pass; selected shared-source parity passes. Final Dev check:
+private and group passes 3 -> 5, two idle peers afterward, zero active passes.
+The immediate event option is phone-specific; Node retains its established
+unref timer adapter. Unbounded microtask feedback was caught during testing and
+avoided with a bounded fairness yield. No live AoN deployment performed.

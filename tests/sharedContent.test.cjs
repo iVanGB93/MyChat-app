@@ -6,10 +6,10 @@ test('shared text preserves content and does not duplicate the extracted URL',()
 });
 test('multiple local shared files retain their names, types and order',()=>{
  const files=[{path:'file:///cache/a.jpg',fileName:'a.jpg',mimeType:'image/jpeg',size:3},{path:'content://provider/b',fileName:'b.pdf',mimeType:'application/pdf'}];
- assert.deepEqual(mod.sharedItems({files}),files.map(f=>({uri:f.path,name:f.fileName,mime:f.mimeType})));
+ assert.deepEqual(mod.sharedItems({files}),files.map(f=>({uri:f.path,name:f.fileName,mime:f.mimeType,...(f.size!=null?{size:f.size}:{})})));
 });
 test('unsupported paths, oversize files, empty shares and excessive batches fail before sending',()=>{
- for(const input of [{},{files:[{path:'https://example.com/x'}]},{files:[{path:'file:///x',size:0}]},{files:[{path:'file:///x',size:251*1024*1024}]},{files:Array(5).fill({path:'file:///x'})}])assert.throws(()=>mod.sharedItems(input));
+ for(const input of [{},{files:[null]},{files:[{path:'file:///x',size:NaN}]},{files:[{path:'https://example.com/x'}]},{files:[{path:'file:///x',size:0}]},{files:[{path:'file:///x',size:251*1024*1024}]},{files:Array(5).fill({path:'file:///x'})}])assert.throws(()=>mod.sharedItems(input));
 });
 test('partial failure retries only remaining items and pins account and recipient',async()=>{
  const batch=mod.sharedBatch([{text:'a'},{text:'b'}]),sent=[];let fail=true;

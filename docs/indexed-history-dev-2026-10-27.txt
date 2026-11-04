@@ -1,0 +1,24 @@
+Indexed history and call alignment acceptance - October 27, 2026
+
+Call cards: outgoing/right, incoming/left, matching message colors. Verified on
+Dev phone R3GYC0H7PMY: incoming card x82..749, outgoing x689..1358.
+No test calls or messages were sent.
+
+Dev migration preserved all pre-existing records, contacts and group state.
+382 messages, 414 actions, 26 contacts, 9 groups, 87 call-history entries.
+Legacy source hash unchanged:
+f9118d4d6d217fd53046c7946bbbc8f714b72c25fff4bffa3d1628fbf489f05c
+Whole-state equality initially differed because two group-control records arrived
+normally after startup (groupSeen and groupPackets appended two entries each).
+Field comparison verified all original entries and other metadata unchanged.
+
+Fresh ledger instance, existing SQLite store: metadata + delivery reads 23.30 ms,
+zero full-history reads, zero historical rows loaded, one operational SQL read.
+This measures network-view acquisition, not end-to-end app startup.
+Reapplying the existing Dev contact alias unchanged preserved contacts and read/
+rewrote zero historical rows. Unit fixtures cover actual sends, edits, receipts,
+attachments, failed writes, stale versions, global capacity and migration rollback.
+Dev UI scrolling also verified call cards and older conversation entries.
+
+No production build, installation, publication, commit or deployment performed.
+Indexed storage is enabled only in Dev. Official app and AoNs unchanged.

@@ -3,7 +3,7 @@ function fixture(){
  const account='axonic:1:'+'a'.repeat(64),sender='axonic:1:'+'b'.repeat(64),id='c'.repeat(64),storage=new Map(),displayed=new Map(),calls=[],cancelled=[];
  let status={state:'unlocked',account},random=0,failSave=false,queued=0;
  const state={version:1,contacts:[{account:sender,accepted:true,blocked:false}],messages:[{id,peer:sender,direction:'incoming',text:'hello',status:'delivered'}]};
- const ledger={snapshot:async()=>state,enqueue:async(...args)=>calls.push(['reply',...args]),act:async(...args)=>calls.push(['read',...args]),enqueueGroup:async(...args)=>calls.push(['group',...args]),markGroupRead:async(...args)=>calls.push(['group-read',...args])};
+ const ledger={snapshot:async()=>{throw Error('Notification must not read full history');},messageSnapshot:async(peer,message)=>{assert.equal(peer,sender);assert.equal(message,id);return state;},enqueue:async(...args)=>calls.push(['reply',...args]),act:async(...args)=>calls.push(['read',...args]),enqueueGroup:async(...args)=>calls.push(['group',...args]),markGroupRead:async(...args)=>calls.push(['group-read',...args])};
  const imports={
   './rootCallNotificationAction':{queueRootCallNotificationAction:async()=>false},
   'react-native':{AppState:{currentState:'active'}},

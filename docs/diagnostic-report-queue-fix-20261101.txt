@@ -1,0 +1,22 @@
+Diagnostic report queue failure — 2026-11-01
+
+Official phone preview showed v2 report, 27,312 bytes, addressed to SecondNeuron,
+and generic queue-confirmation error. Read-only inspection; preview preserved.
+Root cause: composition generated axonic-diagnostic-v2-<id>.json while selection
+validation required v1. Validation occurs before source staging or queue commit.
+
+Fix: shared diagnosticAttachmentName helper used by report producer and validator.
+Current v2 and existing v1 previews are accepted only with exact matching 64-hex
+ID and application/json MIME. Unknown versions/IDs/paths/MIME remain rejected.
+Duplicate/conflict/deleted-report checks unchanged. UI exposes allowlisted useful
+errors (format, blocked neuron, queue full, expired preview), with Spanish text;
+arbitrary native errors remain hidden and uncertain outcomes retain retry guidance.
+
+Validation: 31 focused tests passed, typecheck and module-boundary checks passed.
+Freshly restarted emulator Dev created a real v2 report for SecondNeuron; retrying
+the exact draft returned the same ID, one selection, then one durable attachment
+message. Message was pending at final check; recipient delivery is not claimed.
+Live artifacts: builds/diagnostic-queue-live.json and diagnostic-queue-published.json.
+
+Official app unchanged. Fix requires its next app update; no production build,
+installation, publication, commit, deployment, data deletion or reset performed.

@@ -1064,8 +1064,17 @@ for(const failureState of ['disconnected','failed','post-call'])test(`RTC recove
   assert.equal(pcs[0].remoteDescriptions.length,2);assert.equal(pcs[1].remoteDescriptions.length,2);
  assert.deepEqual(pcs.map(p=>p.channel),channels);assert.ok(transports.every(x=>x.snapshot()[0].open));
  const received=[];wires[1].listen(raw=>received.push(raw),()=>{});wires[0].send('after restart');await new Promise(r=>setImmediate(r));assert.deepEqual(received,['after restart']);
- pcs[0].connectionState='connected';pcs[0].emit('connectionstatechange');pcs[0].connectionState='disconnected';pcs[0].emit('connectionstatechange');
- transports[1].receive({...offer,session:'ee'.repeat(32)},'relay');await new Promise(r=>setImmediate(r));assert.equal(packets.length,4);
+ for(const pc of pcs){pc.connectionState='connected';pc.emit('connectionstatechange');}
+ transports[1].receive({...offer,session:'ee'.repeat(32)},'relay');await new Promise(r=>setImmediate(r));assert.equal(packets.length,4,'old parent cannot authorize another restart');
+ pcs[0].connectionState='disconnected';pcs[0].emit('connectionstatechange');pcs[0].emit('connectionstatechange');
+ await settle(()=>packets.length===5);const second=packets[4].signal;
+ assert.match(second.sdp,new RegExp('a=x-axonic-restart:'+offer.session));
+ assert.notEqual(second.session,offer.session);
+ transports[1].receive(second,'relay');await settle(()=>packets.length===6);
+ transports[0].receive(answer,'relay');await new Promise(r=>setImmediate(r));assert.equal(pcs[0].remoteDescriptions.length,2,'old answer cannot complete later restart');
+ transports[0].receive(packets[5].signal,'relay');await new Promise(r=>setImmediate(r));
+ assert.equal(pcs[0].remoteDescriptions.length,3);assert.equal(pcs[1].remoteDescriptions.length,3);
+ assert.deepEqual(pcs.map(p=>p.channel),channels,'later outage keeps the original authenticated data channels');
 });
 
 test('RTC accepts a delayed answer within its bounded setup window and closes unanswered attempts',async t=>{
@@ -1386,7 +1395,7 @@ test('first-contact custody resolves a signed sender record before decrypting an
  assert.equal(lookups,1);assert.equal(commits,1);assert.ok(await records.read(a.status().account));
  assert.equal(await load('custodyProtocol').verifyCustody(receipt,records,now),true);
  const composition=require('node:fs').readFileSync('src/composition/neuronRuntime.ts','utf8');
- assert.match(composition,/receiveCustody\(envelope,operationalRecords,m=>receiveMessage\(m,relay\)\)/);
+ assert.match(composition,/receiveCustody\(envelope,operationalRecords,m=>receiveMessage\(m,relay\),undefined,relay\)/);
 });
 
 test('native ticks release queued custody polling when background JS timers are suspended',async t=>{
@@ -1752,4 +1761,13 @@ test('exhausted local custody wait returns retry without disconnecting the healt
  const queued=await f.sessions[0].custodyRequest('queued');assert.deepEqual(JSON.parse(queued),{status:'retry',retryAfterMs:1000});
  assert.equal(f.sessions[0].snapshot().state,'connected');release();assert.equal(await first,'ok');
  assert.equal(await f.sessions[0].custodyRequest('next'),'ok');
+});
+
+for(const operation of ['directory','push'])for(const outcome of ['late-response','deadline'])test(`authenticated ${operation} request tolerates storage/provider contention (${outcome})`,async t=>{
+ let release,held=false,index=0;const hooks={onDirectory:async()=> 'ok',onPush:async()=> 'ok'};
+ const f=pair(t,{0:hooks,1:hooks},[true,true],0,d=>{if(index++!==0)return createPersistentAxon(d);const wire=d.wire;return createPersistentAxon({...d,wire:{...wire,send(raw){const frame=JSON.parse(raw);if(frame.kind==='request'&&frame.operation===operation){held=true;release=()=>wire.send(raw);}else wire.send(raw);}}});});
+ await Promise.all(f.sessions.map(s=>s.ready));const request=f.sessions[0][operation+'Request']('lookup');await settle(()=>held);
+ f.advance(4001);f.sessions[0].tick();assert.equal(f.sessions[0].snapshot().state,'connected');
+ if(outcome==='late-response'){release();assert.equal(await request,'ok');assert.equal(f.sessions[0].snapshot().state,'connected');}
+ else{f.advance(11000);f.sessions[0].tick();assert.equal(await request,null);assert.equal(f.sessions[0].snapshot().closeReason,'exchange-timeout:'+operation);}
 });

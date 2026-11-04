@@ -1,0 +1,13 @@
+Background recovery follow-up (local changes, not production deployment)
+
+Evidence: official1.1.35 report had784498ms recovery/setup,296719ms sleep,28352ms whole-processCPU,676942ms historySnapshot maximum. Exact cause of that historical stall remains unproven.
+
+Changes:
+- Conversation projections defer page rebuilds while AppState is not active. Durable dirty marker precedes canonical commit; next UI read repairs from authoritative history, including after restart. No new timer/worker; foreground incremental patch remains.
+- Inline wake admission no longer awaits reverse relay receipt confirmation. Signed receipt submission retains its existing coalescing, authorization and accepted-event mechanism; receipt and media still gate recovery completion. Durable admission itself is not cancelled.
+- Indexed scoped history reads no longer run lifetime count/byte aggregates left over from removed capacity ceilings. Conflict and transactional version checks retained; shared ledger count plumbing removed and mirrored into hosted checkout.
+- Diagnostic reports include allowlisted ledger queue/storage/decode/projection stage aggregates. These are elapsed, potentially overlapping intervals, not CPU.
+
+Validation: focused79/79; corrected AppState fixture test1/1. On connected Axonic Dev, real attachment snapshots31,26,22,21,21ms; three connected sessions. Isolated memory fixture on the phone proved background sparse commit caused0partial/source reads and1dirty-marker write, then recovered1message on demand. No real test messages added. Initial hosted full run323/324 due group-directory-wake timeout during concurrent bundling/tests; unchanged hostedNetwork suite passed20/20 in isolation. Shared parity/typecheck pass. Final full mobile suite:1738passed,3skipped,0failed. Mobile TypeScript passed. Results in builds/recovery-all-mobile-20261030.log.
+
+Limits: warm/read-only phone checks plus isolated background policy test, not an end-to-end cold screen-off FCM replay. No battery-saving percentage claimed. Expired media needs separately verified source/recipient evidence; no messages resent or deleted. Official app unchanged. AoN changes remain staged together with preceding capacity work; no deployments, commits or production builds this turn.

@@ -13,7 +13,7 @@ function fixture(shared=false){
   'expo-file-system':{},'expo-file-system/legacy':{},'react-native':{AppState,Platform:{OS:'android'}},
   '@react-native-async-storage/async-storage':{default:{getItem:async key=>disk.get(key),setItem:async(key,value)=>{disk.set(key,value);}}},
   './localAccount':{localAccount:{status:()=>({account:'owner',state:locked?'locked':'unlocked'}),subscribe:f=>{accountListener=f;return()=>{};}}},
-  './localRootChat':{localRootChat:()=>({snapshot:async()=>{counts.snapshots++;if(blockRead)await blockRead;return state;}})},
+  './localRootChat':{localRootChat:()=>({mediaSnapshot:async()=>{counts.snapshots++;if(blockRead)await blockRead;return state;}})},
   './rootChatActions':{rootChatView:(_,s)=>s},
   './rootAttachmentFiles':{rootAttachmentFile:()=>{counts.resolves++;return shared?new deps['./sharedMediaFile'].SharedMediaFile('content://1'):{exists:true,uri:'file://synthetic'};},rootAttachmentExportLink:(_,d)=>links.get(d),linkRootAttachmentExport:(_,d,u)=>links.set(d,u)},
   './receivedMediaExport':exporter,'../workPump':pump,'../../modules/storage/chatStore':{subscribeOwnChatWrites:f=>{writeListener=f;return()=>{};}},

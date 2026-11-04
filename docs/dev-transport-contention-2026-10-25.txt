@@ -1,0 +1,46 @@
+Transport contention follow-up — October 25, 2026
+
+Confirmed code-level problem
+persistentAxon.custodyRequest returned null both for unavailable/unauthorized
+sessions and for local queue saturation or exhaustion of its bounded2s wait.
+The private courier treated the latter like a failed relay and excluded that
+relay/recipient pair for120 seconds. This is a deterministic false cooldown,
+not proof that it caused the historical58s sample.
+
+Fix (shared source; local/Dev only)
+- Valid sessions with a full local custody queue, pending push work or exhausted
+  local contention wait return status=retry,retryAfterMs=1000.
+- Invalid sessions and oversized requests still return null. Queue bounds and
+  push/call priority unchanged. No request is marked held/delivered by a retry.
+- Courier honors retry hints with a bounded1–60s delay (invalid hint5s), still
+  tries alternative relays, and preserves120s cooldown for actual failures.
+- Existing receipt/drain safety remains unchanged.
+
+Validation
+207 focused tests pass,2 optional skips. Covers queued-work limits, push priority,
+lock cancellation, actual wait-budget exhaustion without disconnect, short retry
+without false delivery, and existing genuine-failure fallback/quota behavior.
+Full suite1549 passed,3 optional skips,0 failed.
+TypeScript, boundaries, cycles, diff whitespace and hosted parity/types pass.
+Shared persistentAxon/custodyCourier synchronized to local AoN worktree only.
+No commit, push, deployment or production/normal-app changes.
+
+Storage investigation
+The requested CPU sampling method is unsupported by this Dev Hermes inspector
+(Profiler.enable rejected). That attempt restored both apps and verified history;
+no receiver profiling result or speed result is claimed for it. Existing bounded
+ledger timing counters remain valid, but storage read elapsed includes native
+scheduling and JavaScript scheduling, not disk latency alone. No unsafe cache,
+backup bypass or database reset was introduced to hide these waits.
+
+Final live5MB test (relay-contention-final5.json)
+File custody observed7.030s; independent descriptor check0.256s later;
+sender total7.286s. Receiver observed completion21.303s, valid checksum,
+sender offline, relay source77fe994d..., one recoverable transfer failure.
+Message present at first2.124s sample. Both Dev identities/histories preserved.
+29 storage reads aggregate8.161s(max1.740s); mutation queue max1.691s,
+snapshot queue max2.246s; attachment historySnapshot aggregate3.381s.
+Aggregates overlap; receive timing starts after debugger reconnect/unlock.
+Compared with prior23.325s receiving, this sample is faster but not a controlled
+proof of a general speedup or elimination of the older58s sender tail.
+Cold native/storage waits remain unresolved and require deeper native timing.

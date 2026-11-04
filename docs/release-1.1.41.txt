@@ -1,0 +1,37 @@
+Axonic 1.1.41 / Android versionCode 112 — local production release, 2026-11-01
+
+User explicitly authorized the next local production AAB with all current fixes.
+Built from the current mobile working tree, not represented as a clean Git commit.
+No publication, official-app installation, data reset, or mobile commit/push authorized.
+
+Prebuild gate: npm run check passed. 1876 passed, 3 skipped, zero failures (1879 total).
+TypeScript, dependency cycles, module boundaries, consolidation and asset checks pass.
+Evidence: builds/release-112-checks.log.
+
+Recovery validation before this build:
+- Cold Dev restart: queued message delivered exactly once; same identity and all 51
+  pre-existing records preserved. Observed delivery check 6441ms.
+- Background Dev notification: one preview, zero generic previews, read receipt
+  adds no notification. Observed delivery check 4775ms.
+- Snapshot checks 27–38ms; isolated deferred-projection recovery passed.
+- All three AoNs deployed on source 5cafd1a, runtime 67884f822dd4; see
+  docs/aon-recovery-followup-20261101.txt for scoped fixes and rollout evidence.
+
+Build settings: com.axonic, 1.1.41 (112), NODE_ENV=production, public environment
+flags cleared, existing upload keystore verified, groupCallsEnabled retained,
+four Android ABIs. Local Gradle bundleRelease; no cloud compilation.
+Sentry automatic artifact upload disabled, matching previous local build workflow.
+
+Build/validation completion will be appended after artifact verification.
+
+Completed: Gradle bundleRelease BUILD SUCCESSFUL in 2m51s.
+Artifact: D:/Proyects/Axonic-app/builds/Axonic-1.1.41-112.aab
+Size: 107826197 bytes.
+SHA256: 3b3d688f9fac54912429bea6b87b2ba66242447f82c7caa622739308e90e95ab
+Packaged source fingerprint: ca7d61ddda2279d32a4c10919b01976854e9017479a134f5094bc7127d7a4ef7
+Bundletool and jarsigner passed. Upload certificate matches 1.1.40. Manifest is
+com.axonic 1.1.41/112, non-debuggable, four ABIs, expected background upload/recovery
+and screen-sharing declarations. Packaged config and source fingerprint verified.
+Previous AAB unchanged. No installation or publication performed.
+Evidence: builds/local-production-aab-112.log; builds/local-aab-112-validation.json,
+local-aab-112-manifest.xml and local-aab-112-signature.txt.

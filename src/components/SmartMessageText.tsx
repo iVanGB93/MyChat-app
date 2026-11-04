@@ -1,5 +1,7 @@
+import {useLanguage} from '../localization/useLanguage';
+import {t,languageSnapshot} from '../localization/language';
 import React from 'react';
-import { Alert, Linking, StyleSheet, Text, type TextStyle } from 'react-native';
+import { Alert, Linking, StyleSheet, Text, type TextProps, type TextStyle } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 
 type SmartPart = {
@@ -76,17 +78,22 @@ export default function SmartMessageText({
   children,
   style,
   linkColor,
+  onTextLayout,
+  trailing,
 }: {
   children: string;
   style?: TextStyle | TextStyle[];
   linkColor: string;
+  onTextLayout?: TextProps['onTextLayout'];
+  trailing?: React.ReactNode;
 }) {
+ useLanguage();
   // Delivery/progress/theme updates do not change the message text. Retain only
   // this mounted bubble's parsed parts; edits naturally invalidate the result.
-  const parts = React.useMemo(() => splitSmartText(children), [children]);
+  const parts = React.useMemo(() => splitSmartText(children), [children,languageSnapshot()]);
 
   return (
-    <Text style={style} selectable>
+    <Text style={style} selectable onTextLayout={onTextLayout}>
       {parts.map((part, index) => {
         const target = targetForSmartPart(part);
         if (!target) return <React.Fragment key={`${part.text}-${index}`}>{part.text}</React.Fragment>;
@@ -98,9 +105,9 @@ export default function SmartMessageText({
             onLongPress={() => {
               if (part.kind !== 'phone') return;
               const phone = part.text.replace(/[^+\d]/g, '');
-              Alert.alert('Phone number', formattedPhoneLabel(part.text), [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Copy', onPress: () => { Clipboard.setStringAsync(phone).catch(() => {}); } },
+              Alert.alert(t("Phone number"), formattedPhoneLabel(part.text), [
+                { text: t("Cancel"), style: 'cancel' },
+                { text: t("Copy"), onPress: () => { Clipboard.setStringAsync(phone).catch(() => {}); } },
                 { text: 'Call', onPress: () => { Linking.openURL(`tel:${phone}`).catch(() => {}); } },
               ]);
             }}
@@ -111,6 +118,7 @@ export default function SmartMessageText({
           </Text>
         );
       })}
+      {trailing}
     </Text>
   );
 }

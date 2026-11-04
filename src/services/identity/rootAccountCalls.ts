@@ -1,3 +1,6 @@
+import {createGroupCallCoordinator} from './groupCallCoordinator';
+import {validGroupCallRoom,groupCallMembershipMatches} from './groupCallRoom';
+import type {RootGroup} from './rootGroupTypes';
 import {createNeuronCallCoordinator,type NeuronCallView} from './neuronCallCoordinator';
 import {createCallControlRuntime} from './callControlRuntime';
 import {createCallRetryScheduler} from './callRetryScheduler';
@@ -23,6 +26,7 @@ export function createRootAccountCalls(d:{
  current():boolean; now():number; random():Promise<Uint8Array>;
  contacts():Promise<{account:string;alias:string;blocked:boolean}[]>;
  contactsRevision?():number;
+ groups?():Promise<RootGroup[]>;
  eventCallPeer?(peer:string):boolean;
  inboxChanged?(peer:string):void;
  changed(view:NeuronCallView<string>|null):void;
@@ -53,10 +57,12 @@ export function createRootAccountCalls(d:{
  const name=(peer:string)=>contacts.find(c=>c.account===peer)?.alias||peer;
  const control=createCallControlRuntime({account,device,store:d.store,records:{read:readRecord},now:d.now,current,blocked,
   signReceipt:async e=>d.identity.signCallReceipt(e),send:(peer,remoteDevice,raw)=>d.network().callControlRequest(peer,remoteDevice,raw)});
- const coordinator=createNeuronCallCoordinator<string>({account,device,store:d.store,now:d.now,current,blocked,busy:()=>false,
+ const coordinator=createGroupCallCoordinator({account,device,now:d.now,random:d.random,current,changed:d.changed,
+  authorize:async room=>{await refresh();if(room.adHoc)return validGroupCallRoom(room)&&room.members.includes(account)&&!room.members.some(blocked)?'Call':null;const group=(await d.groups?.())?.find(g=>g.id===room.group);return groupCallMembershipMatches(room,group,account)&&!room.members.some(blocked)?group!.name:null;},
+  factory:(legId,changed,busy)=>createNeuronCallCoordinator<string>({account,device,store:d.store,now:d.now,current,blocked,busy,
   lookup:peer=>validAccountId(peer)?{user:peer,name:name(peer)}:null,
   resolve:async peer=>{await refresh();return validAccountId(peer)&&peer!==account?{account:peer,name:name(peer)}:null;},
-  readRecord,list:d.list,random:d.random,sign:input=>d.identity.signCall(input),submit:async raw=>{
+  readRecord,list:legId?async()=>[]:d.list,random:d.random,sign:input=>d.identity.signCall(input),submit:async raw=>{
    const saved=await control.submit(raw);if(!saved||!current())return false;
    // Invite, ringing and acceptance should not wait for a periodic retry tick.
    // Only saved, verified events reach here. Drain owns bounded single-flight
@@ -86,13 +92,13 @@ export function createRootAccountCalls(d:{
     const raw=await d.network().callRelayRequest(provider,JSON.stringify({version:1,operation:'ice'}));
     const config=raw&&parseNeuronIceConfig(raw,d.now());if(config)return config;
    }return neuronStunConfig();
-  },changed:d.changed,terminalSaved:invite=>{
+  },changed,terminalSaved:invite=>{
    // Independent of a slow periodic relay poll; failure leaves the durable outbox intact.
    const remote=invite.caller===account?invite.callee:invite.caller;
    for(const peer of d.network().callPeers().filter(p=>p.account===remote&&p.expiresAt>d.now()).slice(0,10))
     void control.drain(invite,peer).catch(()=>{});
    void pump.flushTerminal(invite).catch(()=>{});
-  }});
+  }})});
  const relay=createCallControlRelay({changed:d.inboxChanged,records:d.records,now:d.now,current,blocked});
  const endpoint=createCallRelayEndpoint(relay);
  const mediaRelay=createCallMediaRelay({records:d.records,now:d.now,current,blocked,forward:(...args)=>d.network().forwardMedia(...args)});
@@ -116,8 +122,17 @@ export function createRootAccountCalls(d:{
    await coordinator.observe(event);await d.wakes.finish(event.callId);
   }
  }
+ // Verified local invitations must not queue behind an in-flight network retry.
+ // Coalesce notifications arriving during a drain without introducing a timer.
+ let wakeFlight:Promise<void>|undefined,wakeDirty=false;
+ function recoverWakes(){
+  wakeDirty=true;
+  return wakeFlight??=Promise.resolve().then(async()=>{
+   do{wakeDirty=false;if(!current())return;await refresh();await drainWakes();}while(wakeDirty&&current());
+  }).finally(()=>{wakeFlight=undefined;});
+ }
  return {
-  coordinator,clock:coordinator.tick,nextClockDeadline:coordinator.nextDeadline,
+  coordinator,recoverWakes,clock:coordinator.tick,nextClockDeadline:coordinator.nextDeadline,
   changed(){retry.changed();pump.changed();},
   nextDeadline:()=>Math.min(coordinator.nextDeadline(),retry.nextDeadline(),pump.nextDeadline()),
   relayMetadata:()=>relay.metadata(account),
@@ -131,8 +146,9 @@ export function createRootAccountCalls(d:{
   tick(){
    // A slow direct peer must not hold up relay delivery or the local call clock.
    const clock=coordinator.tick();
-   const work=ticking??=(async()=>{await refresh();await drainWakes();await Promise.all([retry.tick(),pump.tick()]);})().finally(()=>{ticking=null;});
-   return Promise.all([clock,work]).then(()=>{});
+   const wakes=recoverWakes();
+   const work=ticking??=(async()=>{await wakes;await Promise.all([retry.tick(),pump.tick()]);})().finally(()=>{ticking=null;});
+   return Promise.all([clock,wakes,work]).then(()=>{});
   },
   stop(){stopped=true;pump.stop();relay.stop();retry.stop();control.stop();coordinator.stop();},
  };

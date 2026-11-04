@@ -6,6 +6,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { publicDevice, recordDigest, validAccountId, verifyRecord, type IdentityRecord } from './identityProtocol.ts';
 import type { IdentityRecordStore } from './identityAdmission.ts';
+import {validReceivedRoute,type ReceivedRoute} from './deliveryEvidence.ts';
 export const CUSTODY_TTL = 24 * 60 * 60 * 1000;
 export interface CustodyEnvelope {
   version: 1; kind: 'envelope'; id: string; sender: string; senderDevice: string;
@@ -18,6 +19,7 @@ export interface CustodyEnvelope {
 export interface CustodyReceipt {
   version: 1; kind: 'receipt'; id: string; sender: string; recipient: string;
   recipientDevice: string; expires: number; digest: string; signature: string;
+  route?:ReceivedRoute;routeSignature?:string;
 }
 const hex = (v: unknown, n: number): v is string => typeof v === 'string' && v.length === n * 2 && /^[a-f0-9]+$/.test(v);
 const bytes = (v: unknown[]) => utf8ToBytes(JSON.stringify(v));
@@ -25,6 +27,7 @@ const header = (e: CustodyEnvelope) => ['axonic-custody-envelope-v1', e.id, e.se
   e.recipient, e.recipientDevice, e.created, e.expires, e.ephemeral, e.nonce];
 const signedEnvelope = (e: CustodyEnvelope) => bytes([...header(e), e.ciphertext]);
 const signedReceipt = (r: CustodyReceipt) => bytes(['axonic-custody-receipt-v1', r.id, r.sender, r.recipient, r.recipientDevice, r.expires, r.digest]);
+const signedRoute=(r:CustodyReceipt)=>bytes(['axonic-custody-route-v1',r.signature,r.route!.sources,r.route!.partial]);
 export const custodyDigest = (e: CustodyEnvelope) => bytesToHex(sha256(bytes([bytesToHex(signedEnvelope(e)), e.signature])));
 type CustodyWake = {version:1;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;expires:number;digest:string;signature:string;wakeMode?:'silent'};
 const wakeBody=(e:CustodyWake)=>bytes(['axonic-custody-wake-v1',e.version,e.id,e.sender,e.senderDevice,e.recipient,e.recipientDevice,e.expires,e.digest,...(e.wakeMode==='silent'?['silent']:[])]);
@@ -77,8 +80,9 @@ export function parseCustody(raw: string, now: number): CustodyEnvelope | Custod
       return { version, kind, id, sender, senderDevice, recipient, recipientDevice, created, expires, ephemeral, nonce, ciphertext, signature,...(p.wakeSignature?{wakeSignature:p.wakeSignature}:{}),...(p.wakeMode==='silent'?{wakeMode:'silent' as const}:{}) };
     }
     if (p.kind === 'receipt' && hex(p.digest, 32)) {
+      if((p.route===undefined)!==(p.routeSignature===undefined)||p.route!==undefined&&(!validReceivedRoute(p.route)||p.route.sources.includes(p.recipient)||!hex(p.routeSignature,64)))return null;
       const { version, kind, id, sender, recipient, recipientDevice, expires, digest, signature } = p;
-      return { version, kind, id, sender, recipient, recipientDevice, expires, digest, signature };
+      return { version, kind, id, sender, recipient, recipientDevice, expires, digest, signature,...(p.route?{route:p.route,routeSignature:p.routeSignature}:{}) };
     }
   } catch { /* Malformed packets are not admission requests. */ }
   return null;
@@ -90,7 +94,7 @@ export async function verifyCustody(p: CustodyEnvelope | CustodyReceipt, records
     if (!signer || signer.account !== (p.kind === 'envelope' ? p.sender : p.recipient) || !verifyRecord(signer, now)) return false;
     const device = signer.devices.find(d => d.id === (p.kind === 'envelope' ? p.senderDevice : p.recipientDevice));
     if (!device) return false;
-    return ed25519.verify(hexToBytes(p.signature), p.kind === 'envelope' ? signedEnvelope(p) : signedReceipt(p), hexToBytes(device.signing), { zip215: false });
+    return ed25519.verify(hexToBytes(p.signature), p.kind === 'envelope' ? signedEnvelope(p) : signedReceipt(p), hexToBytes(device.signing), { zip215: false })&&(p.kind!=='receipt'||!p.route||ed25519.verify(hexToBytes(p.routeSignature!),signedRoute(p),hexToBytes(device.signing),{zip215:false}));
   } catch { return false; }
 }
 /** Sender-controlled presentation intent; never authorizes plaintext actions. */
@@ -135,9 +139,10 @@ export function openCustody(e: CustodyEnvelope, account: string, signingSeed: Ui
   } finally { shared.fill(0); key?.fill(0); plain?.fill(0); }
 }
 /** Call only AFTER the recipient durably saves/deduplicates its own message. */
-export function signCustodyReceipt(e: CustodyEnvelope, signingSeed: Uint8Array, encryptionSeed: Uint8Array): CustodyReceipt {
+export function signCustodyReceipt(e: CustodyEnvelope, signingSeed: Uint8Array, encryptionSeed: Uint8Array,route?:ReceivedRoute): CustodyReceipt {
   if (publicDevice(signingSeed, encryptionSeed).id !== e.recipientDevice) throw Error('Wrong receipt device');
   const r: CustodyReceipt = { version: 1, kind: 'receipt', id: e.id, sender: e.sender, recipient: e.recipient,
     recipientDevice: e.recipientDevice, expires: e.expires, digest: custodyDigest(e), signature: '' };
-  r.signature = bytesToHex(ed25519.sign(signedReceipt(r), signingSeed)); return r;
+  r.signature = bytesToHex(ed25519.sign(signedReceipt(r), signingSeed));
+  if(route){if(!validReceivedRoute(route)||route.sources.includes(e.recipient))throw Error('Invalid receipt route');r.route={sources:[...route.sources],partial:route.partial};r.routeSignature=bytesToHex(ed25519.sign(signedRoute(r),signingSeed));}return r;
 }

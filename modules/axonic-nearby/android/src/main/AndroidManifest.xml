@@ -2,4 +2,9 @@
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
   <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+  <uses-permission android:name="android.permission.RUN_USER_INITIATED_JOBS" />
+  <application>
+    <service android:name="expo.modules.axonicnearby.AttachmentUploadJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
+    <service android:name="expo.modules.axonicnearby.MessageRecoveryJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
+  </application>
 </manifest>

@@ -1,6 +1,8 @@
-import React from 'react';
+import {useLanguage} from '../../localization/useLanguage';
+import {t} from '../../localization/language';
+import React,{useRef} from 'react';
 import {deliveryStatusIcon,deliveryStatusLabel} from '../../modules/messaging';
-import {View,Text,TouchableOpacity} from 'react-native';
+import {Animated,View,Text,TouchableOpacity} from 'react-native';
 import {Swipeable} from 'react-native-gesture-handler';
 import {Ionicons} from '@expo/vector-icons';
 import type {ThemeColors} from '../../theme';
@@ -29,6 +31,7 @@ interface ChatListRowProps {
   onToggleSelection: (roomId: string) => void;
   onAvatarPress: (roomId: string) => void;
   onMarkRead: (roomId: string) => void;
+  onCall?: (roomId: string, kind: 'voice' | 'video') => void;
 }
 
 function ChatListRowBase({
@@ -53,22 +56,26 @@ function ChatListRowBase({
   onToggleSelection,
   onAvatarPress,
   onMarkRead,
+  onCall,
 }: ChatListRowProps) {
-  const renderRightActions = () => (
-    <TouchableOpacity
-      style={[styles.swipeAction, { backgroundColor: Colors.primary }]}
-      activeOpacity={0.8}
-      onPress={() => onMarkRead(roomId)}
-    >
-      <Ionicons name="checkmark-done" size={22} color="#fff" />
-      <Text style={styles.swipeActionText}>Mark read</Text>
-    </TouchableOpacity>
+ useLanguage();
+  const canCall = isDirect && !!onCall;
+  const pendingCall=useRef<'voice'|'video'|null>(null);
+  const renderAction=(progress:Animated.AnimatedInterpolation<number>,kind:'voice'|'video'|'read')=>(
+    <View style={[styles.swipeAction,{width:canCall?144:80,backgroundColor:Colors.highlight,borderRadius:20,overflow:'hidden'}]}>
+      <Animated.View style={{alignItems:'center',gap:6,opacity:progress.interpolate({inputRange:[0,0.25,1],outputRange:[0,0.35,1],extrapolate:'clamp'}),transform:[{scale:progress.interpolate({inputRange:[0,1],outputRange:[0.75,1],extrapolate:'clamp'})}]}}>
+        <Ionicons name={kind==='voice'?'call-outline':kind==='video'?'videocam-outline':'checkmark-done'} size={26} color={Colors.primary}/>
+        <Text style={[styles.swipeActionText,{color:Colors.primary}]}>{kind==='voice'?'Call':kind==='video'?t("Video call"):t("Mark read")}</Text>
+      </Animated.View>
+    </View>
   );
+  const renderLeftActions=(progress:Animated.AnimatedInterpolation<number>)=>renderAction(progress,'voice');
+  const renderRightActions=(progress:Animated.AnimatedInterpolation<number>)=>renderAction(progress,canCall?'video':'read');
 
   const row = (
     <TouchableOpacity
       testID={`chat-row-${roomId}`}
-      accessibilityLabel={selectionMode ? `${selected ? 'Deselect' : 'Select'} ${displayName}` : `Open chat with ${displayName}`}
+      accessibilityLabel={selectionMode ? `${selected ? 'Deselect' : 'Select'} ${displayName}` : t("Open chat with {0}",{0:displayName})}
       accessibilityState={{ selected }}
       style={[
         styles.chatItem,
@@ -162,7 +169,7 @@ function ChatListRowBase({
                     {lastMsgFromMe && (
                       <Text>
                         <Ionicons
-                          accessibilityLabel={deliveryStatusLabel(lastMsgStatus ?? 'pending')}
+                          accessibilityLabel={t(deliveryStatusLabel(lastMsgStatus ?? 'pending'))}
                           name={deliveryStatusIcon(lastMsgStatus ?? 'pending')}
                           size={14}
                           color={lastMsgStatus === 'read' ? Colors.checkBlue : Colors.textTertiary}
@@ -184,16 +191,24 @@ function ChatListRowBase({
     </TouchableOpacity>
   );
 
-  if (unread > 0 && !selectionMode) {
+  if ((unread > 0 || canCall) && !selectionMode) {
     return (
       <Swipeable
-        renderRightActions={renderRightActions}
+        renderLeftActions={canCall ? renderLeftActions : undefined}
+        renderRightActions={canCall || unread > 0 ? renderRightActions : undefined}
+        friction={canCall?1.5:1}
+        leftThreshold={canCall?120:40}
+        rightThreshold={canCall?120:40}
+        dragOffsetFromLeftEdge={18}
+        dragOffsetFromRightEdge={18}
+        animationOptions={{speed:16,bounciness:0,overshootClamping:true}}
+        onSwipeableClose={()=>{const kind=pendingCall.current;pendingCall.current=null;if(kind)onCall?.(roomId,kind);}}
+        overshootLeft={false}
         overshootRight={false}
         onSwipeableOpen={(direction, swipeable) => {
-          if (direction === 'right') {
-            onMarkRead(roomId);
-            swipeable.close();
-          }
+          if(canCall)pendingCall.current=direction==='left'?'voice':'video';
+          else if(direction==='right')onMarkRead(roomId);
+          swipeable.close();
         }}
       >
         {row}

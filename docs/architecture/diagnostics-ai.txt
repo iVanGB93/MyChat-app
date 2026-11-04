@@ -48,3 +48,8 @@ Next extraction: common observation vocabulary and stable command/event contract
 retain platform-specific listener machinery and credentials outside shared core.
 Guide: identity.txt
 Guide: messaging.txt
+
+Module-aligned phone report v2
+Guide: DIAGNOSTIC-REPORT-V2.txt
+File: src/services/moduleDiagnosticReport.ts
+Call state transitions are event-driven and metadata-only; reports never authorize AI actions.

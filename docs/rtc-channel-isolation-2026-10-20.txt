@@ -1,0 +1,40 @@
+RTC channel isolation and live recovery follow-up — October 20, 2026
+
+Scope: retain LAN TCP, RTC DataChannel and WSS. No production build/install.
+
+Confirmed teardown path fixed:
+An extra unknown or duplicate identity DataChannel previously closed the entire
+RTC connection. After mutual identity authentication, reject only that extra
+channel. Explicitly admitted attachment streams keep their existing checks.
+Pre-authentication extra channels still fail closed. Frame validation, identity
+proofs, session expiration and byte limits are unchanged.
+
+Regression coverage verifies rejection on both initiator and responder, native
+close exceptions, bidirectional custody exchanges after rejection, and normal
+lock cleanup. Full npm run check: 1435 passed, 3 skipped, zero failures; type,
+dependency-cycle, module-boundary and consolidation checks passed.
+
+Live validation used existing Metro and the two Dev emulators. Sandbox-local
+network/ADB checks initially failed; elevated read access found the existing
+Metro, so no duplicate server was started. No phones appeared in ADB.
+
+Both emulators reloaded the new code. Twelve samples retained their mutual RTC
+connection. A separate peer ending 5db9e434 did disconnect/reconnect; logcat
+shows multiple channel-closed events while PC state was still connected. These
+are not established as caused by unknown channels. Remote-side logs unavailable;
+do not classify the entire network as stable or this root cause as resolved.
+
+A subsequent deliberate reload of emulator 5554 restored mutual open/connected
+RTC automatically. Observation completed 14847 ms after starting the reload;
+this includes bundle/runtime startup and polling, not pure negotiation latency.
+Normal chat checks after recovery:
+- A to B delivered/read: 285/295 ms observation.
+- B to A delivered/read: 1879/259 ms observation.
+- Generated 1036000-byte attachment delivered, checksum matched: 3524 ms after
+  enqueue returned. Preparation excluded; not a controlled speed comparison.
+
+Evidence in builds: rtc-channel-full-check.txt, rtc-channel-reloaded-live.txt,
+rtc-channel-reconnect.txt, rtc-channel-media.txt.
+Remaining: correlate the remote peer's close reason, physical LAN/private-route
+checks, and longer background/recovery trials. Hosted AoNs do not instantiate
+this mobile RTC endpoint adapter, so this change requires no AoN deployment.

@@ -1,0 +1,11 @@
+Group relay and history capacity fixes (local, not deployed)
+
+Shared phone/AoN group custody: 4096 jobs, 1024 per sender, 2048 per recipient, 64 MiB serialized budget. Own group outbox follows the shared sender and byte budgets. Mobile persistence uses the same byte budget.
+
+Retained messages, actions, group actions, replay controls, removal tombstones and cancellation records no longer have lifetime record-count ceilings that reject new work. Pending group controls remain bounded at 4096 and 16 MiB; completed history does not consume those pending budgets. Existing records and replay/conflict checks remain intact.
+
+Attachment stores share a 1024 unfinished-job limit, independent of finished history. More than 5000 archived transfers no longer block admission, completion or expiry retirement. Mobile and hosted persistence retain their platform-specific implementation.
+
+Validation: mobile suite 1734 passed, 3 skipped, zero failures; TypeScript passed. Hosted suite initially 323/324 with an obsolete retained-history ceiling assertion; replacement capacity/history regression passed 4/4. Final hosted rerun: 324/324 passed; selected shared-source parity and diff whitespace checks passed. Tests cover restart preservation, scoped reads beyond 5000 messages, transfer history over 5000, active-limit refusal and completion releasing capacity, group relay beyond 16 jobs, retained control history over 20000, and pending budget refusal without mutation.
+
+Not a removal of all resource protections: disk availability, byte budgets, expiry, wire-message size and group membership limits remain. No live data was changed or deleted. No production build or official-app update.

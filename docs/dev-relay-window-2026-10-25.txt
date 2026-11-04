@@ -1,0 +1,72 @@
+Relay window and network-wait investigation — October 25, 2026
+
+Implemented
+- Shared relay stream window increased from 8 x 8000 to 32 x 8000 bytes.
+  Records/wire encoding unchanged. Maximum uncredited bytes 256000 per stream,
+  two streams maximum. Intermediate credits must align with record boundaries.
+- Android JS wire queue admits 80 records only after block streams negotiated:
+  two windows plus control headroom. Existing byte bounds, other connection
+  capacities, ordered writes and failure cleanup retained.
+- Added fixed-stage Dev diagnostics for queue maintenance, history snapshot,
+  and enqueue reconciliation. No message content, keys or paths recorded.
+- Previous receiver processing improvements included in the shared AoN release:
+  strict base64 canonical checks without full re-encoding; optional native decrypt
+  contract preserving shared signature verification and lifecycle guards.
+
+Authorized rollout
+Commit 0bf87db9da3bf20a4cedc5a1e9930a547607d53d
+Message: Reduce relay processing overhead and expand bounded stream window
+Pushed branch codex/operator-foundations-20261022.
+FirstNeuron, SecondNeuron, ThirdNeuron all version 0.2.0, sourceDirty=false,
+sourceMetadataStatus=runtime_bound, runtime cbd68e73575b6d2e0e1b475bc2255d153ef0cb717a7743d83fe061f610ab2518.
+Second Railway deployment 5931f265-d578-476d-b216-98fc58b6bbce SUCCESS.
+Normal Railway Dockerfile hash verified against allowlisted staged source.
+All authenticated status/diagnostics/relay-inventory/operator-memory HTTP 200;
+ownerStatus installed; identity/binding hashes and prior message keys preserved.
+Messages 108/39/2, contacts 10/6/2, groups 3/2/2 unchanged.
+Recovery copies: /var/backups/axonic-window-0bf87db;
+/data/operator-backups/window-0bf87db;
+/var/backups/axonic-third-window-0bf87db.
+No data resets, deletions, credential changes, MCP/channel updates, production
+build or normal phone app changes. Mobile work remains uncommitted; unrelated
+AoN logs untouched. Both Dev apps restored; original baseline history retained.
+
+Validation
+- 1539 mobile tests passed, 3 optional skips; TypeScript and architecture checks pass.
+- 313 full hosted tests passed plus added hosted window/credit regression passed.
+- 18 focused relay/native-queue tests passed; 9 startup/decrypt tests passed.
+- Deterministic latency-only model for one ~3 MB ciphertext block:
+  20ms RTT: 1280 -> 340ms; 80ms: 5120 -> 1360ms; 160ms: 10240 -> 2720ms.
+  This model excludes bandwidth, CPU, disk and native bridge work; NOT live speed.
+
+Live tests (decimal MB, observed receiver time AFTER Dev debugger reconnect)
+- Updated fleet 1 MB: upload 4362ms, receive 15925ms, FirstNeuron, checksum passed.
+- Updated fleet 5 MB: upload 7543ms, receive 16272ms, FirstNeuron, checksum passed.
+- Updated fleet 10 MB: upload 12303ms, receive 27328ms, FirstNeuron, checksum passed.
+- Previous native-receiver runs: 5MB upload10545/receive17834ms;
+  10MB upload17824/receive27235ms. Single runs, not controlled throughput medians.
+- 10MB cumulative upload bulk request time 10570 -> 5076ms.
+  Request durations overlap: do not sum stages to derive wall time.
+- An earlier 1MB run had direct-sender delivery evidence; excluded from relay
+  results. Harness now waits for descriptor networkStoredUntil independently of
+  file custody before stopping sender. Both histories preserved in failed run too.
+- Intermediate test received from still-old SecondNeuron during rollout; excluded
+  from final updated-fleet comparison. No duplicate deployment performed.
+
+Remaining bottlenecks/findings
+- Cold startup and local metadata work remain material. Latest 1MB trace:
+  queueMaintenance 1699ms; historySnapshot 3523ms over6 calls;
+  reconcile 1169ms; bulk request 4805ms; verify+decrypt268ms; filewrite12ms.
+- Message can be present before its job is created; not all waiting is network.
+- Some runs try an unavailable source before reaching the actual custodian.
+- Window improvement helps upload but does not solve receiving end to end.
+  Native record bridge/serialization, startup SQLite/history contention and
+  source readiness require further isolated measurements before changing them.
+
+Evidence
+builds/relay-window-latency.json
+builds/relay-window-final1.json / final5.json / final10.json
+builds/window-rollout-{first,second,third}-{before,after}.json
+builds/relay-window-all-tests.log / hosted-tests.log / focused-tests.log
+builds/relay-startup-tests.log
+builds/backup-second-window-result.log

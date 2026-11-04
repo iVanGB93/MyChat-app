@@ -27,7 +27,7 @@ function db(){return opening??=SQLite.openDatabaseAsync('axonic_root_message_wak
  await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires);');return value;
 }).catch(error=>{opening=undefined;throw error;});}
 async function messagePolicy(owner:string,sender:string,group?:string){
- const raw=await ownChatStore(owner).read();if(!raw)return {blocked:false,muted:false};
+ const store=ownChatStore(owner),raw=store.indexed?(await store.indexed.readScope({metadata:true})).raw:await store.read();if(!raw)return {blocked:false,muted:false};
  const state=JSON.parse(raw);if(state.version!==1||!Array.isArray(state.contacts))throw Error('Contact policy unavailable');
  return {blocked:state.contacts.some((c:{account:string;blocked?:boolean})=>c.account===sender&&c.blocked),
   muted:state.contacts.some((c:{account:string;muted?:boolean})=>c.account===sender&&c.muted===true)||!!group&&state.groups?.some((g:{id:string;muted?:boolean})=>g.id===group&&g.muted===true)};
@@ -105,7 +105,7 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
   setStage('awaiting-verified-message');
  });
  // Keep the headless task alive for bounded recovery; hints remain silent.
- await waitForRecovery(recovery,25000);
+ await recovery;
 }
 /** Invoked only after durable inbox admission, including direct delivery racing a delayed hint. */
 export type RootMessagePreview={orderId?:string;name:string;text:string;at:number;group?:string;read?:boolean;senderName?:string};

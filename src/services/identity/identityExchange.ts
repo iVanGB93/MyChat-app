@@ -1,7 +1,7 @@
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
-import { compareRecord, recordDigest, verifyRecord, type IdentityRecord } from './identityProtocol.ts';
+import { compareRecord, recordDigest, verifyRecord, verifyPublicSignature, type IdentityRecord } from './identityProtocol.ts';
 import { createIdentityAdmission, type IdentityRecordStore, type IdentityRequest } from './identityAdmission.ts';
 
 export interface IdentityDescriptor {
@@ -72,7 +72,7 @@ export function verifyIdentityDescriptor(raw: string, expectedAccount: string, n
       || !fresh(r, now) || !verifyRecord(r.record, now) || r.record.account !== expectedAccount
       || compareRecord(r.record, previous, now, r.history) !== 'accept') return null;
     const device = r.record.devices.find(d => d.id === r.device);
-    return device && ed25519.verify(hexToBytes(r.signature), descriptorBody(r), hexToBytes(device.signing), { zip215: false }) ? r : null;
+    return device && verifyPublicSignature(hexToBytes(r.signature), descriptorBody(r), hexToBytes(device.signing), { zip215: false }) ? r : null;
   } catch { return null; }
 }
 /** Verify against a previously verified descriptor and the exact outstanding request. */
@@ -86,6 +86,6 @@ export function verifyIdentityResponse(raw: string, requestRaw: string, descript
       || request.target !== r.issuer || request.instance !== r.instance || request.operation !== 'authenticate' || request.payload !== ''
       || r.account !== request.record.account || r.requester !== request.device) return false;
     const key = descriptor.record.devices.find(d => d.id === descriptor.device)!.signing;
-    return ed25519.verify(hexToBytes(r.signature), responseBody(r), hexToBytes(key), { zip215: false });
+    return verifyPublicSignature(hexToBytes(r.signature), responseBody(r), hexToBytes(key), { zip215: false });
   } catch { return false; }
 }

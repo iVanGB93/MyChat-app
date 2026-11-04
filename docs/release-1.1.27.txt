@@ -1,0 +1,36 @@
+Axonic 1.1.27 / Android versionCode 98 — October 23, 2026
+
+User explicitly authorized this local production AAB build. No cloud compilation,
+publication, device installation, data reset, Git commit or push is authorized
+by this build step. Existing 1.1.26/code 97 artifact must remain unchanged.
+
+Includes the tested working-tree changes, preserving unrelated staged work:
+- Attachment v4 direct-first streaming over authenticated WebRTC DTLS.
+- Lazy encrypted/signed 3,000,000-byte relay blocks rather than eager ciphertext
+  preparation before a direct transfer.
+- Old local attachment records display a resend notice and are excluded from
+  active transfer work without deleting their saved metadata or files.
+- Existing shared WebRTC, call, connection and native transport fixes in the
+  working tree; the production build keeps the established release flags.
+
+Fleet prerequisite: FirstNeuron, SecondNeuron and ThirdNeuron are on
+1deca094f682fbac0c3e5ddcd5d18836f9bc1d0d / package 0.2.0 / runtime 2d1207e337ba.
+The old attachment decoder is not included. Existing official phone versions
+are not evidence of attachment-v4 interoperability; update phones for v4 tests.
+
+Evidence before build:
+- Mobile broad suite 1,424 passed, three optional skips, followed by 36 passing
+  focused history/job/custody tests including two additional regression tests.
+- AoN suite 280 passed; all three live relays passed 1/5/10 MB tests including
+  reconnect, offline sender, checksums and signed receipts.
+- Dev emulator direct transfers passed 1/5/10 MB with no relay ciphertext.
+  Final isolated 10 MB observation: 7.674 seconds; earlier runs varied up to
+  66.959 seconds. Not a controlled benchmark or proof that variability is fixed.
+- Android relay probe passed all sizes on the second emulator. First emulator
+  passed 1/5 MB but its 10 MB run hit the 15-second debugger limit; the diagnostic
+  rerun used a longer debugger limit, not changed production timeouts.
+- TypeScript checked again after version increment.
+
+Validation artifact: builds/local-aab-98-validation.json.
+Physical-phone release testing remains pending. An AAB requires Play/bundletool
+distribution; this build does not install or publish it.

@@ -1,0 +1,36 @@
+RTC / authenticated packet follow-up, October 20, 2026
+
+Changes after the LAN-stability investigation:
+- Serialize up to four incoming RTC signaling frames while identity I/O runs.
+  Previously a second frame closed the authenticated transport as overlapping-
+  signal. The existing signal-rate, frame-size, authentication and expiry limits
+  remain enforced. Queued work checks session ownership and expiry before use.
+- Unknown application operations on authenticated v1 requests receive an explicit
+  unsupported response. Bounded unknown v1 frame kinds are counted and ignored.
+  Malformed/oversized frames, invalid protocol versions, authentication failure,
+  forged encrypted messages and exhausted traffic budgets still fail closed.
+
+Validation:
+- npm run check: 1430 passed, 3 skipped, no failures; typecheck and architecture
+  checks passed. Regression tests cover overlapping signaling, unknown requests,
+  unknown frame admission and oversized unknown frame rejection.
+- Existing composed-network tests cover RTC via an online relay, unavailable or
+  stale LAN, LAN promotion, authentication renewals and identity lock cleanup.
+- Reloaded both Dev emulators, then sent text/read receipts in both directions
+  and a generated 1,036,000-byte attachment. Checksum matched; delivery observed
+  3.300 seconds after queueRootAttachmentSource returned. This excludes source
+  preparation before that function returned and is not a total send-to-view time.
+- Live connection sampling is recorded in builds/rtc-stability-minute.txt.
+  Seven samples over approximately one minute retained three connected peers
+  and one open RTC connection on each emulator. One snapshot reset was counted
+  on emulator 5556; this probe includes pending handshakes, so it is not proof
+  of a working-link disconnect. Logcat still shows additional outbound RTC
+  attempts with no answer timing out. The active pair's RTC link stayed open.
+
+Limits:
+No real VPN/private-network test environment was configured. Private-route pool
+ordering has unit coverage, not an end-to-end private-network performance result.
+The original phones' recurring RTC open-timeout has not been conclusively
+mapped to the same failing route in these emulators; do not claim all RTC
+failure causes are resolved or production readiness.
+No production build, official-app installation, commit, push or deployment.

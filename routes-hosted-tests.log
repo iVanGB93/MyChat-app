@@ -1,0 +1,468 @@
+
+> axonic-neuron@0.2.0 test
+> npm run build && node --test tests/*.test.mjs
+
+
+> axonic-neuron@0.2.0 build
+> node scripts/clean-dist.mjs && tsc -p tsconfig.json
+
+
+> axonic-neuron@0.2.0 postbuild
+> node scripts/stamp-release.mjs
+
+Source release: 9410758f0d12548929e59869e7dab65d00354b90 (modified tracked source)
+(node:35772) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ 3 MB custody blocks survive offline sender, sparse uploads and restart without re-encryption (1894.035ms)
+✔ hosted attachment commits survive another process read; verified receipt removes ciphertext atomically (123.8844ms)
+(node:29016) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ file-backed arbitration survives reopen, concurrent stores, cancellation and corruption (814.7898ms)
+✔ file-backed recipient cancellation defeats delayed selection and caller outbox survives reopen (367.5299ms)
+(node:48700) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ auth rejects tampering and malformed calls before invoking FCM (18.7385ms)
+✔ duplicate invitations, including after restart, never send twice and receipts contain no token (39.1353ms)
+✔ pending send is persisted before FCM and concurrent retry reports unknown (10.0705ms)
+✔ same id with changed payload conflicts and failed sends are not retried (10.5457ms)
+✔ invalid token outcome survives duplicate retry (10.7006ms)
+✔ HTTP listener rejects browser requests, unsigned requests, and wrong paths (134.0434ms)
+✔ message bridge preserves payload, rejects media blobs and contradictory identities, and deduplicates (43.7145ms)
+✔ message HTTP route is independently selected and disabled unless configured (141.5629ms)
+✔ registered targets resolve privately for calls and messages and remain deduplicated across restart (256.926ms)
+✔ revoked target never falls back; invalid rotated token cannot erase the legacy registration (105.3672ms)
+✔ FCM invalid-token response invalidates the actual resolved address, not the legacy fallback (90.6753ms)
+✔ worker call retry reuses the initial receipt across restart without another FCM send (148.0805ms)
+✔ silent recovery has its own receipt and cannot carry alert content (125.4662ms)
+[Axonic peer closed] {"peer":"de3b41cf","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:call-relay":10,"response:custody":3,"request:call-media-relay":2}}
+[Axonic peer closed] {"peer":"cc6ede32","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":3,"request:call-relay":9,"response:call-media-forward":2}}
+✔ signed private call selection over real courier sockets without a direct caller-recipient axon (227.3866ms)
+[Axonic peer closed] {"peer":"c3eb36ff","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:call-relay":10,"response:custody":3,"request:call-media-relay":2}}
+[Axonic peer closed] {"peer":"932a445e","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":3,"request:call-relay":9,"response:call-media-forward":2}}
+✔ signed ad-hoc expansion call selection over real courier sockets without a direct caller-recipient axon (132.6763ms)
+(node:4812) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ 1000 notification receipts survive restart without repeated provider sends; capacity preserves unexpired records (9227.7114ms)
+✔ interrupted wake reservation survives restart, retries after lease, and definite failure backoff persists (17.114ms)
+✔ identity migration preserves pins, crosses 256 accounts, and capacity never blocks existing-account renewal (810.6969ms)
+✔ push registrations exceed 1000, survive restart, and token rotation retains unique ownership (2724.9351ms)
+✔ custody separates live quotas from tombstones, preserves replay protection, rolls back errors and survives restart (54.2372ms)
+✔ custody read snapshots are immutable and refresh for own writes, external writes and rollback (25.299ms)
+✔ indexed read-only polls retain recipient isolation, exclusion validation and expiry (21.598ms)
+✔ large chat response reads network once and gives consistent delivery hints (4.4545ms)
+✔ chat rejection reasons remain bounded and redact payloads and unknown errors (0.8172ms)
+✔ chat presentation composes with private/group handlers and read receipts (1.5404ms)
+✔ visual enhancement cannot send messages or change receipt/storage state (0.2391ms)
+✔ private/group bubbles share app palette and responsive layout (0.0986ms)
+✔ modern presentation uses safe text, existing actions and closes private dialogs on logout (0.1526ms)
+✔ transient chat failure retries once and DM/group readers share a single request flight (4.2424ms)
+✔ unauthorized chat reads do not retry; subsequent successful reads recover (1.1524ms)
+✔ hung chat request times out and releases the shared flight for recovery (71.9342ms)
+✔ recovered load warning clears without hiding an unrelated send failure (2.3415ms)
+✔ request diagnostics retain bounded status evidence but never arbitrary paths or queries (1.3281ms)
+✔ release has no retired account chat UI, clients or mailbox workers (6.7769ms)
+✔ remaining shared protocol snapshot matches its recorded manifest (85.0667ms)
+(node:47784) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[Axonic peer closed] {"peer":"63cf05f7","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1}}
+[Axonic peer closed] {"peer":"e8a35fb1","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":2}}
+[Axonic peer closed] {"peer":"63cf05f7","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":2}}
+✔ three ordinary identities deliver via restarted hosted custodian over real authenticated WebSockets (342.321ms)
+✔ host custody fails closed on corrupt disk and transaction errors preserve previous state (11.4528ms)
+✔ complete served dashboard JavaScript composes without declaration collisions (471.0451ms)
+(node:14928) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ remembered browser login survives service restart with only hashes persisted (83.6105ms)
+✔ one-hour login remains temporary and logout revokes remembered access after restart (127.6813ms)
+✔ session store is bounded and forged tokens are rejected (534.2944ms)
+✔ browser SSE follows panel/page events, coalesces refresh and ignores stale streams (1.5162ms)
+✔ browser idle calls use SSE, active calls and event disconnects retain heartbeat (1.0416ms)
+✔ AoN delivery distinguishes confirmed custody, expiry, full media custody and receipts (0.2176ms)
+✔ presence is the set of connected current axons, not candidates or legacy users (0.1017ms)
+✔ SSE revokes streams, bounds clients and disconnects slow consumers without exposing tokens (0.9324ms)
+✔ call errors are actionable and unexpected internal details are redacted (0.1838ms)
+✔ browser dashboard scripts parse together (145.6739ms)
+✔ diagnostic labels require bounded matching file identity and never grant acceptance (0.8405ms)
+✔ both public proxies pass diagnostics to the authenticated application (6.5181ms)
+✔ FCM adapter sends bounded data-only calls, does not follow redirects, and classifies failures (1.8952ms)
+✔ file snapshots share immutable unchanged data but refresh after atomic replacement and reject corrupted owner (46.918ms)
+✔ three participants negotiate all three signed pair legs only after local consent (290.1316ms)
+✔ selected group members alone are invited and connected; outsiders and stale membership fail closed (110.659ms)
+✔ out-of-order pair invitation cannot ring or autoaccept before creator invitation (103.2697ms)
+✔ membership revocation closes all local legs and preserves journals (238.4217ms)
+✔ group audience, room and pair ownership are covered by the signature (7.6876ms)
+✔ room expiry is terminal and does not create fresh invitations (50.559ms)
+✔ last remote departure closes the room on delivery without a scheduler tick (145.8483ms)
+✔ departed participant rejoins the existing mesh using fresh signed legs; no finished room is revived (652.3315ms)
+✔ group call audience permits four participants and rejects five without limiting group membership (0.3717ms)
+✔ four users form six pair connections and a rejoin preserves the remaining mesh (534.3408ms)
+✔ private voice expands without replacing either existing transport; new participants still consent (458.8635ms)
+✔ private video expands without replacing either existing transport; new participants still consent (350.0079ms)
+✔ declined expansion invite leaves original private connection intact (126.8217ms)
+✔ completed control history does not fill pending budget and survives reopening (12.4523ms)
+✔ pending, retained-count and byte limits refuse new work without changing state (180.8174ms)
+✔ reconnect deduplicates only pending identical metadata, then resends after delivery (2.2036ms)
+✔ incoming replay history above the old limit accepts a new control and rejects same-ID changes (24.5982ms)
+(node:23264) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ real hosted group ledgers share one durable payload and recover an offline recipient after restart (551.486ms)
+(node:21880) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ quoted group bytes account for metadata, UTF-8, escaping and timestamps (12.0404ms)
+✔ hosted rejection preserves history and does not mark quote read or queue any recipient (56.9461ms)
+✔ browser uses shared encoding/check, preserves oversized draft and unchanged retry ID (1.9485ms)
+✔ health samples bound retention and preserve failure/recovery transitions (2.3671ms)
+✔ rapid flapping cannot grow transition history without bound (1.4433ms)
+(node:49488) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ a blocked private inbox does not prevent group inbox reconciliation (106.0298ms)
+✔ contiguous receiver batches writes, checkpoints and verifies exact tail before publication (32.4158ms)
+✔ legacy checkpoint migration retains old parts until verified commit and resumes after restart (98.1442ms)
+✔ uncheckpointed buffered bytes are discarded and a persisted tail is safely overwritten (114.6188ms)
+✔ missing checkpoint bytes, invalid indices, revocation and failed checksum never publish (94.8388ms)
+(node:20836) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ host identity survives restart and corrupt files are never replaced (90.9648ms)
+[Axonic peer closed] {"peer":"6f00d75c","reason":"transport-closed","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+✔ ordinary unknown peer authenticates without Django or contact pairing and disconnect releases slot (151.9416ms)
+[Axonic peer closed] {"peer":"a17ee801","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+[Axonic peer closed] {"peer":"45f166c6","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+[Axonic peer closed] {"peer":"bafa39ab","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:introductions":1,"response:introductions":1}}
+✔ host advertises relay-only RTC and signed introductions exclude relay-only destinations (6341.078ms)
+[Axonic peer closed] {"peer":"058bff0c","reason":"transport-closed","traffic":{}}
+✔ pending authentication occupies capacity before WebSocket upgrade (47.9418ms)
+[Axonic peer closed] {"peer":"7abd29bb","reason":"invalid-hello","traffic":{"hello":1}}
+✔ spoofed account and browser origin cannot establish a connection (54.9753ms)
+✔ expired identity fails closed while retaining its account (16.8322ms)
+✔ host renewal serializes, persists across restart, keeps keys, and refuses writes after shutdown (12.0377ms)
+✔ failed host renewal does not advertise an unpersisted record (9.4574ms)
+✔ durable host registry accepts complete renewal ancestry, never a gap (30.5538ms)
+[Axonic peer closed] {"peer":"83ea54b0","reason":"transport-closed","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:introductions":1,"request:introductions":1}}
+[Axonic peer closed] {"peer":"44bd729a","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:introductions":1,"request:introductions":1}}
+✔ three ordinary neurons exchange bounded reports over real sockets without promoting reports to dial targets (6596.3161ms)
+[Axonic peer closed] {"peer":"169bffe7","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"signal":3}}
+[Axonic peer closed] {"peer":"e9684a27","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+✔ ordinary host forwards signed setup once between connected peers and rejects a forged third-party sender (214.4913ms)
+[Axonic peer closed] {"peer":"2c0f9016","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:push":1,"response:push":1}}
+[Axonic peer closed] {"peer":"364ae114","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1}}
+✔ hosted custodian without local FCM credentials forwards durable wakes to a remote gateway (122.859ms)
+[Axonic peer closed] {"peer":"51733eba","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1}}
+✔ hosted custodian drains its durable wake queue through its local gateway without another AoN (89.3023ms)
+[Axonic peer closed] {"peer":"dc583166","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"response:push":2,"request:directory":1}}
+[Axonic peer closed] {"peer":"ab21c0f7","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4}}
+[Axonic peer closed] {"peer":"a0ef760d","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+✔ group wake recovers an unknown sender through the authenticated directory before sending push (1163.3741ms)
+[Axonic peer closed] {"peer":"f13ade0f","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4}}
+[Axonic peer closed] {"peer":"f603c362","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":2}}
+[Axonic peer closed] {"peer":"10dc0924","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":1,"request:custody":2}}
+✔ shared group custody negotiates over authenticated sockets and serves recipient-bound grants (156.9989ms)
+[Axonic peer closed] {"peer":"4fc2f9db","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":3}}
+[Axonic peer closed] {"peer":"929bee3d","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":3}}
+✔ local observed response quality orders hosted custody and group peers without extra requests (85.4602ms)
+[Axonic peer closed] {"peer":"79c9ba03","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":1}}
+[Axonic peer closed] {"peer":"71a249b6","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1}}
+✔ real authenticated sockets deliver through one custodian without an FCM wake (133.5152ms)
+[Axonic peer closed] {"peer":"4ba41b9e","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4,"response:custody":2}}
+[Axonic peer closed] {"peer":"03615d66","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":1,"response:custody":1}}
+✔ an idle authenticated recipient receives a later deposit by event, then sender gets a receipt event (138.1046ms)
+✔ idle hosted network arms expiry but no empty inbox or wake polling (127.4124ms)
+[Axonic peer closed] {"peer":"f76eb294","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:custody":1}}
+[Axonic peer closed] {"peer":"d42eecbc","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"request:custody":4}}
+✔ event-driven hosted group work still repairs a replica after its retry deadline (119.2787ms)
+(node:42108) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ AoN caches signed phone avatars across restart without adding a message (231.5696ms)
+✔ AoN signs its own thumbnail, queues only capable chat partners and validates upload size (175.4574ms)
+(node:46752) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ hosted receiver publishes verified WSS streams and signed receipts without relay reads (2765.1312ms)
+✔ AoN v4 uses one payload below 3MB and 3MB blocks above, with verified tails (3890.3362ms)
+✔ hosted worker uses single-block envelopes and verifies the tail (66.5779ms)
+✔ AoN v4 retains a durable 3MB prefix across interruption and resumes without replaying it (960.5466ms)
+✔ AoN v4 rejects tampering, wrong keys and changed version/recipient bindings (303.5939ms)
+✔ hosted preparation selects v4 for a negotiated AoN and serves one full-file payload (273.2012ms)
+✔ hosted permission guard indexes history once and refreshes on the next snapshot (36.1798ms)
+✔ automatic hosted pump completes verified media and stays stopped after shutdown (325.8021ms)
+✔ bounded hosted scheduling delivers a 256 KiB synthetic file without changing bytes (83.8933ms)
+ℹ {"bytes":262144,"ticks":1,"manualPumpMilliseconds":43,"requests":2}
+✔ an unavailable top-ranked relay cannot starve a lower-ranked complete source after cooldown expires (37.4609ms)
+✔ hosted own media resumes after restart, verifies bytes and preserves the receipt and own file (445.2039ms)
+✔ forward retries use one signed descriptor and refuse blocked peers and deleted originals (49.6349ms)
+✔ a corrupted own file is refused and a different identity cannot open its media journal (49.0809ms)
+✔ fresh own upload uses a verified shared encrypted descriptor and retries one message id (67.4475ms)
+✔ own upload refuses a checksum mismatch before publishing any encrypted message (36.097ms)
+✔ hosted block read rejects scalar operations, rejects wrong peers and truncated sources (65.4163ms)
+✔ hosted group forwarding reuses encrypted content and key with distinct recipient grants (53.4801ms)
+✔ native group upload creates only group deliveries, survives retry, and pins membership revision (72.9705ms)
+✔ group uploads reject mixed destinations and blocked or unaccepted groups (18.637ms)
+✔ hosted preparation defers relay encryption for 1000000 bytes (519.09ms)
+✔ hosted preparation defers relay encryption for 5000000 bytes (1442.6533ms)
+✔ hosted preparation defers relay encryption for 10000000 bytes (2740.6815ms)
+(node:10536) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ owner policy gates call start, acceptance and media without blocking relay infrastructure (232.3132ms)
+✔ hosted own callers exchange selected call control and signed media through shared phone protocol (165.1774ms)
+✔ another dashboard cannot control or read media and missing heartbeats end the own call (200.9528ms)
+✔ blocking ends active own calls and journal recovery never resumes stale media (191.1096ms)
+✔ routed media rejects tampering and replay, and acknowledgments are scoped to the current call (146.7679ms)
+✔ hosted own call queues while the recipient is offline, wakes once and completes only after signed recipient selection (351.8737ms)
+✔ cancelled offline hosted calls cannot progress to media after delayed relay delivery (70.2792ms)
+✔ hosted own callers complete signed selection through another ordinary neuron with no local relay or direct recipient axon (336.7526ms)
+✔ call start resolves a missing peer identity and failed starts release the browser claim (76.6749ms)
+(node:8476) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ private nicknames persist without accepting contacts or changing messages (197.1043ms)
+✔ repeat direct deletes preserve one event and derived tombstones across sync and restart (101.5379ms)
+✔ reply marks only its received incoming target read and retries do not add receipts (50.036ms)
+✔ reply to pending media does not acknowledge content until complete (126.6476ms)
+✔ generic group read refuses incomplete incoming content without creating an action (182.6116ms)
+✔ group deletes use logical IDs and replies acknowledge only their incoming target (292.8821ms)
+✔ phone ledger and hosted ledger exchange text and replies with identical references (216.1601ms)
+✔ offline queue survives restart and duplicate transport delivery produces one received message (203.0106ms)
+✔ blocked peer is neither retried nor accepted and stopped host rejects new messages (70.3187ms)
+✔ hosted delete cannot claim authorship of an incoming message (65.3247ms)
+✔ different hosted owner cannot reinterpret saved own history (37.8191ms)
+✔ local conversation deletion survives restart, suppresses replay and permits new messages (37.8014ms)
+[Axonic peer closed] {"peer":"46cac078","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"chat-message":2}}
+✔ fresh root accounts exchange a quoted reply over real authenticated encrypted axons without Django (157.1811ms)
+✔ hosted chat exchanges authenticated actions with phone history across restart (39.1485ms)
+✔ hosted own group outbox survives restart and delivers independently to two ordinary phone ledgers (32.6289ms)
+✔ hosted group replies, author edits and independent member reactions survive restart (60.3102ms)
+✔ explicit hosted reads send phone-compatible receipts once and do not mark fetched history read (35.1117ms)
+✔ AoN reconnect automatically restores a fresh member ledger before pending group delivery (43.9699ms)
+✔ hosted direct-first delivery retries the same ID before custody (15.0357ms)
+✔ hosted queued conversation progresses while another direct recipient stalls (26.6163ms)
+✔ hosted blocking during a failed direct attempt prevents retry and deposit (26.8415ms)
+✔ hosted avatar offers fetch only changed bytes, persist summaries and apply signed removals (69.3019ms)
+✔ cached ledger reads observe externally replaced owner and reject writes (17.8377ms)
+✔ hosted successful custody handoff does not repeat every tick and new messages progress (96.9573ms)
+✔ hosted dashboard reuses immutable snapshots and refreshes after durable changes (20.0033ms)
+✔ idle hosted chat sleeps and reconnect drains the durable queue without polling (128.8739ms)
+✔ policy-held hosted outbox sleeps and approval event resumes preserved work (122.2122ms)
+✔ production custody network reconnect bypasses handoff cooldown without optional peers callback (62.6516ms)
+(node:30780) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ offline root text survives sender restart, recipient reconnects, and signed receipt removes third-party ciphertext (445.1114ms)
+(node:29660) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ own upload resumes after restart, accepts exact repeated chunks and queues only complete bytes (357.789ms)
+✔ upload staging rejects offsets, altered retries, malformed encoding, paths and quota overflow (319.1851ms)
+✔ expired staging is removed on restart and locked staging cannot mutate own files (67.9205ms)
+✔ batch preserves exact overlap retries and final short chunk across restart (83.2612ms)
+✔ invalid or conflicting batch cannot write its valid prefix or advance metadata (44.5168ms)
+✔ uncheckpointed tail is replayable without altering the acknowledged prefix (27.634ms)
+✔ bounded 1 MiB upload batch survives restart, replay and a short final batch (302.9448ms)
+(node:28520) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ dashboard protects status, checks origin and logs out (HTTPS=false) (2066.6104ms)
+✔ dashboard protects status, checks origin and logs out (HTTPS=true) (891.479ms)
+(node:56068) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ hosted and mobile shared protocol mutually verify without a legacy account registry (116.8644ms)
+✔ disk registry preserves conflicts, rejects rollback/capacity and fails closed on corruption (70.6457ms)
+✔ ordinary hosted participants authenticate through the same client with separate durable registries (69.7077ms)
+✔ hosted shared connection pool authenticates an ordinary peer and releases its slot on disconnect (60.4244ms)
+(node:38380) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[Axonic peer closed] {"peer":"202fbc58","reason":"transport-closed","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"request:directory":1}}
+[Axonic peer closed] {"peer":"202fbc58","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"request:directory":1}}
+[Axonic peer closed] {"peer":"202fbc58","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"request:directory":1}}
+[Axonic peer closed] {"peer":"202fbc58","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"request:directory":1}}
+✔ directory replication and replacement cross authenticated real sockets and survive reopening durable files (409.2843ms)
+[Axonic peer closed] {"peer":"421b3a97","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1}}
+✔ older axons decline the directory capability without breaking identity authentication (86.4089ms)
+✔ directory lookups and publication cannot override a newer authenticated pin (38.0894ms)
+[Axonic peer closed] {"peer":"1ae2ba47","reason":"transport-closed","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"request:directory":1}}
+[Axonic peer closed] {"peer":"078d6073","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"response:directory":1,"request:directory":1}}
+✔ an unrelated neuron retrieves an offline owners record through an authenticated replica without pinning it (154.4151ms)
+✔ real TCP identity exchanges admit an ordinary peer through the shared pool without Django (181.4971ms)
+✔ listener rejects alternate paths, browser origins, oversized bodies and spoofed rate-limit sources (121.4528ms)
+✔ chunked uploads exceeding the byte cap never reach identity verification (8.9799ms)
+✔ absolute connection deadline closes incomplete headers (4010.0967ms)
+(node:28264) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ bot tokens are hashed, scoped, persistent, expiring, rate limited and revocable (36.6754ms)
+✔ restart history distinguishes releases, graceful stop and unknown unclean exit (272.9847ms)
+✔ metrics normalize endpoints, track error and queue state without content (0.8003ms)
+✔ queue attention separates unknown ages, expired media custody and recipient records (0.2053ms)
+✔ chat cursors page history and replay edits, receipts and removals after persistence (2.9358ms)
+✔ delta pagination has no gaps and scopes exclude other conversations (2.2786ms)
+✔ monitoring UI scripts parse together (7.7256ms)
+(node:52580) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ HTTP bot boundaries reject administration and other peers; empty delta and restart cursors are durable (2907.8045ms)
+✔ signed neuron wake sends to the exact private device once and does not expose token in payload (64.6326ms)
+✔ unknown outcomes are not blindly resent; invalid tokens are revoked (18.4431ms)
+✔ forged peer, expired invite, unavailable device and shutdown cannot send a call wake (6.1238ms)
+✔ ICE provider issues authenticated device-scoped temporary credentials without returning the secret (49.5791ms)
+(node:2736) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ rejection diagnostics are fixed redacted reasons and preserve generic wire replies (53.7041ms)
+✔ failure evidence distinguishes altered silence from invalid signatures without accepting either (15.2341ms)
+✔ authenticated retry replies expose remaining lease without destination or identity details (13.8965ms)
+✔ unavailable wake destinations back off, retain custody, and retry promptly through new gateways (24.5842ms)
+✔ gateway reconnect churn cannot reset backlog backoff and new gateways do not retry old ones (21.3217ms)
+✔ wake diagnostics distinguish unavailable destinations and retained retry leases without exposing identities (9.8368ms)
+✔ custody wake targets one registered device and authenticates without message content (16.8558ms)
+✔ legacy or forged envelope cannot send a notice, and invalid tokens are revoked (15.2826ms)
+✔ authenticated ordinary custodian forwards metadata with shared direct-deposit deduplication (22.9664ms)
+✔ forwarded wake rejects altered routing and retries definite failures after backoff (28.7813ms)
+✔ a full completed-wake cache does not block notifications for later messages (1241.6781ms)
+✔ inline encrypted wakes are validated, bounded and deduplicated by the same message digest (9.9688ms)
+✔ ordinary stored envelopes opt into inline FCM while group hooks retain metadata-only behavior (17.1206ms)
+✔ custodian hints bind to the requesting peer and preserve encrypted inline content (11.3965ms)
+✔ bridge scopes automatic input to owner, persists reply before send, and never replays handled history (604.6025ms)
+✔ explicit operator promotion preserves secret and expiry, persists, and respects revocation (57.1597ms)
+✔ operator client permits only fixed local API paths and preserves chat identity (27.3767ms)
+✔ enabled HTTP policy denies implicit approval and forged decisions; requests and binding survive restart (1832.4703ms)
+✔ server asks once and applies quoted No without invoking an AI (25.0129ms)
+✔ upload checks permission at begin, chunk and finish; denial preserves staged bytes (25.9259ms)
+✔ notification marker survives restart and missing history; failed send retries the same request (12.7199ms)
+✔ crash after prompt queueing recovers its marker without sending again (14.4189ms)
+✔ unknown group invite members request approval without accepting the invitation (10.9404ms)
+(node:56992) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ existing approvals and blocks remain; unknown receive is allowed but send cannot self-approve (6.9316ms)
+✔ request is idempotent; only exact private authenticated owner decision applies; restart replays safely (33.8302ms)
+✔ explicit denial blocks; absence of answer never blocks; interrupted apply resumes (50.5696ms)
+✔ hosted text cannot self-approve; nickname alone is harmless (98.6966ms)
+✔ group fan-out, media descriptors, reactions and read actions cannot bypass the write guard (10.8432ms)
+✔ owner can quote the exact request and answer Yes or No; unquoted answers are not guessed (65.3281ms)
+✔ blocked contact requires a fresh owner review and decision; old proofs never unblock (155.2459ms)
+✔ group creation preflights every member before committing controls (60.3986ms)
+✔ owner installed once, separate from editable memory and bound to neuron (38.3833ms)
+✔ durable revisions, optimistic conflict, concurrent writes and restart (25.599ms)
+✔ bounded text/history and untrusted data never become authorization (1178.2702ms)
+✔ corrupted storage fails closed without overwriting evidence (7.2507ms)
+✔ advanced evidence does not turn missing observations into zero or claim AI coverage (0.7378ms)
+✔ generated dashboard scripts parse and use safe text rendering (1.2374ms)
+✔ group membership alone does not publish an avatar under owner policy; approval resumes recovery (40.9565ms)
+✔ neuron-https.conf.template exposes bounded authenticated operator routes (6.2515ms)
+✔ railway-nginx.conf exposes bounded authenticated operator routes (1.3575ms)
+✔ offline own cleanup preserves relay bytes, membership, settings, cursors and recovery archives (51.1038ms)
+✔ same authenticated WebSocket negotiates streaming and binds writes to this peer instance (135.3331ms)
+✔ WSS stream is unavailable without explicit remote capability (38.7292ms)
+✔ binary WSS negotiates on the authenticated socket and keeps control traffic working (66.1226ms)
+✔ binary WSS cannot be sent without negotiated binary support (51.3402ms)
+✔ authenticated WebSocket negotiates existing 512 KiB batches with two bounded requests (67.0632ms)
+✔ AoN stream transports full 3MB ciphertext envelopes without the old speed pacing (226.565ms)
+✔ large authenticated replies tolerate TLS-sized TCP pieces without reconnecting (417.3561ms)
+✔ unadmitted WebSocket retains the small pre-allocation cap (21.1503ms)
+✔ admitted large-frame peers still reject oversized control and excess bulk payloads (88.8114ms)
+✔ real WebSocket ordinary peers renew identity proofs without reconnecting (66.2026ms)
+✔ real WebSocket rejects binary and over-limit fragmented messages (76.8059ms)
+✔ real WebSocket rejects proofs replayed from a previous connection (91.3056ms)
+✔ Railway host samples are unsupported, not stale (0.6655ms)
+✔ host monitor distinguishes missing, stale and current samples (0.0971ms)
+✔ Railway exposes scoped process and filesystem metrics without claiming provider health (8.2521ms)
+(node:40452) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ missing push registration skips identity work and new registrations are immediately visible (68.2043ms)
+✔ registration is device-bound, survives restart, replaces rotated tokens and supports revocation (36.5437ms)
+✔ unknown, expired and revoked devices cannot register or receive push (23.2413ms)
+✔ one account cannot claim another token or unregister another device (25.3479ms)
+✔ migration requires both a Django ticket and matching live neuron; conflicts and replay cannot transfer ownership (29.9334ms)
+✔ bound push uses current private registration; old installations fall back but revoked and expired bindings do not (34.7195ms)
+✔ background wake lease survives 25 hours, unrelated registration and restart without granting an expired session admission (43.9958ms)
+✔ known device revocation immediately overrides the retained wake lease (26.5721ms)
+✔ legacy leases are not extended and wake retention never outlives the signed record (54.299ms)
+✔ invalid FCM token removal survives restart and a late failure cannot erase a rotated token (32.967ms)
+(node:42628) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ initialization is local-only and preserves seeds and identity without account provisioning (12.8712ms)
+✔ initialization rejects unsafe config and never repairs corrupt existing data silently (6.8291ms)
+✔ group dashboard acknowledges only visible complete incoming rows in an expanded focused group (4.1291ms)
+✔ browser read receipts require focused visible chat and visible incoming complete messages (2.4613ms)
+✔ read checks wake on viewport/render events, sleep idle, retry failures and stop on pagehide (1.2429ms)
+✔ hosted relay framing preserves opaque ciphertext and bounds every wire record (70.7489ms)
+✔ hosted receiver refuses unsolicited response admission and excessive allocation (0.3391ms)
+✔ hosted stream window is bounded at 256 KB and rejects forged partial credits (4.871ms)
+✔ relay summary separates retained record kinds, foreign scope and packet age (0.7956ms)
+(node:53448) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ attachment inspection reports SQL chunk aggregates without loading ciphertext or deleting rows (42.5645ms)
+✔ dashboard inventory uses text-only DOM, guarded refresh, and no mutation controls (0.4806ms)
+✔ category counts cover the whole inventory before pagination and expiry takes precedence (0.5769ms)
+✔ both public proxies allow the authenticated relay inventory route (2.8146ms)
+(node:18808) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ arrival metadata never invents old history or resets on record transitions (0.4902ms)
+✔ message arrival persists across restart while imported legacy rows remain unknown (39.613ms)
+✔ additive media timestamp migration preserves old chunks and records new arrival (37.1014ms)
+✔ progress is local evidence, expiry and shared payloads do not inflate awaiting-receipt totals (12.6128ms)
+✔ group and media progress separate recipients, shared content and locally missing chunks (1.3435ms)
+(node:46360) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[Axonic peer closed] {"peer":"0c5b0d64","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1}}
+✔ hosted WSS upload capability requires custody=false; batches commit durably (170.4256ms)
+[Axonic peer closed] {"peer":"542a7e1a","reason":"session-stopped","traffic":{"hello":1,"request:describe":1,"response:describe":1,"request:authenticate":1,"response:authenticate":1,"media-request":2,"relay-block-stream":1004,"bulk-request":3}}
+✔ hosted WSS upload capability requires custody=true; batches commit durably (1269.2051ms)
+✔ report epochs distinguish renewal, process restart and deployments (1.9901ms)
+✔ release includes human version and exact executed source fingerprint (505.4018ms)
+✔ Health UI shows release and its observation time, and clears unavailable values (2.0399ms)
+✔ scorecard UI separates contribution from health and clears missing observations (11.0504ms)
+✔ trial badge is separate from health and hides absent balances (0.8577ms)
+✔ old local attachment history is preserved as an inert notice (7.3322ms)
+✔ group reasons distinguish invalid targets and authorship without exposing internals (0.6195ms)
+✔ UTF-8 and encoded packet validation agrees with the real ledger (2.6645ms)
+✔ rejection reasons are actionable without exposing unknown exception details (0.1666ms)
+✔ dashboard preserves rejected drafts and uses the same ID for retry (0.9112ms)
+✔ dashboard local deletion requires confirmation and clears the selected chat only on success (1.0593ms)
+✔ source commit requires build metadata bound to current runtime bytes (17.1443ms)
+✔ release fingerprints are path independent and detect changed or additional modules (28.667ms)
+✔ shared view ranks connected pool entries and preserves exact-target lookup (3.4071ms)
+✔ close penalties exclude intentional shutdown and clear removes prior identity measurements (14.011ms)
+✔ ranking matches the former adapter algorithm for both transport-independent modes (1.1422ms)
+✔ shared sync normalizes LF and checks both copies and manifest hashes (796.1696ms)
+✔ shared sync preflight prevents partial writes for missing inputs or unmapped dependencies (376.5772ms)
+✔ WSS remembers early acknowledgments without skipping burst yields (1.1809ms)
+(node:34828) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ hosted credits persist idempotently through restart and concurrent observations (45.9368ms)
+✔ wake traces correlate retries and payload fallbacks without exposing identities or signed data (2.2527ms)
+(node:7472) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+✔ hosted directory fallback serves only valid public pins and respects cancellation and request validation (61.315ms)
+✔ unknown original sender is admitted through signed lookup; retry verifies wake and sends once (47.9459ms)
+✔ missing recipient pins recover without inventing a push registration (36.4409ms)
+✔ recovery rejects wrong-account and tampered records and cancellation without changing pins (26.8992ms)
+✔ recovery respects concurrent pins and limits repeated unavailable lookups (22.373ms)
+✔ optimized serialization matches independent original v1 encoding across scratch reuse (15.4282ms)
+✔ WSS encryption authenticates controls and binary records in both directions (4.716ms)
+✔ WSS rejects different key (0.5864ms)
+✔ WSS rejects different digest (0.3307ms)
+✔ WSS rejects different id (0.3751ms)
+✔ WSS rejects reflection, tampering, replay and out of order without advancing on failure (0.7488ms)
+✔ existing WSS encrypted stream verifies 1000000 bytes (105.335ms)
+✔ existing WSS encrypted stream verifies 5000000 bytes (298.1171ms)
+✔ existing WSS encrypted stream verifies 10000000 bytes (571.2811ms)
+✔ WSS disconnect never publishes partial file (102.2523ms)
+✔ WSS tamper never publishes partial file (2.9232ms)
+✔ WSS revoke never publishes partial file (2.8636ms)
+✔ receiver durable checks follow credit grants, not every binary frame wake (54.0797ms)
+✔ binary WSS verifies 1 bytes with bounded records (1.0162ms)
+✔ binary WSS verifies 32768 bytes with bounded records (1.0788ms)
+✔ binary WSS verifies 524288 bytes with bounded records (8.4243ms)
+✔ binary WSS verifies 1000000 bytes with bounded records (16.0724ms)
+✔ binary WSS verifies 3000000 bytes with bounded records (43.8761ms)
+✔ binary WSS verifies 5000000 bytes with bounded records (89.8651ms)
+✔ binary WSS verifies 10000000 bytes with bounded records (142.7973ms)
+✔ binary WSS disconnect never publishes partial file (102.7929ms)
+✔ binary WSS tamper never publishes partial file (4.3043ms)
+✔ binary WSS revoke never publishes partial file (4.778ms)
+✔ binary records authenticate exact bytes, sequence, direction and bounds (1.3379ms)
+✔ binary representation preserves ciphertext and authenticated binding after caller clears salt (0.8139ms)
+✔ binary WSS rejects different key (0.4447ms)
+✔ binary WSS rejects different digest (0.2612ms)
+✔ binary WSS rejects different id (0.2588ms)
+✔ optimized serializer is byte-identical to original v1 across scratch reuse (11.0394ms)
+✔ ephemeral WSS records bind direction, attachment, attempt and exact sequence (3.0888ms)
+✔ optional crypto adapter interoperates with default cipher in both record formats (0.9232ms)
+ℹ tests 342
+ℹ suites 0
+ℹ pass 342
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 16403.2911

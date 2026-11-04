@@ -1,3 +1,6 @@
+import {t} from '../localization/language';
+import NetworkPage from '../screens/profile/NetworkPage';
+import {FloatingStackHeader} from './FloatingHeader';
 import AppUpdateBanner from '../components/ui/AppUpdateBanner';
 import {report} from '../screens/rootScreenSupport';
 import RootGroupMessageInfo from '../screens/chat/RootGroupMessageInfo';
@@ -10,22 +13,21 @@ import notifee,{EventType} from '@notifee/react-native';
 import {handleRootNotificationAction} from '../modules/messaging/notifications';
 import {subscribeRootNotificationOpen,setRootVisibleConversation,queueRootNotificationOpen,pendingRootNotificationOpen,finishRootNotificationOpen} from '../modules/messaging/notifications';
 import {displayIdentity,takeIdentityLink,subscribeIdentityLinks} from '../modules/identity';
-import React,{useEffect,useRef} from 'react';
-import {AppState,Keyboard,ScrollView} from 'react-native';
-import {NavigationContainer,DarkTheme,DefaultTheme,createNavigationContainerRef} from '@react-navigation/native';
+import React,{useEffect,useRef,useState} from 'react';
+import {AppState,Keyboard,View,ActivityIndicator} from 'react-native';
+import {NavigationContainer,DarkTheme,DefaultTheme,createNavigationContainerRef,type InitialState} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {createBottomTabNavigator} from '@react-navigation/bottom-tabs';
 import {useTheme} from '../contexts/ThemeContext';
 import {useMainTabOptions} from './main-tab-options';
 import {localAccount} from '../modules/identity';
-import {conversations} from '../modules/messaging';
 import {RootGroupCreate,RootGroupRoom,RootGroupInfo} from '../screens/chat/RootGroupScreens';
 import type {RootAccountRoutes} from './rootAccountRoutes';
 import ChatList from '../screens/chat/RootChatListScreen';
 import ChatRoom from '../screens/chat/RootPrivateChatScreen';
 import Contact from '../screens/contacts/RootContactScreen';
 import NewChat from '../screens/contacts/RootNewChatScreen';
-import Calls from '../screens/calls/RootCallHistoryScreen';
+import Game from '../screens/game/RootGameScreen';
 import BlockedUsers from '../screens/contacts/RootBlockedUsersScreen';
 import MessageInfo from '../screens/chat/RootMessageInfoScreen';
 import OutgoingCall from '../screens/calls/RootOutgoingCallScreen';
@@ -40,6 +42,7 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
  const ref=useRef(createNavigationContainerRef<Routes>()).current;
 
+ const [launchState,setLaunchState]=useState<InitialState|null>(null);
  const openPending=useRef<()=>void>(()=>{});
  const visibleRoom=useRef<string|null>(null);
  const visible=()=>{const route=ref.getCurrentRoute(),room=route&&['ChatRoom','GroupRoom'].includes(route.name)?route.key:null;if(visibleRoom.current&&visibleRoom.current!==room)Keyboard.dismiss();visibleRoom.current=room;setRootVisibleConversation(route?.name==='ChatRoom'?{peer:(route.params as Routes['ChatRoom']).peer}:route?.name==='GroupRoom'?{group:(route.params as Routes['GroupRoom']).id}:null);};
@@ -52,45 +55,55 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
    try{const link=takeIdentityLink();if(link&&link!==localAccount.status().account){ref.navigate('NewChat',{identity:displayIdentity(link)});return;}const account=localAccount.status().account!,target=await pendingRootNotificationOpen(account);if(!target||!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
 
-    const state=await conversations().snapshot();if(!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
-
-    if(target.inbox)ref.navigate('Tabs',{screen:'Chats'});else if(target.group&&state.groups?.some(g=>g.id===target.group))ref.navigate('GroupRoom',{id:target.group});else ref.navigate('ChatRoom',{peer:target.sender});
+    if(target.inbox)ref.navigate('Tabs',{screen:'Chats'});else if(target.group)ref.navigate('GroupRoom',{id:target.group});else ref.navigate('ChatRoom',{peer:target.sender});
 
     await finishRootNotificationOpen(target);
-    if(target.inbox&&target.unavailable)Alert.alert('Notification update',target.unavailable==='not_received'
-     ?'Only a delivery hint is available for this alert; there is no matching chat message to open. Axonic will check for pending deliveries when connected.'
-     :target.unavailable==='removed'?'The message for this older notification has been removed. Your remaining chats are unchanged.'
-     :'The group for this notification is not available on this device yet. Axonic is checking the network.');
+    if(target.inbox&&target.unavailable)Alert.alert(t("Notification update"),target.unavailable==='not_received'
+     ?t("Only a delivery hint is available for this alert; there is no matching chat message to open. Axonic will check for pending deliveries when connected.")
+     :target.unavailable==='removed'?t("The message for this older notification has been removed. Your remaining chats are unchanged.")
+     :t("The group for this notification is not available on this device yet. Axonic is checking the network."));
 
    }catch{failed=true;failures++;}finally{opening=false;if(!failed)failures=0;if(dirty&&alive)void open();else if(failed&&alive&&AppState.currentState==='active')retry=setTimeout(()=>void open(),Math.min(30000,1000*2**Math.min(failures,5)));}};
 
-  const stop=notifee.onForegroundEvent(({type,detail})=>{if(type===EventType.PRESS)void queueRootNotificationOpen(detail.notification?.data).then(open).catch(()=>{});else if(type===EventType.ACTION_PRESS)void handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data,detail.input).catch(report);});
+  const stop=notifee.onForegroundEvent(({type,detail})=>{if(type===EventType.PRESS)void handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data).then(()=>queueRootNotificationOpen(detail.notification?.data)).then(open).catch(report);else if(type===EventType.ACTION_PRESS)void handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data,detail.input).catch(report);});
 
-  void notifee.getInitialNotification().then(async initial=>{if(!initial)return;await handleRootNotificationAction(initial.pressAction?.id??'',initial.notification.data);await queueRootNotificationOpen(initial.notification.data);}).then(open).catch(()=>{});
+  // Resolve the cold-launch destination before mounting Tabs. The conversation
+  // screen loads its own pages; notification opening does not await that work.
+  const launchAccount=localAccount.status().account;
+  void (async()=>{
+   const initial=await notifee.getInitialNotification();
+   if(initial){await handleRootNotificationAction(initial.pressAction?.id??'',initial.notification.data);await queueRootNotificationOpen(initial.notification.data);}
+   const target=launchAccount?await pendingRootNotificationOpen(launchAccount):null;
+   if(!alive)return;
+   const valid=localAccount.status().state==='unlocked'&&localAccount.status().account===launchAccount;
+   const destination=valid&&target&&!target.inbox?(target.group?{name:'GroupRoom',params:{id:target.group}}:{name:'ChatRoom',params:{peer:target.sender}}):null;
+   setLaunchState({index:destination?1:0,routes:[{name:'Tabs'},...(destination?[destination]:[])]});
+  })().catch(()=>{if(alive)setLaunchState({index:0,routes:[{name:'Tabs'}]});});
 
   openPending.current=()=>{void open();};const offQueue=subscribeRootNotificationOpen(()=>void open()),offLinks=subscribeIdentityLinks(()=>void open()),offAccount=localAccount.subscribe(()=>void open());const appState=AppState.addEventListener('change',()=>void open());void open();return()=>{alive=false;clearTimeout(retry);openPending.current=()=>{};offQueue();offLinks();offAccount();appState.remove();stop();setRootVisibleConversation(null);};
 
  },[ref]);
 
- return <><AppUpdateBanner/><NavigationContainer ref={ref} onReady={()=>{visible();openPending.current();}} onStateChange={visible} theme={{...base,colors:{...base.colors,background:colors.background,card:colors.headerBg,text:colors.text,primary:colors.primary,border:colors.neonBorder}}}>
+ if(!launchState)return <View style={{flex:1,backgroundColor:colors.background,alignItems:'center',justifyContent:'center'}}><ActivityIndicator color={colors.primary} accessibilityLabel={t("Opening Axonic")}/></View>;
+ return <><AppUpdateBanner/><NavigationContainer initialState={launchState} ref={ref} onReady={()=>{visible();openPending.current();}} onStateChange={visible} theme={{...base,colors:{...base.colors,background:colors.background,card:colors.headerBg,text:colors.text,primary:colors.primary,border:colors.neonBorder}}}>
 
-  <Stack.Navigator screenOptions={{headerStyle:{backgroundColor:colors.headerBg},headerTintColor:colors.headerText,headerTitleStyle:{...Font.semiBold,color:colors.headerText},contentStyle:{backgroundColor:colors.background}}}>
+  <Stack.Navigator screenOptions={{header:props=><FloatingStackHeader {...props}/>,headerStyle:{backgroundColor:colors.headerBg},headerTintColor:colors.headerText,headerTitleStyle:{...Font.semiBold,color:colors.headerText},contentStyle:{backgroundColor:colors.background}}}>
 
-   <Stack.Screen name="Tabs" options={{headerShown:false}}>{props=><Tabs.Navigator detachInactiveScreens screenOptions={options}><Tabs.Screen name="Chats" options={{headerTitle:'AXONIC'}}>{()=> <ChatList {...props}/>}</Tabs.Screen><Tabs.Screen name="Calls" options={{headerTitle:'CALLS'}}>{()=> <Calls {...props}/>}</Tabs.Screen><Tabs.Screen name="Profile" options={{headerTitle:'PROFILE'}}>{()=> <>{profile}</>}</Tabs.Screen></Tabs.Navigator>}</Stack.Screen>
+   <Stack.Screen name="Tabs" options={{headerShown:false}}>{props=><Tabs.Navigator safeAreaInsets={{bottom:0}} detachInactiveScreens screenOptions={options}><Tabs.Screen name="Chats" options={{headerTitle:t("AXONIC"),tabBarLabel:t("Social")}}>{()=> <ChatList {...props}/>}</Tabs.Screen><Tabs.Screen name="Game" options={{headerTitle:t("GAMES"),tabBarLabel:t("Games")}} component={Game}/><Tabs.Screen name="Profile" options={{headerTitle:t("PROFILE"),tabBarLabel:t("Profile")}}>{()=> <>{profile}</>}</Tabs.Screen></Tabs.Navigator>}</Stack.Screen>
 
-   <Stack.Screen name="ChatRoom" component={ChatRoom}/><Stack.Screen name="NewChat" component={NewChat} options={{title:'New chat'}}/><Stack.Screen name="Contact" component={Contact} options={{title:'User details'}}/>
+   <Stack.Screen name="ChatRoom" component={ChatRoom} options={{headerTransparent:true}}/><Stack.Screen name="NewChat" component={NewChat} options={{title:t("New chat")}}/><Stack.Screen name="Contact" component={Contact} options={{title:t("User details")}}/>
 
-   <Stack.Screen name="GroupCreate" component={RootGroupCreate} options={{title:'New group'}}/><Stack.Screen name="GroupRoom" component={RootGroupRoom}/><Stack.Screen name="GroupMessageInfo" component={RootGroupMessageInfo} options={{title:'Message info'}}/><Stack.Screen name="GroupInfo" component={RootGroupInfo} options={{title:'Group information'}}/>
+   <Stack.Screen name="GroupCreate" component={RootGroupCreate} options={{title:t("New group")}}/><Stack.Screen name="GroupRoom" component={RootGroupRoom} options={{headerTransparent:true}}/><Stack.Screen name="GroupMessageInfo" component={RootGroupMessageInfo} options={{title:t("Message info")}}/><Stack.Screen name="GroupInfo" component={RootGroupInfo} options={{title:t("Group information")}}/>
 
-   <Stack.Screen name="ChatStorage" component={RootChatStorageScreen} options={{title:'Chat storage'}}/>
+   <Stack.Screen name="ChatStorage" component={RootChatStorageScreen} options={{title:t("Chat storage")}}/>
 
-   <Stack.Screen name="BlockedUsers" component={BlockedUsers} options={{title:'Blocked users'}}/>
+   <Stack.Screen name="BlockedUsers" component={BlockedUsers} options={{title:t("Blocked users")}}/>
 
-   <Stack.Screen name="MessageInfo" component={MessageInfo} options={{title:'Message info'}}/>
+   <Stack.Screen name="MessageInfo" component={MessageInfo} options={{title:t("Message info")}}/>
 
    <Stack.Screen name="OutgoingCall" component={OutgoingCall} options={{headerShown:false,presentation:'transparentModal',animation:'slide_from_bottom',contentStyle:{backgroundColor:'transparent'},gestureEnabled:false}}/>
 
-   <Stack.Screen name="Network" options={{title:'Network'}}>{()=> <ScrollView contentContainerStyle={{padding:24,gap:16}}>{network}</ScrollView>}</Stack.Screen>
+   <Stack.Screen name="Network" options={{title:t("Network"),headerTransparent:true}}>{()=> <NetworkPage>{network}</NetworkPage>}</Stack.Screen>
 
   </Stack.Navigator>
 

@@ -3,3 +3,20 @@ function fixture(){const saved=new Map(),mod={};new Function('exports','require'
 const account='axonic:1:'+'a'.repeat(64),callId='b'.repeat(64),data={type:'root_neuron_call',account,callId};
 test('call actions apply once and only to the matching account and call',async()=>{const f=fixture();assert(await f.queueRootCallNotificationAction('root-call-answer',data));assert.equal(await f.takeRootCallNotificationAction('axonic:1:'+'c'.repeat(64),callId),null);assert.equal(await f.takeRootCallNotificationAction(account,'d'.repeat(64)),null);assert.equal(await f.takeRootCallNotificationAction(account,callId),'root-call-answer');assert.equal(await f.takeRootCallNotificationAction(account,callId),null);});
 test('invalid or unrelated notification actions cannot request call acceptance',async()=>{const f=fixture();for(const [action,value] of [['root-reply',data],['root-call-answer',{...data,type:'root_neuron_message'}],['root-call-answer',{...data,callId:'invalid'}]])assert.equal(await f.queueRootCallNotificationAction(action,value),false);assert.equal(await f.takeRootCallNotificationAction(account,callId),null);});
+
+
+test('opening a call never replaces a queued answer or implies acceptance',async()=>{
+ const f=fixture();await f.queueRootCallNotificationAction('root-call-answer',data);await f.queueRootCallNotificationAction('root-call-open',data);
+ assert.equal(await f.takeRootCallNotificationAction(account,callId),'root-call-answer');
+ await f.queueRootCallNotificationAction('root-call-open',data);assert.equal(await f.takeRootCallNotificationAction(account,callId),'root-call-open');
+});
+test('simultaneous foreground and background consumers apply an action only once',async()=>{
+ const f=fixture();await f.queueRootCallNotificationAction('root-call-answer',data);
+ const actions=await Promise.all([f.takeRootCallNotificationAction(account,callId),f.takeRootCallNotificationAction(account,callId)]);
+ assert.deepEqual(actions,['root-call-answer',null]);
+});
+test('a new action cannot be erased by an earlier asynchronous consume',async()=>{
+ const f=fixture();await f.queueRootCallNotificationAction('root-call-open',data);
+ const first=f.takeRootCallNotificationAction(account,callId),second=f.queueRootCallNotificationAction('root-call-answer',data);
+ assert.equal(await first,'root-call-open');await second;assert.equal(await f.takeRootCallNotificationAction(account,callId),'root-call-answer');
+});

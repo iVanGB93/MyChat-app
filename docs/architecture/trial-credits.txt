@@ -1,0 +1,26 @@
+Trial credits v1 — 2026-10-31
+
+Purpose
+Separate persistent experimental accounting from the session contribution scorecard and current health. No service restriction, balance gate, cash value, transfers, offline penalty, or synchronized multi-device balance. Negative balances are allowed. The policy is provisional, not a reward economy or consensus system.
+
+Policy
+100 credits once per local identity ledger. +1 for each unique verified relay recipient receipt (private/group message); media completion earns a separate +1. -1 simulated spending per sender message/recipient whose relay custody is confirmed. Direct delivery is not charged. No credit for storage alone, retries, polls or errors. Reference = SHA256(sender, message id, recipient); event kind distinguishes message/media completion and use. Re-encryption and duplicate acknowledgments do not change that reference.
+
+Architecture
+Shared services/identity/trialCredits.ts owns policy, validation and idempotency. Existing custody receipt callbacks fire after successful durable custody transactions; existing courier-held callbacks record simulated usage. Phone mobileTrialCredits uses its own indexed SQLite table scoped by owner. Hosted adapter reuses indexedStore; database name is scoped to canonical neuron account. Append-only observation rows and a materialized balance update atomically in one transaction. UI consumes an observed global state; hosted dashboard refresh uses existing change events. No new periodic task or history scan.
+
+Failure semantics
+Credits never hold up delivery. Accounting errors mark the balance unavailable; corrupt state is not cleared or granted another allowance. Relay commits and credit commits are separate: a crash or failed accounting write can omit an observation until a duplicate receipt/held callback arrives. There is no automatic backfill or durable cross-ledger settlement. These limitations, local integrity and possible peer collusion must be addressed before assigning real value or enforcing a balance.
+
+Presentation
+Social header: AXONIC matches other tab titles; far-right cyan lightning badge shows balance and opens the existing styled explanation. Hosted header has a trial-labelled balance. Scorecard and health stay independent.
+
+Validation
+Phone full check: 1817 passed, 3 intentional skips, zero failures; typecheck, module/dependency/consolidation/assets checks passed. Additional real custody-service integration test verifies valid committed receipts, retry deduplication, rejection and failed-write behavior. Mobile adapter test verifies persistence and identity isolation. Hosted suite: 337 passed. Connected Dev phone showed allowance 100 and matching global state; badge and explanation inspected. No synthetic credit events inserted on phone, no real messages sent. No official app changes, production build or deployment.
+
+Shared-source audit
+Selected changed shared sources and hashes match. Full legacy sync check remains blocked by an existing mapping to removed normalChatProtocol.ts; unrelated cleanup is outside this credit change.
+
+2026-10-31 rollout: AoN commit 58be913 pushed and deployed to all three; runtime 515a654e830f. All healthy/active, trial ready and serviceRestricted=false. Observed balances 1N=100, 2N=102 (earned 2), 3N=98 (spent 2) from live traffic. No injected events/reset. Phone outline removed locally and typechecked; device disconnected before visual recheck. Evidence builds/trial-credits-deployment.json.
+
+2026-10-31 Dev live validation: R3GYC0H7PMY badge visually inspected without enclosing outline. Baseline 101 (earned 1). One labelled normal send to existing offline Group Call Emulator 1 produced confirmed relay storage and exactly one simulated debit: balance 100, earned 1, spent 1, entries 3. Global state and UI accessibility label both updated to 100 without reloading. Observed update in 1.927s of test polling (not precise network latency). Dev process restart retained all values, no repeated allowance/debit. serviceRestricted=false throughout. Six accounting/adapter regression tests pass including negative balance. No injected balances or events, official app unchanged. Recipient offline: storage confirmed, final delivery not claimed. Evidence builds/trial-credit-live-test.json and builds/credits-no-outline.png.

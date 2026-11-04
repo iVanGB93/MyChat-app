@@ -13,5 +13,29 @@ function patch(source){
  for(const signature of ['  fun record() {','  fun pauseRecording() {','  fun stopRecording(): Bundle {','  private fun reset() {'])result=result.replace(signature,marker+'  @Synchronized\n'+signature);
  return result.replace('  fun record() {\n','  fun record() {\n    if (!isPrepared || recorder == null || isRecording) return\n').replace('  fun pauseRecording() {\n','  fun pauseRecording() {\n    if (!isRecording || recorder == null) return\n');
 }
-if(require.main===module){const file=path.resolve(__dirname,'../node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioRecorder.kt');const before=fs.readFileSync(file,'utf8'),after=patch(before);if(before!==after)fs.writeFileSync(file,after);console.log('Expo audio recorder lifecycle guard ready');}
-module.exports={patch};
+const oldRoute=`    audioManager.mode = if (playThroughEarpiece) AudioManager.MODE_IN_COMMUNICATION else AudioManager.MODE_NORMAL
+    audioManager.setSpeakerphoneOn(!playThroughEarpiece)`;
+const mediaRoute=`    // Axonic: ordinary media follows Android's selected Bluetooth/headset output.
+    // Forcing speakerphone creates a communication route and can immediately
+    // interrupt Bluetooth playback when the media track becomes active.
+    audioManager.mode = if (playThroughEarpiece) AudioManager.MODE_IN_COMMUNICATION else AudioManager.MODE_NORMAL
+    if (playThroughEarpiece) {
+      audioManager.setSpeakerphoneOn(false)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+      audioManager.clearCommunicationDevice()
+    } else {
+      audioManager.setSpeakerphoneOn(false)
+    }`;
+function patchRouting(source){
+ const s=source.replace(/\r\n/g,'\n');
+ if(s.includes(mediaRoute))return s;
+ if(s.split(oldRoute).length!==2)throw Error('Unsupported expo-audio routing source; review required');
+ return s.replace(oldRoute,mediaRoute);
+}
+if(require.main===module){
+ for(const [name,transform] of [['AudioRecorder.kt',patch],['AudioModule.kt',patchRouting]]){
+  const file=path.resolve(__dirname,'../node_modules/expo-audio/android/src/main/java/expo/modules/audio',name),before=fs.readFileSync(file,'utf8'),after=transform(before);if(before!==after)fs.writeFileSync(file,after);
+ }
+ console.log('Expo audio recorder lifecycle and media routing guards ready');
+}
+module.exports={patch,patchRouting};

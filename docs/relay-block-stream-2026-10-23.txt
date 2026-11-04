@@ -1,0 +1,50 @@
+Encrypted relay-block streaming — local implementation, not deployed
+
+Scope
+Negotiated relayBlockStream:1 on the existing authenticated WSS connection.
+Both put-batch ciphertext uploads and get-batch ciphertext responses use bounded
+records. No additional socket, no decryption/re-encryption, no destination keys
+at the custodian, no changes to signed v4 manifests or 3,000,000-byte blocks.
+Peers without the capability retain their existing bounded bulk transport.
+
+Contract
+8,000 base64 characters per record; eight-record sender credit window, credit
+every four records. Two incoming and two outgoing bounded attempts per session,
+15-second attempt deadlines, exact offset/order and fixed header validation.
+Bounded 30-second late-frame tombstones avoid tearing down the shared connection
+on one timed-out transfer. Existing repeated-media-timeout policy remains intact.
+Only outstanding bulk requests admit streamed responses; uploads require the
+existing upload capability and inbound handler budget. Authentication/current
+session is checked for every frame. Partial attempt buffers are not persisted.
+Existing offer/quota, signature, atomic custody transaction, received prefix,
+idempotency, recipient receipt and file-publication logic remains authoritative.
+Transport credit is not storage, delivery or read confirmation. Storage replies
+remain generated only by the existing verified transaction after commit.
+
+Limitations
+This is transport streaming, not incremental disk/crypto preparation. Existing
+batch encoding and one complete bounded ciphertext block are still materialized
+for verification/storage. Do not claim reduced preparation time or internet speed
+improvement from these tests. No live AoN changed or new deployment authorized.
+
+Evidence
+Mobile typecheck passed. Focused mobile tests: 228 passed, 3 skipped.
+Final AoN build and full suite: 309 passed.
+Full mobile check: 1487 passed, 3 skipped; module/cycle/consolidation/assets passed.
+Final timeout refinement: typecheck passed; 145 focused tests passed, 2 skipped.
+New tests include byte-exact signed ciphertext for 1/5/10 MiB files, both stream
+directions, native persistent-axon negotiation, final storage acknowledgement
+ordering, malformed/oversized/order/duplicate/admission rejection, bounded credit
+and interrupted transfer cleanup. Existing custody rollback/resume tests passed.
+Isolated phone Dev native WebSocket probe via USB forwarding passed:
+1 MiB / 1 block: 1621 ms round trip
+5 MiB / 2 blocks: 7652 ms round trip
+10 MiB / 4 blocks: 16292 ms round trip
+All ciphertext identical; maximum observed record 8115 bytes; 3519 records.
+These are synthetic round trips over USB, not one-way internet transfer timings.
+No user chats, histories, stores, identities or official app modified by probe.
+Temporary probe socket and ADB forwarding removed afterward.
+
+Next: after final checks, obtain explicit approval to commit/push/deploy FirstNeuron
+and run live Dev custody upload/download tests. Other AoNs remain untouched unless
+separately authorized.

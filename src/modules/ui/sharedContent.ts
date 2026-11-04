@@ -1,11 +1,11 @@
-export type SharedItem = {text:string} | {uri:string;name:string;mime:string;caption?:string};
+export type SharedItem = {text:string} | {uri:string;name:string;mime:string;size?:number;caption?:string};
 export function sharedItems(input:{text?:string|null;webUrl?:string|null;files?:{path:string;fileName:string;mimeType:string;size?:number|null}[]|null}):SharedItem[]{
  const files=input.files??[];
  if(files.length>4)throw Error('Share up to four files at a time.');
- for(const f of files)if(!/^(file|content):\/\//i.test(f.path)||f.size!=null&&(f.size<1||f.size>250*1024*1024))throw Error('Choose local files between 1 byte and 250 MiB.');
+ for(const f of files)if(!f||typeof f.path!=='string'||!/^(file|content):\/\//i.test(f.path)||f.size!=null&&(!Number.isFinite(f.size)||f.size<1||f.size>250*1024*1024))throw Error('Choose local files between 1 byte and 250 MiB.');
  const text=input.text?.trim()||input.webUrl?.trim()||'';
  const items:SharedItem[]=text?[{text}]:[];
- for(const f of files)items.push({uri:f.path,name:f.fileName||'Attachment',mime:f.mimeType||'application/octet-stream'});
+ for(const f of files)items.push({uri:f.path,name:f.fileName||'Attachment',mime:f.mimeType||'application/octet-stream',...(f.size!=null?{size:f.size}:{})});
  if(!items.length)throw Error('There is no supported content to share.');
  return items;
 }

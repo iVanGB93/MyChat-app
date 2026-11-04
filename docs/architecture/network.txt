@@ -47,3 +47,12 @@ the shared attachmentRouteSelection module, separately from scheduling/checkpoin
 File: src/services/identity/attachmentRouteSelection.ts
 Guide: transfers.txt
 Guide: coordination.txt
+
+October 27 operational ledger reads
+Mobile composition routes delivery selection/rechecks to deliverySnapshot and
+call/contact policy, typing activity, profile recovery and capability/policy jobs
+to metadataSnapshot. Incoming duplicate checks and custody receipt membership use
+ledger indexes, avoiding full-history snapshots for those checks. Notification
+preview derivation after new admission still requests full history. Shared ledger
+APIs live in canonical services/identity/rootChatLedger.ts; this change has not
+been synced/deployed to hosted AoNs. The transport protocol is unchanged.

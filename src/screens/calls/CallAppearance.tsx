@@ -1,3 +1,4 @@
+import {Chrome} from '../../theme';
 import React from 'react';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -35,7 +36,7 @@ export function ActionButton({
           alignItems: 'center',
           justifyContent: 'center',
           shadowColor: Colors.primary,
-          shadowOpacity: active ? 0.5 : 0.2,
+          shadowOpacity: Chrome.shadowOpacity,
           shadowRadius: active ? 10 : 6,
           shadowOffset: { width: 0, height: 0 },
           elevation: active ? 5 : 2,
@@ -73,7 +74,7 @@ export function makeStyles(Colors: any) {
       // Keep Android's rectangular native surface inside every rounded frame corner.
       padding: Math.ceil(Radius.lg * (1 - Math.SQRT1_2)),
       shadowColor: Colors.primary,
-      shadowOpacity: 0.45,
+      shadowOpacity: Chrome.shadowOpacity,
       shadowRadius: 10,
       shadowOffset: { width: 0, height: 0 },
       elevation: 6,
@@ -115,7 +116,7 @@ export function makeStyles(Colors: any) {
       borderWidth: 1,
       borderColor: Colors.neonBorder,
       shadowColor: Colors.primary,
-      shadowOpacity: 0.5,
+      shadowOpacity: Chrome.shadowOpacity,
       shadowRadius: 16,
       shadowOffset: { width: 0, height: 0 },
       elevation: 6,
@@ -150,19 +151,19 @@ export function makeStyles(Colors: any) {
       gap: 2,
     },
     optionsBackdrop: {flex:1,justifyContent:'flex-end',alignItems:'flex-end',backgroundColor:'rgba(0,0,0,0.35)'},
-    optionsPanel: {width:'100%',maxWidth:380,maxHeight:'70%',flexShrink:1,borderRadius:20,borderWidth:1,borderColor:Colors.neonBorder,backgroundColor:Colors.headerBg,overflow:'hidden'},
+    optionsPanel: {width:'100%',maxWidth:380,maxHeight:'70%',flexShrink:1,borderRadius:Chrome.panelRadius,borderWidth:1,borderColor:Colors.neonBorder,backgroundColor:Colors.headerBg,overflow:'hidden'},
     optionsHeader: {flexDirection:'row',alignItems:'center',gap:8,paddingLeft:16,borderBottomWidth:1,borderBottomColor:Colors.neonBorder},
     optionsTitle: {flex:1,color:Colors.primary,fontSize:16,...Font.medium},
     optionsClose: {width:44,height:48,alignItems:'center',justifyContent:'center'},
     optionsContent: {padding:12,gap:4},
     optionsSection: {color:'rgba(255,255,255,0.6)',fontSize:11,...Font.medium,letterSpacing:1,marginBottom:6},
     qualityChoices: {flexDirection:'row',gap:4},
-    qualityChoice: {flex:1,minHeight:44,paddingVertical:10,justifyContent:'center',alignItems:'center',borderRadius:10,borderWidth:1,borderColor:'transparent',backgroundColor:'rgba(255,255,255,0.05)'},
+    qualityChoice: {flex:1,minHeight:44,paddingVertical:10,justifyContent:'center',alignItems:'center',borderRadius:Chrome.controlRadius,borderWidth:1,borderColor:'transparent',backgroundColor:'rgba(255,255,255,0.05)'},
     qualityChoiceSelected: {borderColor:Colors.primary,backgroundColor:'rgba(0,229,255,0.1)'},
     optionText: {color:'#fff',fontSize:14},
     optionDetail: {color:'rgba(255,255,255,0.6)',fontSize:11,marginTop:2},
     optionError: {color:Colors.error,fontSize:12,marginVertical:4},
-    audioChoice: {flexDirection:'row',alignItems:'center',gap:10,minHeight:44,paddingHorizontal:10,paddingVertical:8,borderRadius:10},
+    audioChoice: {flexDirection:'row',alignItems:'center',gap:10,minHeight:44,paddingHorizontal:10,paddingVertical:8,borderRadius:Chrome.controlRadius},
     audioChoiceSelected: {backgroundColor:'rgba(0,229,255,0.08)'},
     routeInUse: {color:Colors.primary,fontSize:11},
     actions: {
@@ -181,7 +182,7 @@ export function makeStyles(Colors: any) {
       alignItems: 'center',
       justifyContent: 'center',
       shadowColor: Colors.error,
-      shadowOpacity: 0.7,
+      shadowOpacity: Chrome.shadowOpacity,
       shadowRadius: 14,
       shadowOffset: { width: 0, height: 0 },
       elevation: 8,

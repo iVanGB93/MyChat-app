@@ -1,0 +1,28 @@
+Axonic pre-release review — next candidate 1.1.34 / Android code 105
+Current source version remains 1.1.33 / 104. No production build authorized or started in this review.
+
+Checks
+- TypeScript passed.
+- Full automated suite: 1,692 tests; 1,688 passed, 3 optional benchmarks skipped, 1 outdated source assertion failed.
+- Corrected that assertion: both private and group lists now use the combined timeline. Focused rerun: 22/22 passed, including that test, media picker, placeholder handoff, stable timeline keys, and SQLite cleanup patch.
+- Service cycles, module boundaries, source consolidation, asset references passed.
+- Native identity/stream admission and notification completion/timeout/exactly-once checks passed.
+- git diff --check passed after whitespace-only cleanup.
+- No temporary live SQL tracing is included in app source.
+
+Live Dev evidence from the preceding phone session
+- Persistent native database locks affected history and call databases, taking about 2.5 seconds per failed BEGIN.
+- Removed the added history-BEGIN retry loop because it amplified persistent contention.
+- Restarted only com.axonic.dev, preserving data; no official app changes.
+- After restart: text saved in 1.59 seconds; UI keyboard send appeared above keyboard; incoming text and a tiny synthetic photo followed to the bottom.
+- Receiver verified exactly one photo record and an available local file.
+- Short event-loop sample: average 15.45 ms delay over 50 ms timers, max 17.87 ms; no SQL errors observed during tracing.
+- Background/resume reopened the chat through UI. Debugger timed out on the final measurement, so a complete post-resume timing result is NOT established.
+- Do not interpret the restart as proof the persistent-lock cause is permanently fixed. The existing native SQLite cleanup patch is included in postinstall/build hooks and its source regression passes; verify the newly compiled candidate.
+
+Release boundaries
+- Next build must be explicitly approved and built locally with existing signing identity and production flags.
+- Increment app.json version/code and Android code together at build time; do not reuse 104.
+- Validate AAB manifest, signing certificate, feature flags, source fingerprint, and bundletool output after building.
+- No publication or official-app installation authorized here.
+- Preserve the existing working-tree changes from other work; do not reset or sweep them into an unrelated cleanup commit.

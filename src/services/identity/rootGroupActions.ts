@@ -16,7 +16,7 @@ export const sameGroupAction=(a:RootGroupAction,b:RootGroupAction)=>JSON.stringi
 export function validGroupAction(a:RootGroupAction,owner:string){const actor=a?.direction==='outgoing'?owner:a?.peer;return !!a&&/^[a-f0-9]{64}$/.test(a.id)&&validAccountId(a.peer)&&a.peer!==owner&&['incoming','outgoing'].includes(a.direction)&&validGroupContext(a.group)&&a.id===rootGroupDeliveryId(a.group.messageId,a.direction==='outgoing'?a.peer:owner,'action')&&validGroupReply(a.target)&&['edit','delete','reaction','read'].includes(a.kind)&&Number.isSafeInteger(a.revision)&&a.revision>=1&&a.revision<=1000000&&typeof a.text==='string'&&Number.isSafeInteger(a.at)&&['pending','delivered'].includes(a.status)&&(a.kind==='edit'?a.target.author===actor&&!!a.text.trim()&&new TextEncoder().encode(a.text).length<=1600:a.kind==='delete'?a.target.author===actor&&a.text==='':a.kind==='read'?a.text===''&&a.revision===1&&a.target.author===(a.direction==='outgoing'?a.peer:owner):a.text===''||reactions.includes(a.text));}
 export const encodeGroupAction=(a:RootGroupAction)=>JSON.stringify(['axonic-root-group-action-v1',a.peer,a.id,groupActionBody(a)]);
 const targets=(a:RootGroupAction,group:string,target:RootChatReply)=>a.group.id===group&&a.target.id===target.id&&a.target.author===target.author;
-export function enqueueGroupAction(s:RootChatState,owner:string,groupId:string,logicalId:string,target:RootChatReply,kind:RootGroupAction['kind'],text:string,now:number){
+export function enqueueGroupAction(s:RootChatState,owner:string,groupId:string,logicalId:string,target:RootChatReply,kind:RootGroupAction['kind'],text:string,now:number,_totalActions=s.groupActions?.length??0){
  const g=s.groups?.find(g=>g.id===groupId);if(!g||!g.accepted||g.blocked||!g.members.includes(owner)||!validGroupReply(target))throw Error('Accept an active group first');
  const m=s.messages.find(m=>m.group?.id===groupId&&m.group.messageId===target.id&&(m.direction==='outgoing'?owner:m.peer)===target.author);if(!m)throw Error('Original group message unavailable');
  const prior=(s.groupActions??[]).filter(a=>targets(a,groupId,target)&&a.direction==='outgoing'&&family(a.kind)===family(kind));
@@ -30,10 +30,10 @@ export function enqueueGroupAction(s:RootChatState,owner:string,groupId:string,l
  if(rows.some(a=>s.messages.some(m=>m.id===a.id&&m.peer===a.peer&&m.direction==='outgoing')||s.groupPackets?.some(p=>p.id===a.id)||s.actions?.some(v=>v.id===a.id&&v.peer===a.peer&&v.direction==='outgoing')))throw Error('Group action ID conflict');
  // Validate authorship, payload and ID collisions before accepting a repeat delete.
  if((s.groupActions??[]).some(a=>targets(a,groupId,target)&&a.kind==='delete')){if(kind==='delete')return false;throw Error('Message was deleted');}
- if((s.groupActions?.length??0)+rows.length>10000)throw Error('Group action storage is full');
+
  (s.groupActions??=[]).push(...rows);return true;
 }
-export function receiveGroupAction(s:RootChatState,owner:string,from:string,id:string,body:unknown,now:number){
+export function receiveGroupAction(s:RootChatState,owner:string,from:string,id:string,body:unknown,now:number,_totalActions=s.groupActions?.length??0){
  const b=body as ReturnType<typeof groupActionBody>;if(!b||Object.keys(b).sort().join(',')!=='group,kind,revision,target,text')return false;
  const a:RootGroupAction={...b,id,peer:from,direction:'incoming',at:now,status:'delivered'};
  if(!validGroupAction(a,owner)||rootGroupDeliveryId(a.group.messageId,owner,'action')!==id||!rootGroupAllowed(s,owner,from,a.group))return false;
@@ -41,5 +41,5 @@ export function receiveGroupAction(s:RootChatState,owner:string,from:string,id:s
  const old=s.groupActions?.find(v=>v.peer===from&&v.direction==='incoming'&&v.id===id);if(old)return sameGroupAction(old,a);
  const conflict=s.groupActions?.find(v=>v.peer===from&&v.direction==='incoming'&&targets(v,a.group.id,a.target)&&family(v.kind)===family(a.kind)&&v.revision===a.revision);if(conflict)return sameGroupAction(conflict,a);
  const m=s.messages.find(m=>m.group?.id===a.group.id&&m.group.messageId===a.target.id&&(m.direction==='outgoing'?owner:m.peer)===a.target.author);if(m?.attachment&&a.kind==='edit')return false;
- if((s.groupActions?.length??0)>=10000)return false;(s.groupActions??=[]).push(a);return true;
+ (s.groupActions??=[]).push(a);return true;
 }

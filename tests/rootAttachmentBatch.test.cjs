@@ -8,7 +8,7 @@ function fixture(){
   if(name==='./attachmentChanges')return {attachmentChanged(){}};
   if(name==='./rootGroups')return {validGroupContext:()=>true};
   if(name==='./rootMessageFeedback')return {publishRootMessageFeedback:event=>feedback.push(event)};
-  if(name==='./localRootChat')return {subscribeRootChatCommitted:()=>()=>{},localRootChat:()=>({snapshot:async()=>({messages:groupMessages})})};
+  if(name==='./localRootChat')return {subscribeRootChatCommitted:()=>()=>{},localRootChat:()=>({groupSnapshot:async()=>({messages:groupMessages}),messageIdSnapshot:async()=>({messages:groupMessages})})};
   if(name==='./rootGroupActions')return {validGroupReply:r=>!!r&&/^[a-f0-9]{64}$/.test(r.id)&&['owner','peer','other'].includes(r.author),groupReplyAvailable:(state,owner,group,reply)=>state.messages.some(m=>m.group?.id===group&&m.group.messageId===reply.id&&m.peer===reply.author)};
   if(name==='./localAccount')return {localAccount:{status:()=>status,subscribe:()=>()=>{}}};
   if(name==='./attachmentTiming')return {createAttachmentTiming:()=>({snapshot:()=>({})})};
@@ -21,12 +21,24 @@ function fixture(){
   if(name==='../workPump')return {createWorkPump:()=>({wake(){},stop(){}})};
   if(name==='../../modules/storage/chatStore')return {subscribeOwnChatWrites:()=>()=>{}};
   if(name==='./identityProtocol')return {validAccountId:p=>['owner','peer','other'].includes(p)};
-  if(name==='./rootAttachmentFiles')return {stageRootAttachmentSource:(owner,id,uri,shared)=>{if(fail&&uri==='file://two')throw Error('Disk full');staged.set(shared??id,uri);},removeRootAttachmentSource:(owner,id)=>{removed.push(id);staged.delete(id);}};
+  if(name==='./rootAttachmentFiles')return {restageRootAttachmentSource:(owner,id,previous,shared)=>{staged.set(shared??id,'file://retained-'+previous);},stageRootAttachmentSource:(owner,id,uri,shared)=>{if(fail&&uri==='file://two')throw Error('Disk full');staged.set(shared??id,uri);},removeRootAttachmentSource:(owner,id)=>{removed.push(id);staged.delete(id);}};
   return {};
  };
  for(const file of ['rootAttachmentSelections','rootAttachmentRuntime'])new Function('require','exports','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/'+file+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(deps,out,()=>0,()=>{});
  return {out,rows,staged,status,groupMessages,feedback,fail:()=>fail=true,items:[{uri:'file://one',name:'One',mime:'image/jpeg',caption:'First'},{uri:'file://two',name:'Two',mime:'image/png'}]};
 }
+for(const version of [1,2])test(`diagnostic v${version} queues once and retries its exact stable ID`,async()=>{
+ const f=fixture(),id='a'.repeat(64),name=f.out.diagnosticAttachmentName(id,version);
+ assert.equal(f.out.diagnosticAttachmentName(id),`axonic-diagnostic-v2-${id}.json`);
+ for(let i=0;i<2;i++)assert.equal(await f.out.queueRootAttachmentSource('peer','file://report',name,'application/json','owner',undefined,'Report',id),id);
+ assert.equal((await f.out.selections('owner')).length,1);assert.equal(f.staged.size,1);
+ await assert.rejects(f.out.queueRootAttachmentSource('other','file://report',name,'application/json','owner',undefined,'Report',id),/conflict/);
+});
+test('diagnostic naming rejects a different ID, version, MIME or path before staging',async()=>{
+ for(const [name,mime] of [[`axonic-diagnostic-v2-${'b'.repeat(64)}.json`,'application/json'],[`axonic-diagnostic-v3-${'a'.repeat(64)}.json`,'application/json'],[`axonic-diagnostic-v2-${'a'.repeat(64)}.json`,'text/plain'],['../report.json','application/json']]){
+  const f=fixture();await assert.rejects(f.out.queueRootAttachmentSource('peer','file://report',name,mime,'owner',undefined,'Report','a'.repeat(64)),/Invalid diagnostic attachment/);assert.equal(f.staged.size,0);assert.equal(f.rows.size,0);
+ }
+});
 test('reviewed batch commits all selections together and preserves captions',async()=>{
  const f=fixture();await f.out.queueRootAttachmentBatch({owner:'owner',peer:'peer',items:f.items});
  const rows=JSON.parse([...f.rows.values()][0]);assert.equal(rows.length,2);assert.equal(rows[0].caption,'First');assert.equal(f.staged.size,2);
@@ -72,4 +84,17 @@ test('group preparation displays one row per photo and retries/removes the whole
  await f.out.retryRootAttachmentSelection(visible[0].id);rows=JSON.parse([...f.rows.values()][0]);assert(rows.every(r=>!r.failed));
  rows[1].failed=true;f.rows.set([...f.rows.keys()][0],JSON.stringify(rows));await f.out.removeRootAttachmentSelection(visible[0].id);
  rows=JSON.parse([...f.rows.values()][0]);assert.equal(rows.length,2);assert(rows.every(r=>r.group.messageId===visible[1].group.messageId));
+});
+
+test('caption retry creates fresh grants and preserves the old source and quote',async()=>{
+ const f=fixture(),group={id:'a'.repeat(64),revision:2,messageId:'b'.repeat(64)};
+ await f.out.queueRootAttachmentBatch({owner:'owner',peer:'peer',audience:{owner:'owner',peers:['peer','other'],group},items:[f.items[0]]});
+ await f.out.changeSelections('owner',rows=>{for(const r of rows){r.failed=true;r.reason='caption';}});
+ const before=await f.out.selections('owner');await f.out.retryRootAttachmentCaption(before[0].id,'Short');
+ const after=await f.out.selections('owner');assert.equal(after.length,2);
+ assert(after.every(r=>r.caption==='Short'&&!r.failed&&!r.reason&&!before.some(b=>b.id===r.id)));
+ assert.equal(after[0].shared.id,after[1].shared.id);assert.notEqual(after[0].shared.id,before[0].shared.id);
+ assert.equal(after[0].group.messageId,after[1].group.messageId);assert.notEqual(after[0].group.messageId,before[0].group.messageId);
+ assert(f.staged.has(before[0].shared.id),'original staged source survives until durable replacement is known');
+ await assert.rejects(f.out.retryRootAttachmentCaption(after[0].id,'Again'),/no longer/);
 });

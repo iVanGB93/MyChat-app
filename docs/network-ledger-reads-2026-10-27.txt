@@ -1,0 +1,38 @@
+Network ledger read audit and Dev verification — October 27, 2026
+
+Finding: runtimeChatReads already reused snapshots between revisions, but each
+revision still caused full-history copies for consumers needing only policy or
+pending work. Ledger readCache reused serialized bytes, not targeted projections.
+
+Change: revision-bound metadata and delivery snapshots plus exact incoming and
+outgoing receipt membership indexes. Shared ledger code remains platform-neutral.
+Mobile runtime routes its operational consumers through these APIs. Existing
+canonical ledger/schema and messages/media stay intact. No server deployment,
+commit/push, production build, reinstall or official-app change performed.
+
+Dev phone R3GYC0H7PMY, existing 382-message ledger:
+full serialized state 3,127,438 chars; metadata 40,617; delivery 62,043.
+Pending packets matched the full-ledger derivation exactly (zero currently pending).
+20 warm metadata+delivery pairs: mean 0.283 ms, maximum 0.938 ms; zero historyDecode
+or storageRead delta; revision stable throughout. These measure local ledger read
+work, not transfer speed or cold startup. Evidence: builds/network-ledger-live.json.
+
+Tests: isolated fixtures exercise actual pending sends and group controls/actions,
+blocked-peer invalidation, cancellation, external revision change, failed/uncertain
+writes, lock cleanup, foreign peer/direction membership, mutable caller isolation,
+and no-revision storage. All 44 delivery pump tests now use compact snapshots,
+including late ACK/fallback, retries, locking and policy changes.
+Full suite/check output: builds/network-ledger-check.log.
+
+Remaining: cold hydration still reads and validates full canonical history once;
+mutations still parse and rewrite it. Attachment authorization and notification
+presentation retain full views where required. Projections add bounded-by-ledger
+key sets and current pending-work state in memory; they do not duplicate historical
+message bodies. No claim of a fully indexed canonical database or AoN rollout.
+
+Final validation: npm run check exited 0 (1,638 passed, 3 skipped; TypeScript,
+module/cycle/consolidation/assets checks passed). A final async lock-boundary
+hardening was verified afterward with 87 focused ledger/delivery tests and
+TypeScript. Second live measurement: 3,131,968 full-state chars, same 40,617/62,043
+projection sizes; mean pair 0.179 ms, max 0.602 ms; zero decode/storage reads and
+identical pending packets. This is not an end-to-end transfer benchmark.

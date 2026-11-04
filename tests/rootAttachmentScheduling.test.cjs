@@ -4,12 +4,14 @@ function fixture(mode,appState='active',route){
  const gate=new Promise(r=>release=r),owner='axonic:1:'+'a'.repeat(64),peer='axonic:1:'+'b'.repeat(64);
  const selection={id:'c'.repeat(64),peer,name:'test',mime:'image/jpeg',failed:false};
  let rows=[selection];
+ if(mode==='lookup-two')rows.push({...selection,id:'2'.repeat(64),peer:'axonic:1:'+'3'.repeat(64)});
  if(mode==='group'){selection.shared={id:'d'.repeat(64),count:2,slot:0};selection.group={id:'e'.repeat(64),revision:1,messageId:'f'.repeat(64)};rows.push({...selection,id:'1'.repeat(64),peer:'axonic:1:'+'2'.repeat(64),shared:{...selection.shared,slot:1}});}
  const incoming={manifest:{expires:Date.now()+60000}};
  const snapshot={contacts:[{account:peer,accepted:true}],messages:[{peer,status:'pending',direction:'incoming',attachment:incoming}]};
  if(mode==='group')snapshot.groups=[{id:selection.group.id,accepted:true,members:[owner,peer,rows[1].peer]}];
  const worker={enqueue:async(_,direction)=>{if(mode==='save-failure'&&direction==='outgoing')throw Error('Storage unavailable');events.push(direction);},receive:async()=>workerDeps.allowed(peer)?'ready':'rejected',tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
  const deps={
+ './rootChatLedger':{assertAttachmentFits(){if(mode==='caption')throw Error('Attachment description is too large; shorten the caption');}},
  '../../../modules/axonic-nearby':{default:route?{identityRandomBytes(){},attachmentFileSha256(){},attachmentStageStream(){}}:undefined},
  './rootAttachmentStreams':{createRootAttachmentStreams:()=>({pull:async()=>{events.push('rtc');return route.rtcResult;},stop(){}})},
  './wssAttachmentStreams':{createWssAttachmentStreams:()=>({pull:async()=>{events.push('wss');return route.wssResult;},stop(){}})},
@@ -20,24 +22,34 @@ function fixture(mode,appState='active',route){
  '../../modules/storage/chatStore':{ownChatRevision:()=>revision,subscribeOwnChatWrites:f=>{writeListener=f;return()=>{};}},
  '../workPump':{createWorkPump:d=>{const out={};new Function('exports','setTimeout','clearTimeout',ts.transpileModule(fs.readFileSync('src/services/workPump.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,f=>{timers.push(f);return f;},f=>{const i=timers.indexOf(f);if(i>=0)timers.splice(i,1);});return out.createWorkPump(d);}},
  './localAccount':{localAccount:{status:()=>({account:owner,state:locked?'locked':'unlocked'}),subscribe:f=>{listener=f;return()=>{};}}},
- './localRootChat':{subscribeRootChatCommitted:f=>{committedListener=f;return()=>{committedListener=null;};},localRootChat:()=>({snapshot:async()=>snapshot,revisionSnapshot:async readRevision=>{historyReads++;return {state:snapshot,revision:readRevision()};},enqueueAttachment:async()=>events.push('publish'),enqueueAttachments:async items=>{assert.equal(items.length,2);assert.equal(prepares,2);events.push('publish-batch');}})},
+ './localRootChat':{subscribeRootChatCommitted:f=>{committedListener=f;return()=>{committedListener=null;};},localRootChat:()=>({snapshot:async()=>snapshot,attachmentRevisionSnapshot:async readRevision=>{historyReads++;return {state:snapshot,revision:readRevision()};},enqueueAttachment:async()=>events.push('publish'),enqueueAttachments:async items=>{assert.equal(items.length,2);assert.equal(prepares,2);events.push('publish-batch');}})},
  './attachmentPolicy':{...require('./helpers/attachment.cjs').load('attachmentPolicy'),indexAttachmentPolicy:()=>()=>true},
  './attachmentTiming':{createAttachmentTiming:()=>({measure:(_s,f)=>f(),snapshot:()=>({})})},
  './rootMediaExport':{startRootMediaExport:()=>({stop(){},wake(){}})},
- './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async()=>mode==='lookup'?null:{}})},
+ './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async p=>mode==='lookup'||mode==='lookup-two'&&p===peer?null:{}})},
  './rootGroups':{validGroupContext:()=>true,rootGroupAllowed:()=>true},
  './identityProtocol':{validAccountId:()=>true,verifyRecord:()=>true},
  './mobileAttachmentJobs':{createMobileAttachmentJobs:()=>({})},
  './attachmentTransfer':{createAttachmentTransfer:d=>{workerDeps=d;return worker;}},
- './rootAttachmentFiles':{prepareRootAttachment:async()=>{prepares++;await gate;return incoming;},removeRootAttachmentSource:()=>events.push('remove')},
+ './rootAttachmentFiles':{rootAttachmentFile:()=>({exists:false}),prepareRootAttachment:async()=>{prepares++;await gate;return incoming;},removeRootAttachmentSource:()=>events.push('remove')},
  '@react-native-async-storage/async-storage':{default:{getItem:async()=>JSON.stringify(rows),setItem:async(_k,s)=>rows=JSON.parse(s)}},
  };
  const selections={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentSelections.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>deps[n]??{},selections);deps['./rootAttachmentSelections']=selections;
  const out={};new Function('require','exports','setTimeout','clearTimeout','__DEV__',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>deps[n]??{},out,f=>{timers.push(f);return f;},()=>{},false);
  const runtime=out.startRootAttachmentRuntime({...(route?{streams:{available:()=>route.rtcReady},wss:{peer:()=>({device:route.device??'device'})}}:{}),peers:()=>[],request:async()=>null,lookup:async()=>{lookupCount++;await gate;}});
  const pump=async()=>{assert(timers.length);timers.shift()();for(let n=0;n<12;n++)await new Promise(setImmediate);};
- return {runtime,events,pump,release,pull:()=>workerDeps.connections.directStream({descriptor:{manifest:{sender:peer,senderDevice:'device'}}},async()=>true),historyReads:()=>historyReads,commitBlocked(){snapshot.contacts[0].blocked=true;revision++;writeListener(owner);committedListener(owner,revision,snapshot);},change(){revision++;writeListener(owner);},block(){snapshot.contacts[0].blocked=true;revision++;},lock(){locked=true;listener();},lookupCount:()=>lookupCount,prepares:()=>prepares,rows:()=>rows};
+ return {runtime,events,pump,release,deps,complete:(job,current=()=>true)=>workerDeps.completed(job,current),pull:()=>workerDeps.connections.directStream({descriptor:{manifest:{sender:peer,senderDevice:'device'}}},async()=>true),historyReads:()=>historyReads,commitBlocked(){snapshot.contacts[0].blocked=true;revision++;writeListener(owner);committedListener(owner,revision,snapshot);},change(){revision++;writeListener(owner);},block(){snapshot.contacts[0].blocked=true;revision++;},lock(){locked=true;listener();},lookupCount:()=>lookupCount,prepares:()=>prepares,rows:()=>rows};
 }
+test('outgoing receipt completion does not require the deleted source; incoming and invalid receipts remain held',async t=>{
+ const f=fixture('lookup');t.after(()=>{f.runtime.stop();f.release();});let verified=0,accept=true;
+ f.deps['./localRootChat'].localRootChat=()=>({attachmentComplete:async()=>{verified++;return accept;}});
+ const job={owner:'owner',digest:'digest',direction:'outgoing',receipt:{},descriptor:{manifest:{id:'id',sender:'sender',recipient:'recipient'}}};
+ await f.complete(job);assert.equal(verified,1);
+ await assert.rejects(f.complete({...job,direction:'incoming'}),/Own attachment unavailable/);assert.equal(verified,1);
+ accept=false;await assert.rejects(f.complete(job),/Attachment chat receipt unavailable/);assert.equal(verified,2);
+ await assert.rejects(f.complete({...job,receipt:null}),/Attachment chat receipt unavailable/);assert.equal(verified,2);
+ await assert.rejects(f.complete(job,()=>false),/Account locked/);assert.equal(verified,2);
+});
 for(const [route,expected,result] of [
  [{rtcReady:false,wssResult:true,rtcResult:true},['wss'],true],
  [{rtcReady:true,wssResult:true,rtcResult:true},['rtc'],true],
@@ -75,7 +87,7 @@ test('background committed-message events run without a frame timer and coalesce
  f.change();f.runtime.wake();f.runtime.wake();
  for(let n=0;n<20;n++)await new Promise(setImmediate);
  assert.equal(f.events.filter(x=>x==='incoming').length,1);
- assert.equal(f.events.filter(x=>x==='tick').length,1);
+ assert.equal(f.events.filter(x=>x==='tick').length,2,'one additional wake publishes the durable waiting reason');
  assert.equal(f.lookupCount(),1);
  f.commitBlocked();for(let n=0;n<20;n++)await new Promise(setImmediate);
  assert.equal(await f.runtime.receive('{}',{}),'rejected');
@@ -109,4 +121,24 @@ test('serving refreshes policy before the first pump and immediately honors bloc
  assert.equal(await f.runtime.receive('request',{}),'ready');
  f.block();assert.equal(await f.runtime.receive('request',{}),'rejected');
  f.lock();assert.equal(await f.runtime.receive('request',{}),null);
+});
+
+test('missing identity is visible and lookup remains single flight',async t=>{
+ const f=fixture('lookup');t.after(()=>{f.runtime.stop();f.release();});
+ await f.pump();await f.pump();assert.equal(f.rows()[0].reason,'identity');assert.equal(f.lookupCount(),1);
+});
+test('blocked group member fails the whole preparation without partial publication',async t=>{
+ const f=fixture('group');t.after(()=>{f.runtime.stop();f.release();});f.block();await f.pump();
+ assert(f.rows().every(r=>r.failed&&r.reason==='audience'));assert(!f.events.includes('publish-batch'));assert.equal(f.rows().length,2);
+});
+
+test('unresolved recipient lookup does not monopolize preparation for another recipient',async t=>{
+ const f=fixture('lookup-two');t.after(()=>{f.runtime.stop();f.release();});await f.pump();await f.pump();
+ assert.equal(f.lookupCount(),1);assert.equal(f.prepares(),1,'another queued file can prepare before lookup resolves');
+});
+test('caption rejection saves an actionable failure before any serving job or message is published',async t=>{
+ const f=fixture('caption');t.after(()=>{f.runtime.stop();f.release();});await f.pump();f.release();
+ for(let i=0;i<20;i++)await new Promise(setImmediate);
+ assert.equal(f.rows()[0].failed,true);assert.equal(f.rows()[0].reason,'caption');
+ assert(!f.events.includes('outgoing'));assert(!f.events.includes('publish'));assert(!f.events.includes('remove'));
 });

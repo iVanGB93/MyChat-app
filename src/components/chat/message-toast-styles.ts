@@ -1,5 +1,6 @@
+import {Chrome} from '../../theme';
 import {StyleSheet,Platform} from 'react-native';
-import {Font,Radius} from '../../theme';
+import {Font} from '../../theme';
 export const messageToastStyles = StyleSheet.create({
   container: {
     position: 'absolute',
@@ -12,11 +13,11 @@ export const messageToastStyles = StyleSheet.create({
   inner: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: Radius.md,
+    borderRadius: Chrome.panelRadius,
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderWidth: 1,
-    shadowOpacity: 0.3,
+    shadowOpacity: Chrome.shadowOpacity,
     shadowRadius: 16,
     shadowOffset: { width: 0, height: 0 },
     elevation: 10,
@@ -24,7 +25,7 @@ export const messageToastStyles = StyleSheet.create({
   avatar: {
     width: 38,
     height: 38,
-    borderRadius: 8,
+    borderRadius: 19,
     borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',

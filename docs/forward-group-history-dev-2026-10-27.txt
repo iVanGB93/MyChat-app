@@ -1,0 +1,21 @@
+Forwarding / attachment selection / group history verification
+
+No messages sent, settings changed, history deleted, or official app updated.
+Connected Axonic Dev was reloaded for the new scoped-query implementation.
+Read-only comparison against existing history: 382 messages, 9 groups.
+All selected views matched the rendered full-history baseline, including group
+media (2 existing rows) and three logical-message recipient views.
+Full-read counter delta across scoped queries: 0 (baseline captured beforehand).
+Forward lookup: 1 row, 30.8ms. Nine group media queries: 15.8-19.4ms.
+These are single-run query timings, not end-to-end screen latency benchmarks.
+
+Full npm check: 1670 passed, 3 skipped; typecheck, cycles, module boundaries,
+consolidation and assets passed. Three additional hook lifecycle tests passed:
+metadata/media/message scope selection, write-driven refresh, stale completion
+and lock handling, focus/background suspension and preservation on read errors.
+Regression coverage includes original message direction, action/deletion parity,
+all group recipient copies, and diagnostic retry ID/deletion evidence.
+
+Remaining full reads include explicit storage management, report capture,
+delete/reset, migration/projection rebuild and legacy-adapter fallback.
+No production/AoN rollout claimed. No commit, push or deployment performed.

@@ -1,5 +1,31 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),{DatabaseSync}=require('node:sqlite');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentCustody}=load('attachmentCustody');
+test('ordinary sharing exceeds four files without losing custody; byte budget still rejects new content',async t=>{
+ const f=fixture(17),s=storeFixture(t,f.ids[2].record.account);
+ const deps={owner:f.ids[2].record.account,store:s.store,records:{read:async()=>f.ids[0].record},now:()=>now,current:()=>true,maxBytes:17*20};
+ let relay=createAttachmentCustody(deps);
+ const peer={account:f.ids[0].record.account,device:f.ids[0].device.id,expiresAt:now+60000};
+ const manifests=Array.from({length:21},(_,i)=>a.signAttachmentManifest({...f.manifest,id:(i+1).toString(16).padStart(64,'0')},f.ids[0].signingSeed,f.ids[0].record,now));
+ const offer=m=>relay.receive(JSON.stringify({version:1,operation:'offer',manifest:m}),peer).then(JSON.parse);
+ for(const m of manifests.slice(0,20))assert.equal((await offer(m)).status,'held');
+ const before=await s.store.transaction(tx=>tx.rows());assert.equal(before.length,20);
+ assert.deepEqual(await offer(manifests[20]),{status:'full',reason:'byte_capacity'});
+ relay=createAttachmentCustody(deps);
+ assert.equal((await offer(manifests[0])).status,'held','existing grant remains usable at capacity after restart');
+ assert.deepEqual(await s.store.transaction(tx=>tx.rows()),before,'refusal and retries preserve every reserved file');
+});
+
+test('sender metadata bound remains enforced without the old four-file bottleneck',async()=>{
+ const f=fixture(1),limits=load('attachmentCustody').ATTACHMENT_CUSTODY_LIMITS,rows=[];
+ for(let i=0;i<limits.senderContents;i++){
+  const manifest={...f.manifest,id:(i+1).toString(16).padStart(64,'0')};
+  rows.push({manifest,digest:a.attachmentDigest(manifest),received:0,receipt:null});
+ }
+ const store={transaction:async work=>work({rows:async()=>rows,save:async()=>{throw Error('must not save');},erase:async()=>{throw Error('must not erase');},eraseChunks:async()=>{throw Error('must not erase');}})};
+ const relay=createAttachmentCustody({owner:f.ids[2].record.account,store,records:{read:async()=>f.ids[0].record},now:()=>now,current:()=>true});
+ const r=JSON.parse(await relay.receive(JSON.stringify({version:1,operation:'offer',manifest:f.manifest}),{account:f.ids[0].record.account,device:f.ids[0].device.id,expiresAt:now+60000}));
+ assert.deepEqual(r,{status:'full',reason:'sender_capacity'});assert.equal(rows.length,limits.senderContents);
+});
 test('retired local custody records stay intact and do not block current offers',async()=>{
  const f=fixture(),old={digest:'a'.repeat(64),manifest:{version:3},received:0,receipt:null},rows=[old];
  const store={transaction:async work=>work({rows:async()=>rows,save:async row=>rows.push(row),erase:async()=>{throw Error('must preserve old data');},eraseChunks:async()=>{throw Error('must preserve old files');}})};
@@ -25,7 +51,7 @@ test('upload batches validate all proofs, commit atomically, and retry idempoten
  for(const body of [{...batch,data:corrupt.toString('base64')},{...batch,index:2},{...batch,count:129},{...batch,extra:'forbidden'},{...batch,data:batch.data+'='}])assert.equal((await send(body)).status,'rejected');
  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM asset_chunks').get().n,0);
  assert.equal((await send(batch,1)).status,'rejected');
- assert.equal((await send(batch)).received,1);relay=createAttachmentCustody(deps);assert.equal((await send(batch)).received,1);
+ assert.equal((await send(batch)).received,1);assert.equal(relay.contribution().counts.blocksStored,1);assert.equal(relay.contribution().counts.ciphertextBytesStored,Buffer.from(f.chunks[0].ciphertext,'base64').length);await send(batch);assert.equal(relay.contribution().counts.blocksStored,1);relay=createAttachmentCustody(deps);assert.equal((await send(batch)).received,1);assert.equal(relay.contribution().counts.blocksStored,0);
  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM asset_chunks').get().n,1);
  const tail={operation:'put-batch',index:1,count:1,data:b.packAttachmentBatch(f.manifest,1,[f.chunks[1]])};
  const response=await send(tail);assert.deepEqual(response,{status:'held',index:1,count:1,received:2});
@@ -52,7 +78,7 @@ test('attachment custody resumes, rejects unauthorized peers and deletes all chu
  assert.deepEqual((await request(1,'get',{index:0})).chunk,f.chunks[0]);assert.equal((await request(0,'status')).received,f.chunks.length);
  const receipt=a.signAttachmentReceipt(f.manifest,f.ids[1].signingSeed,f.ids[1].record,clock);
  assert.equal((await request(0,'receipt',{receipt})).status,'rejected');assert.equal((await request(1,'receipt',{receipt:{...receipt,signature:'00'.repeat(64)}})).status,'rejected');
- assert.equal((await request(1,'receipt',{receipt})).status,'completed');assert.equal(s.db.prepare('SELECT COUNT(*) n FROM asset_chunks').get().n,0);
+ assert.equal((await request(1,'receipt',{receipt})).status,'completed');await request(1,'receipt',{receipt});assert.equal(relay.contribution().counts.attachmentReceipts,1);assert.equal(s.db.prepare('SELECT COUNT(*) n FROM asset_chunks').get().n,0);
  assert.equal((await request(0,'offer',{manifest:f.manifest})).status,'completed');assert.equal((await request(0,'put',{chunk:f.chunks[0]})).status,'completed');
  assert.deepEqual(await s.other.transaction(tx=>tx.rows()),[]);clock=f.manifest.expires;await relay.sweep();assert.equal(s.db.prepare('SELECT COUNT(*) n FROM assets').get().n,0);
 });
@@ -64,4 +90,13 @@ test('attachment capacity reservations, failed commits and stopped sessions cann
  assert.equal(JSON.parse(await createAttachmentCustody({...base,store:broken}).receive(raw,peer)).status,'rejected');assert.equal((await s.store.transaction(tx=>tx.rows())).length,0);
  let live=true;const stopped={transaction:work=>s.store.transaction(async tx=>{const save=tx.save;tx.save=async row=>{await save(row);live=false;};return work(tx);})};
  assert.equal(JSON.parse(await createAttachmentCustody({...base,store:stopped,current:()=>live}).receive(raw,peer)).status,'rejected');assert.equal((await s.store.transaction(tx=>tx.rows())).length,0);
+});
+
+test('media scorecard observes committed unique offers and holds counters on rollback',async t=>{
+ const f=fixture(17),s=storeFixture(t,f.ids[2].record.account),peer={account:f.ids[0].record.account,device:f.ids[0].device.id,expiresAt:now+60000};
+ const deps={owner:f.ids[2].record.account,store:s.store,records:{read:async()=>f.ids[0].record},now:()=>now,current:()=>true};
+ const relay=createAttachmentCustody(deps),raw=JSON.stringify({version:1,operation:'offer',manifest:f.manifest});
+ await relay.receive(raw,peer);await relay.receive(raw,peer);assert.equal(relay.contribution().counts.attachmentGrantsHeld,1);
+ const bad=createAttachmentCustody({...deps,store:{transaction:async fn=>{await fn({rows:async()=>[],save:async()=>{}});throw Error('commit failed');}}});
+ await bad.receive(raw,peer);assert.equal(bad.contribution().counts.attachmentGrantsHeld,0);
 });

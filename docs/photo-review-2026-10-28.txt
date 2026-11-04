@@ -1,0 +1,10 @@
+Photo review refresh — 2026-10-28
+- One photo: original image preview, size, optional caption, edit/remove overlay; no filename or item card.
+- Multiple attachments: horizontal paged preview with selected thumbnail strip and per-photo captions. Mixed files/videos retain external preview support.
+- Review never mounts PhotoEditor automatically, avoiding image manipulation until requested.
+- Editing is a separate modal with floating accessible icon-only tools; cancel keeps the original, save replaces only that selection. Sticker studio retains its existing textual controls.
+- File sizes are carried from selection metadata and refreshed from the currently displayed file; edited URI invalidates the old size.
+- Validation: TypeScript and module-boundary checks pass; 10 focused behavior tests pass (paging/captions/edit/cancel/remove and existing photo editing/crop/gesture/export).
+- Physical Dev phone: two user-selected photos, thumbnail selection, size changes, editor overlay and cancel inspected. No photos sent or original files modified.
+
+Follow-up: caption floats over the preview bottom. Compact icon Send moved to the right above thumbnails. Inline pinch/double-tap zoom and bounded panning reuse the image-viewer gesture math; gallery swipes pause while zoomed, reset on page/size/URI changes. Eight focused preview/gesture tests pass. Phone layout inspected; physical two-finger pinch still needs a manual check.

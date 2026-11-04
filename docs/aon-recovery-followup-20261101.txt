@@ -1,0 +1,64 @@
+AoN recovery release — 2026-11-01
+
+Completed: committed, pushed and deployed source 5cafd1a5f5b88d96e98f96b67569cc1d7430a80f
+Branch codex/aon-recovery-20261101 (MyChat-neuron).
+All three nodes independently report clean runtime-bound source metadata.
+Runtime: 67884f822dd4f0efeda79179c0308dea58037791a2432dce336411666889d235
+Package version: 0.2.0
+SecondNeuron successful deployment: 3ebfa1d8-92f4-496e-b438-4e406f9b380c.
+First/Third swaps verified health and unchanged identity file hashes.
+No live data deleted/reset; normal phone app untouched. No production build started.
+
+Changes:
+- Direct receipt response reveals partial custodians to the authenticated recipient.
+  Receiver persists them and forwards its verified signed receipt for relay cleanup.
+- Newly usable/rotated/restored push registration wakes recipient work after commit.
+  Ordinary renewals retain backoff. Existing event/deadline machinery reused.
+
+Isolation:
+The earlier staging folder inherited unrelated dirty files from its source checkout.
+Final release uses a fresh worktree at deployed 9410758 and ONLY the scoped changes,
+fixture correction and added registration regression (7 files, 35 additions/9 removals).
+Older checkout restore artifacts remain preserved. Unrelated mobile/AoN work untouched.
+
+Validation:
+- Exact isolated release: TypeScript compilation and 59/59 hosted tests pass.
+- Mobile attachment suite previously: 92 passed, 1 optional benchmark skipped.
+- Shared directory/custody: 78 passed. Mobile typecheck passed.
+- Correction to earlier report: the hosted assertion's 2-versus-1 counted identity
+  RECOVERIES, not sends. The second group recipient could legitimately require a
+  lookup. Fixture pins that unrelated recipient and signals work as its fake clock
+  advances; exact-one-provider-send and accepted wake assertions remain.
+- Phone Dev recovery: queued while stopped, received exactly once after reopening;
+  observed delivery check 6441ms, same identity, all 51 prior records preserved.
+- Background Dev notification: 4775ms observed delivery, exactly one preview,
+  zero generic previews, foreground read receipt added no sender notification.
+- Dev snapshot read samples 38/27/27/27/27ms; isolated deferred-projection recovery passed.
+Timing includes test observation overhead; not raw transport or provider latency.
+
+ThirdNeuron:
+Repeated WSL starts were demonstrated by fresh PID 1 uptime of one second and
+changing service PIDs. An explicitly approved hidden wsl.exe sleep infinity keeper
+(PID 6872) now keeps the distro active in this Windows session. Third service PID
+742 remained stable across final checks. FirstNeuron now sees its live connection.
+Third confirms 2 remote replicas on its 2 available peers; target remains 3 and the
+remaining shortfall is honestly reported as insufficient peers, not failed delivery.
+The keeper is session-local; no Windows boot/login task was installed.
+
+Deployment incident:
+Initial SecondNeuron upload selected the generic Dockerfile instead of Railway's
+initializer; deployment 03722dc1-1e7d-41e3-8f26-f0f45530a6ad crashed due to missing
+/run/axonic/fcm.json. Corrected package uses the committed deploy/Dockerfile.railway
+as its root Dockerfile. Subsequent deployment succeeded and authenticated reporting,
+push configuration and matching runtime metadata were verified. No credentials changed.
+
+Artifacts:
+builds/aon-recovery-release-1101 — clean isolated committed source (+ source-build metadata)
+builds/aon-recovery-railway-1101 — corrected Railway deployment package
+builds/aon-recovery-release-tests.log
+builds/recovery-phone-reconnect-1101.log
+builds/recovery-notification-final-1101.log
+builds/recovery-dev-final-1101.log
+
+Historical partial media: three of six Dev relay partials match successful saved
+checksum tests. No bulk deletion or unproven retroactive completion was performed.

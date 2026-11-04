@@ -1,0 +1,93 @@
+Dev transfer follow-up — October 23, 2026
+
+Scope: phone com.axonic.dev and existing Dev emulator. Preserve identities/history;
+no normal-app changes, AoN deployment, production build, reset or queue deletion.
+
+Implemented this pass:
+1. rootAttachmentFiles uses the existing native SHA-256 callback when signing a lazy
+   relay block or validating its cached ciphertext. Canonical JSON/hash/signature/wire
+   format unchanged. Native capability absent retains reference implementation.
+2. persistentAxon attachment/bulk waiters wake when eligible work completes instead
+   of always waiting for a timer. Authentication, priority, byte/rate/window limits and
+   timeout rules retained. Response completion now notifies eligible waiters.
+3. Aggregate diagnostics distinguish networkStatus/networkOther/networkBulk,
+   streamControl and directStream. No keys, contents or peer identities in these rows.
+   network is a parent total: do not add it again to its child timings. Stream spans
+   overlap streamControl and other work; these are not mutually exclusive CPU times.
+
+Evidence:
+- Synthetic 1MB canonical leaf: phone JS1238.2ms/native26.2ms; emulator1578.4/39.0ms;
+  hashes identical. Microbenchmark only, not whole-file speedup.
+- Exact signed-block equivalence, corrupted-cache rejection, invalid-native-hash
+  rejection covered by new tests. File/preparation suite37/37.
+- Delayed-timer tests prove both media and bulk requests wake on control completion
+  without waiting for artificially delayed1s timers. Persistent session suite138pass/2skip.
+- Six live files all checksum-correct (decimal MB, includes preparation/CDP/polling):
+       phone->emulator   emulator->phone
+  1MB      20.766s            3.657s
+  5MB       4.209s            5.170s
+ 10MB       5.781s           26.044s
+  First cold send used fallback. Reverse10MB sender network calls accumulated15.128s.
+  No stable end-to-end speedup claimed; prior warm10MB reverse was8.042s.
+- Relay-only5MB: receiver initially stopped, sender stopped after custody confirmed.
+  Upload observation33.983s (readFile15.151s/network13.351s); receiver observation10.690s.
+  Received source was AoN77fe994d...df0df0fa, not sender; checksum/source coverage passed;
+  both Dev apps restored and baseline histories preserved.
+
+Evidence files:
+builds/phone-transfer-nativehash-eventwake-20261023.json
+builds/phone-relay-native-hash-20261023.json
+builds/fallback-native-hash-tests-20261023.log
+builds/media-wake-tests-20261023.log
+builds/fallback-eventwake-full-tests-20261023.log
+
+Remaining: isolate slow status/control waits versus actual stream time using the new
+timing breakdown. Native hashing is a measured local improvement, not evidence that
+fallback processing or transfer latency as a whole is solved. Existing unrelated
+working-tree changes retained; do not commit them implicitly with this scoped fix.
+
+Native one-pass source hashes follow-up:
+- Detailed cold10MB exposed31.443s readFile and eventual69.185s delivery (retries).
+  Reverse10MB used directStream35.515s, streamControl141ms: setup alone did not explain it.
+- Added optional AxonicMediaStore.hashBlocks: full SHA256 +3MB block hashes from the
+  SAME bounded native read pass. Private files restricted to canonical own-attachment
+  root/content; MediaStore URIs use existing authority restrictions. Exact size/EOF
+  checked. Source checksum commitment and per-block source validation still required;
+  no cipher/authentication/format changes. Older binaries retain reference hash path.
+- Local Dev APK built successfully for arm64/x86_64; phone and emulator5554 updated
+  with install-r. Phone archive retained, identities and all baseline messages retained.
+- Built Android implementation matched independent Node hashes at1byte,1MB,3MB,
+  3MB+17bytes,10MB on BOTH devices. Short/oversized expected lengths rejected.
+  Native timing output includes three hash attempts (valid + two size-error probes),
+  not a single-pass latency benchmark. Synthetic fixture directories removed only.
+- New preparation tests: exact block bytes, malformed count/size, incorrect checksum,
+  and account lock during native await; no cached block published on rejection.
+- Latest live direct transfers (decimal MB; preparation+delivery observation including
+  CDP/polling; final independent checksum excluded):
+       phone->emulator   emulator->phone
+  1MB       4.151s            3.720s
+  5MB       5.397s            5.437s
+ 10MB       8.860s           20.304s
+  All six checksum-correct; no lazy relay readFile work on these runs. Reverse10MB
+  directStream17.753s and overlapping sender networkStatus9.829s. Cannot add them.
+- Forced relay5MB: upload27.434s, readFile6.933s (prior15.151s), network14.660s
+  including networkStatus11.706s and networkBulk2.862s. Receiver17.659s (prior10.690s).
+  Sender offline, AoN source verified, correct checksum. Both Dev apps restored,
+  identities/history preserved. One-run comparisons are not stable performance claims.
+- Official phone app remains code98, lastUpdateTime2026-10-23 10:11:19.
+- No production build, commit/push, AoN update, queue reset or user-data deletion.
+- Final npm run check passed: typecheck,1464 tests passed/3 skipped/0 failed,
+  cycles/modules/consolidation/assets checks. Scoped git diff --check passed.
+
+Additional evidence:
+builds/phone-transfer-wait-breakdown-20261023.json
+builds/native-source-hash-validation-20261023.json
+builds/phone-transfer-native-sourcehash-20261023.json
+builds/phone-relay-native-sourcehash-20261023.json
+builds/dev-native-blockhash-build-20261023.log
+builds/fallback-sourcehash-full-check-20261023.log
+
+Next investigation: instrument bounded direct-stream credit/ACK waits versus native
+bridge scheduling/read/write time; separate status request queueing from remote RTT.
+Do not remove lease checks, flow-control bounds or increase timeout limits merely to
+hide stalls. Remaining plaintext block hashing/encryption still runs in JS on fallback.

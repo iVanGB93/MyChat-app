@@ -1,0 +1,57 @@
+Requested 1 / 5 / 10 MiB live transfer matrix — October 20, 2026 (EDT)
+
+Scope: FirstNeuron -> SecondNeuron; FirstNeuron -> iVan Dev; iVan Dev ->
+Leidiana Dev across mobile data/Wi-Fi, then shared Wi-Fi. One direction and one
+sample per size, except a repeat of Wi-Fi 1 MiB after recovery. Synthetic random
+binary files only. MiB = 1048576 bytes. Both AoNs source 803d778.
+
+Observed seconds AFTER enqueue returned, until receiver reported complete:
+                                   1 MiB    5 MiB   10 MiB
+FirstNeuron -> SecondNeuron, WSS      2.868    6.436   11.936
+FirstNeuron -> iVan Dev, WSS          3.139   11.544   22.195
+iVan Dev -> Leidiana Dev, internet    FAILED  BLOCKED BLOCKED
+iVan Dev -> Leidiana Dev, same Wi-Fi  2.861*   5.773    8.348
+
+* Clean repeat. Original Wi-Fi 1 MiB took 18.559 seconds during recovery of the
+earlier stalled transfer. Both original and repeat were checksum-correct.
+
+Internet failure: direct peer initially connected, then RTC link disappeared.
+Subsequent snapshots show target authenticating/new, with sender missing a live
+target session; logs show open-timeout and signal-send-failed. Both phones kept
+AoN routes. Stopped the observation driver and preserved queued work. Did not
+send 5/10 MiB without a valid direct route or label fallback as a direct test.
+The outstanding 1 MiB completed after Wi-Fi returned, outside its test condition.
+
+Wi-Fi: both phones on same SSID; application selected direct RTC, classified
+internet by its connection pool (not a measured LAN TCP test). Native path logs
+after reconnection showed UDP host/prflx candidates with 5-15 ms RTT, but without
+per-peer correlation these logs cannot independently prove each tested file's
+candidate pair. Do not claim all bytes stayed on LAN solely from pool labels.
+
+All completed files independently verified SHA-256 and length on the receiver.
+FirstNeuron->phone 1 MiB sender status was still pending at the immediate sample;
+receiver completion and file integrity were confirmed. This is not a read receipt.
+
+Method/limits:
+- Measurements include polling/API/CDP overhead and any deferred preparation,
+  queueing, recovery and completion bookkeeping after enqueue; not raw link speed.
+- Mobile enqueue returns before all preparation necessarily finishes. The earlier
+  conversational shorthand 'after preparation' should be read as 'after enqueue'.
+- Synthetic creation and hashing occur before enqueue returns and are excluded
+  from the table. End-to-end invocation totals (including those costs) in JSON.
+- Host prepareMs covers local upload/finish; mobile prepareMs only measures the
+  enqueue function, so those numbers are not equivalent preparation benchmarks.
+- FirstNeuron worker runs via existing SSH; SecondNeuron worker uses authenticated
+  HTTPS with Railway-injected credentials in memory. No SSH key registered, no
+  credentials saved/printed. Receiver verification API download is after the timed
+  completion and is excluded. API polling roughly one second plus request time.
+- Other normal network work was not disabled. Single samples are diagnostic,
+  not statistical throughput claims. No production build or source runtime edits.
+- User manually switched iVan Wi-Fi off/on. Both phones left on shared Wi-Fi.
+
+Artifacts under builds: matrix-aon.json/txt, matrix-aon-phone.json/txt,
+matrix-phones-internet.txt, matrix-internet-interruption.txt,
+matrix-phones-wifi.json/txt, matrix-phones-wifi-repeat.json/txt,
+matrix-internet-sender-log.txt, requested-transfer-matrix.cjs.
+Priority next: stabilize cross-network RTC recovery, then repeat all internet
+sizes before considering this transfer matrix complete or production ready.

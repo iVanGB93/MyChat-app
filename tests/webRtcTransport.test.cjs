@@ -1,11 +1,12 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),ts=require('typescript');
-function harness(failConfig=false,missing=false,rejectCandidates=false,shared=false,noShared=false){
+function harness(failConfig=false,missing=false,rejectCandidates=false,shared=false,noShared=false,room=false){
   const effects=[],cleanups=[],sent=[],legacySent=[],pcs=[];
   let configReads=0,subscriptions=0,listener,closed=0,stopped=0,disconnected=0,released=0,detached=0;
   const track={kind:'audio',stop(){stopped++;}},stream={getTracks:()=>[track]};
   class PC {
     constructor(config){this.config=config;this.iceGatheringState='complete';this.signalingState='stable';pcs.push(this);}
+    createDataChannel(label){return {label,readyState:"connecting",bufferedAmount:0,send(){},close(){}};}
     addTrack(){return {replaceTrack:async track=>{assert.equal(track,null);detached++;}};} getStats(){return Promise.resolve(new Map());} getSenders(){return [];}
     getTransceivers(){return [];}
     getReceivers(){return [];}
@@ -22,6 +23,7 @@ function harness(failConfig=false,missing=false,rejectCandidates=false,shared=fa
     compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
   const exports={};
   new Function('require','exports',code)(name=>{
+    if(name.includes('callExpansion')){const api={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/callExpansion.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(api,()=>require('./helpers/attachment.cjs').load('groupCallRoom'));return api;}
     if(name.includes('callQualityMonitor')){const api={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/callQualityMonitor.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(()=>require('./helpers/attachment.cjs').load('eventDeadlineTask'),api);return api;}
     if(name==='./useWebRTCCore')return loadHook('useWebRTCCore');
     if(name.includes('call-screen-capture'))return {callScreenCaptureAvailable:true,excludeScreenControls:async()=>{}};
@@ -46,7 +48,7 @@ function harness(failConfig=false,missing=false,rejectCandidates=false,shared=fa
     return {connection:pc,channelLabel:'call',current:()=>true,validateRemote:s=>s==='v=0\r\na=x-axonic-call-peer:shared\r\n',release:()=>released++};
   };
   const hook=exports.default({callId:'one-call',peerUserId:14,callType:'voice',isOutgoing:true,
-    mediaTransport:missing?undefined:transport,onDisconnected:()=>{disconnected++;}});
+    roomStream:room?stream:undefined,mediaTransport:missing?undefined:transport,onDisconnected:()=>{disconnected++;}});
   for(const effect of effects){const cleanup=effect();if(cleanup)cleanups.push(cleanup);}
   return {hook,sent,legacySent,pcs,emit:(...a)=>listener?.(...a),unmount:()=>cleanups.forEach(f=>f()),
     counts:()=>({configReads,subscriptions,closed,stopped,disconnected,released,detached})};
@@ -101,3 +103,5 @@ test('transient ICE disconnect preserves native media and failed ICE restarts be
 test('failed optional trickle candidate does not tear down established media',async()=>{
  const h=harness(false,false,true);try{await h.hook.startAsOfferer();const pc=h.pcs[0];pc.iceConnectionState='connected';pc.oniceconnectionstatechange();pc.onicecandidate({candidate:{toJSON:()=>({candidate:'late candidate'})}});await settle();assert.equal(h.sent.at(-1)[0],'ice-candidate');assert.equal(h.counts().disconnected,0);assert.equal(h.counts().stopped,0);}finally{h.unmount();}
 });
+
+test('a group leg detaches its senders without stopping room-owned capture',async()=>{const h=harness(false,false,false,true,false,true);await h.hook.startAsOfferer();h.unmount();await settle();assert.equal(h.counts().stopped,0);assert.equal(h.counts().released,1);assert.equal(h.counts().closed,0);assert.equal(h.counts().detached,1);});

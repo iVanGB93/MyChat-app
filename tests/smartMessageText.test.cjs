@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(){
  let deps,value,parses=0;const opened=[],copied=[],alerts=[];
  const react={Fragment:'fragment',createElement:(type,props,...children)=>({type,props,children}),useMemo:(fn,next)=>{if(!deps||next.some((v,i)=>v!==deps[i])){value=fn();deps=next;parses++;}return value;}};
- const mod={},requireMock=name=>name==='react'?react:name==='react-native'?{Text:'Text',StyleSheet:{create:v=>v},Linking:{openURL:url=>{opened.push(url);return Promise.resolve();}},Alert:{alert:(...args)=>alerts.push(args)}}:name==='expo-clipboard'?{setStringAsync:v=>{copied.push(v);return Promise.resolve();}}:(()=>{throw Error(name);})();
+ const mod={},requireMock=name=>require('./helpers/localization.cjs')(name) ?? (name==='react'?react:name==='react-native'?{Text:'Text',StyleSheet:{create:v=>v},Linking:{openURL:url=>{opened.push(url);return Promise.resolve();}},Alert:{alert:(...args)=>alerts.push(args)}}:name==='expo-clipboard'?{setStringAsync:v=>{copied.push(v);return Promise.resolve();}}:(()=>{throw Error(name);})());
  new Function('require','exports',ts.transpileModule(fs.readFileSync('src/components/SmartMessageText.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2,esModuleInterop:true}}).outputText)(requireMock,mod);
  return {render:(text,color='cyan')=>mod.default({children:text,linkColor:color}),parses:()=>parses,opened,copied,alerts,mod};
 }

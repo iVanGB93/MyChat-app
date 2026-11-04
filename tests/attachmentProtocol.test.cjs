@@ -1,6 +1,18 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('crypto');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),random=n=>new Uint8Array(crypto.randomBytes(n));
 
+test('attachment receipt signs observed sources independently from its compatible delivery proof',()=>{
+ const f=fixture(),recipient=f.ids[1],relay=f.ids[2].record.account;
+ const r=a.signAttachmentReceipt(f.manifest,recipient.signingSeed,recipient.record,now,{sources:[relay],partial:false});
+ assert(a.verifyAttachmentReceipt(r,f.manifest,recipient.record,now));
+ for(const route of [{sources:[f.manifest.sender],partial:false},{sources:[relay],partial:true},{sources:[r.recipient],partial:false}])assert.equal(a.verifyAttachmentReceipt({...r,route},f.manifest,recipient.record,now),false);
+ assert.equal(a.verifyAttachmentReceipt({...r,routeSignature:undefined},f.manifest,recipient.record,now),false);
+ const legacy={...r};delete legacy.route;delete legacy.routeSignature;assert(a.verifyAttachmentReceipt(legacy,f.manifest,recipient.record,now));
+ const evidence=load('deliveryEvidence').receiptDeliveryEvidence(r,f.manifest.sender,now,f.manifest.sender);
+ assert.equal(evidence.scope,'payload');assert.deepEqual(evidence.relays,[relay]);
+ assert.equal(load('deliveryEvidence').receiptDeliveryEvidence(legacy,f.manifest.sender,now,relay).scope,'receipt');
+});
+
 test('legacy manifests and encryption contexts fail closed instead of selecting a decoder',()=>{
  const f=fixture();
  for(const version of [undefined,0,1,2,3,5]){

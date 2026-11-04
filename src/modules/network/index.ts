@@ -1,4 +1,5 @@
 /** Network lifecycle and diagnostics. Screens do not send application payloads through this API. */
+export {phoneNetworkInfo,type PhoneNetworkInfo} from './phoneNetworkInfo';
 export {chatConnection} from './chatConnection';
 export {startLocalAccountNetwork, localAccountNetworkSnapshot, localAccountDirectorySnapshot,
   localAccountLookupIdentity, localAccountPushStatus,localAccountRelayInventory,subscribeRelayInventoryAccess,localAccountWakeDiagnostics,resetLocalNetworkWork} from '../../composition/neuronRuntime';

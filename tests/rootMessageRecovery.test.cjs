@@ -1,14 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 test('background recovery drives delivery without relying on display-frame JS timers',async()=>{const f=fixture({nativeClock:true});await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().jsTimers,0);assert.ok(f.counts().ticks>1);assert.ok(f.counts().ticks<=20,'receipt observation must not pump the whole network every 300ms');assert.ok(f.counts().elapsed>=20000);assert.deepEqual(f.leases,[30000,0]);});
 test('a durable inbox entry does not close the wake transport before the receipt exchange',async()=>{const f=fixture();await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().resumed,1);assert.ok(f.counts().elapsed>=20000);assert.ok(f.counts().elapsed<30000);assert.equal(f.counts().stopped,1);});
-function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClock=false,foreground=false,completeAfter=null,attachmentAfter=null,inlineFailure=false,inlineDelay=0,diagnosticFailure=false,stopFailure=false,waitDelay=0,sleepDelay=0,clockSamples=false,events=false,manualClock=false}={}){
+function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClock=false,foreground=false,completeAfter=null,attachmentAfter=null,inlineFailure=false,inlineDelay=0,diagnosticFailure=false,stopFailure=false,waitDelay=0,sleepDelay=0,clockSamples=false,events=false,manualClock=false,jobStopAfter=Infinity}={}){
  let now=100000,started=0,resumed=0,stopped=0,owner='own',inspects=0,initializes=0,ticks=0,jsTimers=0;const leases=[],inline=[];
  const app={currentState:foreground?'active':'background'};const diagnostics=[];let appliedDelay=0;
- const imports={'react-native':{AppState:app},'../../../modules/axonic-nearby':{default:native?{axonMessageWake:ms=>leases.push(ms),...(nativeClock?{axonMessageWait:async ms=>{app.currentState='background';now+=ms;}}:{})}:{}},'./localAccount':{startLocalAccount:async()=>{if(!owner)inspects++;if(state==='locked'){initializes++;if(resume)state='unlocked';}},localAccount:{status:()=>({state,account:owner}),inspect:async()=>{inspects++;}},localAccountSession:{initialize:async()=>{initializes++;if(resume)state='unlocked';}}},'../../composition/neuronRuntime':{startLocalAccountNetwork:()=>{started++;const resumedBefore=resumed;return {receiveWakeEnvelope:async e=>{inline.push(e);if(inlineFailure)throw Error("inline unavailable");return {};},resume:()=>resumed++,tick:()=>{ticks++;if(fail)throw Error('pump');},stop:()=>stopped++};}},'./localRootChat':{localRootChat:()=>({snapshot:async()=>{if(fail)throw Error('storage');return {messages:[{peer:'peer',id:'id',direction:'incoming'}]};}})}};
+ const imports={'react-native':{AppState:app},'../../../modules/axonic-nearby':{default:native?{messageRecoveryCurrent:()=>now-100000<jobStopAfter,axonMessageWake:ms=>leases.push(ms),...(nativeClock?{axonMessageWait:async ms=>{app.currentState='background';now+=ms;}}:{})}:{}},'./localAccount':{startLocalAccount:async()=>{if(!owner)inspects++;if(state==='locked'){initializes++;if(resume)state='unlocked';}},localAccount:{status:()=>({state,account:owner}),inspect:async()=>{inspects++;}},localAccountSession:{initialize:async()=>{initializes++;if(resume)state='unlocked';}}},'../../composition/neuronRuntime':{startLocalAccountNetwork:()=>{started++;const resumedBefore=resumed;return {receiveWakeEnvelope:async e=>{inline.push(e);if(inlineFailure)throw Error("inline unavailable");return {};},resume:()=>resumed++,tick:()=>{ticks++;if(fail)throw Error('pump');},stop:()=>stopped++};}},'./localRootChat':{localRootChat:()=>({snapshot:async()=>{if(fail)throw Error('storage');return {messages:[{peer:'peer',id:'id',direction:'incoming'}]};}})}};
  imports['../mobileDeliveryDiagnostics']={deliveryDiagnosticEvent:(_a,_p,_i,event,details)=>{if(diagnosticFailure&&event==='recovery_finished')throw Error('diagnostic unavailable');diagnostics.push({event,details});}};
  if(nativeClock){imports['../../../modules/axonic-nearby'].default.axonMessageWait=async ms=>{app.currentState='background';now+=ms;if(!appliedDelay&&waitDelay){now+=waitDelay;appliedDelay=waitDelay;}};}
  if(clockSamples)imports['../../../modules/axonic-nearby'].default.axonClockSnapshot=()=>({elapsedMs:now,uptimeMs:now-(appliedDelay?sleepDelay:0),processCpuMs:100+(appliedDelay?7:0)});
- const subscribers={chat:new Set(),job:new Set(),account:new Set()},waits=[];
+ const subscribers={chat:new Set(),job:new Set(),account:new Set(),receipt:new Set()},waits=[];
  if(events){
   imports['./localRootChat'].subscribeRootChatCommitted=f=>{subscribers.chat.add(f);return()=>subscribers.chat.delete(f);};
   imports['./mobileAttachmentJobs']={subscribeAttachmentJobProgress:f=>{subscribers.job.add(f);return()=>subscribers.job.delete(f);}};
@@ -17,15 +17,15 @@ function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClo
  if(manualClock)imports['../../../modules/axonic-nearby'].default.axonMessageWait=ms=>new Promise(resolve=>waits.push({ms,resolve}));
  const lease={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/messageWakeLease.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(lease,n=>imports[n]);imports['./messageWakeLease']=lease;
  const originalStart=imports['../../composition/neuronRuntime'].startLocalAccountNetwork;
- imports['../../composition/neuronRuntime'].startLocalAccountNetwork=()=>{const network=originalStart();return {...network,...(attachmentAfter===null?{}:{attachmentRecoveryComplete:async()=>now-100000>=attachmentAfter}),receiveWakeEnvelope:async e=>{now+=inlineDelay;return network.receiveWakeEnvelope(e);},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
+ imports['../../composition/neuronRuntime'].startLocalAccountNetwork=()=>{const network=originalStart();return {...network,subscribeRecovery:f=>{subscribers.receipt.add(f);return()=>subscribers.receipt.delete(f);},...(attachmentAfter===null?{}:{attachmentRecoveryComplete:async()=>now-100000>=attachmentAfter}),receiveWakeEnvelope:async e=>{now+=inlineDelay;return network.receiveWakeEnvelope(e);},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
  const out={};new Function('exports','require','Date','setTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageRecovery.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>imports[n],{now:()=>now},(cb,ms)=>{jsTimers++;now+=ms;queueMicrotask(cb);});
- return {out,leases,inline,diagnostics,waits,subscribers,advance:ms=>now+=ms,emit:()=>{for(const f of subscribers.job)f({owner:'own',id:'id',phase:'complete'});},counts:()=>({started,resumed,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
+ return {out,leases,inline,diagnostics,waits,subscribers,advance:ms=>now+=ms,emitReceipt:(sender='peer',id='id')=>{for(const f of subscribers.receipt)f(sender,id);},emit:()=>{for(const f of subscribers.job)f({owner:'own',id:'id',phase:'complete'});},counts:()=>({started,resumed,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
 }
 
 test('slow inline persistence consumes the recovery budget without aborting the transaction or starting extra polling',async()=>{
  const f=fixture({nativeClock:true,inlineDelay:25000});await f.out.recoverRootMessage('own','peer','id',160000,undefined,{kind:'inline'});
  assert.equal(f.inline.length,1);assert.equal(f.counts().elapsed,25000);assert.equal(f.counts().resumed,0);assert.equal(f.counts().ticks,0);assert.equal(f.counts().stopped,1);assert.deepEqual(f.leases,[30000,0]);
- const d=f.diagnostics.at(-1).details;assert.equal(d.setupMs,25000);assert.equal(d.overrunMs,5000);assert.equal(d.reason,'deadline');
+ const d=f.diagnostics.at(-1).details;assert.equal(d.setupMs,25000);assert.equal(d.overrunMs,5000);assert.equal(d.reason,'deadline');assert.equal(d.waitReason,'setup');
 });
 test('diagnostic exceptions cannot strand recovery; a runtime stop exception still releases the native lease',async()=>{
  const f=fixture({nativeClock:true,completeAfter:900,diagnosticFailure:true});await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().stopped,1);assert.deepEqual(f.leases,[30000,0]);
@@ -89,7 +89,7 @@ test('message receipt does not end recovery while its attachment remains pending
 });
 test('pending media cannot extend the bounded recovery lease indefinitely',async()=>{
  const f=fixture({nativeClock:true,completeAfter:300,attachmentAfter:60000});await f.out.recoverRootMessage('own','peer','id',160000);
- assert(f.counts().elapsed>=20000&&f.counts().elapsed<21000);assert.equal(f.diagnostics.at(-1).details.reason,'deadline');assert.deepEqual(f.leases,[30000,0]);
+ assert(f.counts().elapsed>=20000&&f.counts().elapsed<21000);assert.equal(f.diagnostics.at(-1).details.reason,'deadline');assert.equal(f.diagnostics.at(-1).details.waitReason,'attachment');assert.deepEqual(f.leases,[30000,0]);
 });
 
 test('terminal checkpoint event completes recovery without waiting for the native safety timer',async()=>{
@@ -108,3 +108,28 @@ test('event recovery preserves its deadline when no completion event arrives and
  assert.equal(f.diagnostics.at(-1).details.reason,'deadline');
  for(const set of Object.values(f.subscribers))assert.equal(set.size,0);
 });
+
+test('accepted receipt event finishes recovery without waiting for the native safety timer',async()=>{
+ const f=fixture({events:true,manualClock:true,completeAfter:100});const work=f.out.recoverRootMessage('own','peer','id',160000);
+ for(let i=0;i<30&&!f.waits.length;i++)await Promise.resolve();assert.equal(f.waits.length,1);
+ f.advance(100);f.emitReceipt('different','id');await Promise.resolve();assert.equal(f.counts().stopped,0);
+ f.emitReceipt();await work;assert.equal(f.counts().elapsed,100);assert.equal(f.diagnostics.at(-1).details.reason,'receipt_complete');
+ for(const set of Object.values(f.subscribers))assert.equal(set.size,0);f.waits[0].resolve();
+});
+
+ test('Android job keeps target recovery alive past the old deadline and stops on completion',async()=>{
+ const f=fixture({nativeClock:true,completeAfter:45000,attachmentAfter:48000});
+ await f.out.recoverRootMessage('own','peer','id',300000,undefined,undefined,undefined,undefined,'job');
+ assert(f.counts().elapsed>=48000);assert(f.counts().elapsed<49000);assert.equal(f.counts().stopped,1);
+ assert.equal(f.diagnostics.at(-1).details.budgetMs,120000);assert.equal(f.diagnostics.at(-1).details.reason,'receipt_complete');
+ });
+ test('Android stopping a job releases its runtime without continuing network recovery',async()=>{
+ const f=fixture({nativeClock:true,jobStopAfter:4500});
+ await f.out.recoverRootMessage('own','peer','id',300000,undefined,undefined,undefined,undefined,'job');
+ assert(f.counts().elapsed<5500);assert.equal(f.counts().stopped,1);assert.equal(f.diagnostics.at(-1).details.reason,'job_stopped');
+ const stopped=fixture({nativeClock:true,jobStopAfter:0});await stopped.out.recoverRootMessage('own','peer','id',300000,undefined,undefined,undefined,undefined,'job');assert.equal(stopped.counts().started,0);
+ });
+ test('Android jobs retain a finite deadline and never extend an expired wake',async()=>{
+ const f=fixture({nativeClock:true});await f.out.recoverRootMessage('own','peer','id',300000,undefined,undefined,undefined,undefined,'job');assert.equal(f.counts().elapsed,120000);assert.equal(f.diagnostics.at(-1).details.reason,'deadline');
+ const g=fixture({nativeClock:true});await g.out.recoverRootMessage('own','peer','id',105000,undefined,undefined,undefined,undefined,'job');assert(g.counts().elapsed<6000);
+ });

@@ -1,0 +1,24 @@
+LAN stability investigation, October 20, 2026
+
+Production phone logs confirmed repeated LAN exchange-timeout:custody and
+chat-message-rejected:unexpected-ack closures. RTC fallback also repeatedly
+failed to open. These are real session closures, not just a presence indicator.
+
+Changes:
+- Normal encrypted chat remembers at most 64 expired packet ID/digest pairs for
+  60 seconds. A cryptographically validated late ACK matching one exact packet
+  is consumed without closing the link or acknowledging a newer retry.
+  Authentication, encryption, tamper checks and replay checks remain in place.
+- Authenticated custody exchanges receive up to 15 seconds, bounded by identity
+  proof expiry, rather than tearing down the link after four seconds of durable
+  storage delay. This is a stability mitigation, not a storage-speed fix.
+
+Regression checks cover late ACK versus a newer same-ID retry, forged ciphertext,
+replay rejection, slow custody response, and bounded timeout under suspended JS
+timers. Full npm run check passed. Live emulator texts/read receipts and generated
+file checksum checks passed; logs in builds/lan-stability-emulators.txt and
+builds/lan-130kb-emulators.txt. Emulator timing is not a phone LAN benchmark.
+
+Outstanding: validate these changes in both phone Dev apps, investigate why
+durable recovery handlers exceed four seconds and why RTC negotiation times out.
+Production apps were not updated. No production build, commit, push or deploy.

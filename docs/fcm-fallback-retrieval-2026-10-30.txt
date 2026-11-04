@@ -1,0 +1,20 @@
+FCM fallback retrieval investigation — 2026-10-30
+
+Confirmed local defect:
+The mobile runtime resume() reset private/group relay poll schedules but did not notify their event-deadline coordinators. After a drained event-capable inbox slept at Infinity, runDue() could not resume it without another topology/inbox event. This particularly affects hint-only FCM recovery on an unchanged connection.
+
+Fix:
+Explicitly signal transport, private inbox and group inbox coordinators before pumping recovery. Retain single-flight scheduling, idle sleep, existing authorization and bounded recovery. No added periodic polling or enlarged background lease.
+Diagnostics now classify push callback payload presence as inline or hint_only. This does not mean validation/admission succeeded; no contents or identifiers are recorded.
+
+Validation:
+39 recovery/scheduling tests passed; 59 wake/courier tests passed; 17 diagnostic/resume tests passed (2 resume tests overlap the first run). TypeScript passed.
+Live Dev explicit recovery: private startedPasses 5 -> 7; group 3 -> 5, for two connected relays. Both returned to event-idle, no active passes. Verified without reconnecting or sending another test message.
+
+Live FCM/media attempt:
+Sent one synthetic 5 MiB FirstNeuron -> Phone Dev file, ID eb7c82e19da6129c3de153db3c7c70dd2c4a94e1453077bf0124dac0c919043f.
+Background inspector timed out; script returned Dev to foreground. Subsequent full message view confirmed delivered; 5,242,880 local bytes matched the descriptor checksum. FirstNeuron also reports delivered.
+No reliable callback/completion timing obtained; cannot claim background FCM success. Narrow indexed lookup returned no row while full message view found it: investigate this observation separately before using that harness for timing again. The planned 10 MiB case was not sent after the first case timed out. Pending/history preserved.
+Report: builds/notification-recovery-1793399635451.json.
+
+No official-app update, production build, commit or server deployment performed.

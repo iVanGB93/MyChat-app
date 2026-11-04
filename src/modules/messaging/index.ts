@@ -14,7 +14,7 @@ localAccount.subscribe(()=>{const next=owner();if(next!==pendingOwner)pendingMes
 /** Read and preference operations only. UI cannot inject protocol IDs or admit incoming traffic. */
 export function conversations() {
   const ledger = localRootChat();
-  return {snapshot: ledger.snapshot, configure: ledger.configure, configureGroup: ledger.configureGroup, markGroupRead: ledger.markGroupRead};
+  return {snapshot: ledger.snapshot, messageIdSnapshot:ledger.messageIdSnapshot, groupSnapshot:ledger.groupSnapshot, metadataSnapshot:ledger.metadataSnapshot, configure: ledger.configure, removeSavedContact:ledger.removeSavedContact, configureGroup: ledger.configureGroup, markGroupRead: ledger.markGroupRead};
 }
 
 
@@ -32,7 +32,7 @@ export {forwardRootMessage} from '../../services/identity/rootMessageForward';
 export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';
 export {mobileDeliveryDiagnostics,clearDeliveryCapture} from '../../services/mobileDeliveryDiagnostics';
 
-export {peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';
+export {peerRecording,notifyPeerRecording,peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';
 
 export {groupMessageInfo} from './groupMessageInfo';
 export {messageInfoDescription,messageInfoTimeline,messageInfoRoutes} from './messageInfoState';

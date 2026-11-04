@@ -1,0 +1,24 @@
+Normal-use capacity audit — October 29, 2026 America/New_York
+
+Scope: current mobile shared core and hosted AoN checkout builds/aon-wss-binary-20261026. Read-only source audit plus isolated in-memory reproductions. No live data changed, no deployment, no app installation. This audit follows relay admission fix 56d9342; that fix is already live on FirstNeuron and SecondNeuron only.
+
+Highest-priority confirmed blockers
+
+1. Group relay: groupCustodyService.ts GROUP_CUSTODY_LIMITS has 16 jobs per sender, 64 per recipient, 128 total, 4 MiB serialized store. Applies to phones and AoNs; hosted private custody overrides do not change group custody. A job can persist while any audience grant remains outstanding. In-memory signed-protocol reproduction committed 16 valid group messages; the 17th group-begin returned full, existing jobs preserved. These are logical group jobs, not media byte reservations.
+
+2. Account history: rootChatLedger.ts caps message records at 5000; outgoing sends throw and incoming admission returns false. indexedOwnHistory.ts repeats the same ceiling. Historical delivered messages count, and outgoing group recipient records increase consumption. In-memory ledger reproduction preserved 5000 records and rejected message 5001 with Chat storage is full. Raising only the UI or one validator cannot solve this. Indexed storage should separate retained history from active-work admission, avoiding an account lifetime delivery ceiling.
+
+3. Attachment history: mobileAttachmentJobs.ts limits finished_jobs to 5000; save can refuse completion and retire can throw Attachment history is full. HostedRootAttachments.ts refuses creation when total jobs reaches 5000, including finished history. Existing history should remain queryable without blocking new work or completion; indexed point reads already exist. This finding is source-verified, not a live reproduction at 5000 attachments.
+
+4. Active attachments: 128 records per account in both mobile and hosted stores. A four-photo share to nine recipients creates 36 jobs; four such outstanding batches exceed this. Phone staged selection storage also caps recipient records at 64, private single-source queue uses 4, group single-source path 36; batch path 64. Failed selections remain and consume slots. Some are deliberate UI selection limits, but durable queue admission should not depend on them. Capacity failure during runtime preparation is collapsed into a generic preparation error.
+
+Other relevant limits
+
+- Private text relay on phones: 16 retained packets per sender/recipient, 128 live, 1024 rows, about 1 MB serialized. AoNs correctly use configurable defaults 256 per sender/recipient, 4096 live, 32768 rows, 32 MiB, so do not confuse mobile defaults with deployed AoN private limits (capacity.ts).
+- Relay media byte budget remains 64 MiB on phones and 512 MiB on AoNs, while a single allowed attachment is 250 MiB. A phone cannot relay a file larger than its budget; a few videos can fill an AoN even after the four-file fix. Capacity-aware routing and explicit full reasons are needed; a budget must not be advertised as available custody.
+- All current custody envelopes/media authorizations expire after 24 hours. Expired grants cannot be revived by increasing storage limits; fresh signed grants are required. An offline recipient longer than a day can legitimately need a resend. Do not merely increase TTL validators across mismatched peers.
+- Text/caption UI allowance 1600 UTF-8 bytes sits under a 2048-byte encoded-message budget. Quote/group/attachment metadata consumes the same budget; attachment captions can fail well below 1600. Derive user-visible allowance from actual encoded payload or coordinate wire-budget changes end to end.
+- Groups: 10 members, 64 groups/account; 4096 pending control packets, 20000 retained control/seen entries, 16 MiB control history. Actions have 10000-record ceilings. These are separate from relay limits and also need a retention-vs-active-work design.
+- Bounded concurrent requests, stream windows, authentication rate limits, and small regenerable caches are not lifetime quotas. Do not indiscriminately increase them; test backpressure/retry and fairness separately.
+
+Recommended order: group relay admission and diagnostics; remove history-driven delivery/completion ceilings; coherent active attachment/group fanout budgets; storage-aware route selection; payload sizing feedback and expiry UX. Preserve all history and pending work. Keep platform-specific disk budgets configurable, share policy types and refusal codes, and test one-past-capacity, retries of existing IDs, group fanout, restart, and full-store receipts before rollout.
