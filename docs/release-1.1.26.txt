@@ -1,0 +1,31 @@
+Axonic 1.1.26 / Android versionCode 97 - October 20, 2026
+
+Local production AAB explicitly authorized after the user confirmed the repaired
+Dev video call worked. No cloud compilation, Play upload or official-app installation.
+
+Changes:
+- Shared authenticated WebRTC connection for mobile call media and network data;
+  hanging up detaches call tracks instead of closing the peer connection.
+- Bounded RTC setup/restart recovery and isolated unknown-channel rejection.
+- Call signaling and direct-message queue improvements.
+- Call journal serialized immediate transactions, bounded SQLite busy timeout,
+  initialization cleanup and rollback on write errors.
+- Pinned native SQLite cleanup fix: retain a copy of connections before clearing
+  the registry and close each even if closing another connection fails. This
+  addresses an interrupted Dev transaction surviving a reload and preventing calls.
+
+Validation:
+- npm run check: 1442 passed, 3 skipped, zero failures; types, cycles, module and
+  consolidation checks passed before the version-only increment.
+- Native Dev build succeeded. Both Dev phones updated with identity/chat
+  preservation verified and official packages unchanged.
+- User independently confirmed the call worked after the fix.
+- Further automated phone testing stopped at the user's request to save credits.
+
+Known limits:
+- AoN dashboard shared-RTC migration remains unfinished; this mobile release
+  does not establish compatibility with existing AoN dashboard calls.
+- No claim of complete network-switch, overnight sleep or release-device validation.
+- AoN protocol work remains isolated and is not deployed by this mobile build.
+
+Artifact and signing validation will be recorded in builds/local-aab-97-validation.json.
