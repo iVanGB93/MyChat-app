@@ -27,15 +27,15 @@ export default function AppUpdateBanner(){
 
  const ready=state.status==='ready';
 
- const install=()=>Alert.alert(t("Install update?"),t("Axonic will restart to finish installing the update."),[{text:'Later',style:'cancel'},{text:t("Install"),onPress:()=>void appUpdates.install().then(ok=>{if(!ok)Alert.alert(t("Update postponed"),t("Finish any call, recording, or attachment transfer, then try again."));})}]);
+ const install=()=>Alert.alert(t("Install update?"),t("Axonic will restart to finish installing the update."),[{text:t("Later"),style:'cancel'},{text:t("Install"),onPress:()=>void appUpdates.install().then(ok=>{if(ok==='failed')Alert.alert(t("Couldn’t install the update"),t("Try again or open Axonic in Google Play."));else if(ok==='restart-blocked')Alert.alert(t("Update postponed"),t("Finish your call or voice recording, then try again."));})}]);
 
- return <SafeAreaView edges={['top','left','right']} style={{backgroundColor:'transparent'}}><View style={{padding:16,marginHorizontal:Chrome.gutter,marginVertical:8,borderRadius:Chrome.panelRadius,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:isDark?'rgba(7,20,40,0.94)':'rgba(255,255,255,0.94)',shadowColor:colors.primary,shadowOffset:{width:0,height:3},shadowOpacity:0.14,shadowRadius:10,elevation:3,gap:12}}>
+ return <SafeAreaView pointerEvents="box-none" edges={['top','left','right']} style={{position:'absolute',top:0,left:0,right:0,zIndex:100,backgroundColor:'transparent'}}><View style={{padding:16,marginHorizontal:Chrome.gutter,marginVertical:8,borderRadius:Chrome.panelRadius,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:isDark?'rgba(7,20,40,0.94)':'rgba(255,255,255,0.94)',shadowColor:colors.primary,shadowOffset:{width:0,height:3},shadowOpacity:0.14,shadowRadius:10,elevation:3,gap:12}}>
 
  <View style={{flexDirection:'row',alignItems:'center',gap:12}}>
 
   <View style={{width:42,height:42,borderRadius:21,alignItems:'center',justifyContent:'center',backgroundColor:colors.highlight,borderWidth:1,borderColor:colors.neonBorder}}><Ionicons name={ready?'checkmark-circle-outline':state.status==='installing'?'sync-outline':'download-outline'} size={24} color={colors.primary}/></View>
 
-  <View style={{flex:1,gap:4}}><Text style={{color:colors.text,fontWeight:'700',fontSize:16}}>{ready?t("Your update is ready"):state.status==='installing'?t("Installing Axonic"):t("Updating Axonic")}</Text><Text accessibilityLiveRegion="polite" style={{color:colors.textSecondary,fontSize:13}}>{ready?t("Install when you’re ready to restart."):state.status==='installing'?t("Finishing your update…"):state.progress===undefined?t("Downloading from Google Play…"):`Downloading · ${state.progress}%`}</Text></View>
+  <View style={{flex:1,gap:4}}><Text style={{color:colors.text,fontWeight:'700',fontSize:16}}>{ready?t("Your update is ready"):state.status==='installing'?t("Installing Axonic"):t("Updating Axonic")}</Text><Text accessibilityLiveRegion="polite" style={{color:colors.textSecondary,fontSize:13}}>{ready?t("Install when you’re ready to restart."):state.status==='installing'?t("Finishing your update…"):state.progress===undefined?t("Downloading from Google Play…"):t("Downloading update · {0}%",{0:state.progress})}</Text></View>
 
   {!ready&&<ActivityIndicator color={colors.primary}/>}
 

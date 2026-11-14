@@ -8,7 +8,7 @@ function load(name) {
   cache.set(name, out); return out;
 }
 const {createLocalAccountSession} = load('localAccountSession');
-const {displayIdentity, parseIdentityCode, chooseBackupWords, checkBackupWords} = load('identityPresentation');
+const {displayIdentity, parseIdentityCode} = load('identityPresentation');
 const account = 'axonic:1:' + 'ab'.repeat(32), password = 'a device-only test password';
 test('legacy secure credential upgrades after successful resume and lock still gates cached recovery',async()=>{
  const f=fixture(),derivation={version:1,salt:'ab'.repeat(32),key:'cd'.repeat(32)};let resumes=0;
@@ -70,13 +70,6 @@ test('manual lock cancels a late cold-start credential read', async () => {
   const f = fixture({readCredential: () => gate}); f.identity.lock(); const pending = f.session.initialize();
   await new Promise(resolve => setImmediate(resolve)); await f.session.lock(); release(JSON.stringify({version: 1, account, password}));
   await pending; assert.equal(f.identity.status().state, 'locked');
-});
-test('two backup challenges have distinct random positions and require the exact selected words', async () => {
-  const words = 'one two three four five six seven eight nine ten eleven twelve';
-  const positions = await chooseBackupWords(12, async () => new Uint8Array([255, 3, 3, 7]));
-  assert.deepEqual(positions, [3, 7]); assert.equal(checkBackupWords(words, positions, [' FOUR ', 'eight']), true);
-  assert.equal(checkBackupWords(words, positions, ['eight', 'four']), false);
-  assert.equal(checkBackupWords(words, [3, 3], ['four', 'four']), false);
 });
 test('friendly identity sharing round trips to the signed account and accepts previous codes', () => {
   const code = displayIdentity(account); assert.ok(code.startsWith('axon:')); assert.ok(code.length<68);

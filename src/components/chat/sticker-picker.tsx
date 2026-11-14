@@ -10,7 +10,7 @@ import { loadStickerPreferences, STICKERS, updateStickerPreferences, type Sticke
 import StickerArt from './sticker-art';
 import StickerStudio from './sticker-studio';
 import type { ImportedSticker } from '../../services/imported-stickers';
-import { loadImportedStickers, importedStickerUri, markImportedStickerSent, removeImportedSticker } from '../../services/imported-stickers';
+import { loadImportedStickers, importedStickerUri, markImportedStickerSent, removeImportedSticker, toggleImportedStickerFavorite } from '../../services/imported-stickers';
 import { Image } from 'expo-image';
 import { stickerGridCellWidth } from '../../utils/sticker-grid';
 
@@ -30,7 +30,8 @@ export default function StickerPicker({ ownerId, onClose, onSend, onSendImported
   const [prefs, setPrefs] = useState<StickerPreferences>({ recent: [], favorites: [] });
   const [selected, setSelected] = useState<Sticker>();
   const [customStickers, setCustomStickers] = useState<ImportedSticker[]>([]);
-  const [selectedCustom, setSelectedCustom] = useState<ImportedSticker>();
+  const [selectedCustomId, setSelectedCustom] = useState<string>();
+  const selectedCustom = customStickers.find((sticker) => sticker.id === selectedCustomId);
   useEffect(() => { let active = true; loadImportedStickers(ownerId).then((rows) => { if (active) setCustomStickers(rows); }).catch(() => Alert.alert(t("Storage unavailable"), t("Your stickers could not be loaded."))); return () => { active = false; }; }, [ownerId, tab]);
   const [busy, setBusy] = useState(false);
   const sending = useRef(false);
@@ -51,6 +52,19 @@ export default function StickerPicker({ ownerId, onClose, onSend, onSendImported
   const stickers = tab === 'All' || tab === 'Axonic' ? [...STICKERS] : ids.flatMap((id) => STICKERS.filter((s) => s.id === id));
   const customVisible = tab === 'All' ? customStickers : tab === 'Favorites' ? customStickers.filter((s) => s.favorite) : tab === 'Recent' ? customStickers.filter((s) => Number.isFinite(s.lastSentAt) && s.lastSentAt! > 0).sort((a, b) => b.lastSentAt! - a.lastSentAt!).slice(0, 24) : [];
   const close=()=>{if(!sending.current)onClose();};
+  const favorite = selectedCustom ? selectedCustom.favorite : !!selected && prefs.favorites.includes(selected.id);
+  const favoriteButton = (
+    <TouchableOpacity disabled={busy} style={{ padding: 12 }} onPress={async () => {
+      try {
+        if (selectedCustom) setCustomStickers(await toggleImportedStickerFavorite(ownerId, selectedCustom.id));
+        else if (selected) setPrefs(await updateStickerPreferences(ownerId, selected.id, 'favorite'));
+      } catch {
+        Alert.alert(t("Could not save favorite"), t("Please try again."));
+      }
+    }}>
+      <Text style={{ color: c.primary }}>{favorite ? `★ ${t("Remove from favorites")}` : `☆ ${t("Add to favorites")}`}</Text>
+    </TouchableOpacity>
+  );
   return <Modal visible transparent statusBarTranslucent animationType="slide" onRequestClose={close}>
     <View style={{flex:1,justifyContent:'flex-end',alignItems:'center'}}>
     <Pressable accessibilityRole="button" accessibilityLabel={t("Close stickers")} disabled={busy} onPress={close} style={{position:'absolute',top:0,bottom:0,left:0,right:0,backgroundColor:'rgba(0,0,0,0.35)'}}/>
@@ -60,13 +74,13 @@ export default function StickerPicker({ ownerId, onClose, onSend, onSendImported
         <Text accessibilityRole="header" style={{flex:1,color:c.primary,fontSize:22,fontWeight:'700'}}>{t("Stickers")}</Text>
         <TouchableOpacity accessibilityRole="button" accessibilityLabel={t("Close stickers")} disabled={busy} onPress={close} style={{width:44,height:44,alignItems:'center',justifyContent:'center'}}><Ionicons name="close" size={24} color={c.primary}/></TouchableOpacity>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{flexGrow:0,flexShrink:0}} contentContainerStyle={{paddingHorizontal:16,paddingBottom:8,gap:8}}>
+      <ScrollView keyboardShouldPersistTaps="handled" horizontal showsHorizontalScrollIndicator={false} style={{flexGrow:0,flexShrink:0}} contentContainerStyle={{paddingHorizontal:16,paddingBottom:8,gap:8}}>
         {['All', 'Axonic', 'Recent', 'Favorites', 'Create'].filter(name => allowCreate || name !== 'Create').map((name) => <TouchableOpacity disabled={busy} key={name} accessibilityRole="tab" accessibilityState={{ selected: tab === name }} onPress={() => { tabChosen.current = true; setSelected(undefined); setSelectedCustom(undefined); setTab(name); }} style={{ padding: 12, borderRadius: 20, backgroundColor: tab === name ? c.primary : c.surface }}><Text style={{ color: tab === name ? c.textInverse : c.text }}>{name}</Text></TouchableOpacity>)}
       </ScrollView>
       {tab === 'Create' ? <StickerStudio draftStorage={draftStorage} ownerId={ownerId} initialUri={initialUri} onBusy={(value) => { sending.current = value; setBusy(value); }} onSaved={() => setTab('All')} /> : <>
-      <ScrollView onLayout={event=>setGridWidth(event.nativeEvent.layout.width)} contentContainerStyle={{ padding: 16, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
+      <ScrollView keyboardShouldPersistTaps="handled" onLayout={event=>setGridWidth(event.nativeEvent.layout.width)} contentContainerStyle={{ padding: 16, flexDirection: 'row', flexWrap: 'wrap', gap: 12 }}>
         {!stickers.length && !customVisible.length && <Text style={{ color: c.textSecondary }}>{tab === 'Recent' ? t("Your sent stickers will appear here.") : t("Choose a sticker and tap Add to favorites.")}</Text>}
-        {customVisible.map((sticker) => <TouchableOpacity key={sticker.id} accessibilityLabel={`Preview ${sticker.name}`} onPress={() => { setSelected(undefined); setSelectedCustom(sticker); }} style={{ width: cellWidth, alignItems: 'center', paddingVertical: 4 }}><Image source={{ uri: importedStickerUri(ownerId, sticker) }} contentFit="contain" style={{ width: Math.min(110, cellWidth), height: Math.min(110, cellWidth) }} /></TouchableOpacity>)}
+        {customVisible.map((sticker) => <TouchableOpacity key={sticker.id} accessibilityLabel={`Preview ${sticker.name}`} onPress={() => { setSelected(undefined); setSelectedCustom(sticker.id); }} style={{ width: cellWidth, alignItems: 'center', paddingVertical: 4 }}><Image source={{ uri: importedStickerUri(ownerId, sticker) }} contentFit="contain" style={{ width: Math.min(110, cellWidth), height: Math.min(110, cellWidth) }} /></TouchableOpacity>)}
         {stickers.map((sticker) => <TouchableOpacity key={sticker.id} accessibilityLabel={t("Preview {0} sticker",{0:sticker.label})} accessibilityState={{ selected: selected?.id === sticker.id }} onPress={() => { setSelectedCustom(undefined); setSelected(sticker); }} style={{ width: cellWidth, alignItems: 'center', paddingVertical: 4 }}>
           <StickerArt sticker={sticker} size={Math.min(110, cellWidth)} animate loop />
           <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: selected?.id === sticker.id ? c.primary : 'transparent' }} />
@@ -74,6 +88,7 @@ export default function StickerPicker({ ownerId, onClose, onSend, onSendImported
       </ScrollView>
       {selectedCustom && <View style={{ alignItems: 'center', padding: 12, gap: 8 }}>
         <Image source={{ uri: importedStickerUri(ownerId, selectedCustom) }} style={{ width: 140, height: 140 }} contentFit="contain" />
+        {favoriteButton}
         <TouchableOpacity disabled={busy} accessibilityLabel={t("Send sticker")} style={{ padding: 16, backgroundColor: c.primary, borderRadius: Chrome.controlRadius, alignSelf: 'stretch', alignItems: 'center' }} onPress={async () => {
           if (sending.current) return;
           sending.current = true; setBusy(true);
@@ -90,7 +105,7 @@ export default function StickerPicker({ ownerId, onClose, onSend, onSendImported
       </View>}
       {selected && <View style={{ alignItems: 'center', padding: 12, gap: 8 }}>
         <StickerArt sticker={selected} size={140} animate loop />
-        <TouchableOpacity disabled={busy} style={{ padding: 12 }} onPress={() => { void updateStickerPreferences(ownerId, selected.id, 'favorite').then(setPrefs).catch(() => Alert.alert(t("Could not save favorite"), t("Please try again."))); }}><Text style={{ color: c.primary }}>{prefs.favorites.includes(selected.id) ? '★ Remove from favorites' : '☆ Add to favorites'}</Text></TouchableOpacity>
+        {favoriteButton}
         <TouchableOpacity disabled={busy} accessibilityLabel={t("Send sticker")} style={{ backgroundColor: c.primary, padding: 16, borderRadius: Chrome.controlRadius, alignSelf: 'stretch', alignItems: 'center' }} onPress={async () => {
           if (sending.current) return;
           sending.current = true; setBusy(true);

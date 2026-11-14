@@ -82,3 +82,36 @@ test('scoped mutations do not aggregate unrelated retained history',async()=>{
  for(const name of ['getFirstAsync','getAllAsync']){const original=f.sql[name];f.sql[name]=async(sql,...args)=>{assert(!/COUNT\(\*\)|SUM\(/i.test(sql),'no lifetime count or byte scan for a selected mutation');return original(sql,...args);};}
  const l=f.ledger();await l.enqueue(b,id(7001),'selected send');assert(await l.receive(b,id(7002),encodeRootChat(a,id(7002),'selected receive')));f.db.close();
 });
+
+test('conversation projection reads skip group control replay bodies',async()=>{
+ const f=fixture(100);
+ try{
+  const initial=JSON.parse(f.source());
+  initial.groupSeen=Array.from({length:500},(_,i)=>({peer:b,id:id(10000+i),raw:'control replay'}));
+  f.sourceSet(JSON.stringify(initial));
+  await f.ledger().metadataSnapshot();
+  const store=f.store(),before=store.diagnostics();
+  const room=JSON.parse(await store.readRooms([b])),after=store.diagnostics();
+  assert.equal(room.messages.length,50);
+  assert.equal(room.groupSeen.length,0);
+  assert.equal(after.rowsRead-before.rowsRead,50);
+  assert.equal(after.fullReads,before.fullReads);
+  assert.equal((await f.ledger().snapshot()).groupSeen.length,500);
+ }finally{f.db.close();}
+});
+
+test('outgoing group reactions load only the target and collision records',async()=>{
+ const f=fixture(0),l=f.ledger(),group=id(24000),target=id(24001);
+ try{
+  await l.createGroup(group,id(24002),'Group',[a,b,c]);
+  await l.enqueueGroup(group,target,'target');
+  for(let i=0;i<30;i++)await l.enqueueGroup(group,id(24100+i),'other');
+  const store=f.store(),before=store.diagnostics(),action=id(24500);
+  assert.equal(await l.actGroup(group,action,{id:target,author:a},'reaction','👍'),true);
+  assert.equal(await l.actGroup(group,action,{id:target,author:a},'reaction','👍'),false);
+  const after=store.diagnostics();
+  assert.equal(after.fullReads,before.fullReads);
+  assert.ok(after.rowsRead-before.rowsRead<=6);
+  assert.equal((await l.groupSnapshot(group,target)).messages.length,2);
+ }finally{f.db.close();}
+});

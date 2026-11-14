@@ -1,6 +1,8 @@
 import {rootChatView} from './rootChatActions';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {validAccountId} from './identityProtocol';
+import Native from '../../../modules/axonic-nearby';
+import {rootMessageNotificationId} from './rootMessageNotification';
 const listeners=new Set<()=>void>();
 export function subscribeRootNotificationOpen(fn:()=>void){listeners.add(fn);return()=>{listeners.delete(fn);};}
 let tail:Promise<unknown>=Promise.resolve();
@@ -21,6 +23,10 @@ export async function queueRootNotificationOpen(data:unknown){
   // Legacy generic alerts have a message ID but no decrypted preview metadata.
   if(d.messageId&&!d.messageAt&&!d.messagePreviews&&/^[a-f0-9]{64}$/.test(d.messageId))target.hintId=d.messageId;
   await serial(()=>AsyncStorage.setItem(KEY,JSON.stringify(target)));
+  if(d.messageId&&/^[a-f0-9]{64}$/.test(d.messageId)){
+   const id=rootMessageNotificationId(target.account,target.sender,target.group);
+   await Native?.forgetMessageNoticeRestore?.(id,d.messageId).catch(()=>{});
+  }
   for(const fn of listeners)try{fn();}catch{};
  }
 }

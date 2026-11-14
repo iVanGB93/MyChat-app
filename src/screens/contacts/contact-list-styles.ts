@@ -5,12 +5,15 @@ export const contactListStyles = StyleSheet.create({
   container: { flex: 1 },
   list: { paddingBottom: Spacing.md },
   emptyContainer: { flexGrow: 1 },
+  fixedControls: {
+    position: 'absolute',
+    zIndex: 2,
+    paddingBottom: Spacing.sm,
+  },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'stretch',
-    paddingHorizontal: Spacing.md,
-    paddingTop: Spacing.sm,
-    paddingBottom: Spacing.md,
+    paddingBottom: Spacing.sm,
     gap: Spacing.sm,
   },
   searchInput: { marginBottom: 0 },

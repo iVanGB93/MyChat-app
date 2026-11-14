@@ -13,13 +13,19 @@ import android.os.Bundle
 internal object NotificationReadAction {
   fun install(context: Context, id: String): Boolean {
     require(id.startsWith("root-conversation:"))
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     val notice = manager.activeNotifications.firstOrNull {
       it.notification.extras.getBundle("notifee.notification")?.getString("id") == id
     } ?: return false
     val original = notice.notification
     val packet = Bundle(original.extras.getBundle("notifee.notification") ?: return false)
+    val builder = Notification.Builder.recoverBuilder(context, original).setOnlyAlertOnce(true)
+    MessageNoticeRestore.remember(context, packet, packet.getBundle("android")?.getString("channelId"))
+      ?.let { builder.setDeleteIntent(it) }
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+      manager.notify(notice.tag, notice.id, builder.build())
+      return true
+    }
     val options = Bundle(packet.getBundle("android") ?: return false)
     // Cancellation belongs to the existing JS handler, which protects newer arrivals.
     options.putBoolean("autoCancel", false)
@@ -45,8 +51,7 @@ internal object NotificationReadAction {
     actions[index] = Notification.Action.Builder(old.getIcon(), old.title, pending)
       .addExtras(actionExtras)
       .setSemanticAction(Notification.Action.SEMANTIC_ACTION_MARK_AS_READ).build()
-    val updated = Notification.Builder.recoverBuilder(context, original)
-      .setActions(*actions).setOnlyAlertOnce(true).build()
+    val updated = builder.setActions(*actions).build()
     manager.notify(notice.tag, notice.id, updated)
     return true
   }

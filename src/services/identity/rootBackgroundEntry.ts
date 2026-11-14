@@ -8,7 +8,7 @@ import {recoverRootMessage} from './rootMessageRecovery';
 import {recoverWakeSender} from './mobileWakeSenderRecovery';
 import {queueRootNotificationOpen} from './rootNotificationRoute';
 import {receiveRootCallWake} from './rootCallWake';
-import {receiveRootMessageWake,rootMessageWakeFailed} from './rootMessageWake';
+import {receiveRootMessageWake,rootMessageWakeFailed,restoreRootMessageNotices} from './rootMessageWake';
 import {handleRootNotificationAction} from './rootNotificationActions';
 /** Loaded only by the fresh-account entry, including its Android headless launch. */
 export function registerRootBackgroundHandlers(){
@@ -35,7 +35,14 @@ export function registerRootBackgroundHandlers(){
    await process(JSON.parse(data.message),data.token);
   }finally{Native?.messageRecoveryComplete?.(data.token);}
  });
+ AppRegistry.registerHeadlessTask('AxonicRestoreMessageNotices',()=>async()=>{
+  try{await restoreRootMessageNotices();}catch{/* Keep unverified notices silent. */}
+  finally{Native?.completeMessageNoticeRestore?.();}
+ });
  setBackgroundMessageHandler(getMessaging(),receive);
  onMessage(getMessaging(),receive);
- notifee.onBackgroundEvent(async({type,detail})=>{if(type===EventType.PRESS){await handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data);await queueRootNotificationOpen(detail.notification?.data);}else if(type===EventType.ACTION_PRESS)await handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data,detail.input);});
+ notifee.onBackgroundEvent(async({type,detail})=>{if(type===EventType.PRESS){await handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data);await queueRootNotificationOpen(detail.notification?.data);}else if(type===EventType.ACTION_PRESS)await handleRootNotificationAction(detail.pressAction?.id??'',detail.notification?.data,detail.input);else if(type===EventType.DISMISSED&&detail.notification?.id?.startsWith('root-conversation:')){
+  const id=detail.notification.data?.messageId;
+  if(typeof id==='string')await Native?.forgetMessageNoticeRestore?.(detail.notification.id,id);
+ }});
 }

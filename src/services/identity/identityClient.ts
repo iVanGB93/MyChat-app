@@ -12,6 +12,7 @@ export async function authenticateIdentityPeer(d: {
   random(size: number): Promise<Uint8Array>; now(): number; current(): boolean;
   exchange(operation: 'describe' | 'authenticate', payload: string): Promise<string>;
   sign(audience: { account: string; instance: string }): Promise<IdentityRequest>;
+  onClockSkew?():void;
 }): Promise<IdentityPeer | null> {
   try {
     if (!d.current()) return null;
@@ -22,8 +23,18 @@ export async function authenticateIdentityPeer(d: {
     if (!d.current()) return null;
     const known = await d.store.read(d.expectedAccount);
     if (!d.current()) return null;
-    const descriptor = verifyIdentityDescriptor(raw, d.expectedAccount, nonce, known, d.now());
-    if (!descriptor) return null;
+    const now = d.now();
+    const descriptor = verifyIdentityDescriptor(raw, d.expectedAccount, nonce, known, now);
+    if (!descriptor) {
+      // Diagnose only using the signed reply to this session's fresh nonce.
+      // Never use the remote timestamp to authenticate or update the pinned record.
+      if (d.onClockSkew && raw.length <= 12_000) {
+        const issuedAt = JSON.parse(raw)?.issuedAt;
+        if (Number.isSafeInteger(issuedAt) && Math.abs(issuedAt - now) >= 120_000 &&
+            verifyIdentityDescriptor(raw, d.expectedAccount, nonce, known, issuedAt)) d.onClockSkew();
+      }
+      return null;
+    }
     if (!await pinIdentityRecord(d.store, known, descriptor.record, descriptor.history) || !d.current()) return null;
     const request = await d.sign({ account: descriptor.record.account, instance: descriptor.instance });
     if (!d.current() || request.record.account !== d.localAccount || request.target !== d.expectedAccount

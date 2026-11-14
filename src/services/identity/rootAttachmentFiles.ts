@@ -35,13 +35,57 @@ function privateAttachmentFile(owner:string,digest:string){
  const shared=readSharedReference(new File(root,'axonic-own-attachments-v1',account,'files',digest,'shared.json'));
  return new File(root,'axonic-own-attachments-v1',account,shared?'shared':'files',shared??digest,'content');
 }
-export function rootAttachmentFile(owner:string,digest:string):File|SharedMediaFile{
+function reusedDigest(owner:string,digest:string){
+ const link=new File(folder(owner,digest),'reuse.json');if(!link.exists)return null;
+ const v=JSON.parse(link.textSync());if(Object.keys(v).join(',')!=='digest'||typeof v.digest!=='string'||!/^[a-f0-9]{64}$/.test(v.digest)||v.digest===digest)throw Error('Invalid local media reference');return v.digest as string;
+}
+function reusedSticker(owner:string,digest:string){
+ const link=new File(folder(owner,digest),'sticker-reuse.json');if(!link.exists)return null;
+ const v=JSON.parse(link.textSync());if(Object.keys(v).sort().join(',')!=='format,id'||!/^([a-f0-9]{32})$/.test(v.id)||!['png','webp','gif'].includes(v.format))throw Error('Invalid saved sticker reference');
+ return new File(Paths.document,'stickers','root-'+owner.slice(9),v.id+'.'+v.format);
+}
+export async function reuseRootStickerFile(job:AttachmentJob,stickers:{id:string;format?:string}[],current:()=>boolean){
+ check(current);const link=new File(folder(job.owner,job.digest),'sticker-reuse.json');if(link.exists)link.delete();
+ const old=new File(folder(job.owner,job.digest),'reuse.json');if(old.exists)old.delete();
+ for(const sticker of stickers){if(!/^[a-f0-9]{32}$/.test(sticker.id))continue;const format=sticker.format??'png';if(!['png','webp','gif'].includes(format))continue;
+  try{const file=new File(Paths.document,'stickers','root-'+job.owner.slice(9),sticker.id+'.'+format);
+   if(!file.exists||file.size!==job.descriptor.manifest.bytes)continue;const checksum=await hashContent(file,job.descriptor.manifest.bytes,current);check(current);
+   if(checksum!==job.descriptor.checksum||attachmentChecksumCommitment(checksum,job.descriptor.key)!==job.descriptor.manifest.checksum)continue;
+   folder(job.owner,job.digest).create({intermediates:true,idempotent:true});link.write(JSON.stringify({id:sticker.id,format}));attachmentContentChanged();return true;
+  }catch{check(current);}
+ }return false;
+}
+export async function reuseRootAttachmentFile(job:AttachmentJob,candidates:string[],current:()=>boolean){
+ check(current);
+ const link=new File(folder(job.owner,job.digest),'reuse.json');
+ // Failed/deleted candidates must not redirect the normal download's final path.
+ if(link.exists)link.delete();
+ for(const candidate of candidates){
+  if(candidate===job.digest)continue;
+  try{
+   let target=candidate;const seen=new Set<string>([job.digest]);
+   for(;;){if(seen.has(target)||seen.size>=8)throw Error('Invalid local media reference');seen.add(target);const next=reusedDigest(job.owner,target);if(!next)break;target=next;}
+   const file=rootAttachmentFile(job.owner,target);
+   if(!file.exists||file.size!==job.descriptor.manifest.bytes)continue;
+   const checksum=await hashContent(file,job.descriptor.manifest.bytes,current);check(current);
+   if(checksum!==job.descriptor.checksum||attachmentChecksumCommitment(checksum,job.descriptor.key)!==job.descriptor.manifest.checksum)continue;
+   folder(job.owner,job.digest).create({intermediates:true,idempotent:true});
+   link.write(JSON.stringify({digest:target}));attachmentContentChanged();return true;
+  }catch{check(current);/* A stale local candidate is not a failed transfer. */}
+ }
+ return false;
+}
+export function rootAttachmentFile(owner:string,digest:string,visited=new Set<string>()):File|SharedMediaFile{
+ if(visited.has(digest)||visited.size>=8)throw Error('Invalid local media reference');visited.add(digest);
+ const reused=reusedDigest(owner,digest);if(reused)return rootAttachmentFile(owner,reused,visited);
+ const sticker=reusedSticker(owner,digest);if(sticker)return sticker;
  const privateFile=privateAttachmentFile(owner,digest),link=new File(privateFile.uri.replace(/content$/,'media.json'));
  if(link.exists){const value=JSON.parse(link.textSync());if(typeof value.uri!=='string'||!isSharedMediaUri(value.uri))throw Error('Invalid media reference');return new SharedMediaFile(value.uri);}
  return privateFile;
 }
 export async function hashRootAttachmentFile(owner:string,digest:string,bytes:number){
  const file=rootAttachmentFile(owner,digest);
+ if(reusedDigest(owner,digest)||reusedSticker(owner,digest))return hashContent(file,bytes,()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner);
  if(file instanceof SharedMediaFile){if(!file.exists||file.size!==bytes)throw Error('Attachment removed or changed');return sharedMediaNative!.sha256(file.uri);}
  try{return await Native!.attachmentFileSha256!(owner,digest,true,bytes);}
  catch(error){
@@ -58,6 +102,8 @@ export async function hashRootAttachmentFile(owner:string,digest:string,bytes:nu
  * private duplicate. A crash before deletion is recoverable on the next pass.
  * Missing shared media is never restored from the obsolete private replica. */
 export async function adoptRootAttachmentExport(owner:string,digest:string,uri:string){
+ if(reusedSticker(owner,digest))return; // Saved stickers already have one canonical library file.
+ const reused=reusedDigest(owner,digest);if(reused){await adoptRootAttachmentExport(owner,reused,uri);return;}
  if(!sharedMediaNative?.singleCopy)return;
  const privateFile=privateAttachmentFile(owner,digest);
  let changed=privateFile.exists;
@@ -79,6 +125,8 @@ function releaseSharedPayload(owner:string,id:string){
 }
 /** Remove this grant's local media without breaking another recipient's transfer. */
 export function removeRootAttachmentContent(owner:string,digest:string){
+ const sticker=new File(folder(owner,digest),'sticker-reuse.json');if(sticker.exists){sticker.delete();attachmentContentChanged();return;}
+ const reuse=new File(folder(owner,digest),'reuse.json');if(reuse.exists){reuse.delete();attachmentContentChanged();return;}
  const directory=folder(owner,digest),shared=sharedReference(directory);
  if(shared){new File(directory,'shared.json').delete();releaseSharedPayload(owner,shared);}
  else {const content=new File(directory,'content');if(content.exists)content.delete();}
@@ -278,6 +326,11 @@ export async function writeRootAttachmentChunks(job:AttachmentJob,index:number,p
 }
 export async function commitRootAttachmentFile(job:AttachmentJob,current:()=>boolean){
  check(current);
+ if(reusedDigest(job.owner,job.digest)||reusedSticker(job.owner,job.digest)){
+  const file=rootAttachmentFile(job.owner,job.digest);
+  if(!file.exists||file.size!==job.descriptor.manifest.bytes||await hashContent(file,job.descriptor.manifest.bytes,current)!==job.descriptor.checksum)throw Error('Reused attachment removed or changed');
+  check(current);return;
+ }
  const published=rootAttachmentFile(job.owner,job.digest);
  if(published instanceof SharedMediaFile){if(!published.exists||published.size!==job.descriptor.manifest.bytes||await sharedMediaNative!.sha256(published.uri)!==job.descriptor.checksum)throw Error('Shared attachment removed or changed');check(current);return;}
  const directory=folder(job.owner,job.digest),final=published,partial=new File(directory,'partial'),file=final.exists?final:partial;

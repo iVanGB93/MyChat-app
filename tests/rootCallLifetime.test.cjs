@@ -1,8 +1,13 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
-function fixture(){const app={currentState:'active'},events=[];let start=async()=>{events.push('start');};const mod={};const imports={
- 'react-native':{AppState:app,Platform:{OS:'android'},NativeModules:{MyChatService:{start:()=>start(),stop:async()=>events.push('stop'),update:async()=>{},setPictureInPictureEnabled:async enabled=>events.push(['pip',enabled])}}},
+function fixture(){const app={currentState:'active'},events=[];let start=async()=>{events.push('start');};const mod={},service={start:()=>start(),stop:async()=>events.push('stop'),setPictureInPictureEnabled:async enabled=>events.push(['pip',enabled])};const imports={
+ 'react-native':{AppState:app,Platform:{OS:'android'},NativeModules:{MyChatService:service}},
  '../../../modules/axonic-nearby':{default:{axonConnectedCall:v=>events.push(v)}}};
- new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootCallLifetime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]);return {mod,app,events,delay:fn=>{start=fn;}};}
+ new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootCallLifetime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]);return {mod,app,events,service,delay:fn=>{start=fn;}};}
+test('ongoing notification actions are bound to the current call ID',async()=>{
+ const f=fixture();f.service.startWithHangUp=async(kind,id)=>f.events.push([kind,id]);
+ assert.equal(await f.mod.startRootCallLease('current-call','video'),true);
+ assert.deepEqual(f.events.find(event=>event[0]==='video'),['video','current-call']);
+});
 test('background protection requires a foreground-started service and connected media',async()=>{
  const f=fixture();assert.equal(f.mod.rootCallMayRunBackground(),false);await f.mod.startRootCallLease('one','voice');assert.equal(f.mod.rootCallMayRunBackground(),false);
  f.mod.markRootCallConnected('wrong');assert.equal(f.mod.rootCallMayRunBackground(),false);f.mod.markRootCallConnected('one');assert.equal(f.mod.rootCallMayRunBackground(),true);

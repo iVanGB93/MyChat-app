@@ -8,7 +8,7 @@ export interface OwnHistoryStore {
 }
 
 /** Selected records plus complete account policy; absent rows are not deleted. */
-export type OwnHistoryScope={peer:string;ids:string[]}|{metadata:true}|{group:string;ids:string[];logicalIds:string[]}|{control:true;photoGroup?:string;photoId?:string;incomingPeer?:string;incomingId?:string}|{groupRead:string}|{deliveryIds:string[]};
+export type OwnHistoryScope={peer:string;ids:string[]}|{metadata:true}|{group:string;ids:string[];logicalIds:string[];actionTarget?:string}|{control:true;photoGroup?:string;photoId?:string;incomingPeer?:string;incomingId?:string}|{groupRead:string}|{deliveryIds:string[]};
 export type OwnHistorySlice={raw:string;version:number;counts:Record<string,number>;bytes?:Record<string,number>};
 export interface IndexedOwnHistory {
  readScope(scope:OwnHistoryScope):Promise<OwnHistorySlice>;

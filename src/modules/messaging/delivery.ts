@@ -1,12 +1,13 @@
-import {deliveryEvidence} from '../../services/identity/deliveryEvidence';
 import {messageRetryDeadline} from '../../services/identity/messageRetryDeadline';
-import {pendingRootChat} from '../../services/identity/rootChatLedger';
-import type {createRootChatLedger} from '../../services/identity/rootChatLedger';
+
+export type DeliveryPackage={peer:string;id:string;raw:string};
+export type DeliveryView={rows:DeliveryPackage[];blockedPeers:string[];outgoingKeys:ReadonlySet<string>};
 
 /** A transport-independent outbox pump: acknowledgement, not a send attempt, marks delivery. */
 export function createMessageDelivery(d: {
   owner(): string | null;
-  ledger(): ReturnType<typeof createRootChatLedger>;
+  readOutbox(): Promise<DeliveryView>;
+  acceptDirect(peer:string,id:string,at:number):Promise<unknown>;
   blocked(peers: string[]): void;
   collect(): Promise<unknown>;
   send(peer: string, raw: string, id: string): Promise<boolean>;
@@ -16,9 +17,8 @@ export function createMessageDelivery(d: {
   now?():number;
   directTimeoutMs?:number;
   connectedPeers():string[];
-  /** Opt in only for immutable, revision-cached runtime snapshots. */
-  stableSnapshots?:boolean;
   changed?():void;
+  directDelivery?(owner:string,peer:string,id:string):void;
 }) {
   const resolving=new Set<string>();
   const retries=new Map<string,{peer:string;failures:number;after:number}>();
@@ -26,14 +26,15 @@ export function createMessageDelivery(d: {
   let connected=new Set<string>();
   let dispatchAfter=0;
   let attempts=0,directTimeouts=0,lastTraffic='none',lastOutcome='none';
-  type State=Awaited<ReturnType<ReturnType<typeof createRootChatLedger>['snapshot']>>;
-  let pendingDerivations=0,cached:{state:State;owner:string;rows:ReturnType<typeof pendingRootChat>;keys:Set<string>}|undefined;
-  let blockedState:State|undefined;
-  function updateBlocked(state:State){if(!d.stableSnapshots||blockedState!==state){d.blocked(state.contacts.filter(c=>c.blocked).map(c=>c.account));blockedState=state;}}
-  function pendingView(state:State,owner:string){
-    if(d.stableSnapshots&&cached?.state===state&&cached.owner===owner)return cached;
-    pendingDerivations++;const rows=pendingRootChat(state,owner),view={state,owner,rows,keys:new Set(rows.map(m=>m.peer+':'+m.id))};
-    if(d.stableSnapshots)cached=view;return view;
+  let pendingDerivations=0,cached:{view:DeliveryView;keys:Set<string>}|undefined;
+  let blockedView:DeliveryView|undefined;
+  function updateBlocked(view:DeliveryView){
+    if(blockedView!==view){d.blocked(view.blockedPeers);blockedView=view;}
+  }
+  function pendingView(view:DeliveryView){
+    if(cached?.view===view)return cached;
+    pendingDerivations++;
+    return cached={view,keys:new Set(view.rows.map(m=>m.peer+':'+m.id))};
   }
   // Keep unresolved transports bounded even after their caller falls back.
   // Timeout starts fallback; a late authenticated ACK may still settle the same live intent.
@@ -60,7 +61,7 @@ export function createMessageDelivery(d: {
     if (collecting || !owner || stopped) return;
     collecting = true;
     try {
-      const state = await d.ledger().snapshot();
+      const state = await d.readOutbox();
       if (stopped || generation !== epoch || d.owner() !== owner) return;
       updateBlocked(state);
       await d.collect();
@@ -75,12 +76,12 @@ export function createMessageDelivery(d: {
       const attempt={phase:'storage',started:now()};
       const current = () => !stopped && generation === epoch && d.owner() === owner;
       try {
-        const ledger = d.ledger(), state = await ledger.snapshot(); if (!current()) return;
+        const state = await d.readOutbox(); if (!current()) return;
         updateBlocked(state);
         const available=new Set(d.connectedPeers());
         for(const [key,retry] of retries)if(available.has(retry.peer)&&!connected.has(retry.peer))retries.delete(key);
         connected=available;
-        const {rows:all,keys}=pendingView(state,owner);
+        const {keys}=pendingView(state),all=state.rows;
         for(const key of retries.keys())if(!keys.has(key))retries.delete(key);
         for(let i=urgent.length-1;i>=0;i--)if(!keys.has(urgent[i].peer+':'+urgent[i].id))urgent.splice(i,1);
         const pending = all.filter(m=>!active.has(m.peer)&&(retries.get(m.peer+':'+m.id)?.after??0)<=now());
@@ -89,6 +90,10 @@ export function createMessageDelivery(d: {
         const hint=urgent.find(h=>pending.some(m=>m.peer===h.peer&&m.id===h.id));
         const message = (hint?pending.find(m=>m.peer===hint.peer&&m.id===hint.id):null)??(pending.length ? pending[cursor++ % pending.length] : null);
         if (!message) return;
+        const markDirect=async()=>{
+          await d.acceptDirect(message.peer,message.id,now());
+          if(d.directDelivery&&state.outgoingKeys.has(message.peer+':'+message.id))d.directDelivery(owner,message.peer,message.id);
+        };
         retryKey=message.peer+':'+message.id;
         peer=message.peer;active.set(peer,attempt);selecting=false;ownsSelection=false;schedule();
         attempts++;lastTraffic=message.raw.startsWith('["axonic-avatar-')?'avatar':'chat';lastOutcome='attempting';
@@ -96,18 +101,18 @@ export function createMessageDelivery(d: {
         // The route decision is a local session lookup, never a discovery wait.
         if(available.has(message.peer)){
           attempt.phase='send';direct=await sendDirect(message.peer,message.raw,message.id,current,async()=>{
-            if(!current())return;const latest=await ledger.snapshot();if(!current())return;
+            if(!current())return;const latest=await d.readOutbox();if(!current())return;
             // Keep the original intent and current policy authoritative after fallback.
-            if(latest.contacts.some(c=>c.account===message.peer&&c.blocked)||!pendingView(latest,owner).rows.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
-            await ledger.delivered(message.peer,message.id,deliveryEvidence('payload',now()));
+            if(latest.blockedPeers.includes(message.peer)||!latest.rows.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
+            await markDirect();
             if(current()){retries.delete(message.peer+':'+message.id);d.changed?.();}
           });
         }
         lastOutcome=direct?'direct-ack':'direct-unavailable';
-        if(direct){if(current()){await ledger.delivered(message.peer,message.id,deliveryEvidence('payload',now()));delivered=true;}}
+        if(direct){if(current()){await markDirect();delivered=true;}}
         else if(current()){
           // Recheck revocation after a failed direct attempt and before custody.
-          const latest=await ledger.snapshot();if(!current())return;const latestPending=pendingView(latest,owner).rows;if(!latestPending.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
+          const latest=await d.readOutbox();if(!current())return;const latestPending=latest.rows;if(!latestPending.some(m=>m.peer===message.peer&&m.id===message.id&&m.raw===message.raw))return;
           attempt.phase='deposit';const group=await d.depositGroup?.(latestPending,message);if(!current())return;const held=group===undefined?await d.deposit(message.peer,message.raw,message.id):group;handedOff=held===true;lastOutcome=handedOff?'custody-held':'custody-attempted';
           if(handedOff)for(let i=urgent.length-1;i>=0;i--)if(urgent[i].peer===message.peer&&urgent[i].id===message.id)urgent.splice(i,1);
           // Missing keys may need discovery for a later retry. It must never
@@ -132,7 +137,7 @@ export function createMessageDelivery(d: {
       if(stopped||!d.owner()||selecting||active.size>=2)return Infinity;
       if(dispatchAfter>now())return dispatchAfter;
       if(!cached)return now();
-      return messageRetryDeadline(cached.rows,now(),0,new Set(active.keys()),(peer,id)=>retries.get(peer+':'+id)?.after);
+      return messageRetryDeadline(cached.view.rows,now(),0,new Set(active.keys()),(peer,id)=>retries.get(peer+':'+id)?.after);
     },
     topologyChanged(){connected.clear();dispatchAfter=0;},
     snapshot:()=>({phase:selecting?'storage':active.values().next().value?.phase??'idle',busy:selecting||active.size>0,collecting,queuedHints:urgent.length,attempts,pendingDerivations,lastTraffic,lastOutcome,directTimeouts,directInFlight:directFlights.size,oldestAttemptMs:Math.max(0,...[...active.values()].map(a=>now()-a.started))}),
@@ -140,8 +145,8 @@ export function createMessageDelivery(d: {
     // An offline outgoing peer must not monopolize the bounded background wake
     // window. Inbox polling and receipt collection have their own single flight.
     async tick() { await Promise.all([collect(), dispatch()]); },
-    invalidate() { generation++;cached=undefined;blockedState=undefined;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
-    stop() { stopped = true; generation++;cached=undefined;blockedState=undefined;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
+    invalidate() { generation++;cached=undefined;blockedView=undefined;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
+    stop() { stopped = true; generation++;cached=undefined;blockedView=undefined;retries.clear();connected.clear();urgent.length=0;clearTimeout(wakeTimer);wakeTimer=undefined; },
   };
 }
 

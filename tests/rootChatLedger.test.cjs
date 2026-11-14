@@ -273,6 +273,7 @@ test('status icons distinguish custody, complete media, read and expired custody
  const m={status:'pending',networkStoredUntil:200};assert.equal(status.rootMessageStatus(m,100),'stored');assert.equal(status.rootMessageStatus(m,200),'pending');
  assert.equal(status.rootMessageStatus({...m,attachment:{}},100),'pending');assert.equal(status.rootMessageStatus({...m,attachment:{},attachmentStoredUntil:200},100),'stored');
  assert.equal(status.rootMessageStatus({...m,attachment:{},read:true},100),'pending');assert.equal(status.rootMessageStatus({...m,status:'delivered'},100),'delivered');assert.equal(status.rootMessageStatus({...m,status:'delivered',read:true},100),'read');
+ assert.equal(status.rootMessageStatus({...m,attachment:{},deliveredAt:99,read:true},300),'read');
  assert.deepEqual(['pending','stored','delivered','read'].map(status.deliveryStatusIcon),['time-outline','checkmark','checkmark-done','checkmark-done']);
 });
 

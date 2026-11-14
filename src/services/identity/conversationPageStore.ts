@@ -12,7 +12,17 @@ export function createConversationPageStore(owner:string,d:{get(key:string):Prom
  async function existing(){metrics.indexReads++;const raw=await d.get(meta);if(!raw)return null;try{const v=JSON.parse(raw) as ConversationIndex;
   return v.version===2&&v.owner===owner&&Number.isSafeInteger(v.generation)&&Array.isArray(v.state?.contacts)&&Array.isArray(v.state?.messages)&&v.summaries&&v.rooms&&Object.values(v.rooms).every(r=>Array.isArray(r.pages)&&typeof r.lookupKey==='string'&&typeof r.lookupHash==='string'&&r.pages.every(p=>typeof p.key==='string'&&typeof p.hash==='string'&&p.first&&p.last))?v:null;
  }catch{return null;}}
- const hashes=(index:ConversationIndex|null)=>new Map(index?Object.values(index.rooms).flatMap(r=>[[r.lookupKey,r.lookupHash] as const,...r.pages.map(p=>[p.key,p.hash] as const)]):[]);
+ function hashes(index:ConversationIndex|null,rooms?:readonly string[]){
+  const result=new Map<string,string>();
+  if(!index)return result;
+  for(const key of rooms??Object.keys(index.rooms)){
+   const room=index.rooms[key];
+   if(!room)continue;
+   result.set(room.lookupKey,room.lookupHash);
+   for(const page of room.pages)result.set(page.key,page.hash);
+  }
+  return result;
+ }
  async function publish(raw:string|null,old:ConversationIndex|null,reuse:boolean){
   const started=Date.now();metrics.builds++;
   const {index,values}=buildConversationProjection(owner,raw,(old?.generation??0)+1,hash),previous=reuse?hashes(old):new Map<string,string>(),next=hashes(index);
@@ -26,12 +36,12 @@ export function createConversationPageStore(owner:string,d:{get(key:string):Prom
  }
  async function publishRooms(old:ConversationIndex,rooms:string[],raw:string){
     const started=Date.now(),built=buildConversationProjection(owner,raw,old.generation+1,hash),changed=new Set(rooms),index:ConversationIndex={...built.index,summaries:{...old.summaries},rooms:{...old.rooms}};
-    const previous=hashes(old),next=hashes(built.index);
+    const previous=hashes(old,rooms),next=hashes(built.index,rooms);
     for(const room of changed){delete index.summaries[room];delete index.rooms[room];if(built.index.rooms[room]){index.rooms[room]=built.index.rooms[room];index.summaries[room]=built.index.summaries[room];}}
     index.state.messages=[...old.state.messages.filter(m=>!changed.has(m.group?'group:'+m.group.id:m.peer)),...built.index.state.messages.filter(m=>changed.has(m.group?'group:'+m.group.id:m.peer))];
     for(const [key,value] of built.values)if(previous.get(key)!==next.get(key))await d.set(key,value);
     await d.set(meta,JSON.stringify(index));metrics.builds++;metrics.lastBuildMs=Date.now()-started;
-    const live=hashes(index),obsolete=[...previous.keys()].filter(k=>!live.has(k)&&k.startsWith(conversationCachePrefix(owner)));if(obsolete.length)await d.remove(obsolete).catch(()=>{});
+    const obsolete=[...previous.keys()].filter(k=>!next.has(k)&&k.startsWith(conversationCachePrefix(owner)));if(obsolete.length)await d.remove(obsolete).catch(()=>{});
     return index;
  }
  const scopedDirty=(old:ConversationIndex)=>Array.isArray(old.dirtyRooms)&&old.dirtyRooms.every(room=>typeof room==='string'&&/^(axonic:1:|group:)[a-f0-9]{64}$/.test(room));
@@ -45,8 +55,14 @@ export function createConversationPageStore(owner:string,d:{get(key:string):Prom
   const room=index.rooms[key];if(!room)return {generation:index.generation,messages:[],references:[],hasMore:false};
   const cache=new Map<number,RootChatMessage[]>();
   async function page(n:number){let rows=cache.get(n);if(!rows){rows=await checked(room.pages[n].key,room.pages[n].hash) as RootChatMessage[];if(!Array.isArray(rows))throw new InvalidProjection();cache.set(n,rows);}return rows;}
-  let rows:RootChatMessage[]=[],n=room.pages.length;
-  while(n>0){rows=[...await page(--n),...rows];if(rows.length>=minimum&&(!through||comparePositions(messagePosition(rows[0],owner),through)<=0))break;}
+  const newestFirst:RootChatMessage[][]=[];
+  let count=0,n=room.pages.length;
+  while(n>0){
+   const rows=await page(--n);
+   newestFirst.push(rows);count+=rows.length;
+   if(count>=minimum&&(!through||comparePositions(messagePosition(rows[0],owner),through)<=0))break;
+  }
+  const rows=newestFirst.reverse().flat();
   let start=Math.max(0,rows.length-minimum);
   if(through){const anchor=rows.findIndex(m=>comparePositions(messagePosition(m,owner),through)>=0);if(anchor>=0)start=Math.min(start,anchor);}
   const messages=rows.slice(start),hasMore=n>0||start>0,refs=new Map<string,RootChatMessage>();

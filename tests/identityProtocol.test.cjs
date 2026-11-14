@@ -100,8 +100,8 @@ test('password vault requires password AND device secret; authenticates public m
   const unlocked = await vault.unlockIdentity(raw, password, deviceSecret, now);
   assert.equal(unlocked.record.account, identity.record.account);
   assert.deepEqual(unlocked.signingSeed, identity.signingSeed);
-  await assert.rejects(vault.unlockIdentity(raw, 'wrong password 2026', deviceSecret, now), /Unable to unlock/);
-  await assert.rejects(vault.unlockIdentity(raw, password, random(32), now), /Unable to unlock/);
+  await assert.rejects(vault.unlockIdentity(raw, 'wrong password 2026', deviceSecret, now), /Couldn’t unlock your account/);
+  await assert.rejects(vault.unlockIdentity(raw, password, random(32), now), /Couldn’t unlock your account/);
   const corrupt = { ...sealed, ciphertext: (sealed.ciphertext.startsWith('00') ? '01' : '00') + sealed.ciphertext.slice(2) };
   await assert.rejects(vault.unlockIdentity(JSON.stringify(corrupt), password, deviceSecret, now));
   await assert.rejects(vault.unlockIdentity(JSON.stringify({ ...sealed, kdf: 'scrypt-999999999' }), password, deviceSecret, now));
@@ -275,6 +275,24 @@ test('identity client completes mutual authentication and records both public id
   assert.equal(f.alice.store.records.get(f.bob.record.account).root, f.bob.record.root);
   assert.equal(f.bob.store.records.get(f.alice.record.account).root, f.alice.record.root);
 });
+test('clock skew diagnosis requires a signed nonce-bound descriptor and grants no access', async () => {
+  const f = clientPair();
+  let warnings = 0, signCalls = 0;
+  const skewed = {...f.d, now:()=>now+3_600_000, onClockSkew:()=>warnings++,
+    sign:async audience=>{signCalls++;return f.d.sign(audience);}};
+  assert.equal(await authenticateIdentityPeer(skewed),null);
+  assert.equal(warnings,1);
+  assert.equal(signCalls,0);
+  assert.equal(f.alice.store.records.has(f.bob.record.account),false);
+  assert.equal(await authenticateIdentityPeer({...skewed,exchange:async(op,raw)=>{
+    const descriptor=JSON.parse(await f.d.exchange(op,raw));
+    descriptor.signature='00'.repeat(64);
+    return JSON.stringify(descriptor);
+  }}),null);
+  assert.equal(warnings,1);
+  assert.equal((await authenticateIdentityPeer({...skewed,now:()=>now})).account,f.bob.record.account);
+  assert.equal(warnings,1);
+});
 test('client refuses substituted peers, forged acknowledgments, storage failures and late replies after lock', async () => {
   const wrong = clientPair(); wrong.d.expectedAccount = account().record.account;
   assert.equal(await authenticateIdentityPeer(wrong.d), null);
@@ -404,4 +422,43 @@ test('hot exact signatures survive cache churn; mutated signed bytes remain reje
  for(let i=0;i<260;i++){const m=new Uint8Array([i&255,i>>8]);assert(counted.verifyPublicSignature(ed25519.sign(m,seed),m,key,{zip215:false}));assert(counted.verifyPublicSignature(signature,message,key,{zip215:false}));}
  assert.equal(calls,261);const modified=message.slice();modified[0]^=1;assert.equal(counted.verifyPublicSignature(signature,modified,key,{zip215:false}),false);
  }
+});
+
+test('locked account recovery replaces the password without deleting local data', async () => {
+  const store=localStorage(), c=createLocalIdentityController(store,async n=>random(n),()=>now);
+  const phrase=await c.beginCreate();
+  await c.confirmBackup(phrase,'old local password');
+  const record=c.publicRecord(), raw=JSON.stringify({version:1,record,history:[]});
+  c.lock();
+  const before={...store.data};
+  await assert.rejects(c.restore(phrase,raw,'new local password'),/already exists/);
+  const other=await vault.createLocalIdentity(async n=>random(n),now);
+  try{await assert.rejects(c.restore(other.recoveryPhrase,raw,'new local password',async()=>{},record.account));}
+  finally{vault.destroyIdentity(other.identity);}
+  await assert.rejects(c.restore(phrase,raw,'new local password',async()=>{throw Error('lookup failed');},record.account),/lookup failed/);
+  assert.deepEqual(store.data,before);
+  await c.restore(phrase,raw,'new local password',async()=>{},record.account);
+  assert.equal(store.data.secret,before.secret);
+  await assert.rejects(c.unlock('old local password'),/Couldn’t unlock/);
+  await c.unlock('new local password');
+  assert.equal(c.publicRecord().account,record.account);
+  assert.equal(c.publicRecord().revision,record.revision+1);
+});
+
+test('starting over requires explicit confirmation of the locked account and only stages removal', async () => {
+  const store=localStorage(), removals=[];
+  store.beginRemoval=async account=>removals.push(account);
+  const c=createLocalIdentityController(store,async n=>random(n),()=>now);
+  const phrase=await c.beginCreate();
+  await c.confirmBackup(phrase,'local password');
+  const owner=c.status().account;
+  await assert.rejects(c.prepareLockedDeviceRemoval(owner,true),/Account changed/);
+  c.lock();
+  await assert.rejects(c.prepareLockedDeviceRemoval(owner,false),/Account changed/);
+  await assert.rejects(c.prepareLockedDeviceRemoval('wrong account',true),/Account changed/);
+  const before={...store.data};
+  await c.prepareLockedDeviceRemoval(owner,true);
+  assert.deepEqual(removals,[owner]);
+  assert.deepEqual(store.data,before);
+  assert.equal(c.status().removalPending,true);
 });

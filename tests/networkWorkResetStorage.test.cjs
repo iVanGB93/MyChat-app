@@ -7,6 +7,7 @@ test('cold reset erases only selected owner queues, archives calls, preserves ch
  for(const [file,table] of policy.networkResetTables){let db=stores.get(file);if(!db){db=new DatabaseSync(':memory:');stores.set(file,db);t.after(()=>db.close());}db.exec(`CREATE TABLE ${table}(owner TEXT,raw TEXT)`);for(const who of [account,other])db.prepare(`INSERT INTO ${table} VALUES (?,?)`).run(who,'preserve other');}
  const calls=new DatabaseSync(':memory:');stores.set('axonic_call_control_v1.db',calls);t.after(()=>calls.close());calls.exec('CREATE TABLE call_journal(owner TEXT,call_id TEXT,data TEXT);');for(const who of [account,other])calls.prepare('INSERT INTO call_journal VALUES (?,?,?)').run(who,'call','history');
  const deps={
+  '../../../modules/axonic-nearby':{default:{clearMessageNoticeRestores:async owner=>assert.equal(owner,account)}},
   './networkWorkReset':policy,'./rootChatLedger':ledgerApi,'../../modules/storage/chatStore':{ownChatStore:()=>({read:async()=>raw,write:async v=>raw=v})},
   '@react-native-async-storage/async-storage':{default:{multiRemove:async ks=>ks.forEach(k=>keys.delete(k)),setItem:async(k,v)=>keys.set(k,v)}},
   '@notifee/react-native':{default:{getDisplayedNotifications:async()=>[account,other].map(a=>({notification:{id:a,data:{account:a}}})),cancelNotification:async id=>cancelled.push(id)}},

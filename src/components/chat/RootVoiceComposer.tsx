@@ -4,6 +4,7 @@ import {useIsFocused} from '@react-navigation/native';
 import React,{useCallback,useEffect,useMemo,useRef,useState} from 'react';
 import {AccessibilityInfo,Animated,AppState,Easing,LayoutAnimation,Pressable,Text,Vibration,View} from 'react-native';
 import {AudioModule,RecordingPresets,setAudioModeAsync,useAudioRecorder} from 'expo-audio';
+import {useKeepAwake} from 'expo-keep-awake';
 import {File} from 'expo-file-system';
 import {Ionicons} from '@expo/vector-icons';
 import {useTheme} from '../../contexts/ThemeContext';
@@ -16,6 +17,10 @@ import {createVoiceRecordingGesture} from '../../utils/voice-recording-gesture';
 
 const options={...RecordingPresets.HIGH_QUALITY,sampleRate:22050,numberOfChannels:1,bitRate:48000};
 const callActive=()=>{const call=localAccountCalls()?.snapshot();return !!call&&call.status!=='ended';};
+function VoiceRecordingKeepAwake(){
+ useKeepAwake(undefined,{suppressDeactivateWarnings:true});
+ return null;
+}
 export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onError,onActive,onRecording,reply,onSent}:{peer:string;groupId?:string;disabled:boolean;onError(error:unknown):void;onActive(active:boolean):void;onRecording?(active:boolean):void;reply?:RootChatReply;onSent?():void}){
  const focused=useIsFocused();
  const {colors}=useTheme(),recorder=useAudioRecorder(options),owner=localAccount.status().account;
@@ -78,6 +83,7 @@ export default React.memo(function RootVoiceComposer({peer,groupId,disabled,onEr
   accessibilityActions={[{name:'activate',label:t("Record voice message")}]} onAccessibilityAction={()=>{if(!disabled&&!active)startRecording();}} onAccessibilityTap={()=>{if(!disabled&&!active)startRecording();}}
   onStartShouldSetResponder={()=>!disabled&&state==='idle'} onResponderGrant={event=>gesture.press(event.nativeEvent.pageX)} onResponderMove={event=>gesture.move(event.nativeEvent.pageX)} onResponderRelease={event=>gesture.release(event.nativeEvent.pageX)} onResponderTerminationRequest={()=>false} onResponderTerminate={()=>gesture.terminate()}
   style={active?[styles.recordingTray,{backgroundColor:colors.surface,flex:1,gap:12,borderColor:gestureState.cancelling?colors.error:colors.neonBorder}]:[styles.sendBtn,{borderRadius:22,backgroundColor:colors.tabBarBg,borderColor:colors.neonBorder,opacity:disabled?0.45:1}]}>
+  {focused&&!disabled&&(state==='starting'||state==='recording')&&<VoiceRecordingKeepAwake/>}
   {!active?<Ionicons name="mic-outline" size={24} color={colors.primary}/>:<Animated.View style={{flex:1,flexDirection:'row',alignItems:'center',gap:12,opacity:entry,transform:[{translateY:entry.interpolate({inputRange:[0,1],outputRange:[6,0]})}]}}>{gestureState.holding?<>
    <Animated.View style={{width:36,height:36,flexShrink:0,borderRadius:18,alignItems:'center',justifyContent:'center',backgroundColor:colors.error,transform:[{scale:bin.interpolate({inputRange:[0,1],outputRange:[1,1.12]})}]}}><Ionicons name="trash-outline" size={24} color="#fff" style={{width:24,height:24,lineHeight:24,textAlign:'center',includeFontPadding:false}}/></Animated.View>
    <Text style={{flex:1,color:gestureState.cancelling?colors.error:colors.text}}>{gestureState.cancelling?t("Release to cancel"):`‹ Slide left to cancel · ${seconds}s`}</Text>

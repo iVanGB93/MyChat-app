@@ -17,10 +17,11 @@ export function startRootCallLease(id:string,kind:'voice'|'video'){
   try{
    await pictureInPicture(false);
    if(lease!==own)return false;
-   await NativeModules.MyChatService.start(kind);
+   const service=NativeModules.MyChatService;
+   if(service.startWithHangUp)await service.startWithHangUp(kind,id);
+   else await service.start(kind);
    if(lease!==own){await NativeModules.MyChatService.stop();return false;}
    own.ready=true;
-   await NativeModules.MyChatService.update('Axonic','Call in progress');
    Native?.axonConnectedCall?.(own.connected);
    if(lease===own)await pictureInPicture(own.connected&&!own.sharing);
    return true;

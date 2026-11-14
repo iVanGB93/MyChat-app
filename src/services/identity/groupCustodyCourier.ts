@@ -1,3 +1,4 @@
+import {supportsSignedGroupCustody} from './identityProtocol.ts';
 import {GROUP_CUSTODY_LIMITS} from './groupCustodyService.ts';
 import {validAccountId} from './identityProtocol.ts';
 import {sha256} from '@noble/hashes/sha2.js';
@@ -23,7 +24,7 @@ export function validateGroupOutbox(rows:GroupOutboxEntry[],owner:string){
 /** One durable ciphertext per logical group message. Normal ledger IDs remain
  * per recipient, preserving deduplication and the existing receipt UI. */
 export function createGroupCustodyCourier(d:{owner():string|null;now():number;records:IdentityRecordStore;own:OwnCustodyStore;store:GroupOutboxStore;eventDriven?(peer:string):boolean;receiptAccepted?(sender:string,id:string):void;
- compatible(peer:string):Promise<boolean>;relays():string[];request(peer:string,raw:string):Promise<string|null>;allowed(peer:string):boolean;
+ compatible(peer:string):Promise<boolean>;relays():string[];depositRelays?(raw:string):string[];request(peer:string,raw:string):Promise<string|null>;allowed(peer:string):boolean;
  seal(id:string,text:string,recipients:Parameters<typeof sealGroupCustody>[0]['recipients']):Promise<GroupCustodyJob>;
  receive(e:CustodyEnvelope,p:GroupCustodyPayload,relay:string):Promise<CustodyReceipt|null>;held(e:CustodyEnvelope,relay:string):Promise<void>;heldGroup?(envelopes:CustodyEnvelope[],relay:string):Promise<void>;confirm(r:CustodyReceipt,current:()=>boolean,relay:string):Promise<boolean>}){
  let epoch=0,stopped=false,depositing=false,pollCursor=0;let writes:Promise<unknown>=Promise.resolve();
@@ -48,29 +49,36 @@ export function createGroupCustodyCourier(d:{owner():string|null;now():number;re
    try{
     const entry=await change(l.owner!,l.current,async rows=>{
      const old=rows.find(r=>r.job.payload.id===id);if(old)return old;
-     if(!d.relays().some(p=>p!==l.owner&&!matching.some(m=>m.peer===p)))return 'legacy' as const;
-     for(const m of matching)if(!await d.compatible(m.peer))return 'legacy' as const;
+     if(!(d.depositRelays?.(selected.raw)??d.relays()).some(p=>p!==l.owner&&!matching.some(m=>m.peer===p)))return 'legacy' as const;
      if(matching.length<2||matching.length>9||new TextEncoder().encode(common.text).length>2048)return 'legacy' as const;
      if(rows.length>=GROUP_CUSTODY_LIMITS.perSender)return null;
      // Never mix an already-sealed legacy delivery with a shared grant under the same ID.
      for(const m of matching)if(await d.own.get(l.owner!,m.id))return 'legacy' as const;
      const recipients:Parameters<typeof sealGroupCustody>[0]['recipients']=[];
-     for(const m of matching){if(!l.current()||!d.allowed(m.peer))return null;const record=await d.records.read(m.peer);if(!record)return null;recipients.push({record,device:record.devices[0].id,id:m.id,metadata:splitGroupCustodyMessage(m.raw)!.metadata});}
+     for(const m of matching){if(!l.current()||!d.allowed(m.peer))return null;const record=await d.records.read(m.peer);if(!record)return null;if(!supportsSignedGroupCustody(record,d.now())&&!await d.compatible(m.peer))return 'legacy' as const;recipients.push({record,device:record.devices[0].id,id:m.id,metadata:splitGroupCustodyMessage(m.raw)!.metadata});}
      if(!l.current())return null;const job=await d.seal(id,common.text,recipients);if(!l.current())return null;
      const result={job,relay:null,consumed:[]};rows.push(result);return result;
     });
     if(entry==='legacy')return undefined;
     if(!entry||!l.current())return false;
-    const candidates=d.relays().filter(p=>p!==l.owner&&!entry.job.grants.some(e=>e.recipient===p)).slice(0,3);
+    const candidates=(d.depositRelays?.(selected.raw)??d.relays()).filter(p=>p!==l.owner&&!entry.job.grants.some(e=>e.recipient===p));
     if(!candidates.length)return false;
     if(!await verifyGroupCustodyJob(entry.job,d.records,d.now())||entry.job.payload.sender!==l.owner||!l.current())return false;
     // Freeze the audience before handoff. Revoked recipients prevent a new
     // deposit; already accepted relay traffic follows ordinary expiry semantics.
     if(entry.job.grants.some(e=>!d.allowed(e.recipient)))return false;
     for(const e of entry.job.grants){const saved=await d.own.get(l.owner!,e.id)??await d.own.save(l.owner!,e,l.current);if(!saved||custodyDigest(saved.envelope)!==custodyDigest(e)||!l.current())return false;}
-    // Recheck responsibility on retry; a cached relay name is not proof that
-    // its durable job still exists. A replacement receives the exact same job.
-    const ordered=entry.relay&&candidates.includes(entry.relay)?[entry.relay,...candidates.filter(p=>p!==entry.relay)]:candidates;
+    // Persist the relay before beginning the handoff. Recheck its durable
+    // status on retry, since a lost response can hide an accepted job.
+    const selectedRelay=entry.relay??candidates[0];
+    if(!candidates.includes(selectedRelay))return false;
+    if(!entry.relay)await change(l.owner!,l.current,rows=>{const r=rows.find(r=>r.job.payload.id===id);if(r)r.relay=selectedRelay;});
+    for(const e of entry.job.grants){
+     const saved=await d.own.get(l.owner!,e.id);
+     if(!l.current()||!saved||saved.relay&&saved.relay!==selectedRelay)return false;
+     if(!saved.relay)await d.own.held(l.owner!,e.id,selectedRelay,l.current);
+    }
+    const ordered=[selectedRelay];
     for(const peer of ordered){
      if(!l.current())return false;
      let begin=entry.relay===peer?await request(peer,{operation:'group-status',sender:l.owner,id,digest:groupCustodyDigest(entry.job.payload)}):null;

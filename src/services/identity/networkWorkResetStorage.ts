@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SQLite from 'expo-sqlite';
 import notifee from '@notifee/react-native';
+import Native from '../../../modules/axonic-nearby';
 import {ownChatStore} from '../../modules/storage/chatStore';
 import {createRootChatLedger} from './rootChatLedger';
 import {networkResetKeys,networkResetTables,parseNetworkReset,type NetworkResetIntent} from './networkWorkReset';
@@ -26,6 +27,7 @@ export async function purgeNetworkWork(input:NetworkResetIntent){
  });}finally{await db.closeAsync();}
  await AsyncStorage.multiRemove(networkResetKeys(account));
  for(const n of await notifee.getDisplayedNotifications())if(n.notification.data?.account===account&&n.notification.id)await notifee.cancelNotification(n.notification.id);
+ await Native?.clearMessageNoticeRestores?.(account);
  // Keep a local measurement boundary; diagnostics distinguish cancellation from loss.
  await AsyncStorage.setItem('@axonic_last_network_reset_v1:'+account,JSON.stringify({at,scope:'local-network-work'}));
 }

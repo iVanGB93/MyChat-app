@@ -1,6 +1,7 @@
 import {localAccount} from './localAccount';
 import {localRootChat} from './localRootChat';
 import {forwardRootMessage} from './rootMessageForward';
+import {hasConfirmedDelivery} from './rootMessageStatus';
 import type {RootChatMessage} from './rootChatLedger';
 
 const running=new Map<string,Promise<void>>();
@@ -15,7 +16,7 @@ export function resendExpiredRootAttachment(source:Pick<RootChatMessage,'peer'|'
   if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error('Account changed');
   const message=state.messages.find(m=>m.peer===source.peer&&m.id===source.id&&m.direction===source.direction);
   if(!message||message.deleted||message.networkCancelledAt!==undefined)throw Error('This message is no longer available to resend');
-  if(message.direction!=='outgoing'||!message.attachment||message.status==='delivered'||message.attachment.manifest.expires>Date.now())throw Error('This attachment is not awaiting an expired-transfer retry');
+  if(message.direction!=='outgoing'||!message.attachment||hasConfirmedDelivery(message)||message.attachment.manifest.expires>Date.now())throw Error('This attachment is not awaiting an expired-transfer retry');
   await forwardRootMessage(source,message.group?'group:'+message.group.id:message.peer);
  })();
  running.set(key,work);void work.finally(()=>{if(running.get(key)===work)running.delete(key);}).catch(()=>{});

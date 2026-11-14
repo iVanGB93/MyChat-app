@@ -1,23 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Immutable versioned ids: never reuse an id for different artwork.
-export const STICKERS = [
-  { id: 'hello', label: 'Hello!', emoji: '👋', mood: 'happy' },
-  { id: 'love', label: 'Love it', emoji: '🩵', mood: 'love' },
-  { id: 'laugh', label: 'Too funny', emoji: '😂', mood: 'laugh' },
-  { id: 'wow', label: 'Wow!', emoji: '😮', mood: 'wow' },
-  { id: 'thanks', label: 'Thank you', emoji: '🙏', mood: 'happy' },
-  { id: 'yes', label: 'You got it', emoji: '👍', mood: 'happy' },
-  { id: 'sad', label: 'Oh no', emoji: '😢', mood: 'sad' },
-  { id: 'party', label: 'Let’s celebrate', emoji: '🎉', mood: 'laugh' },
-] as const;
-export type Sticker = typeof STICKERS[number];
-export function stickerMessage(sticker: Sticker): string {
-  return `${sticker.emoji} ${sticker.label} [axonic-sticker:v1:${sticker.id}]`;
-}
-export function parseSticker(content: string): Sticker | undefined {
-  return STICKERS.find((sticker) => stickerMessage(sticker) === content);
-}
+import { STICKERS } from './identity/stickerProtocol';
+export { STICKERS, stickerMessage, parseSticker, type Sticker } from './identity/stickerProtocol';
 export type StickerPreferences = { recent: string[]; favorites: string[] };
 export type StickerOwner = number | string;
 export function stickerOwnerKey(owner: StickerOwner): string {

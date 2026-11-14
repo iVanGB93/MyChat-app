@@ -7,7 +7,7 @@ export interface DirectoryRow extends DirectoryPacket { availableUntil: number }
 export interface DirectoryStore { transaction<T>(change: (rows: DirectoryRow[]) => T): Promise<T> }
 const exactKeys = (value: object, keys: string[]) => Object.keys(value).length === keys.length && Object.keys(value).every(k => keys.includes(k));
 const publicFieldsOnly = (r: IdentityRecord) => exactKeys(r, ['version', 'account', 'root', 'revision', 'previous', 'issuedAt', 'expiresAt', 'devices', 'signature'])
-  && r.devices.every(device => exactKeys(device, ['id', 'signing', 'encryption']));
+  && r.devices.every(device => exactKeys(device, device.groupCustodyProof===undefined?['id', 'signing', 'encryption']:['id', 'signing', 'encryption', 'groupCustodyProof']));
 export function validDirectoryPacket(value: unknown, now: number, expired = false): value is DirectoryPacket {
   try {
     const p = value as DirectoryPacket;

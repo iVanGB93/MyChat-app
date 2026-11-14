@@ -18,7 +18,9 @@ export function createNeuronConnections(d: {
   localAccount: string; now(): number; open: OpenNeuron; limit?: number; jitter?: () => number;
   /** Local policy based on an authenticated session, never discovery priority. */
   preferRtc?(account:string):boolean;
+  allowRoute?(candidate:NeuronCandidate):boolean;
 }) {
+  const allowed=(candidate:NeuronCandidate)=>d.allowRoute?.(candidate)!==false;
   const preferredRtc=(c:NeuronCandidate)=>c.route==='internet'&&c.endpoint.startsWith('rtc:')&&d.preferRtc?.(c.account)===true;
   const rank=(c:NeuronCandidate)=>preferredRtc(c)?-1:routeRank[c.route];
   let limit = d.limit ?? 5;
@@ -70,7 +72,7 @@ export function createNeuronConnections(d: {
     return true;
   }
   function start(candidate: NeuronCandidate, open: OpenNeuron) {
-    if (stopped || !valid(candidate) || upgrades.has(candidate.account)) return false;
+    if (stopped || !allowed(candidate) || !valid(candidate) || upgrades.has(candidate.account)) return false;
     const previous = slots.get(candidate.account);
     if(previous&&protectedSlot(previous))return false;
     if (previous && (previous.state !== 'connected' || rank(candidate) >= rank(previous.candidate))) return false;
@@ -129,10 +131,11 @@ export function createNeuronConnections(d: {
     for (const [account, until] of inboundPromotionRetry) if (until <= now) inboundPromotionRetry.delete(account);
     for (const [id, c] of candidates) if (c.value.expiresAt <= now && !slots.has(id) && c.retryAt <= now) candidates.delete(id);
     for (const slot of allSlots()) {
-      if (slot.state === 'authenticating' && slot.deadline <= now) retire(slot, true);
+      if (slot.state !== 'closing'&&!allowed(slot.candidate)&&!protectedSlot(slot)) retire(slot,false);
+      else if (slot.state === 'authenticating' && slot.deadline <= now) retire(slot, true);
       else if (slot.state === 'connected' && slot.link!.peer.expiresAt <= now) retire(slot, true);
     }
-    const available = [...candidates.values()].filter(c => c.retryAt <= now && c.value.expiresAt > now && !slots.has(c.value.account))
+    const available = [...candidates.values()].filter(c => allowed(c.value)&&c.retryAt <= now && c.value.expiresAt > now && !slots.has(c.value.account))
       .sort((a, b) => rank(a.value) - rank(b.value) || a.value.account.localeCompare(b.value.account));
     const outside = () => [...slots.values()].some(s => s.state !== 'closing' && s.candidate.route !== 'lan');
     // Reserve one route beyond LAN, including when that candidate arrives after a LAN-only pool filled.
@@ -160,7 +163,7 @@ export function createNeuronConnections(d: {
     nextDeadline(){
       if(stopped)return Infinity;
       const deadlines=allSlots().filter(s=>s.state!=='closing').map(s=>s.state==='authenticating'?s.deadline:s.link!.peer.expiresAt);
-      for(const c of candidates.values())if(!slots.has(c.value.account)&&c.value.expiresAt>d.now()&&occupied()<limit)deadlines.push(Math.max(d.now()+100,c.retryAt));
+      for(const c of candidates.values())if(allowed(c.value)&&!slots.has(c.value.account)&&c.value.expiresAt>d.now()&&occupied()<limit)deadlines.push(Math.max(d.now()+100,c.retryAt));
       return Math.min(Infinity,...deadlines);
     },
     // Local lifecycle wake only: discovery refreshes must still preserve backoff.

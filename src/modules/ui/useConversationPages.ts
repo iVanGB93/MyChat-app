@@ -62,5 +62,5 @@ export function useConversationWindow(key:string){
  const state=useMemo(()=>{const metadata=base.index?.state??empty;
   const merged=pendingMessages.merge(owner,{...metadata,messages:value?.messages??[]});return {...merged,messages:merged.messages.filter(m=>conversationKey(m)===key)};
  },[base.index,owner,key,value,pending]);
- return {state,error:window.scope===scope?window.error||base.error:base.error,references:value?.references??[],hasMore:value?.hasMore??false,loading:window.scope!==scope||window.loading,loadMore,revealMessage,photoState:base.index?.state??empty};
+ return {state,error:window.scope===scope?window.error||base.error:base.error,initialLoading:value===null,retry:()=>{if(owner)controller.current?.wake(owner);},references:value?.references??[],hasMore:value?.hasMore??false,loading:window.scope!==scope||window.loading,loadMore,revealMessage,photoState:base.index?.state??empty};
 }

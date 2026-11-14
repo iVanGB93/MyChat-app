@@ -98,6 +98,11 @@ test('deadline wait phase accepts only bounded fixed reasons on deadline events'
   d.record('recovery_finished',{reason:'deadline',waitReason});
   assert.equal(d.snapshot().events.at(-1).waitReason,waitReason);
  }
+ d.record('recovery_finished',{reason:'custodian_stalled',waitReason:'attachment'});
+ assert.equal(d.snapshot().events.at(-1).reason,'custodian_stalled');
+ assert.equal(d.snapshot().events.at(-1).waitReason,'attachment');
+ d.record('recovery_finished',{reason:'route_unavailable'});
+ assert.equal(d.snapshot().events.at(-1).reason,'route_unavailable');
  for(const [event,reason,waitReason] of [['recovery_finished','deadline','secret'],['recovery_finished','receipt_complete','receipt'],['app_active','deadline','setup']]){
   d.record(event,{reason,waitReason});assert.equal(d.snapshot().events.at(-1).waitReason,undefined);
  }

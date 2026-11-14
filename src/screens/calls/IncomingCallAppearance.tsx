@@ -37,7 +37,7 @@ export default function IncomingCallAppearance({callerName,avatarUri,isVideo,loc
       <View pointerEvents="none" style={styles.bgGlowTop} />
       <View pointerEvents="none" style={styles.bgGlowBottom} />
 
-      <ScrollView style={{flexGrow:0,flexShrink:1}} contentContainerStyle={styles.content}>
+      <ScrollView keyboardShouldPersistTaps="handled" style={{flexGrow:0,flexShrink:1}} contentContainerStyle={styles.content}>
         <View style={[styles.typePill, { borderColor: Colors.neonBorder }]}>
           <Ionicons
             name={isVideo ? 'videocam-outline' : 'call-outline'}

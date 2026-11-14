@@ -16,6 +16,12 @@ const clone=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
 type JobProgress={owner:string;id:string;phase:AttachmentJob['phase'];cursor:number;bytes:number;failures:number;digest:string;canPause:boolean};
 const progressListeners=new Set<(progress:JobProgress)=>void>();
 export function subscribeAttachmentJobProgress(listener:(progress:JobProgress)=>void){progressListeners.add(listener);return()=>{progressListeners.delete(listener);};}
+type ReceiveProgressListener=(owner:string,id:string,bytes:number)=>void;
+const receiveProgressListeners=new Set<ReceiveProgressListener>();
+export function subscribeAttachmentReceiveProgress(listener:ReceiveProgressListener){receiveProgressListeners.add(listener);return()=>{receiveProgressListeners.delete(listener);};}
+export function publishAttachmentReceiveProgress(owner:string,id:string,bytes:number){
+ for(const listener of receiveProgressListeners)try{listener(owner,id,bytes);}catch{/* Progress observers cannot interrupt a transfer. */}
+}
 function publishProgress(job:AttachmentJob){const progress:JobProgress={owner:job.owner,id:job.descriptor.manifest.id,phase:job.phase,cursor:job.cursor,bytes:job.descriptor.manifest.bytes,failures:job.failures,digest:job.digest,canPause:!job.receipt&&['queued','uploading','downloading'].includes(job.phase)};
  for(const listener of progressListeners)try{listener(progress);}catch{/* Observers cannot invalidate a committed checkpoint. */}}
 function db(){return opening??=SQLite.openDatabaseAsync('axonic_own_attachment_jobs_v1.db',{useNewConnection:true}).then(async database=>{

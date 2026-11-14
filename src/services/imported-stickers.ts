@@ -29,6 +29,17 @@ export async function loadImportedStickers(owner: StickerOwner): Promise<Importe
   } catch { return []; }
 }
 let writes: Promise<unknown> = Promise.resolve();
+export function toggleImportedStickerFavorite(owner: StickerOwner, id: string): Promise<ImportedSticker[]> {
+  const task = writes.then(async () => {
+    const rows = await loadImportedStickers(owner);
+    const updated = rows.map((sticker) => sticker.id === id ? { ...sticker, favorite: !sticker.favorite } : sticker);
+    await AsyncStorage.setItem(key(owner), JSON.stringify(updated));
+    return updated;
+  });
+  writes = task.catch(() => {});
+  return task;
+}
+
 export function markImportedStickerSent(owner: StickerOwner, id: string): Promise<void> {
   const task = writes.then(async () => {
     const rows = await loadImportedStickers(owner);

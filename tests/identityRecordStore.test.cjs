@@ -30,8 +30,12 @@ test('mobile record store uses real SQLite for immutable identity updates, capac
   const p = f.load('identityProtocol'), { createMobileIdentityRecordStore } = f.load('identityRecordStore');
   const now = 1_800_000_000_000, root = crypto.randomBytes(32), device = p.publicDevice(crypto.randomBytes(32), crypto.randomBytes(32));
   const first = p.issueRecord(root, [device], now), store = createMobileIdentityRecordStore(() => now, 1);
+  const observed=[];const observer=createMobileIdentityRecordStore(()=>now,1);
+  const off=observer.subscribe(record=>{assert.equal(JSON.parse(f.database.prepare('SELECT record FROM identity_records WHERE account=?').get(record.account).record).revision,record.revision);observed.push(record.revision);record.devices.length=0;});
+  t.after(off);
   assert.equal(await store.compareAndSet(first.account, null, first), true);
   assert.equal(await store.compareAndSet(first.account, null, first), false);
+  assert.deepEqual(observed,[0],'rejected CAS emits nothing; observers see the committed row across factories');
   const copy = await store.read(first.account); copy.devices.length = 0;
   assert.equal((await store.read(first.account)).devices.length, 1);
   const other = p.issueRecord(crypto.randomBytes(32), [device], now);

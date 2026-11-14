@@ -2,6 +2,15 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function load(name){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/modules/messaging/'+name+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,()=>({}));return out;}
 const {createPendingMessages}=load('pendingMessages'),{createMessagingCommands}=load('commands');
 const empty={version:1,messages:[],contacts:[]},row={owner:'a',id:'1',peer:'b',text:'hello',at:1};
+test('layout timing only attaches to tracked messages and records the first layout once',()=>{
+ const p=createPendingMessages();
+ assert.equal(p.layoutCallback('a','old'),undefined);
+ p.begin(row);
+ const record=p.layoutCallback('a','1');assert.equal(typeof record,'function');
+ record();const elapsed=p.diagnostics()[0].layoutMs;record();
+ assert.equal(p.diagnostics()[0].layoutMs,elapsed);
+ assert.equal(p.layoutCallback('a','1'),undefined);
+});
 test('pending presentation is separate from durable state and reconciles without duplication',()=>{const p=createPendingMessages();p.begin(row);assert.equal(p.merge('a',empty).messages[0].localPending,true);assert.equal(empty.messages.length,0);assert.equal(p.merge('b',empty),empty);const saved={...empty,messages:[{id:'1',peer:'b',text:'hello',direction:'outgoing',status:'delivered',at:2}]};assert.equal(p.merge('a',saved).messages.length,1);p.reconcile('a',saved);assert.equal(p.merge('a',empty),empty);});
 test('group pending bubble is singular and reconciles with recipient-specific copies',()=>{const p=createPendingMessages(),state={...empty,groups:[{id:'g',revision:1,members:['a','b','c']}]};p.begin({...row,peer:'g',group:true});assert.equal(p.merge('a',state).messages.length,1);const saved={...state,messages:['b','c'].map(peer=>({id:peer,peer,direction:'outgoing',group:{id:'g',revision:1,messageId:'1'}}))};assert.equal(p.merge('a',saved).messages.length,2);p.reconcile('a',saved);assert.equal(p.merge('a',state),state);});
 test('save runs after pending publication; failed persistence removes bubble and rejects',async()=>{const p=createPendingMessages();let release,saved=false;const c=createMessagingCommands({owner:()=> 'a',randomId:async()=> '1',ledger:()=>({enqueue:async()=>{saved=true;throw Error('disk full')}}),pending:p.begin,yieldUI:()=>new Promise(r=>release=r)});const result=c.sendText('b','hello');await new Promise(r=>setImmediate(r));assert.equal(saved,false);assert.equal(p.merge('a',empty).messages.length,1);release();await assert.rejects(result,/disk full/);assert.equal(p.merge('a',empty),empty);});

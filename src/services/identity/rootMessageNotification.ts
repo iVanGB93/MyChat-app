@@ -1,4 +1,5 @@
 import notifee from '@notifee/react-native';
+import Native from '../../../modules/axonic-nearby';
 
 /** Notification presentation is per conversation; inbox deduplication stays per message. */
 export const rootMessageNotificationId=(account:string,sender:string,group?:string)=>
@@ -11,8 +12,10 @@ export async function currentRootMessageNotification(account:string,sender:strin
 
 /** An old wake or action must not dismiss a newer message in the same conversation. */
 export async function cancelRootMessageNotification(account:string,sender:string,messageId:string,group?:string){
+ const id=rootMessageNotificationId(account,sender,group);
+ await Native?.forgetMessageNoticeRestore?.(id,messageId).catch(()=>{});
  const notices=await notifee.getDisplayedNotifications();
- const current=notices.find(n=>n.notification.id===rootMessageNotificationId(account,sender,group))?.notification;
+ const current=notices.find(n=>n.notification.id===id)?.notification;
  if(current?.data?.sender===sender&&current.data.messageId===messageId&&current.id)
   await notifee.cancelNotification(current.id);
  const legacy='root-message:'+account+':'+sender+':'+messageId;
@@ -22,6 +25,7 @@ export async function cancelRootMessageNotification(account:string,sender:string
 /** Opening a conversation retires its current and legacy notices, independent of unread counts. */
 export async function dismissRootConversationNotifications(account:string,target:{peer?:string;group?:string}){
  const id=rootMessageNotificationId(account,target.peer??'',target.group);
+ await Native?.forgetMessageNoticeRestore?.(id,null).catch(()=>{});
  const notices=await notifee.getDisplayedNotifications();
  for(const {notification:n} of notices){
   const data=n.data;

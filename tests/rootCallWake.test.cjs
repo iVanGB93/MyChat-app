@@ -4,10 +4,10 @@ const cache=new Map();
 function protocol(name){if(cache.has(name))return cache.get(name);const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/'+name+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>n.startsWith('./')?protocol(n.slice(2).replace(/\.ts$/,'')):require(n));cache.set(name,out);return out;}
 const p=protocol('identityProtocol'),c=protocol('callControlProtocol'),w=protocol('callWakeProtocol');
 const seed=n=>new Uint8Array(32).fill(n);
-function fixture(){
+function fixture(callWindow=false){
  const now=Date.now(),device=p.publicDevice(seed(2),seed(3)),recipientDevice=p.publicDevice(seed(5),seed(6));
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
- const storage=new Map([['@axonic_local_account_v1',JSON.stringify({record:recipient})]]),shown=[],cancelled=[];
+ const storage=new Map([['@axonic_local_account_v1',JSON.stringify({record:recipient})]]),shown=[],cancelled=[],clearedWindows=[];
  const database=new DatabaseSync(':memory:');
  const db={execAsync:async sql=>database.exec(sql),runAsync:async(sql,...args)=>database.prepare(sql).run(...args),
   getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
@@ -17,7 +17,7 @@ function fixture(){
   '../../../modules/axonic-nearby':{default:{notificationCallStyle:async()=>true}},
   '../../modules/storage/chatStore':{ownChatStore:owner=>({read:async()=>storage.get('@axonic_root_chat_v1:'+owner)??null})},
   '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null,setItem:async(k,v)=>storage.set(k,v)}},
-  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'}},
+  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'},NativeModules:callWindow?{MyChatService:{clearIncomingCallWindow:id=>clearedWindows.push(id)}}:{}},
   '@notifee/react-native':{default:native,AndroidCategory:{CALL:'call'},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0}},
   './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>id===sender.account?sender:null})},
   '../callNotificationChannel':{ensureCallChannel:async()=>{}},
@@ -26,7 +26,7 @@ function fixture(){
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootCallWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)));
  const fields={record:sender,callId:'ab'.repeat(32),caller:sender.account,callee:recipient.account,callerDevice:device.id,media:'voice',kind:'invite',invitation:null,sequence:0,issuedAt:now,expiresAt:now+60000};
  const invite=c.signCallControl(fields,seed(2),now),data=w.createCallWake(invite,recipientDevice.id,now);
- return {mod,native,storage,shown,cancelled,recipient,recipientDevice,data,invite,sender,
+ return {mod,native,storage,shown,cancelled,clearedWindows,recipient,recipientDevice,data,invite,sender,
   foreground:()=>{imports['react-native'].AppState.currentState='active';},
   cancel:()=>w.createCallWake(c.signCallControl({...fields,kind:'cancel',invitation:c.callControlDigest(JSON.parse(invite)),sequence:1},seed(2),now),recipientDevice.id,now),
   block:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[{account:sender.account,blocked:true}]})),
@@ -118,6 +118,17 @@ test('new callers and contacts without a nickname get a generic call label',asyn
 });
 
 test('incoming call notification supplies answer, decline, full-screen routing and call category',async()=>{const f=fixture();await f.init();await f.mod.receiveRootCallWake(f.data);const n=f.shown[0];assert.equal(n.android.category,'call');assert.equal(n.android.fullScreenAction.launchActivity,'default');assert.deepEqual(n.android.actions.map(a=>a.pressAction.id),['root-call-decline','root-call-answer']);assert.equal(n.android.ongoing,true);assert(!n.body.includes('Open Axonic'));});
+
+test('Android call window uses the private activity and clears only the ended call',async()=>{
+ const f=fixture(true);await f.init();await f.mod.receiveRootCallWake(f.data);
+ const notice=f.shown[0],activity='com.axonic.CallNotificationActivity';
+ assert.equal(notice.android.fullScreenAction.launchActivity,activity);
+ assert.equal(notice.android.pressAction.launchActivity,activity);
+ assert(notice.android.actions.every(action=>action.pressAction.launchActivity===activity));
+ assert.equal(notice.data.expiresAt,String(JSON.parse(f.invite).expiresAt));
+ await f.mod.receiveRootCallWake(f.cancel());
+ assert.deepEqual(f.clearedWindows,[notice.data.callId]);
+});
 test('expired incoming call cannot recreate a ringing notification',async()=>{
  const f=fixture();await f.init();await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing',expiresAt:Date.now()-1});assert.equal(f.shown.length,0);
 });

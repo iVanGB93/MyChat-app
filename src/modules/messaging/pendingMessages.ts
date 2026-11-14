@@ -11,7 +11,11 @@ export function createPendingMessages(){
   subscribe(fn:()=>void){listeners.add(fn);return()=>{listeners.delete(fn);};},
   version:()=>revision,
   begin(row:PendingText){if(rows.size>=256)throw Error('Please wait for pending messages to save');rows.set(key(row),row);if(timings.size>=32)timings.delete(timings.keys().next().value!);timings.set(key(row),{started:row.at,readyMs:Date.now()-row.at});changed();return()=>{if(rows.delete(key(row)))changed();};},
-  laidOut(owner:string|null,id:string){const t=timings.get(owner+':'+id);if(t&&t.layoutMs===undefined)t.layoutMs=Date.now()-t.started;},
+  layoutCallback(owner:string|null,id:string){
+   const timing=timings.get(owner+':'+id);
+   if(!timing||timing.layoutMs!==undefined)return undefined;
+   return ()=>{if(timing.layoutMs===undefined)timing.layoutMs=Date.now()-timing.started;};
+  },
   diagnostics:()=>[...timings.values()].map(({readyMs,layoutMs})=>({readyMs,layoutMs})),
   clear(){timings.clear();if(rows.size){rows.clear();changed();}},
   reconcile(owner:string,s:RootChatState){let removed=false;for(const [k,r] of rows)if(r.owner===owner&&contains(s,r)){rows.delete(k);removed=true;}if(removed)changed();},

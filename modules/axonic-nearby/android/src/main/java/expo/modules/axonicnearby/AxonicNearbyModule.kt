@@ -102,6 +102,16 @@ class AxonicNearbyModule : Module() {
       val context = appContext.reactContext ?: throw IllegalStateException("App context unavailable")
       NotificationReadAction.install(context, id)
     }
+    AsyncFunction("pendingMessageNoticeRestores") {
+      MessageNoticeRestore.pending(requireNotNull(appContext.reactContext))
+    }
+    AsyncFunction("forgetMessageNoticeRestore") { id: String, messageId: String? ->
+      MessageNoticeRestore.forget(requireNotNull(appContext.reactContext), id, messageId)
+    }
+    AsyncFunction("clearMessageNoticeRestores") { account: String ->
+      MessageNoticeRestore.forgetAccount(requireNotNull(appContext.reactContext), account)
+    }
+    Function("completeMessageNoticeRestore") { MessageNoticeRestoreJob.complete() }
     // Unlike JS timers, this bounded wake timer does not depend on display frames.
     AsyncFunction("axonMessageWait") { milliseconds: Int, promise: Promise ->
       require(milliseconds in 1..1000)

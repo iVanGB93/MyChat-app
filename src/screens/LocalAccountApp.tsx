@@ -10,7 +10,6 @@ import {ConfirmProvider,useConfirm} from '../contexts/ConfirmContext';
 import {ThemedAlertBridge} from '../components/ui/ThemedAlert';
 import {LiveNetworkPanel} from './profile/RootNetworkPanel';
 import RootProfileScreen from './profile/RootProfileScreen';
-import { backupWordPositions, checkBackupWords } from '../modules/identity';
 
 
 import {rootCallMayRunBackground} from '../modules/calls';
@@ -48,7 +47,7 @@ import { AppState, Image, Switch, Share, StyleSheet, Text, View } from 'react-na
 
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
-import { localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
+import { identityUnlockErrorMessage, localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
 import { startLocalAccountNetwork } from '../modules/network';
 import {createForegroundNetworkLease} from '../services/foregroundNetworkLease';
@@ -76,8 +75,6 @@ function LocalAccountContent() {
   const status=useAccountState();
 
   const [autoLock, setAutoLock] = useState(false), autoLockRef = useRef(false);
-  const [positions, setPositions] = useState<[number, number]>([0, 1]);
-  const [answers, setAnswers] = useState<[string, string]>(['', '']);
   const [ready, setReady] = useState(false), [busy, setBusy] = useState(false);
 
   const [foreground, setForeground] = useState(AppState.currentState === 'active');
@@ -95,6 +92,7 @@ function LocalAccountContent() {
 
   const recovery = useRef<ReturnType<typeof createMobileRecoveryDiscovery> | null>(null);
 
+  const [lockedRecovery,setLockedRecovery]=useState<string|null>(null),[forgotPassword,setForgotPassword]=useState(false),[startOver,setStartOver]=useState(false);
   const closeRecovery = () => { recovery.current?.stop(); recovery.current = null; setCheckedRecord(''); };
 
   const [restoring, setRestoring] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
@@ -103,7 +101,7 @@ function LocalAccountContent() {
 
   const generation = useRef(0), actionRunning = useRef(false);
 
-  const clearSecrets = () => { closeRecovery(); setPassword(''); setRepeat(''); setPhrase(''); setWords(''); setRecord(''); setSetup(false); setSaved(false); setEnableBiometrics(false); setRestoring(false); setAnswers(['', '']); setNewPassword('');setNewRepeat(''); };
+  const clearSecrets = () => { closeRecovery(); setLockedRecovery(null); setForgotPassword(false); setStartOver(false); setPassword(''); setRepeat(''); setPhrase(''); setWords(''); setRecord(''); setSetup(false); setSaved(false); setEnableBiometrics(false); setRestoring(false); setNewPassword('');setNewRepeat(''); };
 
   const locked = status.state !== 'unlocked';
 
@@ -121,7 +119,7 @@ function LocalAccountContent() {
 
     try { await work(); }
 
-    catch (e) { if (restoring && !setup) { closeRecovery(); } if (generation.current === own) setError(e instanceof Error ? e.message : t("Unable to complete this action")); }
+    catch (e) { if (restoring && !setup) { closeRecovery(); } if (generation.current === own) setError(e instanceof Error ? (e.message === identityUnlockErrorMessage ? t(identityUnlockErrorMessage) : e.message) : t("Unable to complete this action")); }
 
     finally { if (generation.current === own && !setup) { setPassword(''); setRepeat('');setNewPassword('');setNewRepeat(''); } actionRunning.current = false; setBusy(false); }
 
@@ -133,7 +131,11 @@ function LocalAccountContent() {
 
     const account = localAccount.status().account;
 
-    setLoginName(account ? await localAccountUsername.read(account) : null); setReady(true);
+    setReady(true);
+    // The display name is optional and must not gate account startup.
+    if(account)void localAccountUsername.read(account).then(name=>{
+      if(localAccount.status().account===account)setLoginName(current=>current??name);
+    }).catch(()=>{});
 
   }
 
@@ -233,7 +235,7 @@ function LocalAccountContent() {
 
         <View style={styles.header}>
 
-          <View style={styles.logoMark}><Image source={require('../../assets/logo.png')} style={{width:46,height:46}} resizeMode="contain"/></View>
+          <View style={styles.logoMark}><Image source={require('../../assets/logo.png')} style={styles.logoImage} resizeMode="contain"/></View>
 
           <Text style={styles.title}>{t("AXONIC")}</Text><View style={styles.underline}/>
 
@@ -255,7 +257,7 @@ function LocalAccountContent() {
 
           <Text style={styles.text}>{t("Create an identity or recover yours with your private recovery words.")}</Text>
 
-          {authButton(t("CREATE IDENTITY"), () => void action(async () => { const created = await localAccount.beginCreate(); const selected = await backupWordPositions(created.split(' ').length); if (localAccount.status().state === 'backup') {setPhrase(created);setPositions(selected);setAnswers(['','']);} }))}
+          {authButton(t("CREATE IDENTITY"), () => void action(async () => { const created = await localAccount.beginCreate(); if (localAccount.status().state === 'backup') setPhrase(created); }))}
 
           {authButton(t("RECOVER IDENTITY"), () => {setRestoring(true);setError('');})}
 
@@ -275,30 +277,35 @@ function LocalAccountContent() {
 
             {!!phrase && <View style={styles.wordGrid}>{phrase.split(' ').map((word,index)=><Text key={index} style={styles.word}>{index+1}. {word}</Text>)}</View>}
 
-            {restoring ? <RecoveryWordsInput value={words} onChangeText={setWords} editable={!disabled}/> : <>
-              <Text style={styles.text}>{t("Confirm two words from your backup.")}</Text>
-              {positions.map((position,index)=><Input key={position} label={`Word #${position+1}`} accessibilityLabel={t("Confirm word {0}",{0:position+1})} placeholder={t("Enter word #{0}",{0:position+1})} autoCapitalize="none" autoCorrect={false} autoComplete="off" textContentType="none" maxLength={32} value={answers[index]} onChangeText={value=>setAnswers(old=>index===0?[value,old[1]]:[old[0],value])} editable={!disabled}/>)}
-            </>}
+            {restoring && <RecoveryWordsInput value={words} onChangeText={setWords} editable={!disabled}/>}
 
-            {authButton(t("CONTINUE"), () => void action(async () => {
-
+            {authButton(t("CONTINUE"), () => {
               const own = generation.current;
+              if (!restoring) {
+                confirm({
+                  title: t("Did you save your recovery words?"),
+                  message: t("Axonic doesn’t keep a copy of your recovery words, and we can’t access them. Keeping them safe is your responsibility. If you forget your password and lose these words, you could lose access to your Axonic ID."),
+                  icon: 'shield-checkmark-outline',
+                  buttons: [
+                    {text: t("Show me the words again"), style: 'cancel'},
+                    {text: t("I saved my words"), onPress: () => {
+                      if (generation.current === own && localAccount.status().state === 'backup') setSetup(true);
+                    }},
+                  ],
+                });
+                return;
+              }
 
-              if (restoring) {
-
+              void action(async () => {
+                if(lockedRecovery&&accountFromRecoveryPhrase(words)!==lockedRecovery)throw Error(t("These recovery words belong to a different Axonic ID."));
                 const discovery = recovery.current ??= createMobileRecoveryDiscovery();
-
                 const raw = await findRecoveryRecord(words, discovery.lookup, Date.now);
-
                 if (own !== generation.current) return;
-
-                setRecord(raw);setCheckedRecord(raw);
-
-              } else { if (!checkBackupWords(phrase,positions,answers)) throw Error(t("The two words do not match. Check their numbers in your backup.")); setWords(phrase); }
-
-              setSetup(true);
-
-            }), restoring ? !words.trim() : answers.some(answer=>!answer.trim()))}
+                setRecord(raw);
+                setCheckedRecord(raw);
+                setSetup(true);
+              });
+            }, restoring ? !words.trim() : !phrase)}
 
           </> : <>
 
@@ -336,11 +343,11 @@ function LocalAccountContent() {
 
               const expectedAccount = accountFromRecoveryPhrase(restoring ? words : phrase);
 
-              await localAccountUsername.write(expectedAccount, username);
+              if(!lockedRecovery)await localAccountUsername.write(expectedAccount, username);
 
               if (own !== generation.current) return;
 
-              setLoginName(username.trim());
+              if(!lockedRecovery)setLoginName(username.trim());
 
               if (!saved) {
 
@@ -350,7 +357,7 @@ function LocalAccountContent() {
 
                   const discovery = recovery.current;
 
-                  await localAccount.restore(words, record, secret, async () => { await checkRecoveryRecord(record, discovery.lookup, Date.now, true); });
+                  await localAccount.restore(words, record, secret, async () => { await checkRecoveryRecord(record, discovery.lookup, Date.now, true); }, lockedRecovery??undefined);
 
                 } else await localAccount.confirmBackup(phrase, secret);
 
@@ -371,6 +378,7 @@ function LocalAccountContent() {
 
               setLoginName(username.trim());
 
+              if (lockedRecovery && !enableBiometrics) await biometrics.disable();
               if (enableBiometrics) await biometrics.enroll(secret);
 
               else await localAccount.unlock(secret);
@@ -384,11 +392,33 @@ function LocalAccountContent() {
 
           </>}
 
+          {lockedRecovery&&!setup&&!startOver&&authButton(t("I don’t have my recovery words"),()=>setStartOver(true))}
+          {lockedRecovery&&!setup&&startOver&&<>
+            <Text style={styles.text}>{t("If another device is still signed in to this account, check it before starting over.")}</Text>
+            {authButton(t("Start over with a new Axonic ID"),()=>confirm({
+              title:t("Start over with a new Axonic ID?"),
+              message:t("This removes the old account, chats, call history, and media stored only in Axonic from this device. Your new ID won’t inherit your old groups. Gallery copies and messages on other people’s devices stay."),
+              buttons:[{text:t("Cancel"),style:'cancel'},{text:t("Remove account and start over"),style:'destructive',onPress:()=>void action(async()=>{
+                await localAccount.prepareLockedDeviceRemoval(lockedRecovery,true);
+                clearSecrets();
+              })}],
+            }))}
+          </>}
           {authButton(t("CANCEL"), cancelSetup)}
 
         </View>}
 
-        {ready && status.state === 'locked' && !setup && <View style={styles.card}>
+        {ready&&status.state==='locked'&&forgotPassword&&!restoring&&<View style={styles.card}>
+          <Text style={styles.heading}>{t("Forgot password?")}</Text>
+          {biometrics.available()&&authButton(t("USE BIOMETRICS"),()=>void action(()=>biometrics.unlock()))}
+          <Text style={styles.text}>{t("Your recovery words let you keep your Axonic ID and choose a new password. Recovery replaces the account’s device keys and can sign out other devices. Axonic keeps existing chat and media files on this phone, but pending deliveries to the old device keys may be lost.")}</Text>
+          {authButton(t("RECOVER IDENTITY"),()=>{
+            if(!status.account)return;
+            setLockedRecovery(status.account);setRestoring(true);setError('');
+          })}
+          {authButton(t("CANCEL"),cancelSetup)}
+        </View>}
+        {ready && status.state === 'locked' && !restoring && !setup && !forgotPassword && <View style={styles.card}>
 
           <Text style={styles.heading}>{t("Welcome back")}</Text>
 
@@ -409,6 +439,7 @@ function LocalAccountContent() {
 
           {biometrics.available() && authButton(t("USE BIOMETRICS"), () => void action(() => biometrics.unlock()))}
 
+          {authButton(t("Forgot password?"),()=>{setError('');setPassword('');setForgotPassword(true);})}
           <Text style={styles.text}>{t("Your password unlocks this device. It is never sent to another neuron.")}</Text>
 
         </View>}
@@ -425,6 +456,7 @@ const makeLocalStyles = (colors:ReturnType<typeof useTheme>['colors'])=>StyleShe
 
   title: { fontSize: Font.size.title, fontWeight: '800', letterSpacing:8, color: colors.primary }, subtitle: { fontSize: Font.size.xs, letterSpacing:2, color: colors.textSecondary },
 
+  logoImage:{width:64,height:64,borderRadius:Chrome.cardRadius-4},
   header:{alignItems:'center',marginBottom:Spacing.lg},logoMark:{width:72,height:72,borderRadius:Chrome.cardRadius,borderWidth:2,borderColor:colors.primary,alignItems:'center',justifyContent:'center',marginBottom:Spacing.lg,shadowColor:colors.primary,shadowOpacity:Chrome.shadowOpacity,shadowRadius:16,elevation:8},underline:{width:48,height:2,backgroundColor:colors.accent,marginTop:6,marginBottom:Spacing.sm},
 
   wordGrid:{flexDirection:'row',flexWrap:'wrap',gap:8},word:{width:'46%',padding:8,color:colors.text,fontSize:16},

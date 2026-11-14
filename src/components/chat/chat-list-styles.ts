@@ -1,5 +1,7 @@
 import {StyleSheet} from 'react-native';
-import {Font,Spacing,Radius} from '../../theme';
+import {Chrome,Font,Spacing,Radius} from '../../theme';
+export const selectionBarHeight=52;
+
 export const chatListStyles = StyleSheet.create({
   container: { flex: 1 },
   emptyContainer: { flexGrow: 1 },
@@ -101,12 +103,19 @@ export const chatListStyles = StyleSheet.create({
   },
 
   selectionBar: {
+    height: selectionBarHeight,
+    borderRadius: Chrome.panelRadius,
+    shadowOpacity: Chrome.shadowOpacity,
+    position: 'absolute',
+    zIndex: 2,
+    elevation: 3,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 3 },
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 48,
     paddingHorizontal: Spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderWidth: 1,
   },
   selectionBarAction: {
     minHeight: 42,

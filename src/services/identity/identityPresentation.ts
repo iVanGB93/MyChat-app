@@ -34,21 +34,3 @@ export function parseIdentityCode(code:string):string|null{
  return 'axonic:1:'+bytesToHex(body);
  }catch{return null;}
 }
-
-export async function chooseBackupWords(count: number, random: (size: number) => Promise<Uint8Array>): Promise<[number, number]> {
-  if (count !== 12 && count !== 24) throw Error('Invalid recovery phrase');
-  const chosen = new Set<number>(), ceiling = 256 - (256 % count);
-  while (chosen.size < 2) {
-    for (const byte of await random(8)) {
-      if (byte < ceiling) chosen.add(byte % count);
-      if (chosen.size === 2) break;
-    }
-  }
-  return [...chosen].sort((a, b) => a - b) as [number, number];
-}
-export function checkBackupWords(phrase: string, positions: [number, number], answers: [string, string]): boolean {
-  const words = phrase.trim().toLowerCase().split(/\s+/);
-  return positions[0] !== positions[1] && positions.every((position, i) =>
-    Number.isInteger(position) && position >= 0 && position < words.length &&
-    answers[i].trim().toLowerCase() === words[position]);
-}

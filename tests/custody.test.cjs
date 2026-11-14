@@ -293,6 +293,17 @@ test('ranking changes do not duplicate a job already held by the selected custod
  assert.equal(seals,1);assert.deepEqual(packets[0],packets[1]);
  assert.equal((await own.get(a.record.account,id)).relay,hub.record.account);
 });
+test('single-custodian mode keeps a durable assignment after an ambiguous handoff',async t=>{
+ const f=fixture(t),[a,hub,b,backup]=f.ids,own=f.load('ownCustodyStore').createOwnCustodyStore(),calls=[];
+ const id='0a'.repeat(32);let relays=[hub.record.account,backup.record.account];
+ const deps={owner:()=>a.record.account,allowed:()=>true,now:f.now,records:f.records,own,singleCustodian:true,relays:()=>relays,receive:async()=>null,
+  request:async relay=>{calls.push(relay);assert.equal((await own.get(a.record.account,id)).relay,relay);return null;},seal:async(_record,_device,id,text)=>f.seal(text,id)};
+ const create=f.load('custodyCourier').createCustodyCourier;
+ await create(deps).deposit(b.record.account,'one custodian',id);
+ relays=[backup.record.account];await create(deps).deposit(b.record.account,'one custodian',id);
+ relays=[backup.record.account,hub.record.account];await create(deps).deposit(b.record.account,'one custodian',id);
+ assert.deepEqual(calls,[hub.record.account,hub.record.account]);
+});
 test('a full preferred relay yields to another connected custodian without resealing',async t=>{
  const f=fixture(t),[a,hub,b,backup]=f.ids,own=f.load('ownCustodyStore').createOwnCustodyStore(),calls=[];let seals=0;
  const q=f.load('custodyCourier').createCustodyCourier({owner:()=>a.record.account,allowed:()=>true,now:f.now,records:f.records,own,
@@ -558,9 +569,10 @@ test('inline wake carries bounded ciphertext bound to the signed event, with met
  assert.equal(p.custodyWakeEnvelope({...data,envelope:'invalid'},event,f.now()),null);
 });
 test('inline forwarder falls back for an old gateway without marking the message delivered',async t=>{
- const f=fixture(t),e=await f.seal(),sent=[];await f.request(f.service(),0,'deposit',e);
- const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({inlineEnvelope:true,store:f.store,records:f.records,current:()=>true,now:f.now,peers:()=>['gateway'],request:async(_,raw)=>{const q=JSON.parse(raw);sent.push(q);return JSON.stringify({status:q.data.envelope?'rejected':'forwarded'});}});
+ const f=fixture(t),e=await f.seal(),sent=[],custodian=f.ids[1].record.account;await f.request(f.service(),0,'deposit',e);
+ const forward=f.load('custodyWakeForwarder').createCustodyWakeForwarder({inlineEnvelope:true,custodian,store:f.store,records:f.records,current:()=>true,now:f.now,peers:()=>['gateway'],request:async(_,raw)=>{const q=JSON.parse(raw);sent.push(q);return JSON.stringify({status:q.data.envelope?'rejected':'forwarded'});}});
  await forward.tick();assert.equal(sent.length,2);assert(sent[0].data.envelope);assert.equal(sent[1].data.envelope,undefined);
+ assert.deepEqual(sent.map(request=>request.data.custodian),[custodian,custodian]);
  assert.equal((await f.store.transaction(r=>r[0].packet)).kind,'envelope');
 });
 test('all supported maintenance packets are signed silent without suppressing text or media',async t=>{

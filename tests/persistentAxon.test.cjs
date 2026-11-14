@@ -16,14 +16,14 @@ const random = n => new Uint8Array(crypto.randomBytes(n));
 const now = 1_800_000_000_000;
 function identity() {
   const signingSeed = random(32);
-  return { signingSeed, record: p.issueRecord(random(32), [p.publicDevice(signingSeed, random(32))], now) };
+  const rootSeed=random(32);return { rootSeed,signingSeed, record: p.issueRecord(rootSeed, [p.publicDevice(signingSeed, random(32))], now) };
 }
 function store() {
-  const records = new Map();
-  return { read: async id => records.get(id) ?? null, compareAndSet: async (id, expected, next) => {
+  const records = new Map(),listeners=new Set();
+  return {subscribe:f=>{listeners.add(f);return()=>listeners.delete(f);}, read: async id => records.get(id) ?? null, compareAndSet: async (id, expected, next) => {
     const old = records.get(id);
     if ((old ? p.recordDigest(old) : null) !== expected) return false;
-    records.set(id, next); return true;
+    records.set(id, next);for(const f of listeners)f(next); return true;
   } };
 }
 function wires(media = [false,false], latency = 0) {
@@ -54,6 +54,16 @@ async function settle(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await new Promise(r => setTimeout(r, 5)); }
   assert.fail('condition did not settle');
 }
+
+test('durable replacement fences an established device without waiting for renewal; ordinary renewal stays connected',async t=>{
+ const registry=store(),f=pair(t,{0:{store:registry}});await Promise.all(f.sessions.map(s=>s.ready));
+ const old=f.identities[1],renewed=p.issueRecord(old.rootSeed,old.record.devices,now+1,old.record);
+ assert(await registry.compareAndSet(old.record.account,p.recordDigest(old.record),renewed));assert.equal(f.closed[0],0);
+ const next=p.issueRecord(old.rootSeed,[p.publicDevice(random(32),random(32))],now+2,renewed);
+ assert(await registry.compareAndSet(old.record.account,p.recordDigest(renewed),next));assert.equal(f.closed[0],1);
+ assert.equal(f.sessions[0].snapshot().closeReason,'peer-device-superseded');
+ assert.equal(await registry.compareAndSet(old.record.account,p.recordDigest(old.record),old.record),false);
+});
 
 test('negotiated relay streams upload/download without giant wire frames or early custody acknowledgement',async t=>{
  const data=Buffer.alloc(3_000_080,17).toString('base64'),digest='a'.repeat(64);let stored=false,release;
@@ -441,6 +451,7 @@ test('concurrent identity pins accept only the exact durably stored record', asy
 });
 
 const { createLocalIdentityController } = load('localIdentityController');
+const {openIdentityAxon}=load('openIdentityAxon');
 const { createIdentityNetwork } = load('identityNetwork');
 async function testMessagePair(t, transform, existing, received, normal = false) {
   const ids=existing??[await controller(),await controller()],bus=wires(), inbox=[[],[]];
@@ -448,7 +459,7 @@ async function testMessagePair(t, transform, existing, received, normal = false)
     const wire=bus.wire(i),send=wire.send;
     wire.send=raw=>{const changed=transform?transform(raw,i):raw;if(changed!==null)send(changed);};
     const handler=message=>received?received(message,i):((inbox[i].push(message)),true);
-    return id.createAxon(wire,store(),ids[1-i].status().account,()=>{},undefined,undefined,handler,undefined,normal?handler:undefined);
+    return openIdentityAxon(id,{wire,store:store(),expectedAccount:ids[1-i].status().account,onTestMessage:handler,onChatMessage:normal?handler:undefined});
   }));
   t.after(()=>{sessions.forEach(s=>s.stop());if(!existing)ids.forEach(id=>id.lock());});
   await Promise.all(sessions.map(s=>s.ready));
@@ -518,8 +529,7 @@ test('late authenticated normal-chat ACK preserves the connection without confir
 
 test('old peers without test capability cannot receive test payloads',async t=>{
   const ids=[await controller(),await controller()],bus=wires();
-  const sessions=await Promise.all(ids.map((id,i)=>id.createAxon(bus.wire(i),store(),ids[1-i].status().account,
-    ()=>{},undefined,undefined,i===0?()=>true:undefined)));
+  const sessions=await Promise.all(ids.map((id,i)=>openIdentityAxon(id,{wire:bus.wire(i),store:store(),expectedAccount:ids[1-i].status().account,onTestMessage:i===0?()=>true:undefined})));
   t.after(()=>ids.forEach(id=>id.lock()));await Promise.all(sessions.map(s=>s.ready));
   assert.equal(await sessions[0].sendTestMessage('unsupported'),false);
   assert.ok(sessions.every(s=>s.snapshot().state==='connected'));
@@ -535,24 +545,24 @@ async function controller(randomSource = async n => random(n), clock = () => now
 test('controller-owned axons mutually authenticate and lock closes both immediately', async t => {
   const a = await controller(), b = await controller(), w = wires();
   t.after(() => { a.lock(); b.lock(); });
-  const [one, two] = await Promise.all([a.createAxon(w.wire(0), store(), b.status().account), b.createAxon(w.wire(1), store(), a.status().account)]);
+  const [one, two] = await Promise.all([openIdentityAxon(a,{wire:w.wire(0),store:store(),expectedAccount:b.status().account}), openIdentityAxon(b,{wire:w.wire(1),store:store(),expectedAccount:a.status().account})]);
   await Promise.all([one.ready, two.ready]);
   a.lock(); assert.equal(one.snapshot().state, 'closed'); assert.equal(two.snapshot().state, 'closed');
   assert.equal(a.publicRecord(), null);
-  await assert.rejects(a.createAxon(w.wire(0), store()), /unavailable/);
+  await assert.rejects(openIdentityAxon(a,{wire:w.wire(0),store:store()}), /unavailable/);
 });
 test('locking while socket randomness is pending closes the wire and prevents late startup', async () => {
   let release, blocked = false, closed = 0;
   const c = await controller(async n => { if (blocked) await new Promise(r => { release = r; }); return random(n); });
   blocked = true;
-  const opening = c.createAxon({ send() { assert.fail('must not send after lock'); }, listen() { assert.fail('must not attach after lock'); }, close() { closed++; } }, store());
+  const opening = openIdentityAxon(c,{wire:{ send() { assert.fail('must not send after lock'); }, listen() { assert.fail('must not attach after lock'); }, close() { closed++; } },store:store()});
   c.lock(); assert.equal(closed, 1); release(); await assert.rejects(opening, /interrupted/); assert.equal(closed, 1);
 });
 function lifecycleIdentity() {
   const listeners = new Set(); let unlocked = true;
   return { status: () => ({ state: unlocked ? 'unlocked' : 'locked', account: 'axonic:1:' + 'ab'.repeat(32), busy: false }),
     subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); },
-    createAxon() { assert.fail('canceled transport must not enter identity controller'); },
+    withConnectionCredentials() { assert.fail('canceled transport must not enter identity controller'); },
     set(value) { unlocked = value; for (const fn of listeners) fn(); } };
 }
 test('network lock and unlock retain canceled dial reservations until the transport settles', async () => {
@@ -1388,11 +1398,11 @@ test('first-contact custody resolves a signed sender record before decrypting an
  let commits=0,lookups=0;
  assert.equal(await b.receiveCustody(envelope,records,async()=>{commits++;return true;}),null);
  const resolver=load('peerIdentityResolver').createPeerIdentityResolver({records,now:()=>now,current:()=>true,
-  lookup:async account=>{lookups++;assert.equal(account,a.status().account);return {status:'found',queried:1,answered:1,rejected:0,sources:[],packet:{record:a.publicRecord(),history:[]}};}});
+  lookup:async account=>{lookups++;assert.equal(account,a.status().account);const {record,history}=JSON.parse(a.recoveryRecord());return {status:'found',queried:1,answered:1,rejected:0,sources:[],packet:{record,history}};}});
  t.after(()=>resolver.stop());
  const operational={...records,read:async account=>{const result=await resolver.resolve(account);return result.status==='found'?result.record:null;}};
  const receipt=await b.receiveCustody(envelope,operational,async m=>{commits++;assert.equal(m.text,'first contact from a new neuron');return true;});
- assert.equal(lookups,1);assert.equal(commits,1);assert.ok(await records.read(a.status().account));
+ assert.equal(lookups,1,"directory requests");assert.equal(commits,1,"inbox commits");assert.ok(await records.read(a.status().account));
  assert.equal(await load('custodyProtocol').verifyCustody(receipt,records,now),true);
  const composition=require('node:fs').readFileSync('src/composition/neuronRuntime.ts','utf8');
  assert.match(composition,/receiveCustody\(envelope,operationalRecords,m=>receiveMessage\(m,relay\),undefined,relay\)/);

@@ -7,8 +7,13 @@ const path = require('node:path');
 const compiled = ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/services/stickers.ts'), 'utf8'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
+const protocol = {};
+new Function('exports', ts.transpileModule(fs.readFileSync(path.join(__dirname, '../src/services/identity/stickerProtocol.ts'), 'utf8'), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+}).outputText)(protocol);
 function fixture(disk = new Map(), failWrite = false) {
   const context = { exports: {}, require: (name) => {
+    if (name === './identity/stickerProtocol') return protocol;
     assert.equal(name, '@react-native-async-storage/async-storage');
     return { default: { getItem: async (key) => disk.get(key) ?? null, setItem: async (key, value) => {
       if (failWrite) throw new Error('disk full');
@@ -29,6 +34,12 @@ test('every bundled sticker roundtrips through the existing text transport', () 
     assert.equal(s.parseSticker(content.replace(':v1:', ':v2:')), undefined);
   }
   assert.equal(s.parseSticker('hello'), undefined);
+});
+test('wire recognition distinguishes built-in stickers and custom image attachments', () => {
+  const { STICKERS, stickerMessage, identifySticker, IMPORTED_STICKER_CONTENT } = protocol;
+  assert.equal(identifySticker(stickerMessage(STICKERS[0])).id, STICKERS[0].id);
+  assert.deepEqual(identifySticker('', {name: IMPORTED_STICKER_CONTENT, mime: 'image/webp'}), {kind: 'custom'});
+  assert.equal(identifySticker('', {name: IMPORTED_STICKER_CONTENT, mime: 'text/plain'}), undefined);
 });
 test('recent is ordered, deduplicated, persistent and account scoped', async () => {
   const s = fixture();

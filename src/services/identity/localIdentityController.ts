@@ -8,17 +8,14 @@ import { signAxonSignal, type AxonSignal } from './axonSignaling';
 import { signCallControl, type CallControl } from './callControlProtocol';
 import { signCallControlReceipt } from './callControlDelivery';
 import { signCallMediaSignal, type CallMediaSignal } from './callMediaProtocol';
-import { publicDevice } from './identityProtocol';
+import { advertiseGroupCustody, supportsSignedGroupCustody, publicDevice, recordDigest } from './identityProtocol';
 import {signRootGroupBackup} from './rootGroups';
 import type {RootGroupMembership} from './rootGroupTypes';
-import type { IntroductionHooks } from './identityIntroductions';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { verifyRecord, renewIdentityRecord, validRecordHistory, HISTORY_BYTES, HISTORY_RECORDS, type IdentityRecord } from './identityProtocol';
 import { signIdentityRequest, type IdentityRequest, type IdentityRecordStore } from './identityAdmission';
-import { createPersistentAxon, type AxonWire } from './persistentAxon';
-import type { TestMessageHandler } from './axonTestMessages';
 import { createLocalIdentity, recoverReplacingDevices, destroyIdentity, sealIdentity, unlockIdentity, rootFromEntropy,
   type SecureRandom, type UnlockedIdentity, type PasswordDerivation } from './identityVault';
 
@@ -38,8 +35,12 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
   // Re-derive once per unlock, rather than doing two curve operations for every chunk.
   let cachedDeviceId: string | null = null, removing=false;
   let account: string | null = null, state: LocalIdentityStatus['state'] = 'empty', busy = false, epoch = 0;
-  const axons = new Set<() => void>();
-  const closeAxons = () => { for (const close of [...axons]) close(); };
+  const connections = new Set<() => void>();
+  const closeConnections = () => {
+    const pending=[...connections];
+    connections.clear();
+    for(const revoke of pending)revoke();
+  };
   const listeners = new Set<() => void>();
   const emit = () => { for (const listener of listeners) listener(); };
   const assertCurrent = (e: number) => { if (epoch !== e) throw Error('Account operation interrupted'); };
@@ -50,6 +51,15 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
     try { return await work(e); } finally { busy = false; emit(); }
   }
   return {
+    prepareLockedDeviceRemoval(expectedAccount:string,confirmed:true){return exclusive(async e=>{
+      if(confirmed!==true||state!=='locked'||identity||draft||account!==expectedAccount||!storage.beginRemoval)throw Error('Account changed');
+      const raw=await storage.readVault();assertCurrent(e);
+      const record=raw&&JSON.parse(raw).record;
+      if(!record||record.account!==expectedAccount||!verifyRecord(record,now(),true))throw Error('Account changed');
+      try{await storage.beginRemoval(expectedAccount);}finally{
+        removing=true;epoch++;closeConnections();emit();
+      }
+    });},
     status(): LocalIdentityStatus { return { state, account, busy,...(removing?{removalPending:true}:{}) }; },
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     inspect() { return exclusive(async e => {
@@ -120,12 +130,18 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       if (!identity || busy) throw Error('Unlock the local account first');
       return JSON.stringify({ version: 1, record: identity.record, history: identity.history ?? [] });
     },
-    restore(phrase: string, recoveryRecord: string, password: string, verify?: () => Promise<void>) { return exclusive(async e => {
-      if (identity || draft || await storage.readVault()) throw Error('A local identity already exists');
+    restore(phrase: string, recoveryRecord: string, password: string, verify?: () => Promise<void>, expectedAccount?:string) { return exclusive(async e => {
+      const raw=await storage.readVault();
+      if(identity||draft)throw Error('A local identity already exists');
+      const local=expectedAccount&&raw?JSON.parse(raw).record:undefined;
+      if(expectedAccount){
+        if(state!=='locked'||account!==expectedAccount||!local||local.account!==expectedAccount||!verifyRecord(local,now(),true)||!verify)throw Error('Account changed');
+      }else if(raw)throw Error('A local identity already exists');
       assertCurrent(e);
       if (recoveryRecord.length > 12_000) throw Error('Invalid recovery record');
       const packet = JSON.parse(recoveryRecord);
       if (packet.version !== 1 || !validRecordHistory(packet.history, packet.record, now())) throw Error('Invalid recovery record');
+      if(local&&(packet.record.account!==expectedAccount||![...packet.history,packet.record].some(record=>recordDigest(record)===recordDigest(local))))throw Error('Recovery record does not match the locked account');
       const restored = await recoverReplacingDevices(phrase, packet.record, random, now());
       let secret: Uint8Array | undefined;
       try {
@@ -133,10 +149,15 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         if (verify) { await verify(); assertCurrent(e); }
         restored.history = [...packet.history, packet.record];
         while (restored.history.length > HISTORY_RECORDS || new TextEncoder().encode(JSON.stringify(restored.history)).length > HISTORY_BYTES) restored.history.shift();
-        secret = await random(32); assertCurrent(e);
+        if(local){
+          const savedSecret=await storage.readDeviceSecret();
+          if(!savedSecret||!/^[0-9a-f]{64}$/.test(savedSecret))throw Error('Local account storage is unavailable');
+          secret=hexToBytes(savedSecret);
+        }else secret=await random(32);
+        assertCurrent(e);
         const sealed = await sealIdentity(restored, password, secret, random, now(), derive); assertCurrent(e);
         if (verify) { await verify(); assertCurrent(e); }
-        await storage.writeDeviceSecret(bytesToHex(secret)); assertCurrent(e);
+        if(!local){await storage.writeDeviceSecret(bytesToHex(secret));assertCurrent(e);}
         await storage.writeVault(JSON.stringify(sealed));
         account = sealed.record.account; state = 'locked';
         // Restored accounts require an explicit unlock; a background race never exposes keys.
@@ -152,14 +173,20 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         opened = await unlockIdentity(raw, password, secret, now(), derive); assertCurrent(e);
         const root = rootFromEntropy(opened.entropy);
         let renewed: ReturnType<typeof renewIdentityRecord>;
-        try { renewed = renewIdentityRecord(root, opened.record, opened.history ?? [], now()); }
+        try {
+          const device=publicDevice(opened.signingSeed,opened.encryptionSeed);
+          const devices=!supportsSignedGroupCustody(opened.record,now())&&opened.record.devices[0]?.id===device.id
+            ?opened.record.devices.map(d=>d.id===device.id?advertiseGroupCustody(opened!.record.account,d,opened!.signingSeed):d)
+            :opened.record.devices;
+          renewed = renewIdentityRecord(root, opened.record, opened.history ?? [], now(),devices);
+        }
         finally { root.fill(0); }
         if (renewed) {
           opened.record = renewed.record; opened.history = renewed.history;
           const sealed = await sealIdentity(opened, password, secret, random, now(), derive); assertCurrent(e);
           await storage.writeVault(JSON.stringify(sealed)); assertCurrent(e);
         }
-        closeAxons(); if (identity) destroyIdentity(identity);
+        closeConnections(); if (identity) destroyIdentity(identity);
         identity = opened; cachedDeviceId = null; opened = undefined; account = identity.record.account; state = 'unlocked';
       } finally { secret.fill(0); if (opened) destroyIdentity(opened); }
     }); },
@@ -173,7 +200,7 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
         verified=await unlockIdentity(raw,password,secret,now(),derive);assertCurrent(e);
         if(verified.record.account!==expectedAccount)throw Error('Account changed');
         try{await storage.beginRemoval(expectedAccount);}finally{
-          removing=true;epoch++;closeAxons();if(identity)destroyIdentity(identity);if(draft)destroyIdentity(draft);
+          removing=true;epoch++;closeConnections();if(identity)destroyIdentity(identity);if(draft)destroyIdentity(draft);
           identity=null;draft=null;cachedDeviceId=null;state='locked';emit();
         }
       }finally{secret.fill(0);if(verified)destroyIdentity(verified);}
@@ -253,33 +280,26 @@ export function createLocalIdentityController(storage: IdentityStorage, random: 
       if (!identity || busy) throw Error('Unlock the local account first');
       return signAxonSignal(identity.record, identity.signingSeed, identity.history ?? [], target, session, kind, sdp, now());
     },
-    /** Keys stay inside the controller. Pending sockets are owned before the first await. */
-    async createAxon(wire: AxonWire, store: IdentityRecordStore, expectedAccount?: string, onClosed = () => {}, introductions?: IntroductionHooks, onSignal?: Parameters<typeof createPersistentAxon>[0]['onSignal'], onTestMessage?: TestMessageHandler, onCustody?: Parameters<typeof createPersistentAxon>[0]['onCustody'], onChatMessage?: TestMessageHandler, onDirectory?: Parameters<typeof createPersistentAxon>[0]['onDirectory'], onPush?: Parameters<typeof createPersistentAxon>[0]['onPush'], onCallControl?: Parameters<typeof createPersistentAxon>[0]['onCallControl'], onCallMedia?: Parameters<typeof createPersistentAxon>[0]['onCallMedia'], onCallRelay?: Parameters<typeof createPersistentAxon>[0]['onCallRelay'], onCallMediaRelay?: Parameters<typeof createPersistentAxon>[0]['onCallMediaRelay'], onRelayedCallMedia?: Parameters<typeof createPersistentAxon>[0]['onRelayedCallMedia'], onAttachment?:Parameters<typeof createPersistentAxon>[0]['onAttachment']) {
-      const e = epoch, source = identity;
-      let session: ReturnType<typeof createPersistentAxon> | undefined, closed = false;
-      const close = () => {
-        if (closed) return;
-        closed = true; axons.delete(close);
-        session?.stop();
-        try { wire.close(); } catch { /* Continue releasing ownership. */ }
-        try { onClosed(); } catch { /* Observer failures cannot preserve a session. */ }
-      };
-      if (!source || busy || axons.size >= 10) { close(); throw Error('Local identity unavailable or axon capacity reached'); }
-      axons.add(close);
-      try {
-        const instance = await random(32); assertCurrent(e);
-        if (closed || source !== identity || busy) throw Error('Account operation interrupted');
-        session = createPersistentAxon({ record: source.record, history: source.history, signingSeed: source.signingSeed, instance, store,
-          expectedAccount, introductions, onSignal, onCustody, onDirectory, onPush, onCallControl, onCallMedia, onCallRelay, onCallMediaRelay, onRelayedCallMedia, onAttachment,
-          testMessages: onTestMessage ? { encryptionSeed: source.encryptionSeed, received: onTestMessage } : undefined,
-          chatMessages: onChatMessage ? { encryptionSeed: source.encryptionSeed, received: onChatMessage } : undefined,
-          wire, now, random, current: () => !closed && epoch === e && source === identity, onClosed: close });
-        if (closed) session.stop();
-        return session;
-      } catch (error) { close(); throw error; }
+    /** Lease unlocked credentials to a connection and revoke them on lock. */
+    async withConnectionCredentials<T>(
+      revoke:()=>void,
+      start:(credentials:Pick<UnlockedIdentity,'record'|'history'|'signingSeed'|'encryptionSeed'> & {
+        instance:Uint8Array;now:()=>number;random:SecureRandom;current:()=>boolean;
+      },release:()=>void)=>T,
+    ){
+      const e=epoch,source=identity;
+      const release=()=>{connections.delete(revoke);};
+      if(!source||busy||connections.size>=10)throw Error('Local identity unavailable or axon capacity reached');
+      connections.add(revoke);
+      try{
+        const instance=await random(32);assertCurrent(e);
+        if(!connections.has(revoke)||source!==identity||busy)throw Error('Account operation interrupted');
+        return start({record:source.record,history:source.history,signingSeed:source.signingSeed,encryptionSeed:source.encryptionSeed,
+          instance,now,random,current:()=>connections.has(revoke)&&epoch===e&&source===identity},release);
+      }catch(error){release();throw error;}
     },
     lock() {
-      epoch++; closeAxons(); if (identity) destroyIdentity(identity); if (draft) destroyIdentity(draft);
+      epoch++; closeConnections(); if (identity) destroyIdentity(identity); if (draft) destroyIdentity(draft);
       identity = null; cachedDeviceId = null; draft = null; state = account ? 'locked' : 'empty'; emit();
     },
   };

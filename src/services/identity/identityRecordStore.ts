@@ -9,6 +9,7 @@ interface Row { account: string; record: string; digest: string }
 // first pins can fail with SQLITE_BUSY instead of returning a lost CAS. Serialize
 // this database's writes across store instances; the SQL transaction remains atomic.
 let pendingWrite: Promise<void> = Promise.resolve();
+const recordListeners=new Set<(record:IdentityRecord)=>void>();
 function serializeWrite<T>(work: () => Promise<T>): Promise<T> {
   const result = pendingWrite.then(work);
   pendingWrite = result.then(() => {}, () => {});
@@ -29,6 +30,7 @@ export function createMobileIdentityRecordStore(now: () => number, capacity = 25
     return record;
   }
   return {
+    subscribe(listener){recordListeners.add(listener);return()=>{recordListeners.delete(listener);};},
     async read(account) {
       if (!validAccountId(account)) throw Error('Invalid account identifier');
       // Bounded primary-key read (one public record, <=12 KiB). Keep the same
@@ -65,6 +67,7 @@ export function createMobileIdentityRecordStore(now: () => number, capacity = 25
             account, JSON.stringify(snapshot), digest);
           accepted = true;
         });
+        if(accepted)for(const listener of recordListeners)try{listener(JSON.parse(JSON.stringify(snapshot)));}catch{/* Commit remains authoritative. */}
         return accepted;
       });
     },

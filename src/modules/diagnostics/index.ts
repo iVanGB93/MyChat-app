@@ -1,2 +1,2 @@
-export {prepareDiagnosticReport,sendDiagnosticReport,clearDiagnosticLogs,REPORT_ISSUES,REPORT_WHEN,type DiagnosticDraft,type ReportIssue,type ReportWhen} from '../../composition/diagnosticReports';
+export {prepareDiagnosticReport,sendDiagnosticReport,shareDiagnosticReport,clearDiagnosticLogs,REPORT_ISSUES,REPORT_WHEN,type DiagnosticDraft,type ReportIssue,type ReportWhen} from '../../composition/diagnosticReports';
 export {diagnosticReportSendError} from '../../services/diagnosticReport';

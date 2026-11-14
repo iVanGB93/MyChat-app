@@ -13,6 +13,7 @@ export const SECOND_NEURON = Object.freeze({
   endpoint: 'wss://secondneuron-production.up.railway.app/v2/axon',
 });
 export const BOOTSTRAP_NEURONS = Object.freeze([FIRST_NEURON, SECOND_NEURON]);
+export const configuredWakeCustodian=(account:unknown)=>BOOTSTRAP_NEURONS.find(peer=>peer.account===account);
 export function createInternetAxonConnector(native: NativeAxonTransport & {
   axonWssConnect(host: string, account: string): Promise<string>;
 }, localAccount: () => string | null) {

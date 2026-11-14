@@ -1,6 +1,6 @@
 {
   "name": "mychat-app",
-  "version": "1.1.43",
+  "version": "1.1.49",
   "main": "index.ts",
   "scripts": {
     "start": "expo start",
@@ -61,6 +61,7 @@
     "expo-linking": "~55.0.17",
     "expo-secure-store": "~55.0.18",
     "expo-share-intent": "^6.1.1",
+    "expo-sharing": "55.0.24",
     "expo-splash-screen": "~55.0.25",
     "expo-sqlite": "~55.0.20",
     "expo-status-bar": "~55.0.6",

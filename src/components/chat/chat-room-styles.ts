@@ -1,6 +1,7 @@
 import {Chrome} from '../../theme';
 import {StyleSheet,Platform} from 'react-native';
 import {Font,Spacing,Radius} from '../../theme';
+const composerRadius = 28;
 export const chatRoomStyles = StyleSheet.create({
   container: { flex: 1 },
 
@@ -29,12 +30,31 @@ export const chatRoomStyles = StyleSheet.create({
     flexDirection: 'column',
     paddingHorizontal: Spacing.sm,
     paddingVertical: 6,
-    borderRadius: 28,
+    borderRadius: composerRadius,
     borderWidth: 1,
+    borderTopWidth: 1,
+    borderTopRightRadius: composerRadius,
     shadowOpacity: 0.1,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
+    elevation: 0,
+  },
+  composerReplyTop: {
+    alignSelf: 'flex-end',
+    maxWidth: '86%',
+    paddingRight: Spacing.sm,
+    paddingTop: 6,
+    borderWidth: 1,
+    borderBottomWidth: 0,
+    borderLeftWidth: 3,
+    borderTopLeftRadius: composerRadius,
+    borderTopRightRadius: composerRadius,
+    borderBottomLeftRadius: composerRadius,
+  },
+  composerReplyInput: { borderTopWidth: 0, borderTopRightRadius: 0 },
+  composerReplyShoulder: {
+    position: 'absolute', top: 0, left: -1, height: composerRadius,
+    borderTopWidth: 1, borderLeftWidth: 1, borderTopLeftRadius: composerRadius,
   },
   inputRowWrap: {
     flexDirection: 'row',
@@ -51,7 +71,7 @@ export const chatRoomStyles = StyleSheet.create({
     borderWidth: 1,
   },
   stickerBtn: { width: 44, height: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center' },
-  composerShell: { marginTop: -42, paddingTop: 42, marginHorizontal:12, zIndex: 2 },
+  composerShell: { marginTop: -42, paddingTop: 42, marginHorizontal: 12, zIndex: 2 },
   stickerToolbar: { position: 'absolute', top: -8, left: 44 + Spacing.sm * 2, zIndex: 2 },
   stickerToolbarButton: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, alignItems: 'center', justifyContent: 'center', shadowOpacity: 0.12, shadowRadius: 10, shadowOffset: { width: 0, height: 3 }, elevation: 4 },
   textInput: {
@@ -173,6 +193,17 @@ export const chatRoomStyles = StyleSheet.create({
   },
 
   /* ---- Reply composer preview ---- */
+  composerReplyPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.xs,
+  },
+  composerReplyContent: {
+    flexShrink: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: Spacing.sm,
+    paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs,
+  },
+  composerReplyBody: { flexShrink: 1, minWidth: 0 },
+  composerReplyClose: { width: 44, height: 44, flexShrink: 0, alignItems: 'center', justifyContent: 'center' },
   replyPreview: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -191,9 +222,6 @@ export const chatRoomStyles = StyleSheet.create({
   replyPreviewText: {
     fontSize: Font.size.xs,
     marginTop: 1,
-  },
-  replyPreviewClose: {
-    paddingLeft: Spacing.sm,
   },
 
   /* ---- Voice recording overlay (replaces inputRow while recording) ---- */

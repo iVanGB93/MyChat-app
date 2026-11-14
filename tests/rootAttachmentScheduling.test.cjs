@@ -8,8 +8,9 @@ function fixture(mode,appState='active',route){
  if(mode==='group'){selection.shared={id:'d'.repeat(64),count:2,slot:0};selection.group={id:'e'.repeat(64),revision:1,messageId:'f'.repeat(64)};rows.push({...selection,id:'1'.repeat(64),peer:'axonic:1:'+'2'.repeat(64),shared:{...selection.shared,slot:1}});}
  const incoming={manifest:{expires:Date.now()+60000}};
  const snapshot={contacts:[{account:peer,accepted:true}],messages:[{peer,status:'pending',direction:'incoming',attachment:incoming}]};
+ if(mode==='admission-failure')snapshot.messages.unshift({...snapshot.messages[0],attachment:{...incoming,invalid:true}});
  if(mode==='group')snapshot.groups=[{id:selection.group.id,accepted:true,members:[owner,peer,rows[1].peer]}];
- const worker={enqueue:async(_,direction)=>{if(mode==='save-failure'&&direction==='outgoing')throw Error('Storage unavailable');events.push(direction);},receive:async()=>workerDeps.allowed(peer)?'ready':'rejected',tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
+ const worker={enqueue:async(descriptor,direction)=>{if(descriptor.invalid){events.push('admission-failed');throw Error('Attachment identity mismatch');}if(mode==='save-failure'&&direction==='outgoing')throw Error('Storage unavailable');events.push(direction);},receive:async()=>workerDeps.allowed(peer)?'ready':'rejected',tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
  const deps={
  './rootChatLedger':{assertAttachmentFits(){if(mode==='caption')throw Error('Attachment description is too large; shorten the caption');}},
  '../../../modules/axonic-nearby':{default:route?{identityRandomBytes(){},attachmentFileSha256(){},attachmentStageStream(){}}:undefined},
@@ -141,4 +142,10 @@ test('caption rejection saves an actionable failure before any serving job or me
  for(let i=0;i<20;i++)await new Promise(setImmediate);
  assert.equal(f.rows()[0].failed,true);assert.equal(f.rows()[0].reason,'caption');
  assert(!f.events.includes('outgoing'));assert(!f.events.includes('publish'));assert(!f.events.includes('remove'));
+});
+
+test('a failed descriptor admission cannot starve later descriptors or the transfer worker',async t=>{
+ const f=fixture('admission-failure');t.after(()=>{f.runtime.stop();f.release();});
+ await f.pump();
+ assert.deepEqual(f.events.filter(x=>['admission-failed','incoming','tick'].includes(x)),['admission-failed','incoming','tick']);
 });

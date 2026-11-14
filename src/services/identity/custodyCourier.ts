@@ -12,6 +12,8 @@ const CUSTODIAN_BACKOFF_MS = 120_000;
 export function createCustodyCourier(d: {
   owner(): string | null; allowed(peer: string): boolean; now(): number; records: IdentityRecordStore;
   own: OwnCustodyStore; messages?: TestMessageStore; relays(): string[];
+  singleCustodian?:boolean;
+  depositRelays?(raw:string):string[];
   eventDriven?(peer:string):boolean;
   receiptAccepted?(sender:string,id:string):void;
   /** Normal-chat adapter must durably apply the verified receipt before relay consumption. */
@@ -46,7 +48,7 @@ export function createCustodyCourier(d: {
     },
     async deposit(peer: string, text: string, id: string) {
       const l = lease(); if (!l.current() || !d.allowed(peer) || depositing.has(peer) || depositing.size>=2) return;
-      const candidates = d.relays().filter(r => r !== peer && r !== l.owner && (unavailable.get(r+':'+peer) ?? 0) <= d.now()).slice(0, 10);
+      const candidates = (d.depositRelays?.(text)??d.relays()).filter(r => r !== peer && r !== l.owner && (unavailable.get(r+':'+peer) ?? 0) <= d.now());
       if (!candidates.length) return;
       depositing.add(peer);
       try {
@@ -60,9 +62,15 @@ export function createCustodyCourier(d: {
         }
         if (!saved || !l.current() || saved.envelope.recipient !== peer || saved.envelope.expires <= d.now()) return;
         // Keep one custodian when reachable; prefer locally ranked candidates otherwise.
-        const preferred = saved.relay && candidates.includes(saved.relay)
+        const preferred = saved.relay && (d.singleCustodian||candidates.includes(saved.relay))
           ? saved.relay : candidates[0];
-        for(const relay of [preferred,...candidates.filter(r=>r!==preferred)].slice(0,3)){
+        if(d.singleCustodian){
+          if(!candidates.includes(preferred))return;
+          // A lost response may hide a committed deposit. Persist the route before sending.
+          if(!saved.relay)await d.own.held(l.owner!,id,preferred,l.current);
+        }
+        const ordered=d.singleCustodian?[preferred]:[preferred,...candidates.filter(r=>r!==preferred)].slice(0,3);
+        for(const relay of ordered){
         if(!l.current())return;
         // A connected socket can still time out or fail to service custody.
         // Back off that peer so it cannot starve the next available custodian.

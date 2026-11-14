@@ -59,7 +59,11 @@ function fmtTime(ms: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function VoiceMessageBubble({
+export default function VoiceMessageBubble(props: Props) {
+  return <VoiceMessagePlayback key={props.fileUri ?? ''} {...props} />;
+}
+
+function VoiceMessagePlayback({
   fileUri,
   durationMs,
   loading,
@@ -73,8 +77,12 @@ export default function VoiceMessageBubble({
   messageFooter,
 }: Props) {
  useLanguage();
-  const player = useAudioPlayer(fileUri || null, { updateInterval: 250 });
+  const player = useAudioPlayer(null, { updateInterval: 250 });
   const status = useAudioPlayerStatus(player);
+  // Attach the source after subscribing so a fast local prepare can report its duration.
+  useEffect(() => {
+    if (fileUri) player.replace(fileUri);
+  }, [fileUri, player]);
   const trackWidth = useRef(0);
   const seekPreviewRef = useRef<number | null>(null);
   const [seekPreviewMs, setSeekPreviewMs] = useState<number | null>(null);
@@ -222,7 +230,7 @@ export default function VoiceMessageBubble({
               min: 0,
               max: Math.max(0, Math.round(totalMs / 1000)),
               now: Math.max(0, Math.round(displayedMs / 1000)),
-              text: `${fmtTime(displayedMs)} of ${fmtTime(totalMs)}`,
+              text: totalMs > 0 ? `${fmtTime(displayedMs)} of ${fmtTime(totalMs)}` : fmtTime(displayedMs),
             }}
             accessibilityActions={[
               { name: 'increment', label: t("Forward five seconds") },
@@ -255,7 +263,7 @@ export default function VoiceMessageBubble({
         </View>
         <View style={styles.metaRow}>
           <Text numberOfLines={1} style={[styles.duration, { color: subtleColor },messageFooter!=null&&{flex:1}]}>
-            {disabled ? loadingLabel ?? '— : —' : `${fmtTime(displayedMs)} / ${fmtTime(totalMs)}`}
+            {disabled ? loadingLabel ?? '— : —' : `${fmtTime(displayedMs)} / ${totalMs > 0 ? fmtTime(totalMs) : '—'}`}
           </Text>
           <TouchableOpacity
             onPress={cyclePlaybackRate}

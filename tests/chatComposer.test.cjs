@@ -6,10 +6,26 @@ function composer(){
  const c={exports:{},require:n=>require('./helpers/localization.cjs')(n) ?? (n==='react'?react:n==='react-native'?{View:'View',Text:'Text',Pressable:'Pressable',TouchableOpacity:'TouchableOpacity'}:n.includes('safe-area')?{useSafeAreaInsets:()=>({bottom:0})}:n.includes('ThemeContext')?{useTheme:()=>({colors:{}})}:n.includes('use-chat-draft')?{useChatDraft:()=>[text,v=>text=v]}:n.includes('KeyboardForm')?{KeyboardAwareTextInput:'Input'}:n.includes('chat-room-styles')?{chatRoomStyles:{}}:n.includes('AnimatedStickerButtonFace')?{__esModule:true,default:'StickerFace'}:n.includes('vector-icons')?{Ionicons:'Icon'}:{__esModule:true,default:'Voice'})};
  vm.runInNewContext(source,c);
  const nodes=(n,path='')=>[{...n,path},...(n?.children??[]).flat(Infinity).flatMap((x,i)=>x&&typeof x==='object'?nodes(x,path+'.'+i):[])];
- return {sends,type:v=>text=v,render:()=>{const tree=nodes(c.exports.ChatComposer({owner:'owner',peer:'peer',onSend:v=>sends.push(v)},null));tree.find(n=>typeof n.type==='function').props.ref.current={getText:()=>text};return tree;}};
+ return {sends,type:v=>text=v,render:replyPreview=>{const tree=nodes(c.exports.ChatComposer({owner:'owner',peer:'peer',replyPreview,onSend:v=>sends.push(v)},null));tree.find(n=>typeof n.type==='function').props.ref.current={getText:()=>text};return tree;}};
 }
 test('typing hides and disables the recorder without changing its mounted position',()=>{const c=composer(),first=c.render().find(n=>n.type==='Voice');c.type('message');const typed=c.render().find(n=>n.type==='Voice');assert.equal(typed.path,first.path);assert.equal(typed.props.disabled,true);c.type('');const cleared=c.render().find(n=>n.type==='Voice');assert.equal(cleared.path,first.path);assert.equal(cleared.props.disabled,false);});
 test('send uses the current draft and clearing restores the voice control',()=>{const c=composer();c.type('new draft');let tree=c.render();tree.find(n=>n.props?.testID==='axonic-send-message').props.onPress();assert.deepEqual(c.sends,['new draft']);c.type('');tree=c.render();assert.ok(!tree.some(n=>n.props?.testID==='axonic-send-message'));assert.ok(tree.some(n=>n.type==='Voice'));});
+test('reply preview shares the composer surface without moving the draft editor',()=>{
+ const c=composer(),before=c.render().find(n=>typeof n.type==='function');
+ const preview={type:'ReplyPreview',props:{},children:[]},tree=c.render(preview);
+ const bar=tree.find(n=>n.props?.testID==='axonic-composer-bar');
+ assert.equal(bar.children[0].children[0],preview);
+ assert.equal(tree.find(n=>typeof n.type==='function').path,before.path);
+});
+test('typing a reply keeps the sticker button in the input row',()=>{
+ const c=composer();c.type('reply');
+ assert.ok(c.render().some(n=>n.type==='StickerFace'));
+ const tree=c.render({type:'ReplyPreview',props:{},children:[]});
+ const bar=tree.find(n=>n.props?.testID==='axonic-composer-bar');
+ const sticker=tree.find(n=>n.props?.accessibilityLabel==='Open stickers');
+ assert.ok(sticker.path.startsWith(bar.path+'.1.'));
+ assert.ok(!tree.some(n=>n.type==='StickerFace'));
+});
 
 const editorSource=source+'\nexports.testDraftEditor=DraftEditor;';
 function draftEditor(platform='android'){

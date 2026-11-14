@@ -2,8 +2,8 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(){
  const account='axonic:1:'+'a'.repeat(64),sender='axonic:1:'+'b'.repeat(64),id='c'.repeat(64),storage=new Map(),displayed=new Map(),calls=[],cancelled=[];
  let status={state:'unlocked',account},random=0,failSave=false,queued=0;
- const state={version:1,contacts:[{account:sender,accepted:true,blocked:false}],messages:[{id,peer:sender,direction:'incoming',text:'hello',status:'delivered'}]};
- const ledger={snapshot:async()=>{throw Error('Notification must not read full history');},messageSnapshot:async(peer,message)=>{assert.equal(peer,sender);assert.equal(message,id);return state;},enqueue:async(...args)=>calls.push(['reply',...args]),act:async(...args)=>calls.push(['read',...args]),enqueueGroup:async(...args)=>calls.push(['group',...args]),markGroupRead:async(...args)=>calls.push(['group-read',...args])};
+ const state={version:1,contacts:[{account:sender,accepted:true,blocked:false}],messages:[{id,peer:sender,direction:'incoming',text:'hello',status:'delivered',at:10}]};
+ const ledger={snapshot:async()=>{throw Error('Notification must not read full history');},messageSnapshot:async(peer,message)=>{assert.equal(peer,sender);assert.equal(message,id);return state;},unreadSnapshot:async peers=>{assert.deepEqual(peers,[sender]);return state;},enqueue:async(...args)=>calls.push(['reply',...args]),act:async(...args)=>calls.push(['read',...args]),enqueueGroup:async(...args)=>calls.push(['group',...args]),markGroupRead:async(...args)=>calls.push(['group-read',...args]),readBatch:async(peer,items)=>{calls.push(['read-batch',peer,items.map(item=>item.target.id)]);for(const m of state.messages)if(items.some(item=>item.target.id===m.id))m.read=true;}};
  const imports={
   './rootCallNotificationAction':{queueRootCallNotificationAction:async()=>false},
   'react-native':{AppState:{currentState:'active'}},
@@ -19,15 +19,27 @@ function fixture(){
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
  const noticeId=notifications.rootMessageNotificationId(account,sender);displayed.set(noticeId,{id:noticeId,data:{sender,messageId:id}});
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationActions.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>{if(!imports[n])throw Error(n);return imports[n];});
- return {mod,state,storage,displayed,calls,cancelled,data:{type:'root_neuron_message',account,sender,messageId:id},setStatus:s=>status=s,failSave:v=>failSave=v,queued:()=>queued,account,sender};
+ return {mod,state,ledger,storage,displayed,calls,cancelled,data:{type:'root_neuron_message',account,sender,messageId:id},setStatus:s=>status=s,failSave:v=>failSave=v,queued:()=>queued,account,sender};
 }
 test('notification reply is durably queued once with the original reply reference',async()=>{
  const f=fixture();await Promise.all([f.mod.handleRootNotificationAction('root-reply',f.data,'Hello'),f.mod.handleRootNotificationAction('root-reply',f.data,'Hello')]);
- assert.equal(f.calls.length,1);assert.equal(f.calls[0][1],f.sender);assert.equal(f.calls[0][3],'Hello');assert.deepEqual(f.calls[0][4],{id:f.data.messageId,author:f.sender});assert.equal(f.cancelled.length,1);
+ assert.equal(f.calls.length,2);assert.equal(f.calls[0][1],f.sender);assert.equal(f.calls[0][3],'Hello');assert.deepEqual(f.calls[0][4],{id:f.data.messageId,author:f.sender});assert.deepEqual(f.calls[1],['read-batch',f.sender,[f.data.messageId]]);assert.equal(f.cancelled.length,1);
 });
 test('an interrupted action retains its ID so replay cannot create a second message',async()=>{
  const f=fixture();f.failSave(true);await assert.rejects(()=>f.mod.handleRootNotificationAction('root-reply',f.data,'Original'));f.failSave(false);await f.mod.handleRootNotificationAction('root-reply',f.data,'Changed');
- assert.equal(f.calls.length,2);assert.equal(f.calls[0][2],f.calls[1][2]);assert.equal(f.calls[1][3],'Original');
+ assert.deepEqual(f.calls.map(c=>c[0]),['reply','read-batch','reply']);assert.equal(f.calls[0][2],f.calls[2][2]);assert.equal(f.calls[2][3],'Original');
+});
+test('reply reads earlier messages, preserves newer messages and waits for a successful enqueue',async()=>{
+ const f=fixture(),target=f.state.messages[0],earlier={...target,id:'d'.repeat(64),at:9},later={...target,id:'e'.repeat(64),at:11};
+ f.state.messages.push(earlier,later,{...target,id:'f'.repeat(64),at:9,group:{id:'group'}});
+ const enqueue=f.ledger.enqueue;f.ledger.enqueue=async()=>{throw Error('queue unavailable');};
+ await assert.rejects(f.mod.handleRootNotificationAction('root-reply',f.data,'Reply'),/queue unavailable/);
+ assert.deepEqual(f.calls,[]);assert.equal(f.cancelled.length,0);
+ f.ledger.enqueue=enqueue;
+ for(const notice of f.displayed.values())notice.data.messageId=later.id;
+ await f.mod.handleRootNotificationAction('root-reply',f.data,'Reply');
+ assert.deepEqual(f.calls[1],['read-batch',f.sender,[target.id,earlier.id]]);
+ assert.equal(later.read,undefined);assert.equal(f.cancelled.length,0);
 });
 test('locked, changed-owner, blocked, unaccepted and unknown-message actions cannot send',async()=>{
  for(const configure of [f=>f.setStatus({state:'locked',account:f.account}),f=>f.setStatus({state:'unlocked',account:'axonic:1:'+'d'.repeat(64)}),f=>f.state.contacts[0].blocked=true,f=>f.state.contacts[0].accepted=false,f=>f.state.messages=[]]){
@@ -47,7 +59,7 @@ test('mark as read dismisses only the acted-on notification and preserves other 
 });
 test('group replies use the group message ID and require current group membership',async()=>{
  const f=fixture(),group='e'.repeat(64),original='f'.repeat(64);f.data.group=group;f.state.messages[0].group={id:group,messageId:original};f.state.groups=[{id:group,accepted:true,blocked:false,members:[f.account,f.sender]}];
- await f.mod.handleRootNotificationAction('root-reply',f.data,'Group reply');assert.equal(f.calls[0][0],'group');assert.deepEqual(f.calls[0][4],{id:original,author:f.sender});
+ await f.mod.handleRootNotificationAction('root-reply',f.data,'Group reply');assert.equal(f.calls[0][0],'group');assert.deepEqual(f.calls[0][4],{id:original,author:f.sender});assert.deepEqual(f.calls[1],['group-read',group,10]);
  const no=fixture();no.data.group=group;no.state.messages[0].group={id:group,messageId:original};no.state.groups=[{id:group,accepted:true,blocked:false,members:[no.sender]}];await no.mod.handleRootNotificationAction('root-reply',no.data,'No');assert.equal(no.calls.length,0);
 });
 

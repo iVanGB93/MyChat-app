@@ -35,6 +35,8 @@ const shared = {
 
 export const LightColors = {
   ...shared,
+  headerBg: "#F4FAFF",
+  headerText: "#006779",
 
   // Surfaces
   background: '#EAF6FF',

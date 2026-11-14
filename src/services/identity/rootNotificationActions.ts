@@ -38,6 +38,21 @@ export function handleRootNotificationAction(action:string,data:unknown,input?:s
   if(action==='root-reply'){
    if(target.group)await ledger.enqueueGroup(target.group,record.id,record.text,{id:message.group!.messageId,author:target.sender});
    else await ledger.enqueue(target.sender,record.id,record.text,{id:messageId,author:target.sender});
+   if(!current())return;
+   // An older notification can still be acted on after newer messages arrive.
+   if(target.group)await ledger.markGroupRead(target.group,message.at);
+   else {
+    const unread=rootChatView(target.account,await ledger.unreadSnapshot([target.sender])).messages
+      .filter(m=>!m.group&&m.direction==='incoming'&&m.peer===target.sender&&!m.read&&!m.deleted&&(m.id===messageId||m.at<=message.at));
+    for(let i=0;i<unread.length;i+=20){
+     if(!current())return;
+     const items=await Promise.all(unread.slice(i,i+20).map(async m=>({
+      id:await Native!.identityRandomBytes!(32),target:{id:m.id,author:target.sender},
+     })));
+     if(!current())return;
+     await ledger.readBatch(target.sender,items);
+    }
+   }
   }else if(!message.read){
    if(target.group)await ledger.markGroupRead(target.group);
    else await ledger.act(target.sender,record.id,{id:messageId,author:target.sender},'read');

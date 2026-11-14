@@ -18,7 +18,7 @@ export function verifyPublicSignature(signature: Uint8Array, message: Uint8Array
   signatureCache.add(key);return true;
 }
 
-export interface IdentityDevice { id: string; signing: string; encryption: string }
+export interface IdentityDevice { id: string; signing: string; encryption: string; groupCustodyProof?:string }
 export interface IdentityRecord {
   version: 1; account: string; root: string; revision: number;
   previous: string | null; issuedAt: number; expiresAt: number;
@@ -57,6 +57,17 @@ export function publicDevice(signingSeed: Uint8Array, encryptionSeed: Uint8Array
   const signing = bytesToHex(ed25519.getPublicKey(signingSeed));
   const encryption = bytesToHex(x25519.getPublicKey(encryptionSeed));
   return { id: deviceId(signing, encryption), signing, encryption };
+}
+/** Optional device-signed capability. The root-signed device keys remain
+ * compatible with peers that only understand the original record format. */
+const groupCustodyClaim=(account:string,device:string)=>wire(['axonic-group-custody-device-v1',account,device]);
+export function advertiseGroupCustody(account:string,device:IdentityDevice,signingSeed:Uint8Array):IdentityDevice{
+ return {...device,groupCustodyProof:bytesToHex(ed25519.sign(groupCustodyClaim(account,device.id),signingSeed))};
+}
+export function supportsSignedGroupCustody(record:IdentityRecord,now:number):boolean{
+ const device=record.devices[0];
+ return verifyRecord(record,now)&&hex(device?.groupCustodyProof,64)&&
+  verifyPublicSignature(hexToBytes(device.groupCustodyProof),groupCustodyClaim(record.account,device.id),hexToBytes(device.signing),{zip215:false});
 }
 function recordBodyText(r: IdentityRecord): string {
   return JSON.stringify(['axonic-identity-record-v1', r.version, r.account, r.root, r.revision,
@@ -126,10 +137,10 @@ export function validRecordHistory(history: unknown, next: IdentityRecord, now: 
   }
   return true;
 }
-export function renewIdentityRecord(rootSeed: Uint8Array, record: IdentityRecord, history: IdentityRecord[], now: number) {
+export function renewIdentityRecord(rootSeed: Uint8Array, record: IdentityRecord, history: IdentityRecord[], now: number, devices=record.devices) {
   if (!validRecordHistory(history, record, now)) throw Error('Invalid identity history');
-  if (record.expiresAt - now > RENEW_BEFORE) return null;
-  const next = issueRecord(rootSeed, record.devices, now, record);
+  if (record.expiresAt - now > RENEW_BEFORE && devices===record.devices) return null;
+  const next = issueRecord(rootSeed, devices, now, record);
   const retained = [...history, record];
   while (retained.length > HISTORY_RECORDS || new TextEncoder().encode(JSON.stringify(retained)).length > HISTORY_BYTES) retained.shift();
   return { record: next, history: retained };

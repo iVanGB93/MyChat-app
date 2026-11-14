@@ -14,6 +14,10 @@ interface NearbyModule {
   attachmentStreamOpen?(key:Uint8Array,nonce:Uint8Array,aad:Uint8Array,ciphertext:Uint8Array):Uint8Array;
   notificationCallStyle?(id:string,name:string,video:boolean):Promise<boolean>;
   notificationReadActionInShade?(id:string):Promise<boolean>;
+  pendingMessageNoticeRestores?():Promise<string[]>;
+  forgetMessageNoticeRestore?(id:string,messageId:string|null):Promise<void>;
+  clearMessageNoticeRestores?(account:string):Promise<void>;
+  completeMessageNoticeRestore?():void;
   attachmentDecryptBlock?(ciphertext:string,key:string,aad:string):Promise<Uint8Array>;
   attachmentEncryptBlock?(plain:Uint8Array,key:string,hash:string,aad:string):Promise<Uint8Array>;
   attachmentSha256?(value:string):string;

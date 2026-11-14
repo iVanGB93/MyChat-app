@@ -7,7 +7,7 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { entropyToMnemonic, mnemonicToEntropy } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
-import { accountId, validRecordHistory, issueRecord, publicDevice, recordDigest, verifyRecord, type IdentityRecord } from './identityProtocol';
+import { advertiseGroupCustody, accountId, validRecordHistory, issueRecord, publicDevice, recordDigest, verifyRecord, type IdentityRecord } from './identityProtocol';
 
 export type SecureRandom = (size: number) => Promise<Uint8Array>;
 /** Platform adapter must implement exactly scrypt N=131072, r=8, p=1, dkLen=32. */
@@ -75,6 +75,8 @@ export async function sealIdentity(identity: UnlockedIdentity, password: string,
     return v;
   } finally { plaintext.fill(0); key?.fill(0); }
 }
+export const identityUnlockErrorMessage = "Couldn’t unlock your account. Check your password and try again.";
+
 export async function unlockIdentity(raw: string, password: string, deviceSecret: Uint8Array, now: number,
   derive: PasswordDerivation = portableDerivation): Promise<UnlockedIdentity> {
   let key: Uint8Array | undefined, plaintext: Uint8Array | undefined;
@@ -95,7 +97,7 @@ export async function unlockIdentity(raw: string, password: string, deviceSecret
     return identity;
   } catch {
     if (identity) destroyIdentity(identity);
-    throw Error('Unable to unlock account. Check the password and device storage.');
+    throw Error(identityUnlockErrorMessage);
   } finally { key?.fill(0); plaintext?.fill(0); }
 }
 export async function createLocalIdentity(random: SecureRandom, now: number): Promise<{ identity: UnlockedIdentity; recoveryPhrase: string }> {
@@ -111,7 +113,7 @@ async function identityFromEntropy(entropy: Uint8Array, random: SecureRandom, no
   try {
     signingSeed = await randomBytes(random, 32); encryptionSeed = await randomBytes(random, 32);
     return { entropy: entropy.slice(), signingSeed, encryptionSeed,
-      record: issueRecord(root, [publicDevice(signingSeed, encryptionSeed)], now, previous) };
+      record: issueRecord(root, [advertiseGroupCustody(accountId(bytesToHex(ed25519.getPublicKey(root))),publicDevice(signingSeed, encryptionSeed),signingSeed)], now, previous) };
   } catch { signingSeed?.fill(0); encryptionSeed?.fill(0); throw Error('Unable to create local identity'); }
   finally { root.fill(0); }
 }

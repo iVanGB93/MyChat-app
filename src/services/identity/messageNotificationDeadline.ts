@@ -1,3 +1,5 @@
+export type MessageWakeRecoveryOutcome='stalled'|'route-unavailable';
+
 /** Progress means a new authenticated connection or admission milestone, not a retry. */
 export function createMessageNotificationDeadline(now=Date.now){
  const started=now();let lastProgress=started;

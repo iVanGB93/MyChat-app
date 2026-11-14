@@ -15,6 +15,8 @@ export interface AttachmentJobStore {
 }
 /** Own file bytes only, not job metadata or relay ciphertext custody. */
 export interface AttachmentFileStore {
+ /** Verify and bind an existing local file; false means normal download. */
+ reuseFile?(job:AttachmentJob,current:()=>boolean):Promise<boolean>;
  readChunk(job:AttachmentJob,index:number):Promise<AttachmentChunk>;
  readChunks?(job:AttachmentJob,index:number,count:number):Promise<AttachmentChunk[]>;
  /** Idempotent index writes; resolve only after bytes are durable. */

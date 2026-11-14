@@ -40,8 +40,8 @@ export function useMainTabOptions(){const {colors:Colors}=useTheme();const inset
           borderBottomWidth: 1,
           borderBottomColor: Colors.neonBorder,
         },
-        headerTitleStyle: { fontWeight: '800', letterSpacing: 3, color: Colors.primary, fontSize: Font.size.lg },
-        headerTintColor: Colors.primary,
+        headerTitleStyle: { fontWeight: '800', letterSpacing: 3, color: Colors.headerText, fontSize: Font.size.lg },
+        headerTintColor: Colors.headerText,
         tabBarStyle: {
           backgroundColor: Colors.tabBarBg,
           borderColor: Colors.neonBorder,

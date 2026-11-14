@@ -1,4 +1,4 @@
-export const IMPORTED_STICKER_CONTENT = 'Sticker [axonic-sticker:import:v1]';
+export { IMPORTED_STICKER_CONTENT } from './identity/stickerProtocol';
 export const MAX_STICKER_BYTES = 2 * 1024 * 1024;
 /** Inspect real container chunks, not filenames. GIF/WebP are kept intact. */
 export function validateStickerFile(bytes: Uint8Array): 'png' | 'webp' | 'gif' {

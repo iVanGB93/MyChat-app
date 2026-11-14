@@ -60,11 +60,13 @@ test('bounded group polling reaches a fourth relay and receives its offline deli
  time+=5000;await courier.tick();assert.equal(received,1);assert(acked);assert.equal(new Set(polled).size,4);
 });
 
-async function courierFixture(){
+async function courierFixture(signedOnly=false,recipientIndexes=[1,2]){
  const f=await fixture(),courierModule=load('groupCustodyCourier'),packing=load('groupCustodyMessages');let outbox=[],seals=0,relays=[f.ids[3].record.account],held=[],confirmed=[],requests=[];const own=new Map();
- const messages=f.ids.slice(1,3).map((r,i)=>({peer:r.record.account,id:String(i+1).repeat(64),raw:JSON.stringify(['axonic-root-group-text-v1',r.record.account,String(i+1).repeat(64),{text:'shared text',group:{id:'group-id',messageId:'logical-id'}},now])}));
- const courier=courierModule.createGroupCustodyCourier({owner:()=>f.ids[0].record.account,now:()=>now,records:f.records,allowed:()=>true,compatible:async()=>true,
- own:{get:async(o,id)=>own.get(id)??null,save:async(o,e)=>{const row={owner:o,id:e.id,envelope:e,relay:null};own.set(e.id,row);return row;}},
+ const recipients=recipientIndexes.map(index=>f.ids[index]);
+ if(signedOnly)for(const peer of recipients)peer.record.devices[0]=p.advertiseGroupCustody(peer.record.account,peer.device,peer.signingSeed);
+ const messages=recipients.map((r,i)=>({peer:r.record.account,id:String(i+1).repeat(64),raw:JSON.stringify(['axonic-root-group-text-v1',r.record.account,String(i+1).repeat(64),{text:'shared text',group:{id:'group-id',messageId:'logical-id'}},now])}));
+ const courier=courierModule.createGroupCustodyCourier({owner:()=>f.ids[0].record.account,now:()=>now,records:f.records,allowed:()=>true,compatible:async()=>!signedOnly,
+ own:{get:async(o,id)=>own.get(id)??null,save:async(o,e)=>{const row={owner:o,id:e.id,envelope:e,relay:null};own.set(e.id,row);return row;},held:async(o,id,relay)=>{own.get(id).relay=relay;}},
  store:{read:async()=>structuredClone(outbox),write:async(o,rows)=>{outbox=structuredClone(rows);}},relays:()=>relays,
  request:async(peer,raw)=>{const q=JSON.parse(raw);requests.push(q);return JSON.stringify(await f.request(0,q));},
  seal:async(id,text,recipients)=>{seals++;return g.sealGroupCustody({...f.ids[0],id,text,recipients,now,random});},receive:async()=>null,held:async e=>held.push(e.id),confirm:async r=>{confirmed.push(r.id);return true;}});
@@ -74,6 +76,17 @@ test('normal group courier uploads common content once and reuses the signed job
  const f=await courierFixture();assert.equal(await f.courier.deposit(f.messages,f.messages[0]),true);assert.equal(f.seals(),1);assert.equal(f.requests.filter(q=>q.operation==='group-begin').length,1);assert.equal(f.requests.filter(q=>q.operation==='group-grant').length,2);assert.deepEqual(f.held,f.messages.map(m=>m.id));
  const row=f.rows()[0],packet=await f.request(1,{operation:'group-poll',exclude:[]}),identity=f.ids[1];const opened=g.openGroupCustody(packet.payload,packet.packet,c.openCustody(packet.packet,identity.record.account,identity.signingSeed,identity.encryptionSeed));assert.equal(f.packing.joinGroupCustodyMessage(opened.text,opened.metadata,identity.record.account,packet.packet.id),f.messages[0].raw);
  assert.equal(await f.courier.deposit([f.messages[1]],f.messages[1]),true);assert.equal(f.seals(),1);assert.equal(f.requests.filter(q=>q.operation==='group-begin').length,1,'accepted retry checks status without resending the payload');assert.equal(f.requests.filter(q=>q.operation==='group-grant').length,2,'accepted retry does not upload any grants again');assert.equal(f.rows()[0].digest,row.digest);
+});
+test('a group handoff waits for its original custodian to reconnect',async()=>{
+ const f=await courierFixture(),relay=f.ids[3].record.account;
+ assert.equal(await f.courier.deposit(f.messages,f.messages[0]),true);
+ const sent=f.requests.length;
+ f.setRelays(['axonic:1:'+'ab'.repeat(32)]);
+ assert.equal(await f.courier.deposit(f.messages,f.messages[0]),false);
+ assert.equal(f.requests.length,sent);
+ assert(f.messages.every(m=>f.own.get(m.id).relay===relay));
+ f.setRelays([relay]);
+ assert.equal(await f.courier.deposit(f.messages,f.messages[0]),true);
 });
 test('single-recipient groups and existing legacy ciphertext retain the ordinary delivery path',async()=>{
  const f=await courierFixture();assert.equal(await f.courier.deposit([f.messages[0]],f.messages[0]),undefined);assert.equal(f.seals(),0);
@@ -164,4 +177,23 @@ test('group contribution counts commit and each verified receipt once, never sta
  await f.request(0,{operation:'group-commit',sender:f.job.payload.sender,id:f.job.payload.id,digest:g.groupCustodyDigest(f.job.payload)});assert.equal(f.service().contribution().counts.groupsHeld,1);
  const packet=c.signCustodyReceipt(f.job.grants[0],f.ids[1].signingSeed,f.ids[1].encryptionSeed);
  for(let i=0;i<3;i++)await f.request(1,{operation:'group-receipt',id:f.job.payload.id,packet});assert.equal(f.service().contribution().counts.recipientReceipts,1);
+});
+
+test('offline signed device capability allows one payload without prior direct contact',async()=>{
+ const f=await courierFixture(true,[1,2,4]);
+ assert.equal(await f.courier.deposit(f.messages,f.messages[0]),true);
+ assert.equal(f.requests.filter(q=>q.operation==='group-begin').length,1);
+ assert.equal(f.requests.filter(q=>q.operation==='group-grant').length,3);
+ assert.equal(f.requests.filter(q=>q.operation==='deposit').length,0);
+ assert.equal(f.rows().length,1);
+ assert.ok(f.rows()[0].payload);
+ assert.equal(f.rows()[0].recipients.length,3);
+});
+test('device capability proof cannot be copied from another device',async()=>{
+ const f=await courierFixture(true),a=f.ids[1].record,b=f.ids[2].record;
+ assert(p.supportsSignedGroupCustody(a,now));
+ a.devices[0].groupCustodyProof=b.devices[0].groupCustodyProof;
+ assert(p.verifyRecord(a,now));
+ assert(!p.supportsSignedGroupCustody(a,now));
+ assert.equal(await f.courier.deposit(f.messages,f.messages[0]),undefined);
 });

@@ -59,7 +59,7 @@ test('rapid confirmation taps run the action and close only once', () => {
       Animated: { Value: class { setValue() {} }, View: 'AnimatedView',
         spring: () => ({}), timing: () => ({}),
         parallel: () => ({ start: (fn) => { if (fn) animations.push(fn); } }) },
-      Modal: 'Modal', Pressable: 'Pressable', Text: 'Text', TouchableOpacity: 'Button', View: 'View',
+      Modal: 'Modal', Pressable: 'Pressable', ScrollView: 'ScrollView', Text: 'Text', TouchableOpacity: 'Button', View: 'View',
       StyleSheet: { create: (styles) => styles },
     },
     '@expo/vector-icons': { Ionicons: 'Icon' },
@@ -68,7 +68,7 @@ test('rapid confirmation taps run the action and close only once', () => {
     '../../contexts/ThemeContext': { useTheme: () => ({ colors: {} }) },
   });
   let closed = 0, actions = 0;
-  const tree = app.render(({ default: Modal }) => Modal({ visible: true, title: 'Delete?',
+  const tree = app.render(({ default: Modal }) => Modal({ visible: true, title: 'Delete?', message: 'Confirm this action.',
     onClose: () => closed++, buttons: [{ text: 'Delete', onPress: () => actions++ }] }));
   function find(node) {
     if (!node || typeof node !== 'object') return null;
@@ -79,6 +79,10 @@ test('rapid confirmation taps run the action and close only once', () => {
     return null;
   }
   const button = find(tree);
+  const sheet = tree.props.children[1];
+  const scrollBody = sheet.props.children.find(child => child.type === 'ScrollView');
+  assert.ok(scrollBody, 'long confirmation text can still scroll');
+  assert.equal(find(scrollBody), null, 'confirmation actions bypass the scroll responder');
   button.props.onPress();
   button.props.onPress();
   assert.equal(animations.length, 1);

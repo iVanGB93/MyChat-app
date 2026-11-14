@@ -1,8 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),{DatabaseSync}=require('node:sqlite');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer:makeTransfer}=load('attachmentTransfer');
 function createAttachmentTransfer(d){
- const {store,readChunk,readChunks,writeChunk,writeChunks,commitFile,peers,request,sharedPeers,bulkPeers,blockStreamPeers,uploadBatchPeers,batchChunks,batchWindow,bulkRequest,directStream,serveStream,sendingStream,...policy}=d;
- return makeTransfer({...policy,storage:{jobs:store,files:{readChunk,readChunks,writeChunk,writeChunks,commitFile}},connections:{peers,request,sharedPeers,bulkPeers:bulkPeers??peers,blockStreamPeers:blockStreamPeers??peers,uploadBatchPeers:uploadBatchPeers??peers,batchChunks,batchWindow:batchWindow??(()=>d.downloadWindow?Math.min(2,d.downloadWindow):1),bulkRequest:bulkRequest??request,directStream,serveStream,sendingStream}});
+ const {store,readChunk,readChunks,writeChunk,writeChunks,commitFile,reuseFile,peers,request,sharedPeers,bulkPeers,blockStreamPeers,uploadBatchPeers,batchChunks,batchWindow,bulkRequest,directStream,serveStream,sendingStream,...policy}=d;
+ return makeTransfer({...policy,storage:{jobs:store,files:{readChunk,readChunks,writeChunk,writeChunks,commitFile,reuseFile}},connections:{peers,request,sharedPeers,bulkPeers:bulkPeers??peers,blockStreamPeers:blockStreamPeers??peers,uploadBatchPeers:uploadBatchPeers??peers,batchChunks,batchWindow:batchWindow??(()=>d.downloadWindow?Math.min(2,d.downloadWindow):1),bulkRequest:bulkRequest??request,directStream,serveStream,sendingStream}});
 }
 function directContext(t,overrides={}){
  const f=context(t),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
@@ -11,6 +11,47 @@ function directContext(t,overrides={}){
   request:(_p,raw)=>sender.receive(raw,peer),...overrides(f,base)});
  return {...f,sender,receiver,begin:async()=>{await sender.enqueue(f.descriptor,'outgoing');await receiver.enqueue(f.descriptor,'incoming');}};
 }
+
+test('verified local reuse publishes a durable signed receipt with no payload requests',async t=>{
+ const f=context(t,1000),base=f.deps(1);let requests=0;
+ const receiver=createAttachmentTransfer({...base,peers:()=>[],request:async()=>{requests++;throw Error('No download expected');},reuseFile:async()=>{f.written[0]=f.plain.slice();return true;}});
+ await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();const job=await f.job(1);
+ assert(job.receipt);assert(a.verifyAttachmentReceipt(job.receipt,f.manifest,f.ids[1].record,now));assert(f.complete.includes('incoming'));assert.equal(requests,0);assert.equal(job.delivery,undefined,'no invented network route');
+});
+test('local reuse cannot acknowledge failed verification or a lock during candidate lookup',async t=>{
+ for(const mode of ['verification','lock']){
+  const f=context(t,1000),base=f.deps(1);let signatures=0;
+  const receiver=createAttachmentTransfer({...base,reuseFile:async()=>{if(mode==='lock')f.lock();return true;},commitFile:async()=>{throw Error('file changed');},signReceipt:async(...args)=>{signatures++;return base.signReceipt(...args);}});
+  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();f.unlock();const job=await f.job(1);
+  assert.equal(job.receipt,null);assert.equal(signatures,0);assert.equal(f.complete.length,0);
+ }
+});
+
+test('locally reused media sends its receipt to the original sender when it reconnects',async t=>{
+ let connected=false;
+ const f=directContext(t,(fixture)=>({
+  peers:()=>connected?[fixture.manifest.sender]:[],
+  reuseFile:async()=>{fixture.written[0]=fixture.plain.slice();return true;},
+ }));
+ await f.begin();await f.receiver.tick();await f.receiver.tick();
+ assert.equal((await f.job(1)).phase,'confirming');
+ assert.equal((await f.job(0)).receipt,null);
+ connected=true;await f.receiver.tick();await f.sender.tick();
+ assert.equal((await f.job(1)).phase,'complete');
+ assert.equal((await f.job(0)).phase,'complete');
+ assert(f.complete.includes('outgoing'));
+});
+
+test('outgoing media waits for the descriptor route and only offers bytes to its bound relay',async t=>{
+ const f=context(t,1000),base=f.deps(0),relay=f.ids[2].record.account,other='axonic:1:'+'aa'.repeat(32),calls=[];
+ let bound=null,peers=[other,relay];
+ const sender=createAttachmentTransfer({...base,peers:()=>peers,outgoingCustodian:async()=>bound,request:async(peer,raw)=>{
+  calls.push(peer);return base.request(peer,raw);
+ }});
+ await sender.enqueue(f.descriptor,'outgoing');await sender.tick();assert.deepEqual(calls,[]);
+ bound=relay;peers=[other];await sender.tick();assert.deepEqual(calls,[]);
+ peers=[other,relay];await sender.tick();assert.deepEqual(calls,[relay]);
+});
 
 test('stale direct peer is not probed again before each relay block or receipt lookup',async t=>{
  const f=context(t,3_000_001),base=f.deps(0);let probes=0;

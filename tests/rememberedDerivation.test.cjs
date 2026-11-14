@@ -15,7 +15,7 @@ test('remembered key opens the unchanged scrypt vault, retaining device and ciph
  assert.ok(saved);assert.equal(calls,1);d.clear();
  const open=()=>vault.unlockIdentity(raw,password,secret,now,d.derive);
  const restored=await d.withSaved(password,saved,open);assert.deepEqual(restored.signingSeed,identity.signingSeed);assert.equal(calls,1);
- await assert.rejects(d.withSaved(password,saved,()=>vault.unlockIdentity(raw,password,random(32),now,d.derive)),/Unable to unlock/);
+ await assert.rejects(d.withSaved(password,saved,()=>vault.unlockIdentity(raw,password,random(32),now,d.derive)),/Couldn’t unlock your account/);
  const corrupt={...sealed,ciphertext:(sealed.ciphertext.startsWith('00')?'01':'00')+sealed.ciphertext.slice(2)};
  await assert.rejects(d.withSaved(password,saved,()=>vault.unlockIdentity(JSON.stringify(corrupt),password,secret,now,d.derive)));
  await assert.rejects(d.withSaved(password,{...saved,key:'00'.repeat(32)},open));assert.equal(d.export(password),undefined);

@@ -176,7 +176,7 @@ export function createPersistentAxon(d: {
     const entry={until:d.now()+ms,ready,finish(){clearTimeout(timer);sleepers.delete(entry);resolve();}};
     const timer=setTimeout(entry.finish,ms);sleepers.add(entry);
   });}
-  let unsubscribe = () => {};let unsubscribeBinary=()=>{};let peerWssBinary=false;
+  let unsubscribe = () => {};let unsubscribeBinary=()=>{};let unsubscribeRecords=()=>{};let peerWssBinary=false;
   const relayStreams=createRelayBlockStream({
     current:()=>!stopped&&d.current()&&peerRelayStreams&&!!peer&&peer.expiresAt>d.now(),
     admit:(direction,id)=>direction==='bulk-response'?mediaPending.get(id)?.bulk===true||!!timedOutMedia.get(id)?.bulk&&timedOutMedia.get(id)!.until>d.now():!!d.onAttachment?.uploadBatch&&mediaInbound<4&&bulkInbound<2,
@@ -191,6 +191,7 @@ export function createPersistentAxon(d: {
     closeReason = reason;
     if(reason.startsWith('exchange-timeout:')){quality.failures++;quality.updatedAt=d.now();}
     stopped = true;
+    try { unsubscribeRecords(); } catch { /* Continue session cleanup. */ }
     relayStreams.stop();
     deferredFrames=[];deferredBytes=0;
     for(const sleeper of [...sleepers])sleeper.finish();
@@ -238,10 +239,12 @@ export function createPersistentAxon(d: {
     if (!remote || authenticating || introducing || pending || stopped) return;
     authenticating = true;
     try {
+      let clockSkew = false;
       const result = await authenticateIdentityPeer({ localAccount: d.record.account, expectedAccount: remote,
         store: d.store, now: d.now, random: d.random, current: () => !stopped && d.current(), exchange,
+        onClockSkew:()=>{clockSkew=true;},
         sign: async audience => signIdentityRequest(d.record, d.signingSeed, audience, 'authenticate', '', await d.random(32), d.now(), d.history) });
-      if (!result || stopped || (peer && (peer.account !== result.account || peer.device !== result.device || peer.instance !== result.instance))) { stop('authentication-rejected'); return; }
+      if (!result || stopped || (peer && (peer.account !== result.account || peer.device !== result.device || peer.instance !== result.instance))) { stop(clockSkew?'authentication-clock-skew':'authentication-rejected'); return; }
       if (peer) peer.expiresAt = result.expiresAt;
       else {
         peer = { ...result };
@@ -468,6 +471,11 @@ export function createPersistentAxon(d: {
     } catch { stop('receive-error'); }
   }
   try {
+    unsubscribeRecords=d.store.subscribe?.(record=>{
+      // Only committed, verified pins may fence an established device. Ordinary
+      // record renewal keeps its authorized device and must not drop the call.
+      if(peer&&record.account===peer.account&&!record.devices.some(device=>device.id===peer!.device))stop('peer-device-superseded');
+    })??(()=>{});
     unsubscribeBinary=d.wire.listenBinary?.(raw=>{
       if(stopped)return;
       if(d.now()-wssWindow>=60000){wssWindow=d.now();wssFrames=0;}

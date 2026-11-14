@@ -7,6 +7,8 @@ export interface IdentityRequest {
   payload: string; time: number; nonce: string; record: IdentityRecord; history?: IdentityRecord[]; device: string; signature: string;
 }
 export interface IdentityRecordStore {
+  /** Notify only after durable admission; observers never authorize a record. */
+  subscribe?(listener:(record:IdentityRecord)=>void):()=>void;
   read(account: string): Promise<IdentityRecord | null>;
   /** Atomic, bounded and durable. null means absent. Never evict a pin to admit a new identity. */
   compareAndSet(account: string, expectedDigest: string | null, next: IdentityRecord, history?: IdentityRecord[]): Promise<boolean>;

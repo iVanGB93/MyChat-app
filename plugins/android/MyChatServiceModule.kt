@@ -192,9 +192,24 @@ class MyChatServiceModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun start(callType: String, promise: Promise) {
+        startCallService(callType, null, promise)
+    }
+
+    @ReactMethod
+    fun startWithHangUp(callType: String, callId: String, promise: Promise) {
+        startCallService(callType, callId, promise)
+    }
+
+    private fun startCallService(callType: String, callId: String?, promise: Promise) {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(reactContext, android.Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            promise.reject("START_ERROR", "Microphone permission is required for calls")
+            return
+        }
         try {
             val intent = Intent(reactContext, MyChatForegroundService::class.java).apply {
                 putExtra(MyChatForegroundService.EXTRA_CALL_TYPE, callType)
+                putExtra(MyChatForegroundService.EXTRA_CALL_ID, callId)
             }
             reactContext.startForegroundService(intent)
             promise.resolve(null)
@@ -215,13 +230,9 @@ class MyChatServiceModule(private val reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
-    fun update(title: String, text: String, promise: Promise) {
-        try {
-            MyChatForegroundService.updateNotification(reactContext, title, text)
-            promise.resolve(null)
-        } catch (e: Exception) {
-            promise.reject("UPDATE_ERROR", e.message, e)
-        }
+    fun clearIncomingCallWindow(callId: String) {
+        val activity = reactContext.currentActivity as? MainActivity ?: return
+        activity.runOnUiThread { activity.clearIncomingCallWindow(callId) }
     }
 
     /**

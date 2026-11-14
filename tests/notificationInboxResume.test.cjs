@@ -3,7 +3,8 @@ const {load}=require('./helpers/attachment.cjs');
 const {createEventDeadlineTask}=load('eventDeadlineTask'),{createRelayPollSchedule}=load('relayPollSchedule');
 // Execute the production composition's resume method against real idle schedulers.
 const source=fs.readFileSync('src/composition/neuronRuntime.ts','utf8');
-const body=source.match(/resume\(\) \{([\s\S]*?)\}, tick:pump/)[1];
+const body=source.match(/resume\(\) \{([\s\S]*?)\}, refreshRoutes:/)[1];
+const recoveryBody=source.match(/resumeRecovery\(peer:string\) \{([\s\S]*?)\},\s+resume\(\)/)[1];
 function fixture(){
  let now=1,sequence=0;const timers=new Map(),counts={private:0,group:0,transport:0,media:0};
  const task=run=>createEventDeadlineTask({now:()=>now,run,schedule:(fn,ms)=>{timers.set(++sequence,{fn,ms});return sequence;},cancel:id=>timers.delete(id)});
@@ -23,4 +24,11 @@ test('verified hint resumes private and group inboxes already asleep on an uncha
 test('repeated hints coalesce and stopped coordinators cannot start reads',async()=>{
  const f=fixture();await f.idle();for(let i=0;i<20;i++)f.resume();await f.settle();f.pump();await f.settle();
  assert(f.counts.private<=3);assert(f.counts.group<=3);f.stop();const before=f.counts.private;f.resume();await f.settle();assert.equal(f.counts.private,before);
+});
+test('targeted wake resumes only the requested relay without restarting transport discovery',()=>{
+ const calls=[];
+ const resume=new Function('peer','courier','groupCourier','privateInboxWork','groupInboxWork','ownAttachments','pump',recoveryBody);
+ resume('custodian',{resume:p=>calls.push(['private',p])},{resume:p=>calls.push(['group',p])},
+  {changed:()=>calls.push('private-inbox')},{changed:()=>calls.push('group-inbox')},{wake:()=>calls.push('media')},()=>calls.push('pump'));
+ assert.deepEqual(calls,[['private','custodian'],['group','custodian'],'private-inbox','group-inbox','media','pump']);
 });

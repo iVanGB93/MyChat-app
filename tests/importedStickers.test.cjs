@@ -12,7 +12,8 @@ function moduleFrom(file, modules = {}) {
   vm.runInNewContext(output, context);
   return context.exports;
 }
-const format = moduleFrom('sticker-file-format.ts');
+const stickerProtocol = moduleFrom('identity/stickerProtocol.ts');
+const format = moduleFrom('sticker-file-format.ts', {'./identity/stickerProtocol': stickerProtocol});
 function png(width = 512, animation = false) {
   const chunk = (name, data) => {
     const b = Buffer.alloc(12 + data.length); b.writeUInt32BE(data.length); b.write(name, 4); data.copy(b, 8); return b;
@@ -70,7 +71,7 @@ function fixture() {
     delete() { files.delete(this.uri); }
   }
   const api = moduleFrom('imported-stickers.ts', {
-    './stickers': moduleFrom('stickers.ts', {'@react-native-async-storage/async-storage': {default: {}}}),
+    './stickers': moduleFrom('stickers.ts', {'@react-native-async-storage/async-storage': {default: {}}, './identity/stickerProtocol': stickerProtocol}),
     '@react-native-async-storage/async-storage': { default: { getItem: async (k) => disk.get(k), setItem: async (k, v) => { if (failWrite) throw new Error('disk full'); disk.set(k, v); } } },
     'expo-file-system': { Directory, File, Paths: { document: 'file:///documents' } },
     'react-native': { Image: { getSize: async () => ({ width: 512, height: 512 }) } },
@@ -81,6 +82,19 @@ function fixture() {
   });
   return { api, files, disk, fail: () => { failWrite = true; } };
 }
+test('created stickers can be favorited and unfavorited without copying their files', async () => {
+  const { api, files } = fixture();
+  const [sticker] = await api.importSticker(1, 'file:///input', 'Created');
+  await api.markImportedStickerSent(1, sticker.id);
+  const [original] = await api.loadImportedStickers(1);
+  const fileCount = files.size;
+  await api.toggleImportedStickerFavorite(1, sticker.id);
+  assert.deepEqual({ ...(await api.loadImportedStickers(1))[0] }, { ...original, favorite: true });
+  await api.toggleImportedStickerFavorite(1, sticker.id);
+  assert.deepEqual({ ...(await api.loadImportedStickers(1))[0] }, { ...original, favorite: false });
+  assert.equal(files.size, fileCount);
+});
+
 test('imports are durable, deduplicated, and account scoped', async () => {
   const { api, files } = fixture();
   await api.importSticker(1, 'file:///input', 'hello.webp');

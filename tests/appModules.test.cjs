@@ -2,6 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {load}=require('./helpers/attachment.cjs');
 function moduleCode(name){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync((name==='callCommands'?'src/modules/calls/commands.ts':'src/modules/messaging/'+name+'.ts'),'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>load(n.split('/').at(-1)));return out;}
 const {createMessagingCommands}=moduleCode('commands'),{createMessageDelivery}=moduleCode('delivery'),{createCallCommands}=moduleCode('callCommands');
+const {createDeliveryOutbox}=moduleCode('deliveryOutbox');
 const {createRootChatLedger}=load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),c='axonic:1:'+'c'.repeat(64);
 function setup(){let owner=a,raw=null,counter=0,fail=false,random=async()=> (++counter).toString(16).padStart(64,'0');
@@ -9,7 +10,7 @@ function setup(){let owner=a,raw=null,counter=0,fail=false,random=async()=> (++c
  const commands=createMessagingCommands({owner:()=>owner,ledger:()=>ledger,randomId:()=>random()});
  return {ledger,commands,owner:()=>owner,setOwner:v=>owner=v,setRandom:v=>random=v,setFail:v=>fail=v};
 }
-function delivery(f,overrides={}){const events=[];const worker=createMessageDelivery({owner:f.owner,ledger:()=>({...f.ledger,snapshot:f.ledger.deliverySnapshot}),
+function delivery(f,{read=f.ledger.deliverySnapshot,...overrides}={}){const events=[];const outbox=createDeliveryOutbox({owner:f.owner,read,delivered:f.ledger.delivered});const worker=createMessageDelivery({owner:f.owner,...outbox,
  connectedPeers:()=>[b,c],blocked:peers=>events.push(['blocked',peers]),collect:async()=>events.push(['collect']),send:async(...args)=>{events.push(['send',...args]);return false;},
  resolve:async peer=>events.push(['resolve',peer]),deposit:async(...args)=>events.push(['deposit',...args]),...overrides});return {worker,events};}
 
@@ -17,7 +18,7 @@ test('revision-cached outbox derives once while idle and invalidates on block, e
  let raw=null,revision=0,now=10000,send=async()=>true;
  const ledger=createRootChatLedger({owner:a,current:()=>true,now:()=>now,read:async()=>raw,write:async v=>{raw=v;revision++;}});
  const reads=load('runtimeChatReads').createRuntimeChatReads({owner:()=>a,revision:()=>revision,read:ledger.deliverySnapshot});
- const d=delivery({owner:()=>a,ledger},{stableSnapshots:true,ledger:()=>({...ledger,snapshot:reads.read}),now:()=>now,send:(...args)=>send(...args)});
+ const d=delivery({owner:()=>a,ledger},{read:reads.read,now:()=>now,send:(...args)=>send(...args)});
  for(let i=0;i<60;i++)await d.worker.tick();assert.equal(d.worker.snapshot().pendingDerivations,1);
  assert.equal(d.events.filter(e=>e[0]==='blocked').length,1);
  await ledger.enqueue(b,'1'.repeat(64),'synthetic');await d.worker.tick();
@@ -235,7 +236,7 @@ test('reconnected durable backlog drains without waiting for one timer tick per 
 test('outbox exposes failed-job deadlines and returns to sleep after durable delivery',async()=>{
  const f=setup();let now=10000,revision=0,success=false;
  const reads=load('runtimeChatReads').createRuntimeChatReads({owner:f.owner,revision:()=>revision,read:f.ledger.snapshot});
- const d=delivery(f,{stableSnapshots:true,ledger:()=>({...f.ledger,snapshot:reads.read}),now:()=>now,send:async()=>success,deposit:async()=>false});
+ const d=delivery(f,{read:reads.read,now:()=>now,send:async()=>success,deposit:async()=>false});
  await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),Infinity);
  await f.commands.sendText(b,'deadline fixture');revision++;await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),now+2000);
  now+=2000;success=true;await d.worker.dispatch();revision++;await d.worker.dispatch();assert.equal(d.worker.nextDeadline(),Infinity);d.worker.stop();

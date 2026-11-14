@@ -14,9 +14,10 @@ interface Props extends TextInputProps {
   error?: string;
   isPassword?: boolean;
   containerStyle?: StyleProp<ViewStyle>;
+  surfaceStyle?: StyleProp<ViewStyle>;
 }
 
-export default function Input({ label, error, isPassword, style, containerStyle, ...rest }: Props) {
+export default function Input({ label, error, isPassword, style, containerStyle, surfaceStyle, ...rest }: Props) {
   const { colors: Colors } = useTheme();
   const [showPassword, setShowPassword] = useState(false);
 
@@ -33,6 +34,7 @@ export default function Input({ label, error, isPassword, style, containerStyle,
             borderColor: error ? Colors.error : Colors.neonBorder,
             shadowColor: error ? Colors.error : Colors.primary,
           },
+          surfaceStyle,
         ]}
       >
         <TextInput

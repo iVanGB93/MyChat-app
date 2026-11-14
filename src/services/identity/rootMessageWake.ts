@@ -2,11 +2,13 @@ import {rootNotificationAvatar} from './rootNotificationAvatar';
 import {verifyGroupCustodyPayload,matchesGroupGrant,type GroupCustodyPayload} from './groupCustodyProtocol';
 import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
 import {diagnosticJournal} from '../diagnosticJournal';
-import {createMessageNotificationDeadline} from './messageNotificationDeadline';
+import {createMessageNotificationDeadline,type MessageWakeRecoveryOutcome} from './messageNotificationDeadline';
 import {rootMessageNotificationId,currentRootMessageNotification,cancelRootMessageNotification} from './rootMessageNotification';
 import {publishRootMessageToast} from './rootMessageToast';
 import {readRootNotificationPreferences} from './rootNotificationPreferences';
 import {localAccount} from './localAccount';
+import {rootChatView} from './rootChatActions';
+import type {RootChatState} from './rootChatTypes';
 import Native from '../../../modules/axonic-nearby';
 import {rootConversationVisible} from './rootNotificationRoute';
 import * as SQLite from 'expo-sqlite';
@@ -18,14 +20,20 @@ import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {rootWakeContext,rootWakeBlocked} from './rootCallWake';
 import {validWakeLookup} from './wakeSenderRecovery';
 import type {createWakeSenderRecovery} from './wakeSenderRecovery';
+import {t} from '../../localization/language';
 
 function setStage(stage:string){console.info('[Axonic message wake]',stage);}
 export const rootMessageWakeFailed=()=>{setStage('failed');if(localAccount.status().state==='unlocked')diagnosticJournal.record('wake_failed');};
 let opening:Promise<SQLite.SQLiteDatabase>|undefined,tail:Promise<unknown>=Promise.resolve();
 function serial<T>(work:()=>Promise<T>){const result=tail.then(work);tail=result.catch(()=>{});return result;}
 function db(){return opening??=SQLite.openDatabaseAsync('axonic_root_message_wakes_v1.db',{useNewConnection:true}).then(async value=>{
- await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires);');return value;
+ await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires); CREATE TABLE IF NOT EXISTS recovery_notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,PRIMARY KEY(owner,sender,id));');return value;
 }).catch(error=>{opening=undefined;throw error;});}
+const recoveryNoticeId=(owner:string)=>'root-recovery:'+owner;
+async function messageAlreadyAdmitted(owner:string,sender:string,id:string){
+ const store=ownChatStore(owner),raw=store.indexed?await store.indexed.readMessage(sender,id):await store.read();
+ return !!raw&&(JSON.parse(raw) as RootChatState).messages.some(m=>m.direction==='incoming'&&m.peer===sender&&m.id===id);
+}
 async function messagePolicy(owner:string,sender:string,group?:string){
  const store=ownChatStore(owner),raw=store.indexed?(await store.indexed.readScope({metadata:true})).raw:await store.read();if(!raw)return {blocked:false,muted:false};
  const state=JSON.parse(raw);if(state.version!==1||!Array.isArray(state.contacts))throw Error('Contact policy unavailable');
@@ -61,7 +69,7 @@ async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>numbe
  finally{finished=true;if(timer!==undefined)clearTimeout(timer);}
 }
 /** Signed hint with optional ciphertext. Plaintext remains unavailable until local unlock. */
-export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>Promise<void>,recoverSender?:ReturnType<typeof createWakeSenderRecovery>){
+export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>Promise<MessageWakeRecoveryOutcome|void>,recoverSender?:ReturnType<typeof createWakeSenderRecovery>){
  setStage('context');
  const reject=(reason:string)=>{setStage(reason);diagnosticJournal.record('wake_failed',{reason});};
  const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048){reject('invalid-payload');return;}
@@ -84,10 +92,10 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  let envelope=custodyWakeEnvelope(data,event,Date.now())??undefined,payload:GroupCustodyPayload|undefined;
  const rawPayload=(data as {payload?:unknown}).payload;
  if(rawPayload!==undefined){try{const parsed=typeof rawPayload==='string'&&rawPayload.length<=3500?JSON.parse(rawPayload):null;if(envelope&&await verifyGroupCustodyPayload(parsed,records,Date.now())&&matchesGroupGrant(parsed,envelope))payload=parsed;else envelope=undefined;}catch{envelope=undefined;}}
- const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,envelope,custodian,payload)).then(()=>{},()=>{setStage('recovery-failed');});
+ const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,envelope,custodian,payload)).catch(()=>{setStage('recovery-failed');});
  // Three seconds without new progress, capped at ten seconds overall. A preview
  // publishes independently; retries and repeated milestones cannot extend this.
- await waitForRecovery(recovery,10000,deadline.remaining);
+ await waitForRecovery(recovery.then(()=>{}),10000,deadline.remaining);
  await serial(async()=>{
   const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now())return;
   const database=await db();
@@ -97,18 +105,88 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
    await cancelRootMessageNotification(owner.account,sender,event.id);setStage('silent-control');return;
   }
   // A verified routing hint is not proof of a new user-visible message.
-  // Only finishRootMessageWake may notify, after durable decrypted admission.
+  // Only finishRootMessageWake may show a preview, after durable decrypted admission.
   // Retire legacy generic alerts without touching a real preview or consuming
   // this delivery: a later successful recovery must still be able to notify.
   const notice=await currentRootMessageNotification(owner.account,sender);
   if(notice&&!notice.data?.messagePreviews)await cancelRootMessageNotification(owner.account,sender,event.id);
   setStage('awaiting-verified-message');
  });
- // Keep the headless task alive for bounded recovery; hints remain silent.
- await recovery;
+ const outcome=await recovery;
+ if(!outcome||event.wakeMode==='silent')return;
+ await serial(async()=>{
+  const current=await rootWakeContext();
+  if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now()||AppState.currentState==='active')return;
+  const [preferences,policy]=await Promise.all([readRootNotificationPreferences(owner.account),messagePolicy(owner.account,sender)]);
+  if(!preferences.messages||policy.blocked||policy.muted)return;
+  const database=await db(),id=recoveryNoticeId(owner.account);
+  const shown=(await notifee.getDisplayedNotifications()).some(entry=>entry.notification.id===id);
+  if(!shown)await database.runAsync('DELETE FROM recovery_notices WHERE owner=?',owner.account);
+  const consumed=await database.getFirstAsync('SELECT 1 FROM notices WHERE owner=? AND sender=? AND id=? AND displayed=2 AND expires>?',owner.account,sender,event.id,Date.now());
+  // The regular notification already covers an admitted message, including media
+  // whose bytes are still downloading or awaiting contact approval.
+  if(consumed||await messageAlreadyAdmitted(owner.account,sender,event.id))return;
+  await database.runAsync('DELETE FROM recovery_notices WHERE owner=? AND expires<=?',owner.account,Date.now());
+  const channelId=await notifee.createChannel({id:'root-recovery-v1',name:t("Message recovery"),importance:AndroidImportance.LOW,vibration:false});
+  if(await messageAlreadyAdmitted(owner.account,sender,event.id))return;
+  await database.runAsync('INSERT OR REPLACE INTO recovery_notices(owner,sender,id,expires) VALUES(?,?,?,?)',owner.account,sender,event.id,event.expires);
+  if(shown)return;
+  await notifee.displayNotification({id,title:'Axonic',body:t("Some messages may be missing. Open Axonic to sync."),android:{
+   channelId,pressAction:{id:'default',launchActivity:'default'},autoCancel:true,onlyAlertOnce:true,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
+  }});
+  diagnosticJournal.record('notification_fallback_posted');
+  setStage('custodian-recovery-notice');
+ });
 }
 /** Invoked only after durable inbox admission, including direct delivery racing a delayed hint. */
 export type RootMessagePreview={orderId?:string;name:string;text:string;at:number;group?:string;read?:boolean;senderName?:string};
+const messageNoticeActions=()=>[
+ {title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},
+ {title:'Mark as read',pressAction:{id:'root-mark-read'}},
+];
+
+/** Recheck local unread state before restoring any previously displayed notice. */
+export function restoreRootMessageNotices(){
+ return serial(async()=>{
+  const pending=await Native?.pendingMessageNoticeRestores?.();
+  if(!pending?.length)return;
+  const owner=(await rootWakeContext())?.account;
+  if(!owner)return;
+  const preferences=await readRootNotificationPreferences(owner);
+  const store=ownChatStore(owner);
+  const channelId='root-messages-restored-v1';
+  let channelReady=false;
+  for(const raw of pending){
+   const row=JSON.parse(raw) as {id:string;account:string;sender:string;messageId:string;group?:string;channel:string};
+   if(row.account!==owner||!validAccountId(row.sender)||!/^[a-f0-9]{64}$/.test(row.messageId)||
+      (row.group!==undefined&&!/^[a-f0-9]{64}$/.test(row.group))||row.id!==rootMessageNotificationId(owner,row.sender,row.group))continue;
+   const forget=()=>Native?.forgetMessageNoticeRestore?.(row.id,row.messageId);
+   if(!preferences.messages){await forget();continue;}
+   const original=await notifee.getChannel(row.channel);
+   if(original?.blocked||original?.importance===0){await forget();continue;}
+   const history=store.indexed?await store.indexed.readMessage(row.sender,row.messageId):await store.read();
+   const state=history?rootChatView(owner,JSON.parse(history) as RootChatState):null;
+   const message=state?.messages.find(m=>m.direction==='incoming'&&m.peer===row.sender&&m.id===row.messageId&&m.group?.id===row.group);
+   const contact=state?.contacts.find(c=>c.account===row.sender),group=state?.groups?.find(g=>g.id===row.group);
+   if(!message||message.deleted||message.read||contact?.blocked||contact?.muted||group?.blocked||group?.muted||
+      state?.hiddenChats?.includes(row.group?'group:'+row.group:row.sender)||
+      (row.group&&!group?.accepted)||(!row.group&&!contact?.accepted)||rootConversationVisible(row.sender,row.group)){
+    await forget();continue;
+   }
+   if(!channelReady){
+    await notifee.createChannel({id:channelId,name:'Restored messages',importance:AndroidImportance.LOW,vibration:false});
+    channelReady=true;
+   }
+   if((await rootWakeContext())?.account!==owner)return;
+   if(await currentRootMessageNotification(owner,row.sender,row.group))continue;
+   await notifee.displayNotification({id:row.id,title:'Axonic',body:'Unread message',
+    data:{type:'root_neuron_message',account:owner,sender:row.sender,messageId:row.messageId,messageAt:String(message.at),restoreChannel:row.channel,...(row.group?{group:row.group}:{})},
+    android:{channelId,importance:AndroidImportance.LOW,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',onlyAlertOnce:true,
+     pressAction:{id:'root-message-open',launchActivity:'default'},actions:messageNoticeActions()}});
+   await Native?.notificationReadActionInShade?.(row.id);
+  }
+ });
+}
 type NotificationMessage={orderId?:string;id:string;sender:string;name:string;text:string;at:number};
 function notificationMessages(raw:unknown,next:NotificationMessage){
  let messages:NotificationMessage[]=[];
@@ -129,6 +207,8 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   const [database,current]=await Promise.all([db(),rootWakeContext()]);
   const key=rootMessageNotificationId(owner,sender,preview?.group);
   if(current?.account!==owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
+  const cleared=await database.runAsync('DELETE FROM recovery_notices WHERE owner=? AND sender=? AND id=?',owner,sender,id);
+  if(cleared.changes&&!(await database.getFirstAsync('SELECT 1 FROM recovery_notices WHERE owner=? AND expires>? LIMIT 1',owner,Date.now())))await notifee.cancelNotification(recoveryNoticeId(owner)).catch(()=>{});
   // Suppressed/control/read events cannot expose content. They do not need to
   // load the full history and preferences before taking the silent path.
   const suppressed=!preview||preview.read||(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group));
@@ -142,7 +222,7 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
    await cancelRootMessageNotification(owner,sender,id,preview?.group);return;}
   const prior=await database.getFirstAsync<{displayed:number}>('SELECT displayed FROM notices WHERE owner=? AND sender=? AND id=?',owner,sender,id);if(prior?.displayed===2)return;
   await database.runAsync('DELETE FROM notices WHERE expires<=?',Date.now());
-  if(AppState.currentState==='active'&&publishRootMessageToast({account:owner,sender,...(preview.group?{group:preview.group}:{}),name:preview.name,text:preview.text})){
+  if(AppState.currentState==='active'&&publishRootMessageToast({account:owner,sender,...(preview.group?{group:preview.group}:{}),name:preview.name,senderName:preview.group?preview.senderName:undefined,text:preview.text})){
    if(preview.group)await cancelRootMessageNotification(owner,sender,id);
    await cancelRootMessageNotification(owner,sender,id,preview?.group);setStage('preview');
    await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);return;
@@ -155,14 +235,14 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   if(preview.group)await cancelRootMessageNotification(owner,sender,id);
   const existing=await currentRootMessageNotification(owner,sender,preview.group);
   // Preserve the last preview when updating a notice created by the previous client.
-  const previous=existing?.data?.messagePreviews??(existing?.body&&existing.data?.messageId&&existing.data.sender&&Number.isFinite(Number(existing.data.messageAt))?JSON.stringify([{id:existing.data.messageId,sender:existing.data.sender,name:existing.title||preview.name,text:existing.body,at:Number(existing.data.messageAt)}]):undefined);
+  const previous=existing?.data?.messagePreviews??(existing?.body&&!existing.data?.restoreChannel&&existing.data?.messageId&&existing.data.sender&&Number.isFinite(Number(existing.data.messageAt))?JSON.stringify([{id:existing.data.messageId,sender:existing.data.sender,name:existing.title||preview.name,text:existing.body,at:Number(existing.data.messageAt)}]):undefined);
   const messages=notificationMessages(previous,{id,...(preview.orderId?{orderId:preview.orderId}:{}),sender,name:preview.senderName||preview.name,text:preview.text,at:preview.at}),latest=messages[messages.length-1];
   const avatar=await rootNotificationAvatar(owner,latest.sender);
   if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner){avatar?.remove();return;}
-  const notification={id:key,title:preview.name,body:latest.text,data:{type:'root_neuron_message',account:owner,sender:latest.sender,messageId:latest.id,messageAt:String(latest.at),messagePreviews:JSON.stringify(messages),...(preview.group?{group:preview.group}:{})},
-   android:{channelId,...(avatar?{largeIcon:avatar.uri}:{}),onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
-    pressAction:{id:'root-message-open',launchActivity:'default'},actions:[{title:'Reply',pressAction:{id:'root-reply'},input:{allowFreeFormInput:true,placeholder:'Reply…'}},{title:'Mark as read',pressAction:{id:'root-mark-read'}}],style:{type:AndroidStyle.MESSAGING as const,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender,...(avatar&&m.sender===latest.sender?{icon:avatar.uri}:{})}}))}}};
-  try{try{await notifee.displayNotification(notification);}catch(error){if(!avatar)throw error;delete notification.android.largeIcon;for(const m of notification.android.style.messages)delete m.person.icon;await notifee.displayNotification(notification);}}finally{avatar?.remove();}
+  const notification={id:key,title:preview.name,body:preview.group&&latest.name!==preview.name?latest.name+": "+latest.text:latest.text,data:{type:'root_neuron_message',account:owner,sender:latest.sender,messageId:latest.id,messageAt:String(latest.at),messagePreviews:JSON.stringify(messages),...(preview.group?{group:preview.group}:{})},
+   android:{channelId,...(avatar?{largeIcon:avatar.uri,...(preview.group?{circularLargeIcon:true}:{})}:{}),onlyAlertOnce:existing?.data?.messageId===latest.id,importance:AndroidImportance.HIGH,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',color:'#7C3AED',
+    pressAction:{id:'root-message-open',launchActivity:'default'},actions:messageNoticeActions(),style:{type:AndroidStyle.MESSAGING as const,person:{name:'You'},group:!!preview.group,...(preview.group?{title:preview.name}:{}),messages:messages.map(m=>({text:m.text,timestamp:m.at,person:{name:m.name,key:m.sender,...(avatar&&m.sender===latest.sender?{icon:avatar.uri}:{})}}))}}};
+  try{try{await notifee.displayNotification(notification);}catch(error){if(!avatar)throw error;delete notification.android.largeIcon;delete notification.android.circularLargeIcon;for(const m of notification.android.style.messages)delete m.person.icon;await notifee.displayNotification(notification);}}finally{avatar?.remove();}
   console.info('[Axonic notification timing] displayed-ms',Date.now()-began);
   if(localAccount.status().state==='unlocked'&&localAccount.status().account===owner)diagnosticJournal.record('notification_preview_posted',{milliseconds:Date.now()-began});
   await Native?.notificationReadActionInShade?.(key);

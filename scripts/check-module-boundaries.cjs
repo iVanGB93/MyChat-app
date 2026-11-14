@@ -41,6 +41,16 @@ for(const request of imports('src/services/identity/rootAttachmentSelections.ts'
  if(/rootAttachmentRuntime|attachmentTransfer|composition|react-native-webrtc/.test(request))failures.push('Attachment selections own persistence, not transfer execution: '+request);
 for(const request of imports('src/services/callQualityMonitor.ts'))
  if(/react|expo-|composition|localAccount/.test(request))failures.push('Call quality monitor must remain platform-independent: '+request);
+// Local unlock can lease keys, but peer authentication and sockets belong to the network.
+for(const request of imports('src/services/identity/localIdentityController.ts'))
+ if(/(?:persistentAxon|openIdentityAxon|identityNetwork|AxonTransport)$/.test(request))failures.push('Local identity constructs network sessions: '+request);
+// Shared delivery and protocol code receives app and platform behavior through ports.
+for(const name of ['persistentAxon','identityNetwork','attachmentTransfer','custodyCourier','groupCustodyCourier','custodyWakeForwarder','receiptConfirmation']){
+ const file='src/services/identity/'+name+'.ts';
+ for(const request of imports(file)){
+  if(/^(react(?:$|-)|expo(?:$|-)|@react-native)|(?:^|\/)(screens|components|composition|axonic-nearby)(?:\/|$)|(?:^|\/)(localAccount|localRootChat|identityVault)(?:\.[cm]?tsx?)?$/.test(request))failures.push(file+' imports an app or platform adapter: '+request);
+ }
+}
 const navigatorSource=ts.createSourceFile('navigator',fs.readFileSync(path.join(root,'src/navigation/RootAccountNavigator.tsx'),'utf8'),ts.ScriptTarget.Latest,true);
 for(const node of navigatorSource.statements)if(ts.isFunctionDeclaration(node)&&node.name?.text!=='RootAccountNavigator')failures.push('Navigator contains screen implementation: '+node.name?.text);
 if(failures.length){console.error(failures.join('\n'));process.exit(1);}

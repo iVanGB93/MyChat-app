@@ -1,3 +1,4 @@
+import ChatHistoryLoading from '../../components/chat/ChatHistoryLoading';
 import {t,languageSnapshot} from '../../localization/language';
 import DeletedMessage from '../../components/chat/DeletedMessage';
 import RootMessageStatus from '../../components/chat/RootMessageStatus';
@@ -5,9 +6,11 @@ import {attachmentTimeline,type PreparationRow} from '../../modules/ui/useChatSn
 import ChatScrollToBottom from '../../components/chat/ChatScrollToBottom';
 import {useChatScroll,CHAT_REVEAL_SPACE} from '../../modules/ui/useChatSnapshot';
 import {useReplyNavigation} from '../../modules/ui/useChatSnapshot';
+import {createChatReplyLookup} from '../../modules/ui/useChatSnapshot';
 import ChatDateSeparator from '../../components/chat/ChatDateSeparator';
 import MessageTextWithFooter from '../../components/chat/MessageTextWithFooter';
 import RootReplyContent from '../../components/chat/RootReplyContent';
+import ComposerReplyPreview from '../../components/chat/ComposerReplyPreview';
 import AttachmentPreparation from '../../components/chat/AttachmentPreparation';
 import {pendingMessages} from '../../modules/messaging';
 import {ChatComposer,type ChatComposerHandle} from '../../components/chat/ChatComposer';
@@ -59,7 +62,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  const activity=useChatActivity();
 
- const peer=route.params.peer,{colors}=useTheme(),{state,error,references,hasMore,loading,loadMore,revealMessage}=useOwnChat(peer),header=useHeaderHeight();
+ const peer=route.params.peer,{colors}=useTheme(),{state,error,references,hasMore,loading,initialLoading,retry,loadMore,revealMessage}=useOwnChat(peer),header=useHeaderHeight();
  const onChatLayout=useChatLayoutTiming('private_chat_layout');
 
  const focused=useIsFocused(),[foreground,setForeground]=useState(AppState.currentState==='active');
@@ -88,11 +91,12 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
  const composer=useRef<ChatComposerHandle>(null),sending=useRef(false);
  const setText=(next:string|((current:string)=>string))=>composer.current?.setText(next);
  useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
- const calls=usePrivateCallHistory(peer),timeline=useMemo(()=>attachmentTimeline(privateChatTimeline(messages,calls.rows,peer,hasMore),transfers.selections.filter(s=>!s.group&&s.peer===peer),s=>'message:outgoing:'+s.id),[messages,calls.rows,peer,hasMore,transfers.selections,languageSnapshot()]);
+ const openMessageMenu=(message:RootChatMessage,event:{nativeEvent:{pageY:number}})=>{if(message.deleted||message.localPending)return;setMenuY(event.nativeEvent.pageY);setMenu(message);};
+ const calls=usePrivateCallHistory(peer,false,!initialLoading),timeline=useMemo(()=>attachmentTimeline(privateChatTimeline(messages,calls.rows,peer,hasMore),transfers.selections.filter(s=>!s.group&&s.peer===peer),s=>'message:outgoing:'+s.id),[messages,calls.rows,peer,hasMore,transfers.selections,languageSnapshot()]);
  useEffect(()=>{acknowledgeAttachmentHandoffs(messages);},[messages]);
  const list=useRef<FlatList<PrivateChatRow|PreparationRow>>(null),owner=localAccount.status().account;
  const [composerHeight,setComposerHeight]=useState(90);
- const {listProps:chatScroll,showScrollToBottom,scrollToBottom,stopFollowing}=useChatScroll(list,owner+':'+peer);
+ const {listProps:chatScroll,showScrollToBottom,scrollToBottom,stopFollowing}=useChatScroll(list,owner+':'+peer,timeline[0]?.key);
  const replyNavigation=useReplyNavigation({beforeJump:stopFollowing,scope:owner+':'+peer,rows:timeline,message:row=>row.message,list,loading,error,reveal:revealMessage,report});
 
  useEffect(()=>{if(focused&&foreground&&owner)void dismissRootConversationNotifications(owner,{peer}).catch(()=>{});},[focused,foreground,owner,peer]);
@@ -151,19 +155,20 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
  async function attach(source:'camera'|'library'|'files'){setAttachOpen(false);if(busy||contact?.blocked)return;setBusy(true);try{const selection=source==='files'?await pickRootAttachment(peer,replyReference,attachmentPreview.confirm):await pickRootMedia(peer,source,replyReference,undefined,attachmentPreview.confirm,attachmentPreview.capture);if(selection){setReplyTo(undefined);scrollToBottom();}}catch(e){report(e);}finally{setBusy(false);}}
 
 
+ const findReply=useMemo(()=>createChatReplyLookup(state.messages,references,owner,peer),[state.messages,references,owner,peer]);
  const messageList=useMemo(()=>(<FlatList {...messageListRendering} {...chatScroll} ListHeaderComponent={<View style={{height:CHAT_REVEAL_SPACE+composerHeight}}/>} onEndReached={loadMore} onEndReachedThreshold={0.25} maintainVisibleContentPosition={{minIndexForVisible:1}} ListFooterComponent={hasMore?<Pressable disabled={loading} onPress={loadMore} style={{padding:16}}><Text style={{color:colors.primary}}>{loading?t("Loading older messages..."):t("Load older messages")}</Text></Pressable>:null} ref={list} onScrollToIndexFailed={replyNavigation.failed} inverted data={timeline} keyExtractor={row=>row.key} style={roomStyles.messageList} contentContainerStyle={[roomStyles.messagesList,chatScroll.contentContainerStyle,{paddingBottom:header+8}]} keyboardShouldPersistTaps="handled"
 
-   renderItem={({item:row,index})=>{const date=<ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/>;if('preparation' in row)return <View>{date}<AttachmentPreparation selection={row.preparation} colors={colors} report={report}/></View>;if(row.call){const call=row.call,label=(call.outgoing?t("Outgoing"):t("Incoming"))+' '+(call.media==='video'?'video':'voice')+' call',when=new Date(call.at).toLocaleDateString()+' · '+messageTime(call.at);return <View>{date}<Pressable accessibilityRole="button" accessibilityLabel={label+', '+when+'. Call again'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind:call.media})} style={{alignSelf:call.outgoing?'flex-end':'flex-start',flexDirection:'row',alignItems:'center',gap:12,marginVertical:8,marginHorizontal:12,padding:14,borderRadius:16,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:call.outgoing?colors.bubbleSent:colors.bubbleReceived}}><Ionicons name={call.media==='video'?'videocam-outline':'call-outline'} size={24} color={colors.primary}/><View><Text style={{color:colors.text}}>{label}</Text><Text style={{color:colors.textSecondary,fontSize:12,marginTop:4}}>{when}</Text></View></Pressable></View>;}const m=row.message;const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?[...state.messages,...references].find(q=>q.peer===peer&&q.id===m.reply!.id&&(q.direction==='outgoing'?owner:peer)===m.reply!.author):undefined;return <View>{date}<ReplySwipe disabled={m.deleted||contact?.blocked||m.localPending} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View onLayout={()=>pendingMessages.laidOut(owner,m.group?.messageId??m.id)} style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked||m.localPending} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>{if(!m.deleted&&!m.localPending){setMenuY(event.nativeEvent.pageY);setMenu(m);}}} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{borderColor:replyNavigation.isHighlighted(m)?colors.primary:colors.neonBorder,minWidth:m.attachment?260:96,backgroundColor:replyNavigation.isHighlighted(m)?colors.highlight:mine?colors.bubbleSent:colors.bubbleReceived},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble,replyNavigation.isHighlighted(m)&&{backgroundColor:colors.highlight}]}>
+   renderItem={({item:row,index})=>{const date=<ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/>;if('preparation' in row)return <View>{date}<AttachmentPreparation selection={row.preparation} colors={colors} report={report}/></View>;if(row.call){const call=row.call,label=(call.outgoing?t("Outgoing"):t("Incoming"))+' '+(call.media==='video'?'video':'voice')+' call',when=new Date(call.at).toLocaleDateString()+' · '+messageTime(call.at);return <View>{date}<Pressable accessibilityRole="button" accessibilityLabel={label+', '+when+'. Call again'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind:call.media})} style={{alignSelf:call.outgoing?'flex-end':'flex-start',flexDirection:'row',alignItems:'center',gap:12,marginVertical:8,marginHorizontal:12,padding:14,borderRadius:16,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:call.outgoing?colors.bubbleSent:colors.bubbleReceived}}><Ionicons name={call.media==='video'?'videocam-outline':'call-outline'} size={24} color={colors.primary}/><View><Text style={{color:colors.text}}>{label}</Text><Text style={{color:colors.textSecondary,fontSize:12,marginTop:4}}>{when}</Text></View></Pressable></View>;}const m=row.message;const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?findReply(m.reply):undefined;return <View>{date}<ReplySwipe disabled={m.deleted||contact?.blocked||m.localPending} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View onLayout={m.direction==='outgoing'?pendingMessages.layoutCallback(owner,m.group?.messageId??m.id):undefined} style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked||m.localPending} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>openMessageMenu(m,event)} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{borderColor:replyNavigation.isHighlighted(m)?colors.primary:colors.neonBorder,minWidth:m.attachment?260:96,backgroundColor:replyNavigation.isHighlighted(m)?colors.highlight:mine?colors.bubbleSent:colors.bubbleReceived},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble,replyNavigation.isHighlighted(m)&&{backgroundColor:colors.highlight}]}>
 
     {!m.deleted&&m.reply&&<Pressable accessibilityRole="button" accessibilityLabel={t("Go to original message")} onPress={()=>replyNavigation.jump(quoted)} style={{borderLeftWidth:3,borderLeftColor:colors.primary,backgroundColor:m.reply.author===owner?colors.bubbleSent:colors.bubbleReceived,borderRadius:8,padding:8,marginBottom:6}}><RootReplyContent message={quoted}/></Pressable>}
 
-    {m.deleted?<DeletedMessage color={colors.textSecondary}/>:m.attachment?<RootAttachmentBubble onLongPress={event=>{setMenuY(event.nativeEvent.pageY);setMenu(m);}} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbleStyles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>:undefined} message={m} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:<MessageTextWithFooter text={m.text} style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary} footer={<View style={[bubbleStyles.metaRow,{marginTop:0}]}>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}/>}
+    {m.deleted?<DeletedMessage color={colors.textSecondary}/>:m.attachment?<RootAttachmentBubble onLongPress={event=>openMessageMenu(m,event)} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbleStyles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>:undefined} message={m} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onLongPress={event=>openMessageMenu(m,event)} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:<MessageTextWithFooter text={m.text} style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary} footer={<View style={[bubbleStyles.metaRow,{marginTop:0}]}>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}/>}
 
 
 
     {(m.deleted||!!sticker||!!m.attachment&&!m.attachment.mime.startsWith('audio/'))&&<View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}
 
-   </Pressable></RootMessageReactions></View></ReplySwipe></View>;}}/>),[timeline,state.messages,references,hasMore,loading,loadMore,peer,owner,name,colors,contact?.blocked,mediaRevision,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,transfers.selections,languageSnapshot()]);
+   </Pressable></RootMessageReactions></View></ReplySwipe></View>;}}/>),[timeline,findReply,hasMore,loading,loadMore,peer,owner,name,colors,contact?.blocked,mediaRevision,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,transfers.selections,languageSnapshot()]);
 
  return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0}>
 
@@ -174,8 +179,8 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   </View>
 
-  {messageList}
-  {showScrollToBottom&&<ChatScrollToBottom bottom={composerHeight+12} onPress={scrollToBottom}/>}
+  {initialLoading?<ChatHistoryLoading error={error} retry={retry}/>:messageList}
+  {!initialLoading&&showScrollToBottom&&<ChatScrollToBottom bottom={composerHeight+12} onPress={scrollToBottom}/>}
 
   <View pointerEvents="box-none" onLayout={event=>setComposerHeight(event.nativeEvent.layout.height)} style={{position:'absolute',left:0,right:0,bottom:0,zIndex:2}}>
 
@@ -205,9 +210,8 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   <AttachmentMenu visible={attachOpen} onClose={()=>setAttachOpen(false)} onCamera={()=>void attach('camera')} onMultimedia={()=>void attach('library')} onFiles={()=>void attach('files')}/>
 
-  {replyTo&&<View style={[roomStyles.replyPreview,{backgroundColor:replyTo.direction==='outgoing'?colors.bubbleSent:colors.bubbleReceived,borderLeftColor:colors.primary}]}><View style={{flex:1}}><RootReplyContent message={replyTo}/></View><Pressable accessibilityLabel={t("Cancel reply")} onPress={()=>setReplyTo(undefined)} style={roomStyles.replyPreviewClose}><Ionicons name="close" size={22} color={colors.text}/></Pressable></View>}
 
-  <ChatComposer ref={composer} owner={owner} peer={peer} disabled={busy||!!contact?.blocked} cannotCompose={!!contact?.blocked} editing={!!editing} reply={replyReference} onSend={send} onAttach={()=>setAttachOpen(true)} onCamera={()=>void attach('camera')} onStickers={()=>setStickersOpen(true)} onSent={mediaSent} onTyping={value=>activity.notify(peer,value)} onRecording={value=>activity.notifyRecording(peer,value)} onError={report}/>
+  <ChatComposer replyPreview={replyTo&&<ComposerReplyPreview cancelLabel={t("Cancel reply")} onCancel={()=>setReplyTo(undefined)}><RootReplyContent hideMediaLabel message={replyTo}/></ComposerReplyPreview>} ref={composer} owner={owner} peer={peer} disabled={busy||!!contact?.blocked} cannotCompose={!!contact?.blocked} editing={!!editing} reply={replyReference} onSend={send} onAttach={()=>setAttachOpen(true)} onCamera={()=>void attach('camera')} onStickers={()=>setStickersOpen(true)} onSent={mediaSent} onTyping={value=>activity.notify(peer,value)} onRecording={value=>activity.notifyRecording(peer,value)} onError={report}/>
 
   </View>
 

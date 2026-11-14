@@ -91,7 +91,7 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
    <Stack.Screen name="Tabs" options={{headerShown:false}}>{props=><Tabs.Navigator safeAreaInsets={{bottom:0}} detachInactiveScreens screenOptions={options}><Tabs.Screen name="Chats" options={{headerTitle:t("AXONIC"),tabBarLabel:t("Social")}}>{()=> <ChatList {...props}/>}</Tabs.Screen><Tabs.Screen name="Game" options={{headerTitle:t("GAMES"),tabBarLabel:t("Games")}} component={Game}/><Tabs.Screen name="Profile" options={{headerTitle:t("PROFILE"),tabBarLabel:t("Profile")}}>{()=> <>{profile}</>}</Tabs.Screen></Tabs.Navigator>}</Stack.Screen>
 
-   <Stack.Screen name="ChatRoom" component={ChatRoom} options={{headerTransparent:true}}/><Stack.Screen name="NewChat" component={NewChat} options={{title:t("New chat")}}/><Stack.Screen name="Contact" component={Contact} options={{title:t("User details")}}/>
+   <Stack.Screen name="ChatRoom" component={ChatRoom} options={{headerTransparent:true}}/><Stack.Screen name="NewChat" component={NewChat} options={{title:t("New chat"),headerTransparent:true}}/><Stack.Screen name="Contact" component={Contact} options={{title:t("User details")}}/>
 
    <Stack.Screen name="GroupCreate" component={RootGroupCreate} options={{title:t("New group")}}/><Stack.Screen name="GroupRoom" component={RootGroupRoom} options={{headerTransparent:true}}/><Stack.Screen name="GroupMessageInfo" component={RootGroupMessageInfo} options={{title:t("Message info")}}/><Stack.Screen name="GroupInfo" component={RootGroupInfo} options={{title:t("Group information")}}/>
 

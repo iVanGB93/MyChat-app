@@ -8,7 +8,7 @@ function fixture(status='ready'){
  // Setters capture their component's hook storage, as React does.
  react.useState=initial=>{const own=current,i=index++;if(!(i in own))own[i]=initial;return [own[i],value=>own[i]=typeof value==='function'?value(own[i]):value];};
  const rtc={remoteStream:{toURL:()=> 'remote'},localStream:{toURL:()=> 'local'},callQuality:{level:'unknown'}};
- const imports={'../../services/call-screen-capture':{callScreenCaptureAvailable:true},'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
+ const imports={'../../services/call-screen-capture':{callScreenCaptureAvailable:true},'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,DeviceEventEmitter:{addListener:()=>({remove(){}})},Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
   '../../modules/identity':{localAccount:{status:()=>({account:'owner'})},shortIdentity:()=> 'Peer'},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},
   '../../modules/ui/liveState':{useCallState:()=>call},'../../modules/ui/useChatSnapshot':{useChatContacts:()=>({contacts:[]})},
   '../../modules/calls':{MAX_GROUP_CALL_PARTICIPANTS:4,localAccountCalls:()=>({end:()=>{ended++;return Promise.resolve();}})},

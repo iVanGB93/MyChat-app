@@ -4,6 +4,7 @@ import {useTheme} from '../contexts/ThemeContext';
 import Button from './ui/Button';
 import {KeyboardAwareTextInput as TextInput} from './ui/KeyboardForm';
 import {parseIdentityInput} from '../modules/identity';
+import {conversations} from '../modules/messaging';
 import React, { useEffect, useRef, useState } from 'react';
 import { AppState, Text, View } from 'react-native';
 import { type DirectoryLookupResult } from '../modules/identity';
@@ -20,15 +21,20 @@ export default function IdentityLookup({ lookup, color:customColor, muted:custom
 }) {
   const {colors}=useTheme(),color=customColor??colors.text,muted=customMuted??colors.textSecondary,border=customBorder??colors.neonBorder;
   const [account, setAccount] = useState(''), [busy, setBusy] = useState(false), [result, setResult] = useState<DirectoryLookupResult | null>(null);
+  const [nickname, setNickname] = useState<string | null>(null);
   const generation = useRef(0), running = useRef(false);
   useEffect(() => {
-    const state = AppState.addEventListener('change', next => { if (next !== 'active') { generation.current++; setResult(null); } });
+    const state = AppState.addEventListener('change', next => { if (next !== 'active') { generation.current++; setResult(null); setNickname(null); } });
     return () => { generation.current++; state.remove(); };
   }, []);
   async function find() {
-    if (running.current || !parseIdentityInput(account)) return;
-    running.current = true; setBusy(true); setResult(null); const epoch = generation.current;
-    try { const found = await lookup(parseIdentityInput(account)!); if (epoch === generation.current) setResult(found); }
+    const id = parseIdentityInput(account);
+    if (running.current || !id) return;
+    running.current = true; setBusy(true); setResult(null); setNickname(null); const epoch = ++generation.current;
+    void Promise.resolve().then(()=>conversations().metadataSnapshot()).then(snapshot=>{
+      if(epoch===generation.current)setNickname(snapshot.contacts.find(contact=>contact.account===id)?.alias.trim()||null);
+    }).catch(()=>{ /* The signed lookup can still complete if local storage is unavailable. */ });
+    try { const found = await lookup(id); if (epoch === generation.current) setResult(found); }
     catch { if (epoch === generation.current) setResult({ status: 'unavailable', queried: 0, answered: 0, rejected: 0, sources: [] }); }
     finally { running.current = false; setBusy(false); }
   }
@@ -36,12 +42,17 @@ export default function IdentityLookup({ lookup, color:customColor, muted:custom
     <Text accessibilityRole="header" style={{ color, fontSize: 20, fontWeight: '600' }}>{t("Find identity")}</Text>
     <Text style={{ color: muted, lineHeight: 22 }}>{t("Ask connected neurons for a signed public identity record.")}</Text>
     <TextInput accessibilityLabel={t("Public identity code")} placeholder={t("Paste an ID or identity link…")} placeholderTextColor={muted} autoCapitalize="none" autoCorrect={false}
-      value={account} maxLength={256} editable={!busy} onChangeText={value => { setAccount(value); setResult(null); }}
+      value={account} maxLength={256} editable={!busy} onChangeText={value => { generation.current++; setAccount(value); setResult(null); setNickname(null); }}
       style={{ color, borderColor: border, borderWidth: 1, backgroundColor:colors.inputBg,borderRadius: Chrome.controlRadius, padding: 14,minHeight:48,fontSize:16 }} />
     <Button title={t("FIND IDENTITY")} loading={busy} disabled={!parseIdentityInput(account)} onPress={()=>void find()}/>
+    {nickname && <Text accessibilityLiveRegion="polite" style={{color}}>{t("Nickname saved on this phone")}{' · '}{nickname}</Text>}
     {result && <View accessibilityLiveRegion="polite" style={{ gap: 8 }}>
       <Text style={{ color, fontWeight: '600' }}>{t(messages[result.status])}</Text>
       {result.status === 'found' && <Text style={{ color: muted }}>{t("Revision")}{' '}{result.packet?.record.revision} {t("· returned by")}{' '}{result.sources.length} {result.sources.length === 1 ? 'neuron' : 'neurons'}</Text>}
+      {result.status === 'found' && result.packet && <>
+        <Text style={{color:muted}}>{t("Registered devices")}{' · '}{result.packet.record.devices.length}</Text>
+        <Text style={{color:muted}}>{t("Identity record valid until")}{' · '}{new Date(result.packet.record.expiresAt).toLocaleString()}</Text>
+      </>}
       <Text style={{ color: muted }}>{t("Checked")}{' '}{result.queried} {t("neurons ·")}{result.answered} {t("valid replies ·")}{result.rejected} {t("unavailable or rejected")}</Text>
       <Text style={{ color: muted, lineHeight: 22 }}>{t("This checks the records we could reach. It does not prove that no newer record exists elsewhere. Your trusted keys and account remain unchanged.")}</Text>
     </View>}

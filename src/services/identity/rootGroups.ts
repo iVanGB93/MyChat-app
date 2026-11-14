@@ -3,6 +3,7 @@ import {ed25519} from '@noble/curves/ed25519.js';
 import {sha256} from '@noble/hashes/sha2.js';
 import {bytesToHex,hexToBytes,utf8ToBytes} from '@noble/hashes/utils.js';
 import type {RootChatState,RootChatMessage} from './rootChatTypes.ts';
+import {hasConfirmedDelivery} from './rootMessageStatus.ts';
 import type {RootGroup,RootGroupContext,RootGroupMembership,RootGroupBackup} from './rootGroupTypes.ts';
 export const ROOT_GROUP_MAX_MEMBERS=10;
 // Pending delivery and retained replay/conflict evidence are different budgets.
@@ -124,7 +125,23 @@ export function leaveRootGroup(s:RootChatState,owner:string,id:string,packetId:s
 export function rootGroupAllowed(s:RootChatState,owner:string,peer:string,context:RootGroupContext){const g=s.groups?.find(g=>g.id===context.id);return !!g&&!g.recoveryPending&&!g.blocked&&g.members.includes(owner)&&g.members.includes(peer)&&g.revision>=context.revision&&!s.contacts.some(c=>c.account===peer&&c.blocked);}
 export function encodeRootGroupMessage(m:RootChatMessage){return JSON.stringify([m.attachment?'axonic-root-group-attachment-v1':'axonic-root-group-text-v1',m.peer,m.id,{group:m.group,...(m.attachment?{descriptor:m.attachment}:{text:m.text}),...(m.reply?{reply:m.reply}:{})},...(m.createdAt===undefined?[]:[m.createdAt])]);}
 /** Collapse per-recipient own copies for presentation; delivery remains tracked separately. */
-function collectGroupMessage(rows:Map<string,RootChatMessage>,m:RootChatMessage){const key=(m.direction==='outgoing'?'own':m.peer)+':'+m.group!.messageId,old=rows.get(key);if(!old)rows.set(key,{...m});else {if(m.networkCancelledAt!==undefined)old.networkCancelledAt??=m.networkCancelledAt;const description=(v:RootChatMessage)=>v.status==='delivered'||v.descriptorDelivered?Number.MAX_SAFE_INTEGER:v.networkStoredUntil??0;const file=(v:RootChatMessage)=>v.status==='delivered'?Number.MAX_SAFE_INTEGER:v.attachmentStoredUntil??0;old.networkStoredUntil=Math.min(description(old),description(m));old.attachmentStoredUntil=Math.min(file(old),file(m));old.descriptorDelivered=!!old.descriptorDelivered&&!!m.descriptorDelivered;old.read=!!old.read&&!!m.read;if(m.status==='pending')old.status='pending';}}
+function collectGroupMessage(rows:Map<string,RootChatMessage>,m:RootChatMessage){
+ const key=(m.direction==='outgoing'?'own':m.peer)+':'+m.group!.messageId,old=rows.get(key);
+ if(!old){rows.set(key,{...m});return;}
+ if(m.direction==='outgoing'&&old.attachment&&m.attachment){
+  const counts=old.groupAttachmentDelivery??{recipients:1,delivered:Number(hasConfirmedDelivery(old))};
+  old.groupAttachmentDelivery={recipients:counts.recipients+1,delivered:counts.delivered+Number(hasConfirmedDelivery(m))};
+ }
+ if(m.networkCancelledAt!==undefined)old.networkCancelledAt??=m.networkCancelledAt;
+ const description=(v:RootChatMessage)=>hasConfirmedDelivery(v)||v.descriptorDelivered?Number.MAX_SAFE_INTEGER:v.networkStoredUntil??0;
+ const file=(v:RootChatMessage)=>hasConfirmedDelivery(v)?Number.MAX_SAFE_INTEGER:v.attachmentStoredUntil??0;
+ old.networkStoredUntil=Math.min(description(old),description(m));
+ old.attachmentStoredUntil=Math.min(file(old),file(m));
+ old.descriptorDelivered=!!old.descriptorDelivered&&!!m.descriptorDelivered;
+ old.read=!!old.read&&!!m.read;
+ old.status=hasConfirmedDelivery(old)&&hasConfirmedDelivery(m)?'delivered':'pending';
+ if(old.status==='pending')delete old.deliveredAt;
+}
 export function rootGroupMessages(s:RootChatState,id:string){const rows=new Map<string,RootChatMessage>();for(const m of s.messages)if(m.group?.id===id)collectGroupMessage(rows,m);return [...rows.values()];}
 /** One pass for chat-list previews, with the same per-recipient delivery merge
  * and insertion order as individual group views. Never mutate the ledger. */

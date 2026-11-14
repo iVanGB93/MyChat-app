@@ -1,19 +1,9 @@
 /**
  * withCallActivityFlags
  *
- * Makes the main activity able to appear over the lockscreen and wake the
- * screen so an incoming-call full-screen intent actually TAKES OVER the
- * display (like WhatsApp / the phone dialer) instead of only showing a
- * heads-up banner.
- *
- * Adds to <activity android:name=".MainActivity">:
- *   android:showWhenLocked="true"   → activity shows on top of the keyguard
- *   android:turnScreenOn="true"     → device screen turns on when it launches
- *
- * Both are manifest attributes supported on API 27+ (equivalent to the
- * Activity.setShowWhenLocked / setTurnScreenOn calls). Combined with the
- * notification's fullScreenAction + USE_FULL_SCREEN_INTENT permission and the
- * CATEGORY_CALL notification, the incoming-call screen takes over the screen.
+ * Incoming-call notification intents use a private activity to grant a
+ * temporary lock-screen window to MainActivity. Ordinary launches use the
+ * default Android keyguard policy.
  */
 const {
   withAndroidManifest,
@@ -32,8 +22,8 @@ const withCallActivityManifest = (config) =>
       (a) => a.$?.['android:name'] === '.MainActivity',
     );
     if (mainActivity) {
-      mainActivity.$['android:showWhenLocked'] = 'true';
-      mainActivity.$['android:turnScreenOn'] = 'true';
+      delete mainActivity.$['android:showWhenLocked'];
+      delete mainActivity.$['android:turnScreenOn'];
       mainActivity.$['android:supportsPictureInPicture'] = 'true';
       mainActivity.$['android:resizeableActivity'] = 'true';
 
@@ -53,6 +43,19 @@ const withCallActivityManifest = (config) =>
         ...new Set([...existingChanges, ...requiredChanges]),
       ].join('|');
     }
+    const callActivity = {
+      $: {
+        'android:name': '.CallNotificationActivity',
+        'android:exported': 'false',
+        'android:excludeFromRecents': 'true',
+        'android:taskAffinity': '',
+        'android:showWhenLocked': 'true',
+        'android:theme': '@android:style/Theme.NoDisplay',
+      },
+    };
+    const existing = app.activity.findIndex(activity => activity.$?.['android:name'] === '.CallNotificationActivity');
+    if (existing === -1) app.activity.push(callActivity);
+    else app.activity[existing] = callActivity;
     return cfg;
   });
 
@@ -78,7 +81,31 @@ const withCallPictureInPictureActivity = (config) =>
       );
 
       if (!fs.existsSync(activityPath)) return cfg;
+      fs.copyFileSync(path.join(__dirname, 'android', 'CallNotificationActivity.kt'),
+        path.join(path.dirname(activityPath), 'CallNotificationActivity.kt'));
       let source = fs.readFileSync(activityPath, 'utf8');
+
+      if (!source.includes('private val incomingCallWindow')) {
+        if (!source.includes('import android.content.Intent')) {
+          source = source.replace('import android.os.Bundle', 'import android.content.Intent\nimport android.os.Bundle');
+        }
+        source = source.replace('  override fun onCreate(savedInstanceState: Bundle?) {', `  private val incomingCallWindow = IncomingCallWindow(this)
+
+  override fun onNewIntent(intent: Intent) {
+    incomingCallWindow.apply(intent)
+    super.onNewIntent(intent)
+  }
+
+  override fun onStop() {
+    incomingCallWindow.clear()
+    super.onStop()
+  }
+
+  fun clearIncomingCallWindow(callId: String) = incomingCallWindow.clear(callId)
+
+  override fun onCreate(savedInstanceState: Bundle?) {
+    incomingCallWindow.apply(intent)`);
+      }
 
       if (!source.includes('import android.app.PictureInPictureParams')) {
         source = source.replace(

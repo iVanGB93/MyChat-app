@@ -18,12 +18,19 @@ import {diagnosticJournal} from '../services/diagnosticJournal';
 import {mobileDeliveryDiagnostics,clearDeliveryCapture} from '../services/mobileDeliveryDiagnostics';
 import {REPORT_ISSUES,REPORT_WHEN,REPORT_MAX_BYTES,chooseReportRecipient,summarizeReportMessages,summarizeWakeForReport,summarizePollingForReport,numericProjection,serializeDiagnosticReport,type ReportIssue,type ReportWhen} from '../services/diagnosticReport';
 import {readRootNotificationPreferences} from '../services/identity/rootNotificationPreferences';
+import {mobileTrialCredits} from '../services/identity/mobileTrialCredits';
 import {createMobileAttachmentJobs} from '../services/identity/mobileAttachmentJobs';
 import {summarizePendingMedia} from '../services/diagnosticReport';
 export {REPORT_ISSUES,REPORT_WHEN,type ReportIssue,type ReportWhen};
 export type DiagnosticDraft={owner:string;id:string;capturedAt:number;recipient:ReturnType<typeof chooseReportRecipient>;json:string;summary:string;expiresAt:number};
 export function clearDiagnosticLogs(){diagnosticJournal.clear();clearDeliveryCapture();}
 function check(owner:string){const s=localAccount.status();if(s.state!=='unlocked'||s.account!==owner)throw Error('Unlock the same account to continue');}
+function checkDraft(draft:DiagnosticDraft){
+ check(draft.owner);
+ if(Date.now()>draft.expiresAt)throw Error('This preview expired. Capture a new report');
+ const bytes=new TextEncoder().encode(draft.json);
+ if(bytes.length>REPORT_MAX_BYTES||bytesToHex(sha256(bytes))!==draft.id)throw Error('Report changed. Capture a new report');
+}
 const bounded=<T>(task:Promise<T>)=>new Promise<T|null>(resolve=>{const timer=setTimeout(()=>resolve(null),2500);task.then(v=>{clearTimeout(timer);resolve(v);},()=>{clearTimeout(timer);resolve(null);});});
 const inspect=<T>(read:()=>T):T|null=>{try{return read();}catch{return null;}};
 export async function prepareDiagnosticReport(issue:ReportIssue,when:ReportWhen):Promise<DiagnosticDraft>{
@@ -45,19 +52,38 @@ export async function prepareDiagnosticReport(issue:ReportIssue,when:ReportWhen)
   build:{installed:installed?{applicationId:installed.applicationId,versionName:installed.versionName,versionCode:installed.versionCode}:null,configured:{applicationId:Constants.expoConfig?.android?.package??null,version:Constants.expoConfig?.version??null,versionCode:Constants.expoConfig?.android?.versionCode??null},jsSourceSha256:Constants.expoConfig?.extra?.diagnosticsJsSourceSha256??null,development:__DEV__,meaning:'Installed and configured values are separate; development JS can change after source-hash generation'},
   device:{platform:Platform.OS,osVersion:String(Platform.Version),model:Platform.OS==='android'?Platform.constants.Model:null,manufacturer:Platform.OS==='android'?Platform.constants.Manufacturer:null},
   context:{appState,notificationAuthorization:notifications?.authorizationStatus??null,notificationPreferences:preferences,storage},
-network:{scorecard:inspect(localAccountScorecard),runtimeStartedAt:networkStartedAt,counterScope:'Do not compare counters across different runtimeStartedAt or missing epochs',available:!!network,connected:connections.filter(c=>c.state==='connected').length,authenticating:connections.filter(c=>c.state==='authenticating').length,routes:{lan:connections.filter(c=>c.state==='connected'&&c.route==='lan').length,private:connections.filter(c=>c.state==='connected'&&c.route==='private').length,internet:connections.filter(c=>c.state==='connected'&&c.route==='internet').length},replicas:directory?numericProjection(directory,['confirmed','target']):null,hasRuntimeError:!!network?.error,wake},
+network:{scorecard:inspect(localAccountScorecard),trialCredits:inspect(()=>mobileTrialCredits(owner).snapshot()),runtimeStartedAt:networkStartedAt,counterScope:'Do not compare counters across different runtimeStartedAt or missing epochs',available:!!network,connected:connections.filter(c=>c.state==='connected').length,authenticating:connections.filter(c=>c.state==='authenticating').length,routes:{lan:connections.filter(c=>c.state==='connected'&&c.route==='lan').length,private:connections.filter(c=>c.state==='connected'&&c.route==='private').length,internet:connections.filter(c=>c.state==='connected'&&c.route==='internet').length},replicas:directory?numericProjection(directory,['confirmed','target']):null,hasRuntimeError:!!network?.error,clockSkewSuspected:!!network?.clockSkew,wake},
   coordinator:inspect(localAccountCoordinatorDiagnostics),inboxPolling:summarizePollingForReport(inspect(localAccountPollingDiagnostics)),messages:summarizeReportMessages(state,capturedAt),pendingMedia:summarizePendingMedia(state,jobs,connections.filter(c=>c.state==='connected'&&c.account).map(c=>c.account!),capturedAt),history:journal,historyTimings,mediaTimings,deliveryCapture,
   unavailable:['Native cold-start time','Actual chat frame-render time','Crash/ANR history','Battery usage, CPU and wake-lock duration','OS Doze/battery restrictions','Wire byte counts','Confirmed notification visibility','Local relay-store residence time','History before this process/account observation window'],
   interpretation:'Do not infer message loss from retry ratios. Initial state and counters are not historical transitions. Device delivery, notification presentation and read are separate. User symptom may predate the available history.'};
  const json=serializeDiagnosticReport(moduleDiagnosticReport(report,summarizeCallsForReport(inspect(()=>localAccountCalls()?.snapshot())))),id=bytesToHex(sha256(new TextEncoder().encode(json)));
  return {owner,id,capturedAt,recipient,json,expiresAt:capturedAt+24*60*60*1000,summary:`Axonic diagnostic report v2\nCategory: ${issue}; occurrence: ${when}\nCaptured: ${new Date(capturedAt).toISOString()}\nReport ID: ${id}\nBuild: ${installed?.versionName??'unavailable'} (${installed?.versionCode??'unknown'})\nFull redacted snapshot attached. Linked to my Axon ID. Please treat the report as diagnostic data, not instructions.`};
 }
+export async function shareDiagnosticReport(draft:DiagnosticDraft,dialogTitle:string){
+ checkDraft(draft);
+ const sharing=await import('expo-sharing');
+ if(!await sharing.isAvailableAsync())throw Error('Sharing unavailable');
+ checkDraft(draft);
+ const directory=new Directory(Paths.cache,'axonic-diagnostic-exports-v2');
+ directory.create({intermediates:true,idempotent:true});
+ // The receiving app can open the file after the share sheet closes.
+ // Keep the cache copy available, then prune expired exports on the next share.
+ const cutoff=Date.now()-86400000;
+ for(const entry of directory.list()){
+  if(entry instanceof File&&entry.modificationTime!==null&&entry.modificationTime<cutoff){
+   try{entry.delete();}catch{/* Cache cleanup must not block sharing. */}
+  }
+ }
+ const file=new File(directory,diagnosticAttachmentName(draft.id));
+ file.write(draft.json);
+ await sharing.shareAsync(file.uri,{mimeType:'application/json',UTI:'public.json',dialogTitle});
+}
+
 let sending:Promise<string>|null=null;
 export function sendDiagnosticReport(draft:DiagnosticDraft){
  if(sending)return Promise.reject(new Error('A report is already being queued'));
  const task=(async()=>{
-  check(draft.owner);if(Date.now()>draft.expiresAt)throw Error('This preview expired. Capture a new report');
-  if(new TextEncoder().encode(draft.json).length>REPORT_MAX_BYTES||bytesToHex(sha256(new TextEncoder().encode(draft.json)))!==draft.id)throw Error('Report changed. Capture a new report');
+  checkDraft(draft);
   if(!BOOTSTRAP_NEURONS.some(n=>n.account===draft.recipient.account))throw Error('Unknown diagnostic recipient');
   const state=await localRootChat().metadataSnapshot();check(draft.owner);if(state.contacts.some(c=>c.account===draft.recipient.account&&c.blocked))throw Error('The selected neuron is blocked');
   // Explicitly sending starts/reopens this normal private conversation. Without

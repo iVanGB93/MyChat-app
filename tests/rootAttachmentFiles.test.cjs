@@ -15,6 +15,30 @@ test('download publication requires full size and readback checksum',async()=>{
  await f.out.commitRootAttachmentFile(f.job,()=>true);assert(f.final.exists);
 });
 
+test('verified local reuse binds one file without copying and unlink does not delete original',async()=>{
+ const f=setup(1000),candidate='ab'.repeat(32);f.job.descriptor.key=Buffer.from(f.key).toString('hex');
+ const source=f.out.rootAttachmentFile(f.job.owner,candidate);source.write(f.plain);
+ assert.equal(await f.out.reuseRootAttachmentFile(f.job,[candidate],()=>true),true);
+ assert.equal(f.out.rootAttachmentFile(f.job.owner,f.job.digest).uri,source.uri);
+ assert.equal(f.final.exists,false,'no second content file');await f.out.commitRootAttachmentFile(f.job,()=>true);
+ f.out.removeRootAttachmentContent(f.job.owner,f.job.digest);assert.equal(source.exists,true);
+});
+test('deleted, corrupt, wrong-key and locked candidates never become local delivery',async()=>{
+ const f=setup(1000),candidate='ab'.repeat(32);f.job.descriptor.key=Buffer.from(f.key).toString('hex');const source=f.out.rootAttachmentFile(f.job.owner,candidate);
+ assert.equal(await f.out.reuseRootAttachmentFile(f.job,[candidate],()=>true),false);
+ source.write(new Uint8Array(1000));assert.equal(await f.out.reuseRootAttachmentFile(f.job,[candidate],()=>true),false);
+ source.write(f.plain);f.job.descriptor.key='00'.repeat(32);assert.equal(await f.out.reuseRootAttachmentFile(f.job,[candidate],()=>true),false);
+ await assert.rejects(f.out.reuseRootAttachmentFile(f.job,[candidate],()=>false),/Unlock/);
+});
+test('saved sticker library is reused without a chat-history candidate; deletion falls back safely',async()=>{
+ const f=setup(1000);f.job.descriptor.key=Buffer.from(f.key).toString('hex');const sticker={id:'ab'.repeat(16),format:'webp'};
+ const uri=`own/stickers/root-${f.job.owner.slice(9)}/${sticker.id}.webp`;f.data.set(uri,f.plain.slice());
+ assert.equal(await f.out.reuseRootStickerFile(f.job,[sticker],()=>true),true);assert.equal(f.out.rootAttachmentFile(f.job.owner,f.job.digest).uri,uri);
+ await f.out.commitRootAttachmentFile(f.job,()=>true);f.data.delete(uri);
+ assert.equal(await f.out.reuseRootStickerFile(f.job,[sticker],()=>true),false);assert.equal(f.out.rootAttachmentFile(f.job.owner,f.job.digest).uri,f.final.uri);
+ f.partial.write(f.plain);await f.out.commitRootAttachmentFile(f.job,()=>true);assert(f.final.exists,'normal download can publish after stale pointer is removed');
+});
+
 test('verified blocks use one file operation per block and remain replayable',async()=>{
  const f=setup(6_000_001),parts=Array.from({length:3},(_,i)=>f.plain.slice(i*3_000_000,(i+1)*3_000_000));
  for(let i=0;i<parts.length;i++)await f.out.writeRootAttachmentChunks(f.job,i,[parts[i]],()=>true);assert.deepEqual(f.io,{opens:3,writes:3,closes:3});

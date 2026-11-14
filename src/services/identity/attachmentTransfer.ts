@@ -53,7 +53,10 @@ export function createAttachmentTransfer(d:{
  downloadWindow?:number;uploadWindow?:number;
  record(account:string):Promise<IdentityRecord|null>;
  allowed(peer:string):boolean;allowedJob?(job:AttachmentJob):boolean;
+ outgoingCustodian?(job:AttachmentJob):Promise<string|null|undefined>;
+ canStoreOutgoing?(peer:string):boolean;
  signReceipt(manifest:AttachmentManifest,route?:ReceivedRoute):Promise<AttachmentReceipt>;
+ firstRelayBlock?(job:AttachmentJob,relay:string):void;
  stored?(job:AttachmentJob,current:()=>boolean,relay:string):Promise<void>;
  completed(job:AttachmentJob,current:()=>boolean):Promise<void>;
 }){
@@ -172,12 +175,35 @@ export function createAttachmentTransfer(d:{
     if(custodians.length>10)throw Error('Too many attachment sources');
     const acknowledged=[...job.acknowledged,relay];await save({custodians,acknowledged,phase:custodians.every(p=>acknowledged.includes(p))?'complete':'confirming',next:0,failures:0});return;
    }
+   if(job.direction==='incoming'&&!job.receipt&&d.storage.files.reuseFile){
+    const reused=await d.storage.files.reuseFile(job,current);if(!await live())return;
+    if(reused){
+     await d.storage.files.commitFile(job,current);if(!await live())return;
+     const receipt=await d.signReceipt(manifest),recipient=await d.record(manifest.recipient);
+     if(!recipient||!verifyAttachmentReceipt(receipt,manifest,recipient,d.now())||!await live())return;
+     // Reuse skips payload requests, so explicitly retain the sender as a
+     // receipt destination. Its response can identify any other custodians.
+     const custodians=[...new Set([manifest.sender,...job.custodians])];
+     if(custodians.length>10)throw Error('Too many attachment sources');
+     await save({receipt,custodians,cursor:total(job),phase:'confirming',next:0,failures:0});
+     await publish(job,current);return;
+    }
+   }
    // Selection uses one current observation. Retry deadlines and durable route
    // transitions remain worker-owned; adapters still bind the exact device.
    // A direct stream may have been admitted while a status request was awaited.
    if(job.direction==='outgoing'&&!job.receipt&&d.connections.sendingStream?.(job))return;
    const observation=routes();
-   const peers=attachmentRouteCandidates(job,observation,d.now(),routeCooldowns(job,observation.peers),streamRetry.get(job.digest)??0);
+   let peers=attachmentRouteCandidates(job,observation,d.now(),routeCooldowns(job,observation.peers),streamRetry.get(job.digest)??0);
+   if(job.direction==='outgoing'&&d.outgoingCustodian){
+    peers=peers.filter(peer=>d.canStoreOutgoing?.(peer)??true);
+    const bound=await d.outgoingCustodian(job);
+    if(!await live()||bound===null)return;
+    const selected=job.custodians[0]??job.relay??bound;
+    if(bound&&selected!==bound)return;
+    if(selected)peers=peers.filter(peer=>peer===selected);
+   }
+   if(job.direction==='outgoing'&&d.outgoingCustodian&&job.relay&&!peers.includes(job.relay))return;
    if(attachmentRouteNeedsSelection(job,peers)){
     if(!peers.length)return;
     let selected=peers[0];
@@ -317,6 +343,7 @@ export function createAttachmentTransfer(d:{
      const prior=relay===manifest.sender&&Array.isArray(r.custodians)?r.custodians.filter((p:unknown)=>validAccountId(p)&&p!==job.owner).slice(0,9):[];
      custodians=[...new Set<string>([...custodians,relay,...prior])];if(custodians.length>10)throw Error('Too many attachment sources');
      if(!d.storage.files.writeChunks)verifiedCursor=index+1;
+     if(index===0&&relay!==manifest.sender)try{d.firstRelayBlock?.(job,relay);}catch{/* Timing cannot prevent transfer. */}
      if((offset+1)%16===0)await new Promise<void>(resolve=>setTimeout(resolve,0));
     }}finally{
      clearPlain();
@@ -348,7 +375,7 @@ export function createAttachmentTransfer(d:{
    // Repeated unavailability still backs off; malformed data retains the ban.
    const cooldown=error instanceof AttachmentSourceUnavailable?delay:Math.max(10000,delay);
    if(job.relay){if(unavailable.size>=128)unavailable.clear();unavailable.set(job.digest+':'+job.relay,d.now()+cooldown);}
-   await save({relay:null,phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'||error instanceof AttachmentFileReset?0:job.cursor,...(error instanceof AttachmentFileReset?{receivedSources:[],sourceCoverage:true}:{}),failures,next:d.now()+delay}).catch(()=>{});
+   await save({relay:job.direction==='outgoing'&&d.outgoingCustodian?job.relay:null,phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'||error instanceof AttachmentFileReset?0:job.cursor,...(error instanceof AttachmentFileReset?{receivedSources:[],sourceCoverage:true}:{}),failures,next:d.now()+delay}).catch(()=>{});
   }
  }
  return {
@@ -460,7 +487,7 @@ export function createAttachmentTransfer(d:{
    const peer=job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient;
    if(!d.allowed(peer))throw Error('Accept or unblock this identity first');
    unavailable.clear();directWaiting.clear();
-   if(!await d.storage.jobs.save({...job,revision:job.revision+1,phase:job.receipt?'confirming':job.direction==='outgoing'?'queued':'downloading',cursor:job.direction==='outgoing'?0:job.cursor,relay:null,next:0,failures:0},job.revision,()=>!stopped&&generation===epoch&&d.owner()===owner&&d.allowed(peer)))throw Error('Transfer changed. Try again');
+   if(!await d.storage.jobs.save({...job,revision:job.revision+1,phase:job.receipt?'confirming':job.direction==='outgoing'?'queued':'downloading',cursor:job.direction==='outgoing'?0:job.cursor,relay:job.direction==='outgoing'&&d.outgoingCustodian?job.relay:null,next:0,failures:0},job.revision,()=>!stopped&&generation===epoch&&d.owner()===owner&&d.allowed(peer)))throw Error('Transfer changed. Try again');
   },
   invalidate(){generation++;custodyWait.clear();unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},stop(){custodyWait.clear();readiness.clear();stopped=true;generation++;unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},
  };

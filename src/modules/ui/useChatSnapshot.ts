@@ -1,4 +1,5 @@
 export {useConversationIndex} from './useConversationPages';
+export {createChatReplyLookup} from './chatReplyLookup';
 import {useGroupSnapshot} from './useGroupSnapshot';
 import {useConversationIndex,useConversationSummaries,useConversationWindow} from './useConversationPages';
 import {readProfileAvatar,readSharedAvatar,subscribeSharedAvatars} from '../storage';
@@ -59,18 +60,29 @@ export function useChatLayoutTiming(event:'private_chat_layout'|'group_chat_layo
 }
 
 /** Summary/page readers share the same avatar cache as detail screens. */
-function useIndexedAvatars(state:import('../messaging').RootChatState){
+function useIndexedAvatars(state:import('../messaging').RootChatState,conversation?:string,visiblePeers?:readonly string[]){
  const focused=useIsFocused(),foreground=useForeground(),owner=localAccount.status().state==='unlocked'?localAccount.status().account:null;
- const peers=useMemo(()=>[...new Set([...state.contacts.map(c=>c.account),...(state.groups??[]).flatMap(g=>g.members)])].sort().join(','),[state.contacts,state.groups]);
- const [avatars,setAvatars]=useState<{owner:string|null;uris:Record<string,string|null>}>(()=>{const uris:Record<string,string|null>={};if(owner)for(const peer of peers.split(',').filter(Boolean)){const value=avatarSnapshots.peek(owner,peer);if(value!==undefined)uris[peer]=value;}return {owner,uris};});
+ const peers=useMemo(()=>{
+  if(visiblePeers)return [...new Set(visiblePeers)].sort().join(',');
+  if(conversation&&!conversation.startsWith('group:'))return conversation;
+  const members=conversation?state.groups?.find(g=>g.id===conversation.slice(6))?.members??[]:
+    [...state.contacts.map(c=>c.account),...(state.groups??[]).flatMap(g=>g.members)];
+  return [...new Set(members)].sort().join(',');
+ },[conversation,state.contacts,state.groups,visiblePeers]);
+ const accounts=useMemo(()=>peers?peers.split(','):[],[peers]);
+ const [avatars,setAvatars]=useState<{owner:string|null;uris:Record<string,string|null>}>(()=>{const uris:Record<string,string|null>={};if(owner)for(const peer of accounts){const value=avatarSnapshots.peek(owner,peer);if(value!==undefined)uris[peer]=value;}return {owner,uris};});
  useEffect(()=>{if(!focused||!foreground||!owner)return;let active=true,revision=0;
-  const refresh=async()=>{const version=++revision,pairs=await Promise.all(peers.split(',').filter(Boolean).map(async peer=>[peer,await avatarSnapshots.read(owner,peer)] as const));if(active&&version===revision)setAvatars(previous=>previous.owner===owner&&Object.keys(previous.uris).length===pairs.length&&pairs.every(([peer,uri])=>previous.uris[peer]===uri)?previous:{owner,uris:Object.fromEntries(pairs)});};
-  void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};
- },[focused,foreground,owner,peers]);
+  const refresh=async()=>{const version=++revision,pairs=await Promise.all(accounts.map(async peer=>[peer,await avatarSnapshots.read(owner,peer)] as const));if(active&&version===revision)setAvatars(previous=>previous.owner===owner&&Object.keys(previous.uris).length===pairs.length&&pairs.every(([peer,uri])=>previous.uris[peer]===uri)?previous:{owner,uris:Object.fromEntries(pairs)});};
+  void refresh().catch(()=>{});const off=subscribeSharedAvatars(change=>{if(!change||change.owner===owner&&accounts.includes(change.peer))void refresh().catch(()=>{});});return()=>{active=false;off();};
+ },[focused,foreground,owner,accounts]);
  return useMemo(()=>({...state,avatarUris:avatars.owner===owner?avatars.uris:{}}),[state,avatars,owner]);
 }
-export function useChatListSnapshot(){const value=useConversationSummaries();return {...value,state:useIndexedAvatars(value.state)};}
-export function usePagedChat(conversation:string){const value=useConversationWindow(conversation);return {...value,state:useIndexedAvatars(value.state)};}
+export function useChatListSnapshot(onlyConversations=false){
+ const value=useConversationSummaries();
+ const peers=useMemo(()=>onlyConversations?value.state.contacts.filter(contact=>!value.state.hiddenChats?.includes(contact.account)).map(contact=>contact.account):undefined,[onlyConversations,value.state.contacts,value.state.hiddenChats]);
+ return {...value,state:useIndexedAvatars(value.state,undefined,peers)};
+}
+export function usePagedChat(conversation:string){const value=useConversationWindow(conversation);return {...value,state:useIndexedAvatars(value.state,conversation)};}
 
 export {usePrivateCallHistory} from './usePrivateCallHistory';
 export {privateChatTimeline,groupChatTimeline,type PrivateChatRow} from './privateChatTimeline';

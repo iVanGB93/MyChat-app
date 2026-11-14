@@ -29,7 +29,7 @@ export {forwardRootMessage} from '../../services/identity/rootMessageForward';
 
 
 
-export {rootMessageStatus,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';
+export {rootMessageStatus,messagePresentationStatus,hasConfirmedDelivery,deliveryStatusIcon,deliveryStatusLabel} from '../../services/identity/rootMessageStatus';
 export {mobileDeliveryDiagnostics,clearDeliveryCapture} from '../../services/mobileDeliveryDiagnostics';
 
 export {peerRecording,notifyPeerRecording,peerTyping,notifyPeerTyping,localAccountNetworkSnapshot} from '../../composition/neuronRuntime';

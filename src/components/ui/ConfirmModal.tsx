@@ -154,7 +154,7 @@ export default function ConfirmModal({
           },
         ]}
       >
-        <ScrollView bounces={false} contentContainerStyle={{paddingBottom:4}}>
+        <ScrollView style={styles.body} bounces={false}>
         <View style={[styles.handle, { backgroundColor: Colors.neonBorder }]} />
 
         {icon && (
@@ -172,13 +172,17 @@ export default function ConfirmModal({
         {!!message && (
           <Text style={[styles.message, { color: Colors.textSecondary }]}>{message}</Text>
         )}
+        </ScrollView>
 
+        {/* Keep actions outside the scroll responder so a tap can act even
+            while the message is settling after a scroll. */}
         <View style={styles.buttonsCol}>
           {effectiveButtons.map((btn, idx) => {
             const visual = styleForButton(btn.style);
             return (
               <TouchableOpacity
                 key={`${btn.text}-${idx}`}
+                accessibilityRole="button"
                 style={[
                   styles.button,
                   {
@@ -197,7 +201,6 @@ export default function ConfirmModal({
             );
           })}
         </View>
-        </ScrollView>
       </Animated.View>
     </Modal>
   );
@@ -263,6 +266,10 @@ const styles = StyleSheet.create({
   buttonsCol: {
     marginTop: Spacing.sm,
     gap: Spacing.sm,
+  },
+  body: {
+    flexGrow: 0,
+    flexShrink: 1,
   },
   button: {
     minHeight: 48,

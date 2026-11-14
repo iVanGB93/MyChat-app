@@ -13,7 +13,7 @@ export function validWakeLookup(data:unknown,owner:{account:string;device:string
   typeof e.signature==='string'&&/^[a-f0-9]{128}$/.test(e.signature)&&Number.isSafeInteger(e.expires)&&e.expires>now&&e.expires<=now+CUSTODY_TTL&&
   (e.wakeMode===undefined||e.wakeMode==='silent');}catch{return false;}
 }
-export function createWakeSenderRecovery(d:{store:IdentityRecordStore;now():number;lookup(sender:string):Promise<DirectoryLookupResult>;current(owner:{account:string;device:string},sender:string):Promise<boolean>}){
+export function createWakeSenderRecovery(d:{store:IdentityRecordStore;now():number;lookup(sender:string,custodian:unknown):Promise<DirectoryLookupResult>;current(owner:{account:string;device:string},sender:string):Promise<boolean>}){
  let busy=false,next=0;
  return async(data:unknown,owner:{account:string;device:string}):Promise<'recovered'|'invalid'|'deferred'|'unavailable'|'changed'|'verification_failed'|'pin_rejected'>=>{
   if(!validWakeLookup(data,owner,d.now()))return 'invalid';
@@ -22,7 +22,7 @@ export function createWakeSenderRecovery(d:{store:IdentityRecordStore;now():numb
   try{
    const sender=JSON.parse((data as {event:string}).event).sender;
    if(!await d.current(owner,sender))return 'changed';
-   const result=await d.lookup(sender);
+   const result=await d.lookup(sender,(data as {custodian?:unknown}).custodian);
    if(!await d.current(owner,sender))return 'changed';
    if(result.status!=='found'||!result.packet||result.packet.record.account!==sender)return 'unavailable';
    const {record,history}=result.packet;

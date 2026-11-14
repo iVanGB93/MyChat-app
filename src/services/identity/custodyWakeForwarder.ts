@@ -133,8 +133,8 @@ export function createCustodyWakeForwarder(d: {
           try {
             let reply = await request(peer,raw);
             // Older gateways accept signed hints but reject the optional payload.
-            if(reply.status==='rejected'&&(data.envelope||data.custodian)&&current()){
-              const {envelope:_,custodian:__,payload:___,...hint}=data;
+            if(reply.status==='rejected'&&(data.envelope||data.payload)&&current()){
+              const {envelope:_,payload:__,...hint}=data;
               reply=await request(peer,JSON.stringify({version:1,operation:'wake-message',data:hint}));
             }
             if (!current()) return;

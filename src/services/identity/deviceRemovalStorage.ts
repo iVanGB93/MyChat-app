@@ -3,6 +3,7 @@ import {clearChatRecoverySnapshot} from '../../../modules/axonic-app-update/src'
 import * as SQLite from 'expo-sqlite';
 import {Directory,File,Paths} from 'expo-file-system';
 import notifee from '@notifee/react-native';
+import Native from '../../../modules/axonic-nearby';
 import {validAccountId} from './identityProtocol';
 import {deviceRemovalKeys,deviceRemovalTables} from './deviceRemoval';
 /** Only called on cold startup before credentials, delivery workers or UI data load. */
@@ -29,4 +30,5 @@ export async function purgeDeviceAccountData(account:string){
  await clearChatRecoverySnapshot();
  // Do not remove shared gallery exports, public network directories, other accounts, or app settings.
  const notices=await notifee.getDisplayedNotifications();for(const n of notices)if(n.notification.data?.account===account&&n.notification.id)await notifee.cancelNotification(n.notification.id);
+ await Native?.clearMessageNoticeRestores?.(account);
 }

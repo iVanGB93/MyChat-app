@@ -19,7 +19,7 @@ interface ChatListRowProps {
   lastMsgContent: string | null;
   lastMsgTime: string | null;
   lastMsgFromMe: boolean;
-  lastMsgStatus?: 'pending' | 'stored' | 'delivered' | 'read' | 'cancelled' | 'unavailable';
+  lastMsgStatus?: 'pending' | 'partial' | 'stored' | 'delivered' | 'read' | 'cancelled' | 'unavailable';
   unread: number;
   typingLabel: string | null;
   isMuted: boolean;

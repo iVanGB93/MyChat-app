@@ -13,6 +13,7 @@ export interface NativeAxonLan extends NativeAxonTransport {
 }
 type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'> & {
   remembered?():import('./neuronConnections').NeuronCandidate[];
+  recoveryPeers?(): ReadonlySet<string> | undefined;
   native: NativeAxonLan;
   rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait' | 'mediaLane' | 'streamCredit'>;
   internet?: { connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
@@ -48,6 +49,11 @@ export function createLanIdentityRuntime(d: Dependencies) {
   const streamRequests=new Map<string,{device:string;until:number}>();
   let rtc: ReturnType<typeof createRtcAxonTransport> | null = null;
   const network = createIdentityNetwork({ ...d, limit: d.limit ?? 5,
+    clockReference: candidate=>d.internet?.peers.some(peer=>peer.account===candidate.account&&peer.endpoint===candidate.endpoint)===true,
+    allowRoute: candidate=>{
+      const peers=d.recoveryPeers?.();
+      return !peers||peers.has(candidate.account)&&d.internet?.peers.some(peer=>peer.account===candidate.account&&peer.endpoint===candidate.endpoint)===true;
+    },
     onSignal: (signal, via) => rtc?.receive(signal, via),
     connect: async (candidate, context) => {
       if (candidate.endpoint.startsWith('rtc:') && rtc) return rtc.connect(candidate, context);
@@ -94,7 +100,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
   function reconcile() {
     const state = network.snapshot();
     if (rtcAccount !== state.account || state.state !== 'active') { rtc?.stop();streamRequests.clear(); rtcAccount = state.account; }
-    const desired = !disposed && state.state === 'active' ? state.account : null;
+    const desired = !disposed && !d.recoveryPeers?.() && state.state === 'active' ? state.account : null;
     if (active && active.account !== desired) stopLan();
     if (!desired || active || starting || d.now() < retryAt) return;
     starting = true;
@@ -113,6 +119,15 @@ export function createLanIdentityRuntime(d: Dependencies) {
     nextDeadline:()=>disposed?Infinity:Math.min(network.nextDeadline(),retryAt>d.now()?retryAt:Infinity,d.now()+(eventDiscovery?30000:5000)),
     tick() {
       if (disposed) return;
+      const recoveryPeers = d.recoveryPeers?.();
+      if (recoveryPeers) {
+        for (const peer of d.internet?.peers ?? []) {
+          if (recoveryPeers.has(peer.account)) network.offer({...peer,route:'internet',expiresAt:d.now()+60000});
+        }
+        network.tick();
+        reconcile();
+        return;
+      }
       for (const [account, until] of failedLan) if (until <= d.now()) failedLan.delete(account);
       for(const peer of d.remembered?.().slice(0,16)??[]){if(peer.expiresAt>d.now()&&!lanDeferred(peer.account))network.offer(peer);}
       const internetPeers=d.internet?.peers.slice(0,10)??[];

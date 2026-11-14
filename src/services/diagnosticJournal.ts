@@ -1,7 +1,7 @@
 export type DiagnosticEvent='call_state_changed'|'app_active'|'app_background'|'app_inactive'|'network_changed'|'chat_history_read'|'chat_view_derived'|'private_chat_layout'|'group_chat_layout'|'chat_list_ready'|'chat_snapshot_ready'|'chat_snapshot_failed'|'message_committed_incoming'|'message_committed_outgoing'|'wake_verified'|'notification_requested'|'recovery_started'|'recovery_finished'|'notification_fallback_posted'|'notification_preview_posted'|'wake_failed'|'push_received';
 const eventsAllowed=new Set<DiagnosticEvent>(['call_state_changed','app_active','app_background','app_inactive','network_changed','chat_history_read','chat_view_derived','private_chat_layout','group_chat_layout','chat_list_ready','chat_snapshot_ready','chat_snapshot_failed','message_committed_incoming','message_committed_outgoing','wake_verified','notification_requested','recovery_started','recovery_finished','notification_fallback_posted','notification_preview_posted','wake_failed','push_received']);
 const wakeReasons=new Set(['invalid-payload','invalid-event','invalid-sender','owner-unavailable','sender-blocked','invalid-routing-or-expiry','sender-record-missing','sender-lookup-unavailable','sender-lookup-invalid','sender-lookup-deferred','sender-lookup-changed','sender-lookup-verification_failed','sender-lookup-pin_rejected','context-changed','signature-or-record-invalid']);
-export type DiagnosticDetails={callStatus?:string;callMedia?:string;groupCall?:boolean;participants?:number;readyLegs?:number;endedLegs?:number;milliseconds?:number;connected?:number;authenticating?:number;reason?:string;waitReason?:string;sleepMs?:number;processCpuMs?:number;setupMs?:number;waitLagMs?:number;overrunMs?:number;budgetMs?:number;pushPriority?:number;pushOriginalPriority?:number;callbackState?:string;wakePayload?:string};
+export type DiagnosticDetails={callStatus?:string;callMedia?:string;groupCall?:boolean;participants?:number;readyLegs?:number;endedLegs?:number;milliseconds?:number;connected?:number;authenticating?:number;reason?:string;route?:string;waitReason?:string;sleepMs?:number;processCpuMs?:number;setupMs?:number;waitLagMs?:number;overrunMs?:number;budgetMs?:number;pushPriority?:number;pushOriginalPriority?:number;callbackState?:string;wakePayload?:string};
 type Row={at:number;event:DiagnosticEvent}&DiagnosticDetails;
 /** Only fixed wake reason codes and numeric details; never identifiers or payloads. No I/O or timer. */
 export function createDiagnosticJournal(now=Date.now){
@@ -19,8 +19,9 @@ export function createDiagnosticJournal(now=Date.now){
   if(event==='wake_failed'&&details.reason&&wakeReasons.has(details.reason))row.reason=details.reason;
   if(event==='recovery_finished'){
    for(const key of ['sleepMs','processCpuMs','setupMs','waitLagMs','overrunMs','budgetMs'] as const){const n=details[key];if(typeof n==='number'&&Number.isFinite(n)&&n>=0)row[key]=Math.min(86400000,Math.round(n));}
-   if(['receipt_complete','deadline','account_changed','job_stopped','error'].includes(details.reason??''))row.reason=details.reason;
-   if(details.reason==='deadline'&&['setup','receipt','attachment'].includes(details.waitReason??''))row.waitReason=details.waitReason;
+   if(['receipt_complete','inline_complete','route_unavailable','custodian_stalled','deadline','account_changed','job_stopped','error'].includes(details.reason??''))row.reason=details.reason;
+   if(['configured','unsupported','missing','foreground'].includes(details.route??''))row.route=details.route;
+   if((details.reason==='deadline'||details.reason==='custodian_stalled')&&['setup','receipt','attachment'].includes(details.waitReason??''))row.waitReason=details.waitReason;
   }
   if(event==='push_received'){
    if(details.wakePayload==='inline'||details.wakePayload==='hint_only')row.wakePayload=details.wakePayload;

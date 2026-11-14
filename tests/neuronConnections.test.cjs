@@ -14,6 +14,19 @@ test('local wake bypasses failed-dial backoff once without duplicating active sl
 });
 const account = n => 'axonic:1:' + n.toString(16).padStart(64, '0');
 const drain = () => new Promise(r => setImmediate(r));
+test('custodian-only scope retires unrelated connections and prevents their redial',async()=>{
+ let scoped=false;
+ const f=fixture(3,{allowRoute:c=>!scoped||c.account===account(2)});
+ for(const i of [1,2,3])f.pool.offer(f.candidate(i));
+ f.pool.tick();for(let i=0;i<3;i++)f.finish(i);
+ await drain();
+ scoped=true;f.pool.resume();
+ assert.deepEqual(f.pool.snapshot().connections.map(c=>c.account),[account(2)]);
+ assert.equal(f.opens.length,3);
+ scoped=false;f.pool.tick();
+ assert.equal(f.opens.length,5);
+ f.pool.stop();
+});
 test('active call connections survive capacity changes and release independently',async()=>{
  const f=fixture(3);for(const i of [1,2,3])f.pool.offer(f.candidate(i));f.pool.tick();for(const i of [0,1,2])f.finish(i);await drain();
  const release=f.pool.retain(account(3)),second=f.pool.retain(account(3)),other=f.pool.retain(account(2));

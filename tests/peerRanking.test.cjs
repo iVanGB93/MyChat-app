@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
-const cache=new Map();function load(name){if(cache.has(name))return cache.get(name);const out={};cache.set(name,out);new Function('require','exports',ts.transpileModule(fs.readFileSync(`src/services/identity/${name}.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(n=>n.startsWith('./')?load(n.slice(2).replace(/\.(ts|js)$/,'')):require(n),out);return out;}
+const cache=new Map();function load(name){if(cache.has(name))return cache.get(name);const out={};cache.set(name,out);new Function('require','exports',ts.transpileModule(fs.readFileSync(`src/services/identity/${name}.ts`,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText)(n=>n==='./openIdentityAxon'?{openIdentityAxon:(identity,options)=>identity.createAxon(options.wire,options.store,options.expectedAccount)}:n.startsWith('./')?load(n.slice(2).replace(/\.(ts|js)$/,'')):require(n),out);return out;}
 const {createPeerRanking}=load('peerRanking');
 const quality=(responseMs,extra={})=>({samples:10,responseMs,mediaSamples:0,mediaResponseMs:0,mediaBytesPerSecond:0,failures:0,updatedAt:1000,...extra});
 const peers=[{account:'a',route:'internet'},{account:'b',route:'lan'}];

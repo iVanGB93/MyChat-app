@@ -23,10 +23,21 @@ function streamFixture(options={}){
   attachmentStreamPeer:p=>capable?{account:p,device}:null,offer:c=>{offers.push(c);return true;},tick(){},stop(){}};
  const deps={'./identityNetwork':{createIdentityNetwork:()=>network},'./nativeAxonTransport':{createNativeAxonConnector:()=>()=>{}},'./rtcAxonTransport':{createRtcAxonTransport:()=>({stop(){},canStream:()=>false})}};
  new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/lanIdentityRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(source,n=>deps[n]);
- const runtime=source.createLanIdentityRuntime({identity:{subscribe:()=>()=>{}},native:{axonLanStart:()=>new Promise(()=>{}),axonLanStop(){},axonLanSnapshot:()=>({active:true,peers:[{account:peer}]})},now:()=>now,rtc:options.noGuard?{}:{streamCredit:async()=>true},internet:{peers:[{account:seed,endpoint:'wss://seed.test'}],connect(){}}});
+ let lanStarts=0;
+ const runtime=source.createLanIdentityRuntime({recoveryPeers:options.recoveryPeers,remembered:options.remembered,identity:{subscribe:()=>()=>{}},native:{axonLanStart:()=>{lanStarts++;return new Promise(()=>{});},axonLanStop(){},axonLanSnapshot:()=>({active:true,peers:[{account:peer}]})},now:()=>now,rtc:options.noGuard?{}:{streamCredit:async()=>true},internet:{peers:[{account:seed,endpoint:'wss://seed.test'},...(options.extraSeeds??[])],connect(){}}});
  runtime.tick();offers.length=0;
- return {runtime,id,peer,seed,device,offers,advance:n=>now+=n,lock:()=>state='locked'};
+ return {runtime,id,peer,seed,device,offers,lanStarts:()=>lanStarts,advance:n=>now+=n,lock:()=>state='locked'};
 }
+test('headless recovery offers only requested configured peers until normal routing resumes',()=>{
+ const other='axonic:1:'+'8'.repeat(64);
+ let scope=new Set([other]);
+ const f=streamFixture({recoveryPeers:()=>scope,extraSeeds:[{account:other,endpoint:'wss://other.test'}],remembered:()=>[{account:'remembered',expiresAt:60000}]});
+ try{
+  f.runtime.tick();assert.deepEqual(f.offers.map(c=>c.account),[other]);assert.equal(f.lanStarts(),0);
+  scope.add(f.seed);f.offers.length=0;f.runtime.tick();assert.deepEqual(f.offers.map(c=>c.account),[f.seed,other]);
+  scope=undefined;f.offers.length=0;f.runtime.tick();assert.equal(f.lanStarts(),1);assert(f.offers.some(c=>c.account==='remembered'));
+ }finally{f.runtime.stop();}
+});
 test('LAN stream promotion is requested on demand over its authenticated peer, not at idle',()=>{
  const f=streamFixture();try{
   f.runtime.tick();assert(!f.offers.some(c=>c.account===f.peer));
