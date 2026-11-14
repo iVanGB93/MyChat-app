@@ -14,7 +14,7 @@ import {rootConversationVisible} from './rootNotificationRoute';
 import * as SQLite from 'expo-sqlite';
 import {AppState} from 'react-native';
 import notifee,{AndroidImportance,AndroidVisibility,AndroidStyle} from '@notifee/react-native';
-import {validAccountId} from './identityProtocol';
+import {validAccountId,recordDigest,verifyRecord} from './identityProtocol';
 import {verifyCustodyWake,custodyWakeEnvelope,type CustodyEnvelope} from './custodyProtocol';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {rootWakeContext,rootWakeBlocked} from './rootCallWake';
@@ -77,8 +77,10 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  const owner=await rootWakeContext();if(!owner){reject('owner-unavailable');return;}if(await rootWakeBlocked(owner.account,sender)){reject('sender-blocked');return;}
  if(!validWakeLookup(data,owner,Date.now())){reject('invalid-routing-or-expiry');return;}
  const records=createMobileIdentityRecordStore(Date.now);let record=await records.read(sender);
- if(!record){
-  setStage('sender-record-missing');
+ // A renewal changes the record digest even when the sender keeps its keys.
+ // Refresh through the existing authenticated lookup, never bypass the pin or signature.
+ if(!record||!verifyRecord(record,Date.now())||recordDigest(record)!==(data as {record?:string}).record){
+  setStage(record?'sender-record-stale':'sender-record-missing');
   if(!recoverSender){reject('sender-lookup-unavailable');return;}
   const result=await recoverSender(data,owner);setStage('sender-lookup-'+result);
   if(result!=='recovered'){reject('sender-lookup-'+result);return;}

@@ -145,7 +145,14 @@ export function createCustodyWakeForwarder(d: {
               unsupportedUntil.set(peer,d.now()+300000);
             }
             if(status==='retry'&&Number.isSafeInteger(reply.retryAfterMs)&&reply.retryAfterMs>0){if(state.defer.size<64||state.defer.has(peer))state.defer.set(peer,Math.min(packet.expires,d.now()+Math.min(900000,reply.retryAfterMs)));}
-            if (status === 'forwarded') {state.next=packet.expires;state.failures=0;state.forwarded=true;return;}
+            if(status==='forwarded'){
+              // Acceptance can precede a lost push. Revisit only retained custody,
+              // honoring the gateway deadline; a recipient receipt removes this work.
+              const retryAfterMs=reply.retryAfterMs;
+              const retryable=Number.isSafeInteger(retryAfterMs)&&retryAfterMs>0;
+              state.next=retryable?Math.min(packet.expires,d.now()+Math.max(30000,Math.min(900000,retryAfterMs))):packet.expires;
+              state.failures=0;state.forwarded=!retryable;return;
+            }
           } catch {state.last='exception';state.at=d.now();outcomes.exception=(outcomes.exception??0)+1; /* Another gateway, then bounded retry. */ }
         }
       } catch { /* Storage/transport failures retain the encrypted envelope. */ }

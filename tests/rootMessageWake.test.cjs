@@ -7,6 +7,7 @@ async function fixture(t,options={}){
  const now=Date.now(),device=p.publicDevice(seed(2),seed(3)),recipientDevice=p.publicDevice(seed(5),seed(6));
  let senderAvailable=!options.unknownSender;
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
+ let savedSender=options.staleSender?p.issueRecord(seed(1),[device],now-60000):sender;
  const storage=new Map(),displayed=new Map(),shown=[],cancelled=[],toasts=[],channels=[],database=new DatabaseSync(':memory:');t.after(()=>database.close());
  let historyReads=0;let channel=null;let owner={account:recipient.account,device:recipientDevice.id},blocked=false,fail=false,locked=false,visible=false;
  const app={currentState:'background'};let onDisplay=()=>{};
@@ -25,7 +26,7 @@ async function fixture(t,options={}){
  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:app},
  './rootNotificationAvatar':{rootNotificationAvatar:async()=>options.avatar?{uri:'file:///test-avatar.jpg',remove(){}}:null},
  '@notifee/react-native':{default:{getChannel:async()=>channel,createChannel:async c=>{channels.push(c);options.onChannel?.();return c.id;},displayNotification:async n=>{if(fail)throw Error('not ready');shown.push(n);displayed.set(n.id,n);onDisplay();},getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}},AndroidImportance:{LOW:2,HIGH:4},AndroidVisibility:{PRIVATE:0},AndroidStyle:{MESSAGING:1}},
- './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>senderAvailable&&id===sender.account?sender:null})},
+ './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>senderAvailable&&id===sender.account?savedSender:null})},
  './rootCallWake':{rootWakeContext:async()=>owner,rootWakeBlocked:async()=>blocked}};
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
  const preferences={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationPreferences.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(preferences,n=>imports[n]??protocol(n.slice(2)));imports['./rootNotificationPreferences']=preferences;
@@ -33,10 +34,23 @@ async function fixture(t,options={}){
  const envelope=await c.sealCustody({record:sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient,recipientDevice:recipientDevice.id,id:'cd'.repeat(32),text:options.silent?JSON.stringify(['axonic-root-action-v1','peer','id',{kind:'read'}]):'private text',now,random:async n=>new Uint8Array(n).fill(12)});
  const data=c.createCustodyWake(envelope,sender);
  const legacyGeneric=()=>{const id=notifications.rootMessageNotificationId(recipient.account,sender.account);const n={id,title:'Axonic',body:'Legacy generic',data:{type:'root_neuron_message',account:recipient.account,sender:sender.account,messageId:envelope.id}};shown.push(n);displayed.set(id,n);};
- return {legacyGeneric,database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,learnSender:()=>senderAvailable=true,setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>{blocked=true;storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,messages:[],contacts:[{account:sender.account,blocked:true}]}));},historyReads:()=>historyReads,changeOwner:()=>owner=null,fail:v=>fail=v,
+ return {legacyGeneric,database,mod,data,envelope,shown,displayed,cancelled,toasts,channels,learnSender:()=>{senderAvailable=true;savedSender=sender;},setChannel:v=>channel=v,app,storage,recipient,sender,lock:()=>locked=true,visible:()=>visible=true,block:()=>{blocked=true;storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,messages:[],contacts:[{account:sender.account,blocked:true}]}));},historyReads:()=>historyReads,changeOwner:()=>owner=null,fail:v=>fail=v,
  onDisplay:fn=>onDisplay=fn,delivered:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:envelope.id,peer:sender.account,direction:'incoming'}]}))};
 }
 
+test('an existing stale sender pin refreshes before message recovery',async t=>{
+ const f=await fixture(t,{staleSender:true});let lookups=0,recovered=0;
+ await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;},async()=>{lookups++;f.learnSender();return 'recovered';});
+ assert.equal(lookups,1);assert.equal(recovered,1);
+});
+test('stale sender refresh cannot bypass failed lookup, owner change or forged signature',async t=>{
+ for(const mode of ['unavailable','owner-change','forged']){
+  const f=await fixture(t,{staleSender:true});let recovered=0;
+  if(mode==='forged'){const e=JSON.parse(f.data.event);e.signature='00'.repeat(64);f.data.event=JSON.stringify(e);}
+  await f.mod.receiveRootMessageWake(f.data,async()=>{recovered++;},async()=>{if(mode==='unavailable')return 'unavailable';f.learnSender();if(mode==='owner-change')f.changeOwner();return 'recovered';});
+  assert.equal(recovered,0,mode);assert.equal(f.shown.length,0,mode);
+ }
+});
 test('stalled recovery displays one quiet notice, while silent control wakes display none',async t=>{
  const f=await fixture(t);
  await f.mod.receiveRootMessageWake(f.data,async()=>'stalled');
