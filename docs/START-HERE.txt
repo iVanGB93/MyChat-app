@@ -23,12 +23,10 @@ Runtime and ownership
     imports and Android resources are consumers even without a TS screen import.
 
 Read next by subject
-  Architecture first: architecture/INDEX.txt. Ten responsibility guides map the
-    current implementation, shared core, platform adapters and next extractions.
-    architecture/AUDIT.txt separates existing boundaries from proposed changes.
-  Shared protocol: builds/aon-operator-20261022/docs/SHARED-SOURCE.txt (from the
-    mobile repository root). This is the current local AoN integration worktree;
-    the older Axonic-neuron folder still contains separate, preserved work.
+  Architecture first: architecture/APP-NETWORK-MAP.md defines the phone app
+    and network core. architecture/INDEX.txt links to the detailed guides.
+  Shared protocol: architecture/SHARED-CORE.txt explains how to identify the
+    active AoN worktree and verify its shared-source manifest.
   Earlier facade design: app-modules.md; shared state: global-state-2026-10-23.txt.
   Media storage: single-copy-media-2026-10-23.txt (supersedes the old instruction
     to keep a permanent private copy alongside the Gallery copy).

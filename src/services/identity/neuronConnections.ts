@@ -1,7 +1,7 @@
 import type { IdentityPeer } from './identityClient.ts';
 
 export type NeuronRoute = 'lan' | 'private' | 'internet';
-export interface NeuronCandidate { account: string; endpoint: string; route: NeuronRoute; expiresAt: number }
+export interface NeuronCandidate { account: string; endpoint: string; route: NeuronRoute; expiresAt: number; preferredBootstrap?: boolean }
 export interface NeuronLink { peer: IdentityPeer; close(): void }
 export interface ConnectionContext { signal: AbortSignal; onClosed(): void }
 export type OpenNeuron = (candidate: NeuronCandidate, context: ConnectionContext) => Promise<NeuronLink | null>;
@@ -136,7 +136,9 @@ export function createNeuronConnections(d: {
       else if (slot.state === 'connected' && slot.link!.peer.expiresAt <= now) retire(slot, true);
     }
     const available = [...candidates.values()].filter(c => allowed(c.value)&&c.retryAt <= now && c.value.expiresAt > now && !slots.has(c.value.account))
-      .sort((a, b) => rank(a.value) - rank(b.value) || a.value.account.localeCompare(b.value.account));
+      .sort((a, b) => rank(a.value) - rank(b.value) ||
+        Number(!!b.value.preferredBootstrap) - Number(!!a.value.preferredBootstrap) ||
+        a.value.account.localeCompare(b.value.account));
     const outside = () => [...slots.values()].some(s => s.state !== 'closing' && s.candidate.route !== 'lan');
     // Reserve one route beyond LAN, including when that candidate arrives after a LAN-only pool filled.
     if (limit > 1 && occupied() === limit && !outside() && available.some(c => c.value.route !== 'lan')) {

@@ -22,11 +22,11 @@ function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClo
  const lease={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/messageWakeLease.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(lease,n=>imports[n]);imports['./messageWakeLease']=lease;
  imports['./internetAxonTransport']={configuredWakeCustodian:account=>account==='relay'?{account}:undefined};
  const originalStart=imports['../../composition/neuronRuntime'].startLocalAccountNetwork;
- const routes=[];
- imports['../../composition/neuronRuntime'].startLocalAccountNetwork=scope=>{routes.push(scope);const network=originalStart();return {...network,resumeRecovery:network.resume,hasRecoveredContent:async()=>completeAfter!==null&&now-100000>=completeAfter&&(attachmentAfter===null||now-100000>=attachmentAfter),subscribeRecovery:f=>{subscribers.receipt.add(f);return()=>subscribers.receipt.delete(f);},...(attachmentAfter===null?{}:{attachmentRecoveryState:async()=>descriptorAfter!==null&&now-100000<descriptorAfter?'descriptor-missing':now-100000>=attachmentAfter?'complete':'ready'}),receiveWakeEnvelope:async e=>{now+=inlineDelay;return network.receiveWakeEnvelope(e);},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
+ const routes=[];let inlinePending=false,resumedWhileInline=false;
+ imports['../../composition/neuronRuntime'].startLocalAccountNetwork=scope=>{routes.push(scope);const network=originalStart();return {...network,resumeRecovery:()=>{resumedWhileInline||=inlinePending;network.resume();},hasRecoveredContent:async()=>completeAfter!==null&&now-100000>=completeAfter&&(attachmentAfter===null||now-100000>=attachmentAfter),subscribeRecovery:f=>{subscribers.receipt.add(f);return()=>subscribers.receipt.delete(f);},...(attachmentAfter===null?{}:{attachmentRecoveryState:async()=>descriptorAfter!==null&&now-100000<descriptorAfter?'descriptor-missing':now-100000>=attachmentAfter?'complete':'ready'}),receiveWakeEnvelope:async e=>{now+=inlineDelay;inlinePending=true;try{return await network.receiveWakeEnvelope(e);}finally{inlinePending=false;}},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
  const out={};new Function('exports','require','Date','setTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageRecovery.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>imports[n],{now:()=>now},(cb,ms)=>{jsTimers++;now+=ms;queueMicrotask(cb);});
  const recover=out.recoverRootMessage;out.recoverRootMessage=(...args)=>{if(args.length<7)args[6]='relay';return recover(...args);};
- return {out,leases,inline,diagnostics,waits,subscribers,routes,advance:ms=>now+=ms,emitReceipt:(sender='peer',id='id')=>{for(const f of subscribers.receipt)f(sender,id);},emit:()=>{for(const f of subscribers.job)f({owner:'own',id:'id',phase:'complete'});},counts:()=>({started,resumed,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
+ return {out,leases,inline,diagnostics,waits,subscribers,routes,advance:ms=>now+=ms,emitReceipt:(sender='peer',id='id')=>{for(const f of subscribers.receipt)f(sender,id);},emit:()=>{for(const f of subscribers.job)f({owner:'own',id:'id',phase:'complete'});},counts:()=>({started,resumed,resumedWhileInline,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
 }
 test('background recovery uses only its custodian and returns a stall without broadening',async()=>{
  const quick=fixture({nativeClock:true,completeAfter:900});
@@ -95,10 +95,10 @@ test('remembered session may resume; storage failure still releases native and r
 
 test('foreground wake survives going to background and does not strand the next recovery',async()=>{const f=fixture({nativeClock:true,foreground:true});await Promise.all([f.out.recoverRootMessage('own','peer','first',160000),f.out.recoverRootMessage('own','peer','second',160000)]);assert.equal(f.counts().jsTimers,0);assert.equal(f.counts().started,2);assert.equal(f.counts().stopped,2);assert.deepEqual(f.leases,[30000,30000,0]);assert.ok(f.counts().elapsed>=20000);assert.ok(f.counts().elapsed<21000);});
 
-test('inline admission precedes connection resume but receipt recovery still runs',async()=>{
+test('inline admission overlaps custodian inbox startup and still requires receipt recovery',async()=>{
  const f=fixture({nativeClock:true,completeAfter:900}),envelope={kind:'envelope'},progress=[];
  await f.out.recoverRootMessage('own','peer','id',160000,m=>progress.push(m),envelope);
- assert.deepEqual(f.inline,[envelope]);assert(progress.includes('inline-persisted'));assert.equal(f.counts().resumed,1);assert.equal(f.counts().elapsed,900);
+ assert.deepEqual(f.inline,[envelope]);assert(progress.includes('inline-persisted'));assert.equal(f.counts().resumed,1);assert.equal(f.counts().resumedWhileInline,true);assert.equal(f.counts().elapsed,900);
  const locked=fixture({state:'locked'});await locked.out.recoverRootMessage('own','peer','id',160000,undefined,envelope);assert.equal(locked.inline.length,0);
  const failed=fixture({inlineFailure:true,nativeClock:true,completeAfter:900});await failed.out.recoverRootMessage('own','peer','id',160000,undefined,envelope);assert.equal(failed.counts().resumed,1);assert.equal(failed.counts().stopped,1);
 });
@@ -177,6 +177,13 @@ test('Android media recovery waits for late custodian storage without a second p
  assert.equal(f.counts().elapsed,37000);
  assert.equal(f.diagnostics.at(-1).details.reason,'receipt_complete');
  assert.deepEqual(f.routes,[{custodian:'relay'}]);
+});
+test('a signed receipt and committed text release the Android job without a media descriptor',async()=>{
+ const f=fixture({nativeClock:true,events:true,completeAfter:3000,attachmentAfter:0,descriptorAfter:Infinity});
+ await f.out.recoverRootMessage('own','peer','id',300000,undefined,undefined,'relay',undefined,'job');
+ assert.equal(f.counts().elapsed,3000);
+ assert.equal(f.diagnostics.at(-1).details.reason,'receipt_complete');
+ assert.equal(f.leases.at(-1),0);
 });
 test('an attachment that never arrives releases the Android job at its existing deadline',async()=>{
  const f=fixture({nativeClock:true,events:true,completeAfter:5000,attachmentAfter:130000});

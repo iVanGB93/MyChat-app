@@ -17,7 +17,7 @@ type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'>
   native: NativeAxonLan;
   rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait' | 'mediaLane' | 'streamCredit'>;
   internet?: { connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
-    peers: { account: string; endpoint: string }[] };
+    peers: { account: string; endpoint: string; preferredBootstrap?: boolean }[] };
 };
 const validAccount = (id: string) => /^axonic:1:[0-9a-f]{64}$/.test(id);
 /** One current signaling route per destination, using the existing local peer

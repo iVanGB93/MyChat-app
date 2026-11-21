@@ -30,11 +30,11 @@
 - The chat ledger combines history, policy, wire encoding and durable pending
   work. Keep the existing atomic app write for now. A second independent write
   at Send could strand a message if the process stops between the writes.
-- Incoming preview work is awaited on the acknowledgement path even though
-  storage has already committed. Measure that phase before changing it.
-- neuronRuntime is the phone composition root and also contains admission,
-  notification projection and delivery mutations. Move these behind app
-  callbacks incrementally so the same transport contract can serve AoNs.
+- The phone inbox adapter acknowledges after storage commits and runs preview
+  work separately. Background wake recovery can await presentation when needed.
+- neuronRuntime wires the phone inbox and delivery receipt adapters to the
+  shared transport contracts. The adapters own notification projection and
+  chat ledger mutations. AoNs supply their own storage and presentation adapters.
 
 ## First refactor — implemented on the phone sender
 

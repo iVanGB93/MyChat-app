@@ -1,10 +1,12 @@
 Trial credits v1 — 2026-10-31
 
 Purpose
-Separate persistent experimental accounting from the session contribution scorecard and current health. No service restriction, balance gate, cash value, transfers, offline penalty, or synchronized multi-device balance. Negative balances are allowed. The policy is provisional, not a reward economy or consensus system.
+Separate persistent experimental accounting from the session contribution scorecard and current health. No service restriction, balance gate, cash value, transfers, offline penalty, or synchronized multi-device balance. The policy is provisional, not a reward economy or consensus system.
 
 Policy
 100 credits once per local identity ledger. +1 for each unique verified relay recipient receipt (private/group message); media completion earns a separate +1. -1 simulated spending per sender message/recipient whose relay custody is confirmed. Direct delivery is not charged. No credit for storage alone, retries, polls or errors. Reference = SHA256(sender, message id, recipient); event kind distinguishes message/media completion and use. Re-encryption and duplicate acknowledgments do not change that reference.
+
+The phone ledger adds 50 trial credits automatically when a debit reaches zero. An existing negative balance is refilled on load in 50-credit increments until positive. Refill entries commit atomically with the balance and count as top-ups alongside manual refills. Spending and earnings keep their existing totals.
 
 Architecture
 Shared services/identity/trialCredits.ts owns policy, validation and idempotency. Existing custody receipt callbacks fire after successful durable custody transactions; existing courier-held callbacks record simulated usage. Phone mobileTrialCredits uses its own indexed SQLite table scoped by owner. Hosted adapter reuses indexedStore; database name is scoped to canonical neuron account. Append-only observation rows and a materialized balance update atomically in one transaction. UI consumes an observed global state; hosted dashboard refresh uses existing change events. No new periodic task or history scan.

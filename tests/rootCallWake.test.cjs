@@ -4,7 +4,7 @@ const cache=new Map();
 function protocol(name){if(cache.has(name))return cache.get(name);const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/'+name+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>n.startsWith('./')?protocol(n.slice(2).replace(/\.ts$/,'')):require(n));cache.set(name,out);return out;}
 const p=protocol('identityProtocol'),c=protocol('callControlProtocol'),w=protocol('callWakeProtocol');
 const seed=n=>new Uint8Array(32).fill(n);
-function fixture(callWindow=false){
+function fixture(callWindow=false,avatar=null){
  const now=Date.now(),device=p.publicDevice(seed(2),seed(3)),recipientDevice=p.publicDevice(seed(5),seed(6));
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
  const storage=new Map([['@axonic_local_account_v1',JSON.stringify({record:recipient})]]),shown=[],cancelled=[],clearedWindows=[];
@@ -20,6 +20,9 @@ function fixture(callWindow=false){
   'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'},NativeModules:callWindow?{MyChatService:{clearIncomingCallWindow:id=>clearedWindows.push(id)}}:{}},
   '@notifee/react-native':{default:native,AndroidCategory:{CALL:'call'},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0}},
   './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>id===sender.account?sender:null})},
+  './rootNotificationAvatar':{rootNotificationAvatar:async (owner,peer)=>{
+   assert.equal(owner,recipient.account);assert.equal(peer,sender.account);return avatar;
+  }},
   '../callNotificationChannel':{ensureCallChannel:async()=>{}},
  };
  const preferences={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationPreferences.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(preferences,n=>imports[n]??protocol(n.slice(2)));imports['./rootNotificationPreferences']=preferences;
@@ -41,6 +44,35 @@ test('verified direct incoming calls notify in background once and clear on fore
  await f.mod.syncRootCallNotification(f.recipient.account,view);await f.mod.syncRootCallNotification(f.recipient.account,view);
  assert.equal(f.shown.length,1);assert.equal(f.shown[0].android.pressAction.launchActivity,'default');
  f.foreground();await f.mod.syncRootCallNotification(f.recipient.account,view);assert.ok(f.cancelled.includes('root-call:'+view.id));
+});
+test('both incoming call paths use the saved caller avatar and release the temporary image',async()=>{
+ let removed=0;
+ for(const push of [false,true]){
+  const f=fixture(false,{uri:'file:///cached-avatar.jpg',remove(){removed++;}});
+  await f.init();
+  if(push)await f.mod.receiveRootCallWake(f.data);
+  else await f.mod.syncRootCallNotification(f.recipient.account,{
+   id:'ab'.repeat(32),peerUser:f.sender.account,media:'video',outgoing:false,status:'ringing',
+  });
+  assert.equal(f.shown[0].android.largeIcon,'file:///cached-avatar.jpg');
+  assert.equal(f.shown[0].android.circularLargeIcon,true);
+ }
+ assert.equal(removed,2);
+});
+test('an avatar display failure falls back to a ringing call with answer and decline',async()=>{
+ let removed=false;
+ const f=fixture(false,{uri:'file:///unreadable.jpg',remove(){removed=true;}});
+ await f.init();
+ const display=f.native.displayNotification;
+ f.native.displayNotification=async notice=>{
+  if(notice.android.largeIcon)throw Error('Image load failed');
+  await display(notice);
+ };
+ await f.mod.receiveRootCallWake(f.data);
+ assert.equal(f.shown.length,1);
+ assert.equal(f.shown[0].android.largeIcon,undefined);
+ assert.deepEqual(f.shown[0].android.actions.map(action=>action.pressAction.id),['root-call-decline','root-call-answer']);
+ assert.equal(removed,true);
 });
 test('notification confirmation requires successful allowed presentation, never denied permission or a blocked channel',async()=>{
  for(const mode of ['denied','blocked-channel','failed','shown']){

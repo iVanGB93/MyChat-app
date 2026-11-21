@@ -37,11 +37,13 @@ custodian storage, recipient receipt and user read are distinct events.
 
 - Outgoing: deliveryOutbox is the phone adapter over the durable chat ledger.
   Keep one durable Send commit. The worker reads eligible packages and reports
-  direct acceptance back through the adapter. Custody callbacks in neuronRuntime
-  still update the ledger separately.
+  direct acceptance back through the adapter. The mobileDeliveryReceipts adapter
+  commits custody and recipient receipt transitions to phone chat storage.
 - Incoming: incomingMessageAdmission coalesces concurrent identical admissions.
   The app owns block and membership decisions and durable deduplication.
-  Acceptance follows the durable ledger commit. Preview and notification presentation run separately. The Android wake lease can wait for presentation before shutting down.
+  Acceptance follows the durable ledger commit. The mobileIncomingMessages
+  adapter builds notification previews separately. The Android wake lease can
+  wait for presentation before shutting down.
 - Storage follows the data. Chat history, drafts and local media belong to the
   app. Relay ciphertext, pins and transport checkpoints belong to the network.
   The current mobile job adapters and transfer runtime connect the two.

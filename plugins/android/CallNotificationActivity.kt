@@ -1,6 +1,8 @@
 package com.axonic
 
 import android.app.Activity
+import android.app.Notification
+import android.app.NotificationManager
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -13,7 +15,7 @@ import java.util.UUID
 class CallNotificationActivity : Activity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-    val data = intent.getBundleExtra("notification")?.getBundle("data")
+    val data = intent.getBundleExtra("notification")?.getBundle("data") ?: activeIncomingCallData()
     val callId = data?.getString("callId")
     val expiresAt = data?.getString("expiresAt")?.toLongOrNull() ?: 0L
     val remaining = (expiresAt - System.currentTimeMillis()).coerceAtMost(60_000L)
@@ -26,6 +28,25 @@ class CallNotificationActivity : Activity() {
       startActivity(mainIntent)
     }
     finish()
+  }
+
+  // Notifee's full-screen activity intent can contain only the component.
+  // On that path use the app's one unexpired incoming notification as authority.
+  // A stale or ambiguous notification must never grant a lock-screen window.
+  private fun activeIncomingCallData(): Bundle? {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) return null
+    val manager = getSystemService(NotificationManager::class.java) ?: return null
+    val now = System.currentTimeMillis()
+    return manager.activeNotifications.mapNotNull { entry ->
+      val notice = entry.notification
+      if (notice.category != Notification.CATEGORY_CALL || notice.channelId != "incoming-calls-v2") return@mapNotNull null
+      val model = notice.extras.getBundle("notifee.notification") ?: return@mapNotNull null
+      val data = model.getBundle("data") ?: return@mapNotNull null
+      val callId = data.getString("callId") ?: return@mapNotNull null
+      val expiresAt = data.getString("expiresAt")?.toLongOrNull() ?: return@mapNotNull null
+      if (data.getString("type") != "root_neuron_call" || model.getString("id") != "root-call:$callId" || expiresAt <= now) return@mapNotNull null
+      data
+    }.singleOrNull()
   }
 }
 

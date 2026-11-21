@@ -68,7 +68,9 @@ export default function RootAccountCallScreen(){
  },[call?.id,call?.status]);
  const end=()=>{if(call)void localAccountCalls()?.end(call.id).catch(()=>setError(t("Call ended locally; peer notification is pending.")));};
  const answer=async()=>{
-  if(!call||running.current)return;running.current=true;setBusy(true);setError('');
+  if(!call||running.current)return;
+  if((call.expiresAt??Infinity)<=Date.now()){setError(t("This call is no longer available."));return;}
+  running.current=true;setBusy(true);setError('');
   const calls=localAccountCalls();
   try{await ensureRootCallPermissions(call.media);if(calls!==localAccountCalls()||!await calls?.accept(call.id))throw Error(t("This call is no longer available."));}
   catch(e){setError(e instanceof Error?e.message:t("Unable to answer"));}finally{running.current=false;setBusy(false);}
@@ -77,10 +79,18 @@ export default function RootAccountCallScreen(){
   if(!call||call.outgoing||call.status!=='ringing')return;
   let active=true,pending=false,again=false;
   const act=async()=>{if(pending){again=true;return;}if(!active||AppState.currentState!=='active')return;const owner=localAccount.status().account;if(!owner)return;pending=true;again=false;
-   try{const action=await takeRootCallNotificationAction(owner,call.id);if(!active)return;if(action)setMinimizedId(null);if(action==='root-call-decline')end();else if(action==='root-call-answer')await answer();}catch{setError(t("Unable to complete notification action. Use the call controls."));}finally{pending=false;if(again&&active)void act();}};
+   try{
+    const action=await takeRootCallNotificationAction(owner,call.id,()=>active&&AppState.currentState==='active'&&localAccount.status().account===owner);
+    if(!active)return;
+    if(action)setMinimizedId(null);
+    if(action==='root-call-decline')end();else if(action==='root-call-answer')await answer();
+   }catch{setError(t("Unable to complete notification action. Use the call controls."));}
+   finally{pending=false;if(again&&active)void act();}};
   void act();const off=subscribeRootCallNotificationAction(()=>void act()),state=AppState.addEventListener('change',()=>void act());return()=>{active=false;off();state.remove();};
  },[call?.id,call?.outgoing,call?.status]);
- const previewUrl=useRingingCameraPreview(call?.id,call?.media==='video'&&['ringing','connecting'].includes(call.status)&&minimizedId!==call.id);
+ const showPreview=call?.media==='video'&&!busy&&minimizedId!==call.id&&
+  (call.status==='ringing'||(call.outgoing&&call.status==='connecting'));
+ const previewUrl=useRingingCameraPreview(call?.id,showPreview);
  if(!call)return null;
  // The outgoing confirmation sheet owns Finding and its failure/cancellation.
  if(call.outgoing&&call.status==='finding'){confirmationCall.current=call.id;return null;}
@@ -93,7 +103,8 @@ export default function RootAccountCallScreen(){
  if(call.room&&!call.room.anchorId&&call.status==='ready')return <RootGroupCallMedia key={call.id} call={call} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
  if(call.status==='ready'&&(call.transport||call.room?.anchorId))return <RootMedia avatarUri={avatarUri} key={call.id} call={call} name={name} end={end} minimized={minimized} minimize={minimize} restore={restore}/>;
  if(minimized)return ended?null:<MinimizedCall name={name} status={status} video={call.media==='video'} restore={restore} end={end}/>;
- return <Modal visible animationType="slide" onRequestClose={()=>ended?setDismissed(call.id):minimize()}>
+ // Android's SurfaceView can outlive the dismiss animation as the media modal opens.
+ return <Modal visible animationType={Platform.OS==='android'&&call.media==='video'?'none':'slide'} onRequestClose={()=>ended?setDismissed(call.id):minimize()}>
   <StatusBar style="light"/>
   {!call.outgoing&&call.status==='ringing'?<IncomingCallAppearance avatarUri={avatarUri} callerName={name} isVideo={call.media==='video'} localPreviewUrl={previewUrl} busy={busy} error={error} handleAccept={()=>void answer()} handleReject={end}/>:<CallLayout avatarUri={avatarUri} name={name} status={status} video={call.media==='video'} avatar={!previewUrl} background={previewUrl?<RTCView streamURL={previewUrl} objectFit="cover" mirror style={StyleSheet.absoluteFill} zOrder={0}/>:undefined}>
    {!!error&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error}</Text>}
@@ -173,7 +184,7 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  const showControls=sharing||!video||controls;
  const quality=rtc.callQuality;
  const background=video&&<>
-  {(remote||localVisible)&&<RTCView streamURL={(remote||localVisible)!} objectFit={(remote?rtc.remoteScreenSharing:rtc.isScreenSharing)?"contain":"cover"} mirror={!remote&&!rtc.isScreenSharing} style={styles.fullVideo} zOrder={0}/>}
+  {(remote||localVisible)&&<RTCView key={remote?'remote-stage':'local-stage'} streamURL={(remote||localVisible)!} objectFit={(remote?rtc.remoteScreenSharing:rtc.isScreenSharing)?"contain":"cover"} mirror={!remote&&!rtc.isScreenSharing} style={styles.fullVideo} zOrder={0}/>}
   <Pressable accessibilityRole="button" accessibilityLabel={controls?t("Hide call controls"):t("Show call controls")} onPress={()=>setControls(v=>!v)} style={StyleSheet.absoluteFill}/>
   {remote&&foreground&&(!rtc.remoteScreenSharing||showControls)&&<DraggableCallPreview testID="axonic-call-self-view" style={[styles.selfView,{top:insets.top+16,right:insets.right+16}]}>
    <View style={styles.pipWrap}><View style={styles.pip}>{rtc.isCameraOff&&!rtc.isScreenSharing||!local?<View style={{flex:1,alignItems:'center',justifyContent:'center',gap:8}}><Ionicons name="videocam-off" size={28} color="#fff"/><Text style={{color:'#fff',fontSize:12}}>{rtc.isCameraOff?t("Camera off"):t("No preview")}</Text></View>:<RTCView streamURL={local} objectFit={rtc.isScreenSharing?"contain":"cover"} mirror={!rtc.isScreenSharing} style={{flex:1}} zOrder={1}/>}</View></View>

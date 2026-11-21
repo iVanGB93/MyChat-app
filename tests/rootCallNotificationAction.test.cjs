@@ -20,3 +20,18 @@ test('a new action cannot be erased by an earlier asynchronous consume',async()=
  const first=f.takeRootCallNotificationAction(account,callId),second=f.queueRootCallNotificationAction('root-call-answer',data);
  assert.equal(await first,'root-call-open');await second;assert.equal(await f.takeRootCallNotificationAction(account,callId),'root-call-answer');
 });
+test('a notification answer waits for the matching foreground call',async()=>{
+ const f=fixture();
+ assert(await f.queueRootCallNotificationAction('root-call-answer',data));
+ assert.equal(await f.takeRootCallNotificationAction(account,callId,()=>false),null);
+ assert.equal(await f.takeRootCallNotificationAction(account,callId,()=>true),'root-call-answer');
+});
+test('an expired invite cannot queue or apply its notification answer',async(t)=>{
+ let now=10000;
+ t.mock.method(Date,'now',()=>now);
+ const f=fixture(),expiring={...data,expiresAt:'10500'};
+ assert(await f.queueRootCallNotificationAction('root-call-answer',expiring));
+ now=10500;
+ assert.equal(await f.takeRootCallNotificationAction(account,callId),null);
+ assert.equal(await f.queueRootCallNotificationAction('root-call-answer',expiring),false);
+});

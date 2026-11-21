@@ -56,7 +56,7 @@ export function useChatScroll<T>(list:RefObject<FlatList<T>|null>,scope:string,n
    // Yield before native scrolling has recognized the gesture. Never issue
    // corrective scroll commands in response to scroll events themselves.
    onTouchStart:()=>{state.current.touching=true;state.current.jumping=false;if(frame.current!==undefined){cancelAnimationFrame(frame.current);frame.current=undefined;}},
-   onTouchEnd:()=>{state.current.touching=false;if(!state.current.dragging&&!state.current.momentum)follow();},
+   onTouchEnd:()=>{state.current.touching=false;if(pendingFollow.current&&!state.current.dragging&&!state.current.momentum)follow();},
    onTouchCancel:()=>{state.current.touching=false;state.current.dragging=false;state.current.momentum=false;state.current.jumping=false;},
    onScrollBeginDrag:()=>{if(frame.current!==undefined){cancelAnimationFrame(frame.current);frame.current=undefined;}state.current.dragging=true;state.current.momentum=false;state.current.jumping=false;state.current.following=state.current.offset<=CHAT_REVEAL_SPACE+24;},
    onScrollEndDrag:settle,

@@ -2,6 +2,18 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const out=require('./helpers/attachment.cjs').load('rootChatLedger');
 const a='axonic:1:'+'a'.repeat(64),b='axonic:1:'+'b'.repeat(64),id='1'.repeat(64);
 
+test('only a newly committed incoming message triggers presentation',async()=>{
+ let raw=null,fail=true,insertions=0;
+ const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async value=>{if(fail)throw Error('fixture write');raw=value;}});
+ const packet=out.encodeRootChat(a,id,'message'),inserted=()=>{insertions++;};
+ await assert.rejects(ledger.receive(b,id,packet,undefined,inserted),/fixture write/);
+ assert.equal(insertions,0);
+ fail=false;
+ assert.deepEqual(await Promise.all([ledger.receive(b,id,packet,undefined,inserted),ledger.receive(b,id,packet,undefined,inserted)]),[true,true]);
+ assert.equal(await ledger.receive(b,id,out.encodeRootChat(a,id,'conflict'),undefined,inserted),false);
+ assert.equal(insertions,1);
+});
+
 test('ledger work diagnostics record failed work and queue continues without losing later writes',async()=>{
  let raw=null,fail=true;
  const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async value=>{if(fail)throw Error('fixture write');raw=value;}});

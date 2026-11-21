@@ -73,7 +73,7 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
   const budgetMs=jobToken?120000:20000;
   const started=Date.now(),until=Math.min(expires,started+budgetMs),clocks=clockSnapshot();
   let setupMs=0,waitLagMs=0,reason='error',waitReason='setup',attachmentState:string|undefined;
-  let targetProgressAt=started,attachmentCursor=-1,streamBytes=0,receiptSeen=false;
+  let targetProgressAt=started,attachmentCursor=-1,streamBytes=0,receiptSeen=false,mediaSeen=false,checkedAdmittedContent=false;
   let network:ReturnType<typeof startLocalAccountNetwork>|undefined,releaseLease:(()=>void)|undefined;
   const offEvents:(()=>void)[]=[];
   const events=typeof subscribeRootChatCommitted==='function'&&typeof subscribeAttachmentJobProgress==='function';
@@ -96,10 +96,16 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    console.info('[Axonic recovery] grant');releaseLease=acquireMessageWakeLease();console.info('[Axonic recovery] granted');
    network=startLocalAccountNetwork(background?{custodian:peer}:undefined);
    if(network.subscribeRecovery)offEvents.push(network.subscribeRecovery((sender,id)=>{if(sender===_sender&&id===_id)recoveryChanged();}));
-   // Persist and notify through the normal verified inbox before waiting for a connection.
-   // Relay polling still performs the signed receipt exchange, including after a restart.
-   let inlinePersisted=false;
-   if(envelope){try{if(await network.receiveWakeEnvelope(envelope,background?peer:custodian,payload)){inlinePersisted=true;notify('inline-persisted');}}catch{/* Fetch the durable relay copy if inline admission fails. */}}
+   // Start inline admission and the authenticated inbox in the same wake. The
+   // ledger serializes racing copies, and the relay still requires a signed receipt.
+   const inline=envelope?network.receiveWakeEnvelope(envelope,background?peer:custodian,payload).catch(()=>null):undefined;
+   if(Date.now()<until&&currentJob()){
+    if(peer)network.resumeRecovery(peer);
+    else if(!background)network.resume();
+    if(peer||!background)console.info('[Axonic recovery] resumed');
+   }
+   const inlinePersisted=!!(await inline);
+   if(inlinePersisted)notify('inline-persisted');
    // Fixed, content-free outcome; a wake arriving is not proof its ciphertext
    // was admitted. Media bytes still require the attachment worker separately.
    console.info('[Axonic recovery payload]',inlinePersisted?'inline-persisted':'fetch-required');
@@ -111,11 +117,6 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
     if(!currentJob()||localAccount.status().account!==account)return;
     if(inlinePersisted&&await network.hasRecoveredContent(_sender,_id)){reason='inline_complete';return;}
     reason='route_unavailable';return 'route-unavailable';
-   }
-   if(Date.now()<until&&currentJob()){
-    if(peer)network.resumeRecovery(peer);
-    else network.resume();
-    console.info('[Axonic recovery] resumed');
    }
    reason='deadline';
    while(Date.now()<until&&currentJob()&&localAccount.status().state==='unlocked'&&localAccount.status().account===account){
@@ -129,7 +130,14 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
     const receiptConfirmed=network.recoveryComplete?.(_sender,_id);
     attachmentState=receiptConfirmed||jobToken?await network.attachmentRecoveryState?.(_sender,_id):undefined;
     if(receiptConfirmed&&(!attachmentState||attachmentState==='complete')){reason='receipt_complete';break;}
+    if(receiptConfirmed&&attachmentState==='descriptor-missing'&&!checkedAdmittedContent){
+     // The attachment index omits plain text. Check the exact committed inbox
+     // entry once, so receipt-confirmed text can release the Android wake job.
+     checkedAdmittedContent=true;
+     if(await network.hasRecoveredContent(_sender,_id)){reason='receipt_complete';break;}
+    }
     const pendingAttachment=attachmentState!==undefined&&!['complete','descriptor-missing','snapshot-unavailable','policy-held'].includes(attachmentState);
+    if(pendingAttachment)mediaSeen=true;
     if(receiptConfirmed||pendingAttachment||receiptSeen&&attachmentState==='complete'){
      if(!receiptSeen){receiptSeen=true;targetProgressAt=Date.now();}
      waitReason='attachment';
@@ -139,7 +147,7 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
     // when that upload finishes. Keep the bounded Android job on this route
     // once the verified local descriptor has eligible media. The relay ACK
     // can arrive independently of local admission and attachment recovery.
-    const awaitingMedia=!!jobToken&&waitReason==='attachment';
+    const awaitingMedia=!!jobToken&&mediaSeen&&waitReason==='attachment';
     if(background&&!awaitingMedia&&Date.now()-targetProgressAt>=TARGET_IDLE_MS){reason='custodian_stalled';break;}
     waitLagMs=Math.max(waitLagMs,await pump(network,events));
    }

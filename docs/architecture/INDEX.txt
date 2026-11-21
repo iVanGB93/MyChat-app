@@ -5,6 +5,7 @@ Read only this index, the relevant module guide, its entry files and tests first
 Expand to another guide when a change crosses its contract. Dated incident and
 release reports remain evidence, not standing instructions or current defaults.
 
+Guide: APP-NETWORK-MAP.md
 Guide: identity.txt
 Guide: network.txt
 Guide: transfers.txt
@@ -21,7 +22,7 @@ Guide: STORAGE-TRANSFER-EXTRACTION.txt
 Guide: deep-audit-20261101.txt
 Guide: ios-compatibility-audit-20261101.txt
 
-These are ten responsibility areas, NOT ten newly extracted packages. Existing
+The guides detail responsibilities within the two areas defined in APP-NETWORK-MAP.md. Existing
 public facades live in src/modules; many implementations remain under
 src/services/identity. That folder name does not make every file identity code.
 Each guide separates today's entry points from the next extraction opportunity.
@@ -31,7 +32,7 @@ See storage.txt and transfers.txt for the contracts and their regression checks.
 Attachment connection selection is also shared and separated from retry scheduling
 and durable transfer progress; its policy and limits are described in transfers.txt.
 
-Dependency direction (target contract)
+Dependency direction
   UI or AI adapter -> application commands -> domain rules and storage ports
   composition -> connects commands, network, transfer, storage and diagnostics
   network -> authenticated peer sessions; transport -> moves bytes on sessions
@@ -56,9 +57,7 @@ Typical paths
 
 Repository roles
   Axonic-app: canonical shared TS services, mobile composition/UI/native adapters.
-  Axonic-neuron: hosted composition/storage/dashboard/AI adapters and generated
-    shared copies. Current integration worktree is locally under mobile builds/
-    aon-operator-20261022; do not hard-code that temporary layout into runtime.
+  Axonic-neuron: hosted composition, storage, dashboard and AI adapters with generated shared copies. Verify the shared-source manifest in the active checkout.
   Axonic (Django): website/update/legacy routes; not the current phone composition
     root. Do not delete routes merely because the new phone entry bypasses them.
 

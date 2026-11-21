@@ -229,13 +229,11 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
    await cancelRootMessageNotification(owner,sender,id,preview?.group);setStage('preview');
    await database.runAsync('INSERT INTO notices(owner,sender,id,expires,displayed) VALUES(?,?,?,?,2) ON CONFLICT(owner,sender,id) DO UPDATE SET displayed=2',owner,sender,id,Date.now()+7*86400000);return;
   }
-  const channelId=await messageChannel(preferences!.sound);
-  console.info('[Axonic notification timing] policy-channel-ms',Date.now()-began);
-  // An unlock may end while the OS channel is being created.
-  if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)return;
   // Group membership is known only after decryption; retire this message's generic hint.
   if(preview.group)await cancelRootMessageNotification(owner,sender,id);
-  const existing=await currentRootMessageNotification(owner,sender,preview.group);
+  const [channelId,existing]=await Promise.all([messageChannel(preferences!.sound),currentRootMessageNotification(owner,sender,preview.group)]);
+  console.info('[Axonic notification timing] policy-channel-ms',Date.now()-began);
+  if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner)return;
   // Preserve the last preview when updating a notice created by the previous client.
   const previous=existing?.data?.messagePreviews??(existing?.body&&!existing.data?.restoreChannel&&existing.data?.messageId&&existing.data.sender&&Number.isFinite(Number(existing.data.messageAt))?JSON.stringify([{id:existing.data.messageId,sender:existing.data.sender,name:existing.title||preview.name,text:existing.body,at:Number(existing.data.messageAt)}]):undefined);
   const messages=notificationMessages(previous,{id,...(preview.orderId?{orderId:preview.orderId}:{}),sender,name:preview.senderName||preview.name,text:preview.text,at:preview.at}),latest=messages[messages.length-1];

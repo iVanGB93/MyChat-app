@@ -18,7 +18,8 @@ internal object NotificationCallStyle {
     val original = notice.notification
     val actions = original.actions ?: return false
     if (actions.size != 2) return false
-    val caller = Person.Builder().setName(name.take(80).ifBlank { "Unknown caller" }).setImportant(true).build()
+    val caller = Person.Builder().setName(name.take(80).ifBlank { "Unknown caller" }).setImportant(true)
+      .setIcon(original.getLargeIcon()).build()
     val style = Notification.CallStyle.forIncomingCall(caller, actions[0].actionIntent, actions[1].actionIntent).setIsVideo(video)
     val updated = Notification.Builder.recoverBuilder(context, original)
       .setActions().setStyle(style).setCategory(Notification.CATEGORY_CALL).setOnlyAlertOnce(true).build()

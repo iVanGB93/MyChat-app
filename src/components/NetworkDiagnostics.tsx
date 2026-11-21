@@ -10,6 +10,7 @@ import {Ionicons} from '@expo/vector-icons';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useTheme} from '../contexts/ThemeContext';
 import IdentityLookup from './IdentityLookup';
+import BootstrapSettings from './BootstrapSettings';
 
 export default function NetworkDiagnostics({lookup}: Pick<React.ComponentProps<typeof IdentityLookup>, 'lookup'>) {
   const [open, setOpen] = useState(false);
@@ -24,6 +25,7 @@ export default function NetworkDiagnostics({lookup}: Pick<React.ComponentProps<t
       <View style={{flex: 1, backgroundColor: colors.background}}>
         <ScreenHeader title={t("Advanced diagnostics")} backLabel="Back to Network" onBack={()=>setOpen(false)}/>
         <KeyboardFormScrollView contentContainerStyle={{padding: 18, paddingBottom: insets.bottom + 24}}>
+          {open && <BootstrapSettings/>}
           {open && <RecoverySettings/>}
           {open && <IdentityLookup lookup={lookup} color={colors.text} muted={colors.textSecondary} border={colors.border}/>}
           {open && <RelayInventoryPanel/>}

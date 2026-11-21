@@ -14,6 +14,18 @@ test('local wake bypasses failed-dial backoff once without duplicating active sl
 });
 const account = n => 'axonic:1:' + n.toString(16).padStart(64, '0');
 const drain = () => new Promise(r => setImmediate(r));
+test('the configured bootstrap dials before other Internet seeds, with fallback after failure', async () => {
+ const f=fixture(1);
+ f.pool.offer({...f.candidate(1),route:'internet'});
+ f.pool.offer({...f.candidate(2),route:'internet',preferredBootstrap:true});
+ f.pool.tick();
+ assert.equal(f.opens[0].c.account,account(2));
+ f.opens[0].resolve(null);
+ await drain();
+ f.pool.tick();
+ assert.equal(f.opens[1].c.account,account(1));
+ f.pool.stop();
+});
 test('custodian-only scope retires unrelated connections and prevents their redial',async()=>{
  let scoped=false;
  const f=fixture(3,{allowRoute:c=>!scoped||c.account===account(2)});

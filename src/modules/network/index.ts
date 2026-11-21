@@ -10,5 +10,7 @@ export {recoverySettings,defaultRecoverySettings,subscribeRecoverySettings,loadR
 export {subscribeLocalNetworkChanges} from '../../composition/neuronRuntime';
 
 export {subscribeRelayChanges} from '../../composition/neuronRuntime';
+export {bootstrapEndpoint, defaultBootstrapEndpoint, loadBootstrapEndpoint, parseBootstrapEndpoint,
+  saveBootstrapEndpoint, testBootstrapEndpoint} from '../../services/identity/bootstrapSettings';
 
 export {relayPacketDetails,relayCategories,relayPacketCategory,type RelayCategory,type RelayInventory} from '../../services/identity/relayInventory';

@@ -3,7 +3,7 @@ const {load}=require('./helpers/attachment.cjs');
 const {createEventDeadlineTask}=load('eventDeadlineTask'),{createRelayPollSchedule}=load('relayPollSchedule');
 // Execute the production composition's resume method against real idle schedulers.
 const source=fs.readFileSync('src/composition/neuronRuntime.ts','utf8');
-const body=source.match(/resume\(\) \{([\s\S]*?)\}, refreshRoutes:/)[1];
+const body=source.match(/resume\(\) \{([\s\S]*?)\}, refreshRoutes(?:\s*:|\s*\()/)[1];
 const recoveryBody=source.match(/resumeRecovery\(peer:string\) \{([\s\S]*?)\},\s+resume\(\)/)[1];
 function fixture(){
  let now=1,sequence=0;const timers=new Map(),counts={private:0,group:0,transport:0,media:0};

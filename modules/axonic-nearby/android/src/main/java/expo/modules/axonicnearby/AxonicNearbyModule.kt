@@ -209,8 +209,8 @@ class AxonicNearbyModule : Module() {
         synchronized(this@AxonicNearbyModule) {
           val context = requireNotNull(appContext.reactContext)
           check(transportAllowed()) { "Axon transport requires an active app" }
-          // Bootstrap endpoint allowlist, not an identity authority. Shared crypto verifies the peer.
-          require(host in setOf("143.198.121.2", "secondneuron-production.up.railway.app") && account.matches(Regex("axonic:1:[0-9a-f]{64}")))
+          // The host is a TLS locator. Shared crypto verifies the expected Axonic identity.
+          require(host.length <= 253 && host.split('.').all { it.matches(Regex("[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?")) } && account.matches(Regex("axonic:1:[0-9a-f]{64}")))
           socket = javax.net.ssl.SSLSocketFactory.getDefault().createSocket()
           id = axons.reserve(socket!!, true)
         }

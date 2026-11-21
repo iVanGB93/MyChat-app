@@ -55,7 +55,7 @@ import {conversations} from '../../modules/messaging';
 import type {RootChatMessage} from '../../modules/messaging';
 import {messageListRendering} from '../../components/chat/message-list-rendering';
 import {queueRootAttachmentSource} from '../../modules/media';
-import {useTransferState,acknowledgeAttachmentHandoffs} from '../../modules/ui/transferState';
+import {useChatTransferSelections,acknowledgeAttachmentHandoffs} from '../../modules/ui/transferState';
 import type {RootAccountScreen as Screen} from '../../navigation/rootAccountRoutes';
 import {report,nickname} from '../rootScreenSupport';
 export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
@@ -83,7 +83,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
 
 
- const [busy,setBusy]=useState(false),transfers=useTransferState();
+ const [busy,setBusy]=useState(false),selections=useChatTransferSelections(peer);
  const [mediaRevision,refreshMedia]=React.useReducer((n:number)=>n+1,0);
 
  const name=nickname(state,peer),contact=state.contacts.find(c=>c.account===peer),messages=useMemo(()=>state.messages.filter(m=>m.peer===peer&&!m.group).slice().reverse(),[state.messages,peer,languageSnapshot()]);
@@ -92,7 +92,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
  const setText=(next:string|((current:string)=>string))=>composer.current?.setText(next);
  useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
  const openMessageMenu=(message:RootChatMessage,event:{nativeEvent:{pageY:number}})=>{if(message.deleted||message.localPending)return;setMenuY(event.nativeEvent.pageY);setMenu(message);};
- const calls=usePrivateCallHistory(peer,false,!initialLoading),timeline=useMemo(()=>attachmentTimeline(privateChatTimeline(messages,calls.rows,peer,hasMore),transfers.selections.filter(s=>!s.group&&s.peer===peer),s=>'message:outgoing:'+s.id),[messages,calls.rows,peer,hasMore,transfers.selections,languageSnapshot()]);
+ const calls=usePrivateCallHistory(peer,false,!initialLoading),timeline=useMemo(()=>attachmentTimeline(privateChatTimeline(messages,calls.rows,peer,hasMore),selections,s=>'message:outgoing:'+s.id),[messages,calls.rows,peer,hasMore,selections]);
  useEffect(()=>{acknowledgeAttachmentHandoffs(messages);},[messages]);
  const list=useRef<FlatList<PrivateChatRow|PreparationRow>>(null),owner=localAccount.status().account;
  const [composerHeight,setComposerHeight]=useState(90);
@@ -168,7 +168,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
     {(m.deleted||!!sticker||!!m.attachment&&!m.attachment.mime.startsWith('audio/'))&&<View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}
 
-   </Pressable></RootMessageReactions></View></ReplySwipe></View>;}}/>),[timeline,findReply,hasMore,loading,loadMore,peer,owner,name,colors,contact?.blocked,mediaRevision,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,transfers.selections,languageSnapshot()]);
+   </Pressable></RootMessageReactions></View></ReplySwipe></View>;}}/>),[timeline,findReply,hasMore,loading,loadMore,peer,owner,name,colors,contact?.blocked,mediaRevision,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,languageSnapshot()]);
 
  return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0}>
 

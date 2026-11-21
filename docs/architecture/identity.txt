@@ -1,11 +1,14 @@
 IDENTITY AND PERMISSIONS
-Purpose: account/device identity, local unlock, record verification and authorization.
+Phone app: local vault, password, biometric and remembered unlock.
+Network core: signed identity records, peer authentication and session admission.
 Names/nicknames are display labels; canonical identity and verified policy authorize.
 
 File: src/modules/identity/index.ts
 File: src/services/identity/localAccount.ts
 File: src/services/identity/localAccountSession.ts
 File: src/services/identity/localIdentityController.ts
+File: src/services/identity/openIdentityAxon.ts
+File: src/services/identity/persistentAxon.ts
 File: src/services/identity/identityProtocol.ts
 File: src/services/identity/identityAdmission.ts
 File: src/services/identity/identityVault.ts
@@ -30,6 +33,8 @@ Test: tests/identityProtocol.test.cjs
 Test: tests/localAccount.test.cjs
 AoN: tests/operatorMemory.test.mjs
 AoN: tests/operatorApprovals.test.mjs
-Next extraction: separate network discovery consumers from identity policy ports;
-keep cryptographic validation shared and platform secrets behind adapters.
+Handoff: the account controller leases unlocked credentials and revokes them
+on lock. The network constructs and authenticates the session.
+Test: tests/persistentAxon.test.cjs
+Guide: APP-NETWORK-MAP.md
 Guide: diagnostics-ai.txt

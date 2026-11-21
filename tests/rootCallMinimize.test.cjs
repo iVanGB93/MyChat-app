@@ -1,5 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function fixture(status='ready'){
+ let microphonePermission=async()=>({granted:true});
  const effects=[];let appListener,routeListener,preview=null;const chosen=[];const routes={automatic:true,selectedId:'bt',devices:[{id:'phone',kind:'phone',label:'Phone',name:''},{id:'speaker',kind:'speaker',label:'Speaker',name:''},{id:'bt',kind:'bluetooth',label:'Bluetooth',name:'Test headset'}]};const app={currentState:'active',addEventListener:(_,fn)=>{appListener=fn;return {remove(){}};}};
  const call={id:'one',peerUser:'peer',outgoing:true,media:'video',status,transport:{}},slots=new Map();let current,index,ended=0;
  const react={Fragment:'fragment',createElement:(type,props,...children)=>({type,props:{...props,children}}),
@@ -16,6 +17,8 @@ function fixture(status='ready'){
   'expo-keep-awake':{useKeepAwake:()=>{}},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,right:0,bottom:0,left:0})},
   '../../hooks/useWebRTCCore':{default:()=>rtc},
   '@expo/vector-icons':{Ionicons:'Icon'},'react-native-webrtc':{RTCView:'RTCView'}};
+ imports['expo-audio']={AudioModule:{getRecordingPermissionsAsync:()=>microphonePermission()}};
+ imports['expo-image-picker']={getCameraPermissionsAsync:async()=>({granted:true})};
  imports['../../services/call-audio-route']={startCallAudio:async()=>routes,getCallAudioRoutes:async()=>routes,
   observeCallAudioRoutes:fn=>{routeListener=fn;return {remove(){}};},selectCallAudioRoute:async id=>{chosen.push(id);return {...routes,automatic:id==='automatic',selectedId:id==='automatic'?'bt':id};}};
  let permission=async()=>true;
@@ -27,7 +30,7 @@ function fixture(status='ready'){
  const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>(require('./helpers/localization.cjs')(n)??(imports[n]??{})));
  function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;const tree=type(props);return type===out.default?tree:expand(tree);}
  const screen=()=>render(out.default);
- return {call,rtc,render,screen,setPermission:fn=>permission=fn,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
+ return {call,rtc,render,screen,setPermission:fn=>permission=fn,setMicrophonePermission:fn=>microphonePermission=fn,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
 }
 function find(tree,predicate){if(!tree||typeof tree!=='object')return; if(predicate(tree))return tree;for(const child of tree.props?.children??[]){const result=Array.isArray(child)?child.map(x=>find(x,predicate)).find(Boolean):find(child,predicate);if(result)return result;}}
 test('camera fills the call stage while shared screens remain uncropped',()=>{
@@ -50,6 +53,46 @@ test('caller and recipient video ringing use a mirrored local preview, but voice
  caller.call.media='voice';tree=caller.screen();assert.equal(find(tree,n=>n.type==='CallLayout').props.background,undefined);
  const recipient=fixture('ringing');recipient.call.outgoing=false;recipient.setPreview('local-preview');
  assert(find(recipient.screen(),n=>n.props.localPreviewUrl==='local-preview'));
+});
+
+test('answering a video call removes the ringing surface before remote video takes the stage',()=>{
+ const f=fixture('ringing');
+ f.call.outgoing=false;
+ f.setPreview('ringing-camera');
+ const ringing=f.screen();
+ assert.equal(ringing.props.animationType,'none');
+ assert(find(ringing,n=>n.props.localPreviewUrl==='ringing-camera'));
+ f.call.status='connecting';
+ assert.equal(find(f.screen(),n=>n.type==='CallLayout').props.background,undefined);
+ f.call.status='ready';
+ const owner=f.screen();
+ const incoming=f.rtc.remoteStream;
+ f.rtc.remoteStream=null;
+ const stage=()=>find(f.render(owner.type,owner.props),n=>n.type==='CallLayout').props.background;
+ const camera=find(stage(),n=>n.type==='RTCView');
+ assert.equal(camera.props.streamURL,'local');
+ assert(!find(stage(),n=>n.props.testID==='axonic-call-self-view'));
+ f.rtc.remoteStream=incoming;
+ const remote=find(stage(),n=>n.type==='RTCView');
+ assert.equal(remote.props.streamURL,'remote');
+ assert.notEqual(remote.props.key,camera.props.key);
+ assert.equal(find(find(stage(),n=>n.props.testID==='axonic-call-self-view'),n=>n.type==='RTCView').props.streamURL,'local');
+});
+
+test('the ringing camera disappears while the answer is waiting on Android permissions', async()=>{
+ const f=fixture('ringing');
+ f.call.outgoing=false;
+ f.setPreview('ringing-camera');
+ let resolvePermission;
+ f.setMicrophonePermission(()=>new Promise(resolve=>resolvePermission=resolve));
+ const incoming=()=>find(f.screen(),n=>typeof n.props.handleAccept==='function');
+ assert.equal(incoming().props.localPreviewUrl,'ringing-camera');
+ incoming().props.handleAccept();
+ assert.equal(incoming().props.busy,true);
+ assert.equal(incoming().props.localPreviewUrl,null);
+ resolvePermission({granted:true});
+ await new Promise(setImmediate);
+ assert.equal(incoming().props.busy,false);
 });
 
 test('Back minimizes a live video call and restoring retains the same mounted media owner',()=>{

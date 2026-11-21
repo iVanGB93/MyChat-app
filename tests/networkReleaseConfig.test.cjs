@@ -19,7 +19,11 @@ test('production axon entry points allow non-debug apps while retaining foregrou
  assert.match(source,/require\(milliseconds in 0\.\.30000\)/);
  assert.match(source,/wakeTimer.schedule/);
  assert.match(source,/wakeTimer.shutdownNow/);
- const allowedHosts=source.match(/require\(host in setOf\(([^)]+)\) && account\.matches/);
- assert.ok(allowedHosts,'Native bootstrap destinations remain explicitly restricted');
- assert.deepEqual([...allowedHosts[1].matchAll(/"([^"]+)"/g)].map(m=>m[1]),['143.198.121.2','secondneuron-production.up.railway.app']);
+ const wss=source.split('AsyncFunction("axonWssConnect")')[1].split(/\n    (?:AsyncFunction|Function)/)[0];
+ assert.match(wss,/require\(host\.length <= 253 && host\.split\('\.'\)\.all/);
+ assert.match(wss,/account\.matches\(Regex\("axonic:1:/);
+ const sockets=fs.readFileSync('modules/axonic-nearby/android/src/main/java/expo/modules/axonicnearby/AxonSockets.kt','utf8');
+ assert.match(sockets,/InetSocketAddress\(host, 443\)/);
+ assert.match(sockets,/endpointIdentificationAlgorithm = "HTTPS"/);
+ assert.match(sockets,/tls\.startHandshake\(\)/);
 });

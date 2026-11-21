@@ -347,7 +347,7 @@ c.accepted=true;
   },false,{peer,ids:items.flatMap(i=>[i.id,i.target.id])}),
   enqueueAttachment:(input:AttachmentDescriptor,reply?:RootChatReply,group?:RootGroupContext,selectedAt?:number)=>run(()=>enqueueAttachments([{input,reply,group,selectedAt}]),false,attachmentScope([{input,reply,group,selectedAt}])),
   enqueueAttachments:(items:AttachmentInput[])=>run(()=>enqueueAttachments(items),false,attachmentScope(items)),
-  receive:(from:string,id:string,raw:string,evidence?:DeliveryEvidence)=>run(async()=>{
+  receive:(from:string,id:string,raw:string,evidence?:DeliveryEvidence,onInserted?:(state:Readonly<RootChatState>)=>void)=>run(async()=>{
    if(!validPeer(from)||!idValid(id)||byteLength(raw)>2048)return false;
    let a;try{a=JSON.parse(raw);}catch{return false;}
    if(!Array.isArray(a)||![4,5].includes(a.length)||a[1]!==d.owner||a[2]!==id)return false;
@@ -437,7 +437,9 @@ c.accepted=true;
    if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
    if(s.groupSeen?.some(v=>v.peer===from&&v.id===id)||s.actions?.some(a=>a.peer===from&&a.direction==='incoming'&&a.id===id))return false;
    const old=s.messages.find(m=>m.id===id&&m.peer===from&&m.direction==='incoming');if(old)return old.createdAt===createdAt&&JSON.stringify(old.group)===JSON.stringify(group)&&old.text===text&&sameReply(old.reply,reply)&&(!old.attachment&&!attachment||!!old.attachment&&!!attachment&&attachmentDescriptorFingerprint(old.attachment)===attachmentDescriptorFingerprint(attachment));
-   if(createdAt!==undefined&&!(s.timestampPeers??=[]).includes(from)&&s.timestampPeers.length<500)s.timestampPeers.push(from);s.messages.push({id,peer:from,direction:'incoming',text,at:createdAt??d.now(),...(createdAt!==undefined?{createdAt}:{}),...(evidence&&validDeliveryEvidence(evidence)&&evidence.scope==='payload'?{messageDelivery:evidence}:{}),status:attachment?'pending':'delivered',...(attachment?{attachment,descriptorReceivedAt:d.now()}:{deliveredAt:d.now()}),...(reply?{reply}: {}),...(group?{group}: {})});s.hiddenChats=s.hiddenChats?.filter(k=>k!==(group?'group:'+group.id:from));await save(s);return true;
+   if(createdAt!==undefined&&!(s.timestampPeers??=[]).includes(from)&&s.timestampPeers.length<500)s.timestampPeers.push(from);s.messages.push({id,peer:from,direction:'incoming',text,at:createdAt??d.now(),...(createdAt!==undefined?{createdAt}:{}),...(evidence&&validDeliveryEvidence(evidence)&&evidence.scope==='payload'?{messageDelivery:evidence}:{}),status:attachment?'pending':'delivered',...(attachment?{attachment,descriptorReceivedAt:d.now()}:{deliveredAt:d.now()}),...(reply?{reply}: {}),...(group?{group}: {})});s.hiddenChats=s.hiddenChats?.filter(k=>k!==(group?'group:'+group.id:from));await save(s);
+   try{onInserted?.(s);}catch{/* Presentation cannot invalidate a committed message. */}
+   return true;
   },false,privateReceiveScope(from,id,raw)),
   networkStoredGroup:(grants:{recipient:string;id:string;expires:number}[],relay?:string)=>run(async()=>{
    const s=await read();let changed=false;

@@ -14,7 +14,7 @@ test('private and group lists share the render policy without slicing history or
   const data=props.find(p=>ts.isJsxAttribute(p)&&p.name.getText(source)==='data');assert.equal(data.initializer.expression.getText(source),'timeline');
   assert.match(fs.readFileSync(file,'utf8'),/attachmentTimeline\(/);
   // Progress uses the shared checkpoint projection, not screen-local full-list polling.
-  assert.match(fs.readFileSync(file,'utf8'),/useTransferState\(\)/);
+  assert.match(fs.readFileSync(file,'utf8'),/useChatTransferSelections\((?:peer|route\.params\.id,true)\)/);
   assert.doesNotMatch(fs.readFileSync(file,'utf8'),/await rootAttachmentProgress\(\)/);
  }
 });

@@ -40,6 +40,7 @@ export function createRecoveryLookupSession(d: {
     lifetime = setTimeout(stop, 5 * 60_000);
   }
   return {
+    async verifyConnection() { await (connecting ??= start()); },
     async lookup(checkpoint: IdentityRecord | string) {
       if (busy) return { ...unavailableDirectoryLookup(), status: 'busy' as const };
       busy = true;

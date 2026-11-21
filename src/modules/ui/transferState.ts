@@ -1,6 +1,7 @@
 import type {RootChatMessage} from '../messaging';
 import {createStore} from 'zustand/vanilla';
 import {useStore} from 'zustand';
+import {useShallow} from 'zustand/react/shallow';
 import {useMemo} from 'react';
 import {AppState} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
@@ -50,7 +51,9 @@ function useSource(){const focused=useIsFocused(),foreground=useForeground();
  return source;
 }
 /** Parent screens observe pending selections only. Progress belongs to its row. */
-export function useTransferState(){const source=useSource(),selections=useStore(source,s=>s.value.selections);return useMemo(()=>({selections}),[selections]);}
+export function useChatTransferSelections(conversation:string,group=false){
+ return useStore(useSource(),useShallow(s=>s.value.selections.filter(selection=>group?selection.group?.id===conversation:!selection.group&&selection.peer===conversation)));
+}
 export function useTransferProgress(digest:string){return useStore(useSource(),s=>s.lookup(digest));}
 
 /** Called after durable rows render: there must be no empty frame between stores. */

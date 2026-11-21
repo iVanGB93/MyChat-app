@@ -6,13 +6,12 @@ import {localAccount} from '../services/identity/localAccount';
 import {createRootAccountCalls} from '../services/identity/rootAccountCalls';
 import {createMobileCallJournalStore,listMobileCallJournals} from '../services/identity/mobileCallJournalStore';
 import {ownChatRevision} from '../modules/storage/chatStore';
-import {startRootPushRegistration} from '../services/identity/rootPushRegistration';
 import {registerRootCallWakeOwner,pendingRootCallWakes,finishRootCallWake,syncRootCallNotification} from '../services/identity/rootCallWake';
 import type {IdentityRecordStore} from '../services/identity/identityAdmission';
 import type {RootChatState} from '../services/identity/rootChatTypes';
 import type {createLanIdentityRuntime} from '../services/identity/lanIdentityRuntime';
 import type {NeuronCallView} from '../services/identity/neuronCallCoordinator';
-/** Account-scoped Android call notifications and push registration. Shared call
+/** Account-scoped Android call notifications. Shared call
  * protocol/coordinator remain unchanged; this adapter owns their mobile lifetime. */
 export function createMobileCallSession(account:string,d:{
  owner():string|null;network():ReturnType<typeof createLanIdentityRuntime>;records:IdentityRecordStore;
@@ -35,9 +34,7 @@ export function createMobileCallSession(account:string,d:{
       const noticeLifecycle=AppState.addEventListener('change',()=>{if(!current())return;if(AppState.currentState==='active')void callRuntime.recoverWakes().catch(()=>{});d.wake();const view=callRuntime.coordinator.snapshot();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&current())return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});});
       const stopNotice=()=>noticeLifecycle.remove();
       const device=localAccount.callDevice()!;
-      const push=startRootPushRegistration(current,(peer,raw)=>d.network().pushRequest(peer,raw),()=>d.network().pushPeers());
-      
       void registerRootCallWakeOwner(account,device).catch(()=>{});
 
-return {runtime:callRuntime,push,stop(){if(stopped)return;stopped=true;Native?.axonCallSetupWindow?.(0);stopNotice();push.stop();callRuntime.stop();}};
+return {runtime:callRuntime,stop(){if(stopped)return;stopped=true;Native?.axonCallSetupWindow?.(0);stopNotice();callRuntime.stop();}};
 }

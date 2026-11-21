@@ -49,7 +49,8 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { identityUnlockErrorMessage, localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
-import { startLocalAccountNetwork } from '../modules/network';
+import { loadBootstrapEndpoint, startLocalAccountNetwork } from '../modules/network';
+import BootstrapSettings from '../components/BootstrapSettings';
 import {createForegroundNetworkLease} from '../services/foregroundNetworkLease';
 
 
@@ -127,6 +128,7 @@ function LocalAccountContent() {
 
   async function inspect() {
 
+    await loadBootstrapEndpoint().catch(() => {});
     await startLocalAccount(); autoLockRef.current = localAccountSession.autoLock(); setAutoLock(autoLockRef.current);
 
     const account = localAccount.status().account;
@@ -260,6 +262,8 @@ function LocalAccountContent() {
           {authButton(t("CREATE IDENTITY"), () => void action(async () => { const created = await localAccount.beginCreate(); if (localAccount.status().state === 'backup') setPhrase(created); }))}
 
           {authButton(t("RECOVER IDENTITY"), () => {setRestoring(true);setError('');})}
+
+          <BootstrapSettings/>
 
         </View>}
 

@@ -8,7 +8,7 @@ function imports(file){const source=ts.createSourceFile(file,fs.readFileSync(pat
 for(const file of screens)for(const request of imports(file)){
  if(/services\/identity\//.test(request)||/modules\/axonic-nearby/.test(request)||/composition\/neuronRuntime/.test(request)||request==='@react-native-async-storage/async-storage')failures.push(file+' bypasses module API: '+request);
  if(/\/modules\//.test(request)&&! /\/modules\/(identity|maintenance|network|messaging|calls|media|storage|diagnostics|messaging\/notifications|ui\/keyboard|ui\/attachmentPreview|ui\/openAttachmentPreview|ui\/mediaPicker|ui\/documentPicker|ui\/sharedContent|ui\/useChatSnapshot|ui\/useChatActivity|ui\/useMessageStateClock|ui\/liveState|ui\/transferState)$/.test(request))failures.push(file+' imports a module implementation instead of its public API: '+request);
- if(/modules\/network$/.test(request)&&!['src/screens/LocalAccountApp.tsx','src/screens/profile/RootNetworkPanel.tsx','src/screens/profile/PhoneNetworkCard.tsx','src/components/AxonLimitSetting.tsx','src/components/RelayInventoryPanel.tsx','src/components/chat/ChatConnectionBar.tsx','src/components/RecoverySettings.tsx'].includes(file))failures.push(file+' routes communication outside messaging');
+ if(/modules\/network$/.test(request)&&!['src/screens/LocalAccountApp.tsx','src/screens/profile/RootNetworkPanel.tsx','src/screens/profile/PhoneNetworkCard.tsx','src/components/AxonLimitSetting.tsx','src/components/RelayInventoryPanel.tsx','src/components/chat/ChatConnectionBar.tsx','src/components/RecoverySettings.tsx','src/components/BootstrapSettings.tsx'].includes(file))failures.push(file+' routes communication outside messaging');
 }
 for(const file of ['src/modules/messaging/commands.ts','src/modules/messaging/delivery.ts','src/modules/calls/commands.ts'])for(const request of imports(file)){
  if(/^(react|expo-|@react-native)|axonic-nearby|composition\/|modules\/ui|localAccountNetwork|localRootChat/.test(request))failures.push(file+' imports a platform or composition dependency: '+request);
@@ -48,8 +48,11 @@ for(const request of imports('src/services/identity/localIdentityController.ts')
 for(const name of ['persistentAxon','identityNetwork','attachmentTransfer','custodyCourier','groupCustodyCourier','custodyWakeForwarder','receiptConfirmation']){
  const file='src/services/identity/'+name+'.ts';
  for(const request of imports(file)){
-  if(/^(react(?:$|-)|expo(?:$|-)|@react-native)|(?:^|\/)(screens|components|composition|axonic-nearby)(?:\/|$)|(?:^|\/)(localAccount|localRootChat|identityVault)(?:\.[cm]?tsx?)?$/.test(request))failures.push(file+' imports an app or platform adapter: '+request);
+  if(/^(react(?:$|-)|expo(?:$|-)|@react-native)|(?:^|\/)(screens|components|composition|axonic-nearby)(?:\/|$)|(?:^|\/)(localAccount|localRootChat|identityVault|mobileIncomingMessages|mobileDeliveryReceipts)(?:\.[cm]?tsx?)?$/.test(request))failures.push(file+' imports an app or platform adapter: '+request);
  }
+}
+for(const request of imports('src/composition/neuronRuntime.ts')){
+ if(/\/(rootMessageWake|rootNotificationPreviewText|rootChatActions)$/.test(request))failures.push('Network composition must delegate incoming message presentation: '+request);
 }
 const navigatorSource=ts.createSourceFile('navigator',fs.readFileSync(path.join(root,'src/navigation/RootAccountNavigator.tsx'),'utf8'),ts.ScriptTarget.Latest,true);
 for(const node of navigatorSource.statements)if(ts.isFunctionDeclaration(node)&&node.name?.text!=='RootAccountNavigator')failures.push('Navigator contains screen implementation: '+node.name?.text);
