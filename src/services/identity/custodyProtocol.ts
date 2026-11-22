@@ -29,6 +29,8 @@ const signedEnvelope = (e: CustodyEnvelope) => bytes([...header(e), e.ciphertext
 const signedReceipt = (r: CustodyReceipt) => bytes(['axonic-custody-receipt-v1', r.id, r.sender, r.recipient, r.recipientDevice, r.expires, r.digest]);
 const signedRoute=(r:CustodyReceipt)=>bytes(['axonic-custody-route-v1',r.signature,r.route!.sources,r.route!.partial]);
 export const custodyDigest = (e: CustodyEnvelope) => bytesToHex(sha256(bytes([bytesToHex(signedEnvelope(e)), e.signature])));
+/** Diagnostic correlation only; never used to authorize or deduplicate a wake. */
+export const custodyWakeTraceId=(digest:string)=>bytesToHex(sha256(utf8ToBytes('axonic-wake-trace-v1:'+digest))).slice(0,24);
 type CustodyWake = {version:1;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;expires:number;digest:string;signature:string;wakeMode?:'silent'};
 const wakeBody=(e:CustodyWake)=>bytes(['axonic-custody-wake-v1',e.version,e.id,e.sender,e.senderDevice,e.recipient,e.recipientDevice,e.expires,e.digest,...(e.wakeMode==='silent'?['silent']:[])]);
 const wakeFields=(e:CustodyEnvelope):CustodyWake=>({version:1,id:e.id,sender:e.sender,senderDevice:e.senderDevice,recipient:e.recipient,recipientDevice:e.recipientDevice,expires:e.expires,digest:custodyDigest(e),signature:e.wakeSignature??'',...(e.wakeMode==='silent'?{wakeMode:'silent' as const}:{})});

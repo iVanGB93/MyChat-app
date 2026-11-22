@@ -14,6 +14,8 @@ export interface NativeAxonLan extends NativeAxonTransport {
 type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'> & {
   remembered?():import('./neuronConnections').NeuronCandidate[];
   recoveryPeers?(): ReadonlySet<string> | undefined;
+  foregroundStartup?:boolean;
+  onStartupPhase?(phase:'bootstrap'|'expanded'):void;
   native: NativeAxonLan;
   rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait' | 'mediaLane' | 'streamCredit'>;
   internet?: { connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
@@ -34,11 +36,15 @@ export function rankedRtcIntroductions<T extends {account:string;via:string;expi
   }
   return [...selected.values()];
 }
-/** Development-only foreground LAN composition. Call tick once per second.
- * No account in an advertisement is trusted until the axon verifies its signatures.
- */
+/** Combines LAN discovery with authenticated Internet routes. */
 export function createLanIdentityRuntime(d: Dependencies) {
   const lan = createNativeAxonConnector(d.native);
+  let bootstrapOnly=d.foregroundStartup===true, startupUntil=Infinity;
+  const preferredBootstrap=()=>d.internet?.peers.find(peer=>peer.preferredBootstrap);
+  function finishStartup(){
+    if(!bootstrapOnly)return;
+    bootstrapOnly=false;startupUntil=Infinity;d.onStartupPhase?.('expanded');d.onWorkChanged?.();
+  }
   // Discovery can retain a vanished Wi-Fi peer. A failed dial must not let
   // that advertisement suppress an independently authenticated RTC route.
   const failedLan = new Map<string, number>();
@@ -52,7 +58,10 @@ export function createLanIdentityRuntime(d: Dependencies) {
     clockReference: candidate=>d.internet?.peers.some(peer=>peer.account===candidate.account&&peer.endpoint===candidate.endpoint)===true,
     allowRoute: candidate=>{
       const peers=d.recoveryPeers?.();
-      return !peers||peers.has(candidate.account)&&d.internet?.peers.some(peer=>peer.account===candidate.account&&peer.endpoint===candidate.endpoint)===true;
+      if(peers)return peers.has(candidate.account)&&d.internet?.peers.some(peer=>peer.account===candidate.account&&peer.endpoint===candidate.endpoint)===true;
+      if(!bootstrapOnly)return true;
+      const preferred=preferredBootstrap();
+      return candidate.route==='internet'&&candidate.account===preferred?.account&&candidate.endpoint===preferred.endpoint;
     },
     onSignal: (signal, via) => rtc?.receive(signal, via),
     connect: async (candidate, context) => {
@@ -100,9 +109,9 @@ export function createLanIdentityRuntime(d: Dependencies) {
   function reconcile() {
     const state = network.snapshot();
     if (rtcAccount !== state.account || state.state !== 'active') { rtc?.stop();streamRequests.clear(); rtcAccount = state.account; }
-    const desired = !disposed && !d.recoveryPeers?.() && state.state === 'active' ? state.account : null;
+    const desired = !disposed && !bootstrapOnly && !d.recoveryPeers?.() && state.state === 'active' ? state.account : null;
     if (active && active.account !== desired) stopLan();
-    if (!desired || active || starting || d.now() < retryAt) return;
+    if (!desired || active || starting || d.now() < retryAt) return state;
     starting = true;
     const own = { account: desired, abort: new AbortController() }; active = own;
     void d.native.axonLanStart(desired).then(() => {
@@ -111,36 +120,61 @@ export function createLanIdentityRuntime(d: Dependencies) {
     }).catch(() => {
       if (active === own) { error = 'Connect to Wi-Fi to discover nearby neurons'; retryAt = d.now() + 5000; stopLan(); }
     }).finally(() => { starting = false;d.onWorkChanged?.(); });
+    return state;
   }
   const unsubscribe = d.identity.subscribe(reconcile);
   const eventDiscovery=d.native.axonLanEvents?.()===true&&!!d.native.addListener;
   const discoveryListener=eventDiscovery?d.native.addListener!('axonLanChanged',()=>d.onWorkChanged?.()):null;
   return {
-    nextDeadline:()=>disposed?Infinity:Math.min(network.nextDeadline(),retryAt>d.now()?retryAt:Infinity,d.now()+(eventDiscovery?30000:5000)),
+    nextDeadline:()=>disposed?Infinity:Math.min(network.nextDeadline(),startupUntil,retryAt>d.now()?retryAt:Infinity,d.now()+(eventDiscovery?30000:5000)),
     tick() {
       if (disposed) return;
       const recoveryPeers = d.recoveryPeers?.();
+      const now=d.now(),preferred=preferredBootstrap();
+      if(bootstrapOnly&&!recoveryPeers){
+        if(!preferred||now>=startupUntil)finishStartup();
+        else if(!Number.isFinite(startupUntil)&&network.snapshot().state==='active'){
+          startupUntil=now+5000;d.onStartupPhase?.('bootstrap');
+        }
+      }
+      const state=reconcile();
       if (recoveryPeers) {
         for (const peer of d.internet?.peers ?? []) {
-          if (recoveryPeers.has(peer.account)) network.offer({...peer,route:'internet',expiresAt:d.now()+60000});
+          if (recoveryPeers.has(peer.account)) network.offer({...peer,route:'internet',expiresAt:now+60000});
         }
         network.tick();
-        reconcile();
         return;
       }
-      for (const [account, until] of failedLan) if (until <= d.now()) failedLan.delete(account);
-      for(const peer of d.remembered?.().slice(0,16)??[]){if(peer.expiresAt>d.now()&&!lanDeferred(peer.account))network.offer(peer);}
+      if(bootstrapOnly&&preferred){
+        network.offer({...preferred,route:'internet',expiresAt:now+60000});
+        network.tick();
+        return;
+      }
+      for (const [account, until] of failedLan) if (until <= now) failedLan.delete(account);
+      for(const peer of d.remembered?.().slice(0,16)??[]){if(peer.expiresAt>now&&!lanDeferred(peer.account))network.offer(peer);}
       const internetPeers=d.internet?.peers.slice(0,10)??[];
       for (const peer of internetPeers) {
-        network.offer({ ...peer, route: 'internet', expiresAt: d.now() + 60_000 });
+        network.offer({ ...peer, route: 'internet', expiresAt: now + 60_000 });
+      }
+      const nearby = new Set<string>();
+      if (active && (!starting || rtc)) {
+        try {
+          const snapshot = d.native.axonLanSnapshot();
+          if (snapshot.active) for (const peer of snapshot.peers) nearby.add(peer.account);
+          if (!starting) {
+            if (!snapshot.active) { error = 'Wi-Fi discovery stopped'; retryAt = now + 5000; stopLan(); }
+            else for (const peer of snapshot.peers.slice(0, 32)) {
+              // The lower account dials and the higher account accepts.
+              if (!validAccount(peer.account) || peer.account <= active.account || (rtc && lanDeferred(peer.account))) continue;
+              network.offer({ account: peer.account, endpoint: `axon-lan://${peer.host}:${peer.port}`, route: 'lan', expiresAt: now + 60_000 });
+            }
+          }
+        } catch { if (!starting) { error = 'LAN discovery unavailable'; retryAt = now + 5000; stopLan(); } }
       }
       if (rtc) {
-        const state = network.snapshot();
-        let nearby = new Set<string>();
-        try { if (active) nearby = new Set(d.native.axonLanSnapshot().peers.map(p => p.account)); } catch { /* RTC remains a fallback. */ }
         // An introduction is a signaling locator, not proof that an endpoint
         // supports RTC. Keep the configured direct route to a bootstrap peer.
-        for (const peer of rankedRtcIntroductions(state.introductions,state.pool?.connections??[],d.now())) if (state.account && state.account < peer.account
+        for (const peer of rankedRtcIntroductions(state.introductions,state.pool?.connections??[],now)) if (state.account && state.account < peer.account
           && !internetPeers.some(seed=>seed.account===peer.account)
           && (!nearby.has(peer.account) || lanDeferred(peer.account)))
           network.offer({ account: peer.account, endpoint: 'rtc:' + peer.via, route: 'internet', expiresAt: peer.expiresAt });
@@ -148,28 +182,18 @@ export function createLanIdentityRuntime(d: Dependencies) {
         // Only a real transfer requests this promotion. The pool retains LAN
         // until RTC authentication succeeds, with its usual limits and backoff.
         for(const [peer,wanted] of streamRequests){
-          if(wanted.until<=d.now()){streamRequests.delete(peer);continue;}
+          if(wanted.until<=now){streamRequests.delete(peer);continue;}
           if(state.account&&state.account<peer
             &&network.attachmentStreamPeer(peer)?.device===wanted.device)
-            network.offer({account:peer,endpoint:'rtc:'+peer,route:'internet',expiresAt:d.now()+30000});
+            network.offer({account:peer,endpoint:'rtc:'+peer,route:'internet',expiresAt:now+30000});
         }
       }
-      network.tick(); reconcile();
-      if (!active || starting) return;
-      try {
-        const snapshot = d.native.axonLanSnapshot();
-        if (!snapshot.active) { error = 'Wi-Fi discovery stopped'; retryAt = d.now() + 5000; stopLan(); return; }
-        for (const peer of snapshot.peers.slice(0, 32)) {
-          // Stable tie-breaking: the lower account dials; the higher accepts.
-          if (!validAccount(peer.account) || peer.account <= active.account || (rtc && lanDeferred(peer.account))) continue;
-          network.offer({ account: peer.account, endpoint: `axon-lan://${peer.host}:${peer.port}`, route: 'lan', expiresAt: d.now() + 60_000 });
-        }
-        network.tick();
-      } catch { error = 'LAN discovery unavailable'; retryAt = d.now() + 5000; stopLan(); }
+      network.tick();
     },
     setLimit: network.setLimit,
     // A real local foreground transition permits a fresh LAN attempt. Periodic
     // discovery refreshes still preserve the stale-peer backoff.
+    finishStartup,
     resume() { retryAt = 0; failedLan.clear(); network.resume(); },
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,

@@ -150,3 +150,9 @@ test('call diagnostics and event journal never export participant identities or 
  const summary=modular.summarizeCallsForReport(view);assert.equal(summary.participants,3);assert.equal(summary.legs.ready,1);assert.equal(summary.legs.ended,1);assert(!JSON.stringify(summary).includes('secret'));
  const j=journal.createDiagnosticJournal(()=>5);j.record('call_state_changed',{callStatus:'ready',callMedia:'video',groupCall:true,participants:3,readyLegs:2,reason:'secret',peer:'secret'});const row=j.snapshot().events[0];assert.equal(row.readyLegs,2);assert.equal(row.groupCall,true);assert(!JSON.stringify(row).includes('secret'));
 });
+
+test('only verified wake events retain opaque wake tags',()=>{
+ const d=journal.createDiagnosticJournal(()=>1),tag='ab'.repeat(12);
+ d.record('wake_verified',{wakeTrace:tag});d.record('wake_verified',{wakeTrace:'ab'.repeat(32)});d.record('wake_failed',{wakeTrace:tag});
+ assert.deepEqual(d.snapshot().events.map(e=>e.wakeTrace),[tag,undefined,undefined]);
+});

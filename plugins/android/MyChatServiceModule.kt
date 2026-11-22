@@ -286,6 +286,19 @@ class MyChatServiceModule(private val reactContext: ReactApplicationContext) :
             }
         }
     }
+
+    @ReactMethod
+    fun dismissCallPictureInPicture(promise: Promise) {
+        val activity = reactContext.currentActivity
+        if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            promise.resolve(null)
+            return
+        }
+        activity.runOnUiThread {
+            if (!pictureInPictureEnabled && activity.isInPictureInPictureMode) activity.finish()
+            promise.resolve(null)
+        }
+    }
 }
 
 /** Native equivalents of Axonic's circular call actions; no platform button chrome. */

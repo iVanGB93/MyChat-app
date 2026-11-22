@@ -31,3 +31,16 @@ test('failed verified observations retry on the next successful ledger event and
  assert.equal(a.snapshot().metrics.groupRelayDebits,1);assert.equal(a.snapshot().metrics.pendingRetries,0);
  assert.equal(a.snapshot().metrics.writeFailures,1);assert.equal(a.snapshot().metrics.recoveredWrites,1);
 });
+test('one recovery read drains more than eight queued observations and keeps their original classification',async()=>{
+ const f=fixture(),a=createTrialCredits(f.store);
+ await a.load();f.fail(true);
+ for(let i=0;i<12;i++)assert.equal(await a.observe({...event('relay-use',i),chat:'group'}),false);
+ assert.equal(await a.observe({...event('relay-use',0),chat:'private'}),false);
+ assert.equal(a.snapshot().metrics.pendingRetries,12);
+ f.fail(false);
+ assert.equal(await a.load(),true);
+ assert.equal(a.snapshot().spent,12);
+ assert.equal(a.snapshot().metrics.groupRelayDebits,12);
+ assert.equal(a.snapshot().metrics.privateRelayDebits,0);
+ assert.equal(a.snapshot().metrics.pendingRetries,0);
+});

@@ -43,6 +43,17 @@ test('Home picture-in-picture is armed only after media and the service are read
   f.mod.stopRootCallLease('one');await new Promise(r=>setImmediate(r));assert.equal(f.events.at(-1),'stop');assert.deepEqual(f.events.at(-2),['pip',false]);
  }
 });
+test('ending the current call closes its existing Android picture-in-picture window',async()=>{
+ const f=fixture();
+ f.service.dismissCallPictureInPicture=async()=>f.events.push('dismiss-pip');
+ await f.mod.startRootCallLease('one','video');
+ f.mod.stopRootCallLease('older');
+ await new Promise(r=>setImmediate(r));
+ assert(!f.events.includes('dismiss-pip'));
+ f.mod.stopRootCallLease('one');
+ await new Promise(r=>setImmediate(r));
+ assert.deepEqual(f.events.slice(-3),[['pip',false],'stop','dismiss-pip']);
+});
 test('a connection during delayed service startup cannot arm PiP until startup completes',async()=>{
  const f=fixture();let release;f.delay(()=>new Promise(r=>release=r));const work=f.mod.startRootCallLease('one','video');while(!release)await Promise.resolve();f.mod.markRootCallConnected('one');assert(!f.events.some(e=>Array.isArray(e)&&e[0]==='pip'&&e[1]));release();await work;await new Promise(r=>setImmediate(r));assert.deepEqual(f.events.at(-1),['pip',true]);
 });

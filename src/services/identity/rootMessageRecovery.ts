@@ -13,10 +13,18 @@ import type {MessageWakeRecoveryOutcome} from './messageNotificationDeadline';
 // Wakes share the runtime and native wake window, not a per-message FIFO.
 // A missing relay receipt must not delay admission of the next inline message.
 let pumping:Promise<number>|undefined;
+let safetyWait:Promise<void>|undefined;
 let lastPumpAt=0;
 let eventPending=false,finishEventWait:(()=>void)|undefined;
 const TARGET_IDLE_MS=20000;
 function recoveryChanged(){eventPending=true;finishEventWait?.();}
+function waitForSafetyCheck(delay:number){
+ if(safetyWait)return safetyWait;
+ const work=Native?.axonMessageWait?Native.axonMessageWait(delay):new Promise<void>(resolve=>setTimeout(resolve,delay));
+ safetyWait=work;
+ void work.finally(()=>{if(safetyWait===work)safetyWait=undefined;}).catch(()=>{});
+ return work;
+}
 function pump(network:ReturnType<typeof startLocalAccountNetwork>,events=false){
  if(pumping)return pumping;
  const work=Promise.resolve().then(async()=>{
@@ -30,8 +38,7 @@ function pump(network:ReturnType<typeof startLocalAccountNetwork>,events=false){
    let finished=false;
    const finish=()=>{if(finished)return;finished=true;if(finishEventWait===finish)finishEventWait=undefined;eventPending=false;resolve();};
    if(events)finishEventWait=finish;
-   const sleep=Native?.axonMessageWait?Native.axonMessageWait(delay):new Promise<void>(r=>setTimeout(r,delay));
-   void sleep.then(finish,error=>{if(finished)return;finished=true;if(finishEventWait===finish)finishEventWait=undefined;reject(error);});
+   void waitForSafetyCheck(delay).then(finish,error=>{if(finished)return;finished=true;if(finishEventWait===finish)finishEventWait=undefined;reject(error);});
   });
   return Math.max(0,Date.now()-waitingAt-delay);
  });
@@ -95,6 +102,9 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    // Grant it now rather than relying on the app state captured before recovery.
    console.info('[Axonic recovery] grant');releaseLease=acquireMessageWakeLease();console.info('[Axonic recovery] granted');
    network=startLocalAccountNetwork(background?{custodian:peer}:undefined);
+   const connected=(account:string)=>{if(!background||account===peer){notify('connected:'+account);recoveryChanged();}};
+   offEvents.push(network.subscribeConnected(connected));
+   for(const session of network.snapshot().sessions)if(session.state==='connected'&&session.account)connected(session.account);
    if(network.subscribeRecovery)offEvents.push(network.subscribeRecovery((sender,id)=>{if(sender===_sender&&id===_id)recoveryChanged();}));
    // Start inline admission and the authenticated inbox in the same wake. The
    // ledger serializes racing copies, and the relay still requires a signed receipt.
@@ -120,8 +130,6 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    }
    reason='deadline';
    while(Date.now()<until&&currentJob()&&localAccount.status().state==='unlocked'&&localAccount.status().account===account){
-    // Only authenticated sessions count; dialing/retries are not progress.
-    for(const session of network.snapshot?.().sessions??[])if(session.state==='connected'&&session.account)notify('connected:'+session.account);
     // Inbox persistence precedes the signed receipt exchange. This wake owns a
     // lease for its target, not for unrelated relay inboxes or outgoing work.
     // Other wakes retain their own leases; target media still gates completion.

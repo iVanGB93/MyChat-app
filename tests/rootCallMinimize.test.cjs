@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function fixture(status='ready'){
  let microphonePermission=async()=>({granted:true});
- const effects=[];let appListener,routeListener,preview=null;const chosen=[];const routes={automatic:true,selectedId:'bt',devices:[{id:'phone',kind:'phone',label:'Phone',name:''},{id:'speaker',kind:'speaker',label:'Speaker',name:''},{id:'bt',kind:'bluetooth',label:'Bluetooth',name:'Test headset'}]};const app={currentState:'active',addEventListener:(_,fn)=>{appListener=fn;return {remove(){}};}};
+ const effects=[];let appListener,routeListener,hangUpListener,preview=null;const chosen=[];const routes={automatic:true,selectedId:'bt',devices:[{id:'phone',kind:'phone',label:'Phone',name:''},{id:'speaker',kind:'speaker',label:'Speaker',name:''},{id:'bt',kind:'bluetooth',label:'Bluetooth',name:'Test headset'}]};const app={currentState:'active',addEventListener:(_,fn)=>{appListener=fn;return {remove(){}};}};
  const call={id:'one',peerUser:'peer',outgoing:true,media:'video',status,transport:{}},slots=new Map();let current,index,ended=0;
  const react={Fragment:'fragment',createElement:(type,props,...children)=>({type,props:{...props,children}}),
   useState:initial=>{const i=index++;if(!(i in current))current[i]=initial;return [current[i],value=>current[i]=typeof value==='function'?value(current[i]):value];},
@@ -9,7 +9,7 @@ function fixture(status='ready'){
  // Setters capture their component's hook storage, as React does.
  react.useState=initial=>{const own=current,i=index++;if(!(i in own))own[i]=initial;return [own[i],value=>own[i]=typeof value==='function'?value(own[i]):value];};
  const rtc={remoteStream:{toURL:()=> 'remote'},localStream:{toURL:()=> 'local'},callQuality:{level:'unknown'}};
- const imports={'../../services/call-screen-capture':{callScreenCaptureAvailable:true},'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,DeviceEventEmitter:{addListener:()=>({remove(){}})},Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
+ const imports={'../../services/call-screen-capture':{callScreenCaptureAvailable:true},'../../hooks/useRingingCameraPreview':{default:(_id,enabled)=>enabled?preview:null},react:{default:react,...react},'react-native':{Modal:'Modal',View:'View',Pressable:'Pressable',Text:'Text',AppState:app,DeviceEventEmitter:{addListener:(name,fn)=>{if(name==='AxonicCallHangUp')hangUpListener=fn;return {remove(){}};}},Platform:{OS:'android'},StyleSheet:{absoluteFill:{}}},
   '../../modules/identity':{localAccount:{status:()=>({account:'owner'})},shortIdentity:()=> 'Peer'},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},
   '../../modules/ui/liveState':{useCallState:()=>call},'../../modules/ui/useChatSnapshot':{useChatContacts:()=>({contacts:[]})},
   '../../modules/calls':{MAX_GROUP_CALL_PARTICIPANTS:4,localAccountCalls:()=>({end:()=>{ended++;return Promise.resolve();}})},
@@ -30,7 +30,7 @@ function fixture(status='ready'){
  const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/RootAccountCallScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>(require('./helpers/localization.cjs')(n)??(imports[n]??{})));
  function render(type,props={}){effects.length=0;current=slots.get(type)??[];slots.set(type,current);index=0;const tree=type(props);return type===out.default?tree:expand(tree);}
  const screen=()=>render(out.default);
- return {call,rtc,render,screen,setPermission:fn=>permission=fn,setMicrophonePermission:fn=>microphonePermission=fn,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),appState:state=>{app.currentState=state;appListener?.(state);}};
+ return {call,rtc,render,screen,setPermission:fn=>permission=fn,setMicrophonePermission:fn=>microphonePermission=fn,setPreview:url=>preview=url,ended:()=>ended,chosen,audioListen:()=>effects.find(fn=>fn.toString().includes('startCallAudio'))(),routeUpdate:next=>routeListener(next),listen:()=>effects[0](),notificationHangUp:id=>hangUpListener(id),appState:state=>{app.currentState=state;appListener?.(state);}};
 }
 function find(tree,predicate){if(!tree||typeof tree!=='object')return; if(predicate(tree))return tree;for(const child of tree.props?.children??[]){const result=Array.isArray(child)?child.map(x=>find(x,predicate)).find(Boolean):find(child,predicate);if(result)return result;}}
 test('camera fills the call stage while shared screens remain uncropped',()=>{
@@ -55,7 +55,7 @@ test('caller and recipient video ringing use a mirrored local preview, but voice
  assert(find(recipient.screen(),n=>n.props.localPreviewUrl==='local-preview'));
 });
 
-test('answering a video call removes the ringing surface before remote video takes the stage',()=>{
+test('answering keeps the ringing preview until the remote-only call stage takes over',()=>{
  const f=fixture('ringing');
  f.call.outgoing=false;
  f.setPreview('ringing-camera');
@@ -63,23 +63,25 @@ test('answering a video call removes the ringing surface before remote video tak
  assert.equal(ringing.props.animationType,'none');
  assert(find(ringing,n=>n.props.localPreviewUrl==='ringing-camera'));
  f.call.status='connecting';
- assert.equal(find(f.screen(),n=>n.type==='CallLayout').props.background,undefined);
+ const answering=find(f.screen(),n=>n.props.localPreviewUrl==='ringing-camera');
+ assert.equal(answering.props.busy,true);
  f.call.status='ready';
  const owner=f.screen();
  const incoming=f.rtc.remoteStream;
  f.rtc.remoteStream=null;
- const stage=()=>find(f.render(owner.type,owner.props),n=>n.type==='CallLayout').props.background;
- const camera=find(stage(),n=>n.type==='RTCView');
- assert.equal(camera.props.streamURL,'local');
- assert(!find(stage(),n=>n.props.testID==='axonic-call-self-view'));
+ const active=()=>f.render(owner.type,owner.props);
+ const stage=()=>find(active(),n=>n.type==='CallLayout').props.background;
+ assert.equal(find(active(),n=>n.type==='Modal').props.animationType,'none');
+ const self=()=>find(stage(),n=>n.props.testID==='axonic-call-self-view');
+ assert.equal(find(self(),n=>n.type==='RTCView').props.streamURL,'local');
+ assert.equal(find(stage(),n=>n.props.streamURL==='local'&&n.props.zOrder===0),undefined);
+ assert.equal(find(stage(),n=>n.props.streamURL==='ringing-camera'),undefined);
  f.rtc.remoteStream=incoming;
- const remote=find(stage(),n=>n.type==='RTCView');
- assert.equal(remote.props.streamURL,'remote');
- assert.notEqual(remote.props.key,camera.props.key);
- assert.equal(find(find(stage(),n=>n.props.testID==='axonic-call-self-view'),n=>n.type==='RTCView').props.streamURL,'local');
+ assert.equal(find(stage(),n=>n.props.zOrder===0).props.streamURL,'remote');
+ assert.equal(find(self(),n=>n.type==='RTCView').props.streamURL,'local');
 });
 
-test('the ringing camera disappears while the answer is waiting on Android permissions', async()=>{
+test('checking permissions during Answer keeps the preview while the app is foregrounded', async()=>{
  const f=fixture('ringing');
  f.call.outgoing=false;
  f.setPreview('ringing-camera');
@@ -89,7 +91,7 @@ test('the ringing camera disappears while the answer is waiting on Android permi
  assert.equal(incoming().props.localPreviewUrl,'ringing-camera');
  incoming().props.handleAccept();
  assert.equal(incoming().props.busy,true);
- assert.equal(incoming().props.localPreviewUrl,null);
+ assert.equal(incoming().props.localPreviewUrl,'ringing-camera');
  resolvePermission({granted:true});
  await new Promise(setImmediate);
  assert.equal(incoming().props.busy,false);
@@ -111,6 +113,24 @@ test('Back minimizes ringing and connecting calls; only Close dismisses an ended
 test('minimized state is scoped to the call id and ended minimized calls disappear',()=>{
  const f=fixture('connecting');f.screen().props.onRequestClose();f.call.status='ended';assert.equal(f.screen(),null);
  f.call.id='two';f.call.status='connecting';assert.equal(f.screen().type,'Modal');
+});
+test('notification hangup immediately hides a minimized call while media sends its final signal',async()=>{
+ const f=fixture(),owner=f.screen(),full=f.render(owner.type,owner.props);
+ find(full,n=>n.type==='Modal'&&n.props.visible).props.onRequestClose();
+ let finish;f.rtc.notifyCallEnded=()=>new Promise(resolve=>{finish=resolve;});
+ const minimized=f.screen();
+ f.render(minimized.type,minimized.props);f.audioListen();
+ f.notificationHangUp('old-call');
+ assert.equal(f.screen().props.closing,false);
+ f.notificationHangUp(f.call.id);
+ const closing=f.screen();
+ assert.equal(closing.type,owner.type);assert.equal(closing.props.key,owner.props.key);
+ assert.equal(closing.props.closing,true);assert.equal(f.ended(),0);
+ const tree=f.render(closing.type,closing.props);
+ assert(!find(tree,n=>typeof n.type==='function'&&n.props.restore));
+ assert(!find(tree,n=>n.type==='Modal'&&n.props.visible));
+ finish();await Promise.resolve();assert.equal(f.ended(),1);
+ f.call.status='ended';assert.equal(f.screen(),null);
 });
 test('Home puts video on the Activity surface, hides call dialogs and retains the media owner on return',()=>{
  const f=fixture(),owner=f.screen();f.render(owner.type,owner.props);f.listen();f.appState('background');

@@ -52,3 +52,5 @@ export function useGroupCallAvailable(room?:GroupCallRoom){
  useEffect(()=>{if(!room){setAvailable(false);return;}const refresh=()=>setAvailable(groupCallIsActive(room.id));const off=subscribeGroupCallPresence(refresh),watch=watchGroupCallPresence(room);refresh();return()=>{watch();off();};},[room?.id,room?.revision]);
  return available;
 }
+
+export {observeConversationReady,hasConversationIndex} from './conversationState';

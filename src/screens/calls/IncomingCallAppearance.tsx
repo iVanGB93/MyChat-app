@@ -21,6 +21,11 @@ export default function IncomingCallAppearance({callerName,avatarUri,isVideo,loc
   const ring2Scale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.4] });
   const ring2Opacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.3, 0] });
   const sweepRotate = sweep.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
+  const callerIdentity = <>
+    <Text numberOfLines={2} ellipsizeMode="tail" style={styles.callerName}>{callerName}</Text>
+    <Text accessibilityLiveRegion="polite" style={styles.status}>{busy?t("Answering…"):'is calling you…'}</Text>
+    {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+  </>;
 
   return (
     <View style={[styles.container,{paddingTop:insets.top+24,paddingBottom:Math.max(insets.bottom,16)+24,paddingLeft:insets.left,paddingRight:insets.right}]}>
@@ -48,6 +53,8 @@ export default function IncomingCallAppearance({callerName,avatarUri,isVideo,loc
           <Text style={[styles.typePillText, { color: Colors.primary }]}>
             {t("INCOMING")}{' '}{isVideo ? t("VIDEO") : t("VOICE")} {t("CALL")}</Text>
         </View>
+
+        {isVideo && callerIdentity}
 
         {!localPreviewUrl && (
           <>
@@ -79,9 +86,7 @@ export default function IncomingCallAppearance({callerName,avatarUri,isVideo,loc
           </>
         )}
 
-        <Text numberOfLines={2} ellipsizeMode="tail" style={styles.callerName}>{callerName}</Text>
-        <Text accessibilityLiveRegion="polite" style={styles.status}>{busy?t("Answering…"):'is calling you…'}</Text>
-        {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
+        {!isVideo && callerIdentity}
       </ScrollView>
 
       <View style={styles.actions}>

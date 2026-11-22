@@ -1,10 +1,14 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 test('group video gives remote participants equal vertical space and keeps self in a small draggable preview',()=>{
  const react={createElement:(type,props,...children)=>({type,props:{...props,children}})};
- const imports={react:{default:react,...react},'react-native':{View:'View',Modal:'Modal',Text:'Text',StyleSheet:{absoluteFill:{position:'absolute'}}},'react-native-webrtc':{RTCView:'RTCView'},'@expo/vector-icons':{Ionicons:'Icon'},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,right:0})},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'./CallAppearance':{makeStyles:()=>({selfView:{width:110},pipWrap:{height:150},pip:{flex:1}})},'./DraggableCallPreview':{default:'Preview'},'./CallStage':{CallLayout:'Layout'}};
+ const imports={react:{default:react,...react},'react-native':{View:'View',Modal:'Modal',Text:'Text',Platform:{OS:'android'},StyleSheet:{absoluteFill:{position:'absolute'}}},'react-native-webrtc':{RTCView:'RTCView'},'@expo/vector-icons':{Ionicons:'Icon'},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:0,right:0})},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'./CallAppearance':{makeStyles:()=>({selfView:{width:110},pipWrap:{height:150},pip:{flex:1}})},'./DraggableCallPreview':{default:'Preview'},'./CallStage':{CallLayout:'Layout'}};
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/CallSessionScreen.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(mod,n=>(require('./helpers/localization.cjs')(n)??(imports[n]??{})));
  const tree=mod.default({video:true,participants:[{id:'self',local:true,stream:'self'},{id:'a',stream:'a'},{id:'b',stream:'b'}]});
  const walk=n=>!n||typeof n!=='object'?[]:Array.isArray(n)?n.flatMap(walk):[n,...walk(n.props?.children)];
+ const animation=(video,incoming)=>walk(mod.default({video,incoming})).find(n=>n.type==='Modal').props.animationType;
+ assert.equal(animation(true,true),'none');
+ assert.equal(animation(true,false),'slide');
+ assert.equal(animation(false,true),'slide');
  const layout=walk(tree).find(n=>n.type==='Layout'),nodes=walk(layout.props.background);
  const tiles=nodes.filter(n=>n.props?.testID==='axonic-group-remote-tile');assert.equal(tiles.length,2);const label=walk(tiles[1]).find(n=>n.props?.style?.top===12);assert(label,'lower participant label belongs at the top of its half');tiles.forEach(n=>assert.equal(n.props.style.flex,1));
  const remote=tiles.flatMap(walk).filter(n=>n.type==='RTCView');assert.deepEqual(remote.map(n=>n.props.streamURL),['a','b']);

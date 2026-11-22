@@ -13,6 +13,7 @@ import type {NeuronCallView} from './neuronCallCoordinator';
 import {DEVICE_REMOVAL_KEY} from './deviceRemoval';
 import {NETWORK_WORK_RESET_KEY} from './networkWorkReset';
 import {rootNotificationAvatar} from './rootNotificationAvatar';
+import {hasPendingRootCallDecline} from './rootCallNotificationAction';
 const wakeListeners=new Set<(owner:string)=>void>();
 export function subscribeRootCallWakes(listener:(owner:string)=>void){wakeListeners.add(listener);return()=>{wakeListeners.delete(listener);};}
 const KEY='@axonic_root_call_wake_owner_v1';
@@ -56,10 +57,14 @@ async function cancelIncomingNotice(id:string){
  await notifee.cancelNotification(id);
  if(liveNotice===id)liveNotice=null;
 }
+export function dismissRootCallNotice(id:string){return serial(async()=>{
+ clearIncomingCallWindow(id);
+ await cancelIncomingNotice('root-call:'+id);
+});}
 
 async function showIncomingCall(account:string, sender:string, callId:string, media:CallControl['media'], expiresAt:number) {
  const id='root-call:'+callId;
- const canShow=async()=>AppState.currentState!=='active'&&expiresAt>Date.now()&&(await context())?.account===account&&!await blocked(account,sender);
+ const canShow=async()=>AppState.currentState!=='active'&&expiresAt>Date.now()&&(await context())?.account===account&&!await blocked(account,sender)&&!await hasPendingRootCallDecline(account,callId);
  if(!await canShow())return false;
  if(!(await readRootNotificationPreferences(account)).calls)return false;
  const settings=await notifee.getNotificationSettings?.();
@@ -78,7 +83,7 @@ async function showIncomingCall(account:string, sender:string, callId:string, me
    android:{channelId:'incoming-calls-v2',category:AndroidCategory.CALL,importance:AndroidImportance.HIGH,
     visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
     pressAction:{id:'root-call-open',launchActivity},fullScreenAction:{id:'root-call-open',launchActivity},
-    ongoing:true,autoCancel:false,actions:[{title:'Decline',pressAction:{id:'root-call-decline',launchActivity}},
+    ongoing:true,autoCancel:false,actions:[{title:'Decline',pressAction:{id:'root-call-decline'}},
       {title:'Answer',pressAction:{id:'root-call-answer',launchActivity}}],
     timeoutAfter:Math.max(1,Math.min(60000,expiresAt-Date.now()))},
   };

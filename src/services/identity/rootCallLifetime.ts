@@ -44,5 +44,10 @@ export function setRootCallSharing(id:string,sharing:boolean){
 }
 export function stopRootCallLease(id:string){
  if(lease?.id!==id)return;lease=null;Native?.axonConnectedCall?.(false);
- void serialize(async()=>{await pictureInPicture(false);if(Platform.OS==='android')await NativeModules.MyChatService?.stop();}).catch(()=>{});
+ void serialize(async()=>{
+  await pictureInPicture(false);
+  if(Platform.OS!=='android')return;
+  const service=NativeModules.MyChatService;
+  try{await service?.stop();}finally{if(!lease)await service?.dismissCallPictureInPicture?.();}
+ }).catch(()=>{});
 }

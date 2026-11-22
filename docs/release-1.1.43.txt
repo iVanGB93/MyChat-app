@@ -22,3 +22,14 @@ AoN rollout is separate: all three already run source5776d15, runtime97df4913e65
 No new AoN deployment is part of this mobile build.
 
 Build, checks and validation results will be recorded on completion.
+Completed November 8, 2026: local bundleRelease successful (3m1s).
+AAB: D:/Proyects/Axonic-app/builds/Axonic-1.1.43-114.aab
+Bytes:107828631
+SHA256:a29de90346d1a4f42a10a757ff9b7054ef326352d86f1dcb321f5552a2fa8aea
+Packaged source:d70ad29d2719c6e47fb0de8ee6d54d5f1a3274dd6c629f2fa845bee410b25fc2
+Release gate:1888 passed,3 skipped,0 failed; TypeScript, cycles, module boundaries,
+consolidation and asset checks passed. Gate log:builds/release-114-checks.log.
+Bundletool and jarsigner passed. Certificate matches1.1.42, com.axonic1.1.43/114,
+non-debuggable,4ABIs, group-call flag and packaged fingerprint verified.
+Previous AAB unchanged. No publication, installation, mobile commit or push.
+Evidence:builds/local-aab-114-validation.json and local-production-aab-114.log.

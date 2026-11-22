@@ -64,13 +64,13 @@ source rate limits and bounded reads/timeouts before exposing this on the intern
 
 ## Local storage and recovery
 
-New accounts use 256 random bits, encoded as 24 English BIP39 recovery words. The words
+Axonic accounts use 128 random bits, encoded as 12 English BIP39 recovery words. The words
 encode entropy; the root Ed25519 seed is an Axonic-specific HKDF-SHA256 derivation with
 salt `axonic-root-v1` and info `ed25519-account-authority`. This is not an Ethereum or
 Bitcoin wallet derivation and must not be advertised as wallet import compatibility.
 
-The encrypted local vault contains entropy and independent device seeds (96 bytes).
-A 12–256-character password is stretched with scrypt N=131072, r=8, p=1 and a fresh
+The encrypted local vault contains 80 plaintext bytes of entropy and independent device seeds.
+A 6–256-character password is stretched with scrypt N=131072, r=8, p=1 and a fresh
 32-byte salt. HKDF mixes the result with a separate 32-byte device secret to derive the
 XChaCha20-Poly1305 wrapping key. Each write uses a new 24-byte nonce; authenticated
 metadata binds algorithm choices and the public identity-record digest. Untrusted KDF

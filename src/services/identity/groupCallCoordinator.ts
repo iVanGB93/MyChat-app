@@ -180,7 +180,10 @@ export function createGroupCallCoordinator(d:{
    room!.accepted=true;emit();await connect();return true;
   }),
   confirmRinging:(id:string)=>roomActive()?legs.get(id)?.confirmRinging(id)??Promise.resolve(false):privateCall.confirmRinging(id),
-  end:(id:string)=>serial(()=>roomActive()&&room!.id===id?leave('Call ended'):privateCall.end(id)),
+  end:(id:string,incomingRingingOnly=false)=>serial(async()=>{
+   if(incomingRingingOnly){const view=snapshot();if(view?.id!==id||view.outgoing||view.status!=='ringing')return;}
+   await (roomActive()&&room!.id===id?leave('Call ended'):privateCall.end(id));
+  }),
   endParticipant:(id:string)=>serial(async()=>{if(roomActive())await legs.get(id)?.end(id);}),
   tick:()=>serial(async()=>{
    await privateCall.tick();if(!roomActive())return;

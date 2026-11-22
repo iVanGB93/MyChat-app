@@ -362,30 +362,23 @@ test('12-word public lookup identifier matches creation; malformed words never d
   assert.throws(() => vault.rootFromEntropy(new Uint8Array(20)));
   vault.destroyIdentity(created.identity);
 });
-test('old 24-word vaults still unlock and recover; vault version cannot be substituted', async () => {
-  const entropy = random(32), root = vault.rootFromEntropy(entropy);
-  const signingSeed = random(32), encryptionSeed = random(32);
-  const identity = {entropy, signingSeed, encryptionSeed, record:p.issueRecord(root,[p.publicDevice(signingSeed,encryptionSeed)],now)};
-  const secret = random(32), password = 'synthetic compatibility password';
+test('12-word vaults keep their format and recovery rejects longer phrases', async () => {
+  const entropy = random(32);
+  const secret = random(32), password = 'synthetic vault password';
   const derive = async (password,salt) => new Uint8Array(crypto.createHash('sha256').update(password).update(salt).digest());
-  const sealed = await vault.sealIdentity(identity,password,secret,async n=>random(n),now,derive);
-  assert.equal(sealed.version,1);
-  const opened = await vault.unlockIdentity(JSON.stringify(sealed),password,secret,now,derive);
-  assert.deepEqual(opened.entropy,entropy);
   const phrase = require('@scure/bip39').entropyToMnemonic(entropy,require('@scure/bip39/wordlists/english.js').wordlist);
   assert.equal(phrase.split(' ').length,24);
-  assert.equal(vault.accountFromRecoveryPhrase(phrase),identity.record.account);
-  const restored = await vault.recoverReplacingDevices(phrase,identity.record,async n=>random(n),now+1);
-  assert.equal(restored.record.account,identity.record.account);
-  await assert.rejects(vault.unlockIdentity(JSON.stringify({...sealed,version:2}),password,secret,now,derive));
   const fresh = await vault.createLocalIdentity(async n=>random(n),now);
+  assert.throws(()=>vault.accountFromRecoveryPhrase(phrase),/valid 12-word/);
+  assert.throws(()=>vault.rootFromEntropy(entropy),/valid 12-word/);
+  await assert.rejects(vault.recoverReplacingDevices(phrase,fresh.identity.record,async n=>random(n),now+1),/valid 12-word/);
   const compact = await vault.sealIdentity(fresh.identity,password,secret,async n=>random(n),now,derive);
   assert.equal(compact.version,2);assert.equal(compact.ciphertext.length,192);
   const freshOpened = await vault.unlockIdentity(JSON.stringify(compact),password,secret,now,derive);
   assert.deepEqual(freshOpened.entropy,fresh.identity.entropy);
   await assert.rejects(vault.unlockIdentity(JSON.stringify({...compact,version:1}),password,secret,now,derive));
-  for(const item of [opened,restored,identity,fresh.identity,freshOpened])vault.destroyIdentity(item);
-  root.fill(0);secret.fill(0);
+  for(const item of [fresh.identity,freshOpened])vault.destroyIdentity(item);
+  entropy.fill(0);secret.fill(0);
 });
 
 test('public hash reuse stays byte-identical across copies, mutation, eviction and expiry', () => {

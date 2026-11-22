@@ -5,22 +5,44 @@ function fixture(){
  const state={version:1,contacts:[{account:sender,accepted:true,blocked:false}],messages:[{id,peer:sender,direction:'incoming',text:'hello',status:'delivered',at:10}]};
  const ledger={snapshot:async()=>{throw Error('Notification must not read full history');},messageSnapshot:async(peer,message)=>{assert.equal(peer,sender);assert.equal(message,id);return state;},unreadSnapshot:async peers=>{assert.deepEqual(peers,[sender]);return state;},enqueue:async(...args)=>calls.push(['reply',...args]),act:async(...args)=>calls.push(['read',...args]),enqueueGroup:async(...args)=>calls.push(['group',...args]),markGroupRead:async(...args)=>calls.push(['group-read',...args]),readBatch:async(peer,items)=>{calls.push(['read-batch',peer,items.map(item=>item.target.id)]);for(const m of state.messages)if(items.some(item=>item.target.id===m.id))m.read=true;}};
  const imports={
-  './rootCallNotificationAction':{queueRootCallNotificationAction:async()=>false},
+  './rootCallNotificationAction':{queueRootCallNotificationAction:async(action)=>{calls.push(['call-action',action]);return true;},rootCallNotificationTarget:data=>data.type==='root_neuron_call'?{account:data.account,callId:id,expiresAt:100}:null},
+  './rootCallWake':{rootWakeContext:async()=>({account}),dismissRootCallNotice:async id=>calls.push(['dismiss',id])},
+  './messageWakeLease':{acquireMessageWakeLease:()=>{calls.push(['acquire']);return()=>calls.push(['release']);}},
   'react-native':{AppState:{currentState:'active'}},
   '@react-native-async-storage/async-storage':{default:{getItem:async key=>storage.get(key)??null,setItem:async(key,value)=>{if(failSave&&JSON.parse(value).rows[0].done)throw Error('disk unavailable');storage.set(key,value);}}},
   '@notifee/react-native':{default:{getDisplayedNotifications:async()=>[...displayed.values()].map(notification=>({notification})),cancelNotification:async id=>{cancelled.push(id);displayed.delete(id);}}},
   '../../../modules/axonic-nearby':{default:{identityRandomBytes:async()=>String(++random).padStart(64,'0')}},
   './localAccount':{startLocalAccount:async()=>{},localAccount:{status:()=>status,inspect:async()=>{}},localAccountSession:{initialize:async()=>{}}},
   './localRootChat':{localRootChat:()=>ledger},
-  '../../composition/neuronRuntime':{startLocalAccountNetwork:()=>({stop(){}})},
+  '../../composition/neuronRuntime':{startLocalAccountNetwork:()=>({async declineIncomingNotification(...args){calls.push(['decline',...args]);},stop(){}})},
   './rootChatActions':{rootChatView:(_,s)=>s},
   './rootNotificationRoute':{rootNotificationTarget:d=>d?.type==='root_neuron_message'&&d.account===account&&d.sender===sender?{account,sender,...(d.group?{group:d.group}:{})}:null,queueRootNotificationOpen:async()=>{queued++;}},
  };
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
  const noticeId=notifications.rootMessageNotificationId(account,sender);displayed.set(noticeId,{id:noticeId,data:{sender,messageId:id}});
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationActions.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>{if(!imports[n])throw Error(n);return imports[n];});
- return {mod,state,ledger,storage,displayed,calls,cancelled,data:{type:'root_neuron_message',account,sender,messageId:id},setStatus:s=>status=s,failSave:v=>failSave=v,queued:()=>queued,account,sender};
+ return {mod,state,ledger,storage,displayed,calls,cancelled,data:{type:'root_neuron_message',account,sender,messageId:id},setStatus:s=>status=s,background:()=>{imports['react-native'].AppState.currentState='background';},failSave:v=>failSave=v,queued:()=>queued,account,sender};
 }
+test('a background decline dismisses the card before signaling and releases its wake lease',async()=>{
+ const f=fixture(),data={type:'root_neuron_call',account:f.account};
+ f.background();
+ await f.mod.handleRootNotificationAction('root-call-decline',data);
+ assert.deepEqual(f.calls.map(c=>c[0]),['call-action','dismiss','acquire','decline','release']);
+ assert.equal(f.queued(),0);
+});
+test('locked accounts dismiss a matching decline without opening a window or signing',async()=>{
+ const f=fixture();
+ f.background();f.setStatus({state:'locked',account:f.account});
+ await f.mod.handleRootNotificationAction('root-call-decline',{type:'root_neuron_call',account:f.account});
+ await f.mod.handleRootNotificationAction('root-call-decline',{type:'root_neuron_call',account:f.sender});
+ assert.deepEqual(f.calls.map(c=>c[0]),['call-action','dismiss']);
+ assert.equal(f.queued(),0);
+});
+test('a foreground decline uses the visible call screen without a headless wake',async()=>{
+ const f=fixture();
+ await f.mod.handleRootNotificationAction('root-call-decline',{type:'root_neuron_call',account:f.account});
+ assert.deepEqual(f.calls.map(c=>c[0]),['call-action','dismiss']);
+});
 test('notification reply is durably queued once with the original reply reference',async()=>{
  const f=fixture();await Promise.all([f.mod.handleRootNotificationAction('root-reply',f.data,'Hello'),f.mod.handleRootNotificationAction('root-reply',f.data,'Hello')]);
  assert.equal(f.calls.length,2);assert.equal(f.calls[0][1],f.sender);assert.equal(f.calls[0][3],'Hello');assert.deepEqual(f.calls[0][4],{id:f.data.messageId,author:f.sender});assert.deepEqual(f.calls[1],['read-batch',f.sender,[f.data.messageId]]);assert.equal(f.cancelled.length,1);

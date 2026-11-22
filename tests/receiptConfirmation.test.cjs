@@ -1,11 +1,27 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const code=ts.transpileModule(fs.readFileSync('src/services/identity/receiptConfirmation.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 const exports_={};new Function('exports',code)(exports_);
-function fixture(){let owner='recipient',now=100;const calls=[],events=[],waits=[];
+function fixture(){let owner='recipient',now=100,available=true;const calls=[],events=[],waits=[];
  const receipt={recipient:'recipient',sender:'sender',id:'message',expires:1000};
- const tracker=exports_.createReceiptConfirmation({owner:()=>owner,now:()=>now,accepted:(...args)=>events.push(args),request:(peer,raw)=>{calls.push({peer,...JSON.parse(raw)});return new Promise((resolve,reject)=>waits.push({resolve,reject}));}});
- return {tracker,receipt,calls,events,waits,owner:v=>owner=v,time:v=>now=v};
+ const tracker=exports_.createReceiptConfirmation({owner:()=>owner,now:()=>now,available:()=>available,accepted:(...args)=>events.push(args),request:(peer,raw)=>{calls.push({peer,...JSON.parse(raw)});return new Promise((resolve,reject)=>waits.push({resolve,reject}));}});
+ return {tracker,receipt,calls,events,waits,owner:v=>owner=v,time:v=>now=v,available:v=>available=v};
 }
+test('an inline receipt waits for its own custodian to authenticate and coalesces repeats',async()=>{
+ const f=fixture();f.available(false);
+ await f.tracker.confirm(f.receipt,'relay','group');
+ await f.tracker.confirm(f.receipt,'relay','group');
+ f.tracker.connected('relay');
+ assert.equal(f.calls.length,0);
+ f.available(true);f.tracker.connected('other');await Promise.resolve();
+ assert.equal(f.calls.length,0);
+ f.tracker.connected('relay');f.tracker.connected('relay');await Promise.resolve();
+ assert.equal(f.calls.length,1);
+ assert.equal(f.calls[0].operation,'group-receipt');
+ assert.equal(f.tracker.complete('sender','message'),false);
+ const work=f.tracker.confirm(f.receipt,'relay','group');
+ f.waits[0].resolve('{"status":"accepted"}');await work;
+ assert.equal(f.tracker.complete('sender','message'),true);
+});
 test('direct delivery can return its signed receipt while confirmation waits; no early completion',async()=>{
  const f=fixture(),work=f.tracker.confirm(f.receipt,'relay');await Promise.resolve();
  assert.equal(f.tracker.complete('sender','message'),false);assert.deepEqual(f.events,[]);

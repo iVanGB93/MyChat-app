@@ -19,15 +19,26 @@ test('peer introductions cannot replace a configured Internet endpoint with an R
 function streamFixture(options={}){
  const id=n=>'axonic:1:'+n.toString(16).padStart(64,'0'),device='ab'.repeat(32),offers=[],source={};let now=1000,state='active';
  const own=id(options.higher?9:1),peer=id(4),seed=id(2),capable=options.capable!==false;
+ let ticks=0,snapshots=0;
  const network={snapshot:()=>({state,account:state==='active'?own:null,pool:{connections:[{account:seed,state:'connected'}]},introductions:[{account:peer,via:seed,expiresAt:now+60000}]}),
-  attachmentStreamPeer:p=>capable?{account:p,device}:null,offer:c=>{offers.push(c);return true;},tick(){},stop(){}};
+  attachmentStreamPeer:p=>capable?{account:p,device}:null,offer:c=>{offers.push(c);return true;},nextDeadline:()=>Infinity,tick(){ticks++;},stop(){}};
  const deps={'./identityNetwork':{createIdentityNetwork:()=>network},'./nativeAxonTransport':{createNativeAxonConnector:()=>()=>{}},'./rtcAxonTransport':{createRtcAxonTransport:()=>({stop(){},canStream:()=>false})}};
  new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/lanIdentityRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(source,n=>deps[n]);
  let lanStarts=0;
- const runtime=source.createLanIdentityRuntime({recoveryPeers:options.recoveryPeers,remembered:options.remembered,identity:{subscribe:()=>()=>{}},native:{axonLanStart:()=>{lanStarts++;return new Promise(()=>{});},axonLanStop(){},axonLanSnapshot:()=>({active:true,peers:[{account:peer}]})},now:()=>now,rtc:options.noGuard?{}:{streamCredit:async()=>true},internet:{peers:[{account:seed,endpoint:'wss://seed.test'},...(options.extraSeeds??[])],connect(){}}});
+ const runtime=source.createLanIdentityRuntime({recoveryPeers:options.recoveryPeers,foregroundStartup:options.foregroundStartup,remembered:options.remembered,identity:{subscribe:()=>()=>{}},native:{axonLanStart:()=>{lanStarts++;return options.readyLan?Promise.resolve():new Promise(()=>{});},axonAccept:()=>new Promise(()=>{}),axonLanStop(){},axonLanSnapshot:()=>{snapshots++;return {active:true,peers:[{account:peer,host:'10.0.0.2',port:12345}]};}},now:()=>now,rtc:options.noGuard?{}:{streamCredit:async()=>true},internet:{peers:[{account:seed,endpoint:'wss://seed.test',preferredBootstrap:true},...(options.extraSeeds??[])],connect(){}}});
  runtime.tick();offers.length=0;
- return {runtime,id,peer,seed,device,offers,lanStarts:()=>lanStarts,advance:n=>now+=n,lock:()=>state='locked'};
+ return {runtime,id,peer,seed,device,offers,lanStarts:()=>lanStarts,counts:()=>({ticks,snapshots}),advance:n=>now+=n,lock:()=>state='locked'};
 }
+test('foreground discovery batches native LAN and Internet candidates in one pool pass',async()=>{
+ const f=streamFixture({readyLan:true});
+ try{
+  await new Promise(setImmediate);
+  const before=f.counts();
+  f.runtime.tick();
+  assert.deepEqual(f.counts(),{ticks:before.ticks+1,snapshots:before.snapshots+1});
+  assert.deepEqual(f.offers.map(c=>c.route),['internet','lan']);
+ }finally{f.runtime.stop();}
+});
 test('headless recovery offers only requested configured peers until normal routing resumes',()=>{
  const other='axonic:1:'+'8'.repeat(64);
  let scope=new Set([other]);
@@ -68,5 +79,24 @@ test('stream demand is bounded, respects dialing tie break, and is cleared on lo
   for(let i=10;i<14;i++)assert(f.runtime.attachmentStreams.request(f.id(i),f.device));
   assert.equal(f.runtime.attachmentStreams.request(f.id(14),f.device),false);
   f.lock();f.runtime.tick();f.runtime.stop();assert.equal(f.runtime.attachmentStreams.request(f.peer,f.device),false);
+ }finally{f.runtime.stop();}
+});
+
+test('foreground startup waits on the saved bootstrap, then expands on chat readiness',()=>{
+ const f=streamFixture({foregroundStartup:true,extraSeeds:[{account:'secondary',endpoint:'wss://other.test'}]});
+ try{
+  f.runtime.tick();assert.deepEqual(f.offers.map(candidate=>candidate.account),[f.seed]);assert.equal(f.lanStarts(),0);
+  f.offers.length=0;f.runtime.finishStartup();f.runtime.tick();
+  assert(f.offers.some(candidate=>candidate.account==='secondary'));assert.equal(f.lanStarts(),1);
+ }finally{f.runtime.stop();}
+});
+test('foreground startup expands at the five-second deadline even if chat or bootstrap is unavailable',()=>{
+ const f=streamFixture({foregroundStartup:true,extraSeeds:[{account:'secondary',endpoint:'wss://other.test'}]});
+ try{
+  assert.equal(f.runtime.nextDeadline(),6000);
+  f.advance(4999);f.runtime.tick();
+  assert.deepEqual(f.offers.map(candidate=>candidate.account),[f.seed]);assert.equal(f.lanStarts(),0);
+  f.offers.length=0;f.advance(1);f.runtime.tick();
+  assert(f.offers.some(candidate=>candidate.account==='secondary'));assert.equal(f.lanStarts(),1);
  }finally{f.runtime.stop();}
 });

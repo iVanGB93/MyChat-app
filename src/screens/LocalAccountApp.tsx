@@ -1,6 +1,6 @@
 import {t} from '../localization/language';
 import {Chrome} from '../theme';
-import {useAccountState,useNetworkState} from '../modules/ui/liveState';
+import {useAccountState,useNetworkState,hasConversationIndex,observeConversationReady} from '../modules/ui/liveState';
 import RenderBoundary from '../components/ui/RenderBoundary';
 import {requestInitialNotificationPermission} from '../services/notificationPermission';
 import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
@@ -50,7 +50,6 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { identityUnlockErrorMessage, localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
 import { loadBootstrapEndpoint, startLocalAccountNetwork } from '../modules/network';
-import BootstrapSettings from '../components/BootstrapSettings';
 import {createForegroundNetworkLease} from '../services/foregroundNetworkLease';
 
 
@@ -144,7 +143,12 @@ function LocalAccountContent() {
   useEffect(() => {
 
 
-    const network=createForegroundNetworkLease(startLocalAccountNetwork);
+    const network=createForegroundNetworkLease(()=>{
+      const runtime=startLocalAccountNetwork({foreground:true});
+      if(hasConversationIndex())runtime.finishStartup();
+      return runtime;
+    });
+    const stopConversationReady=observeConversationReady(network.ready);
     const stopCallState=subscribeLocalAccountCalls(view=>{network.call(!!view&&view.status!=='ended');if(autoLockRef.current&&AppState.currentState==='background'&&(!view||view.status==='ended'))biometrics.lock();});
 
     void inspect().catch(() => setError(t("Unable to read local account storage. Retry without creating a replacement account.")));
@@ -167,7 +171,7 @@ function LocalAccountContent() {
 
     });
 
-    return () => { generation.current++; state.remove(); stopCallState(); recovery.current?.stop(); recovery.current = null; network.stop(); biometrics.lock(); };
+    return () => { generation.current++; state.remove(); stopCallState(); stopConversationReady(); recovery.current?.stop(); recovery.current = null; network.stop(); biometrics.lock(); };
 
   }, []);
 
@@ -263,8 +267,6 @@ function LocalAccountContent() {
 
           {authButton(t("RECOVER IDENTITY"), () => {setRestoring(true);setError('');})}
 
-          <BootstrapSettings/>
-
         </View>}
 
         {ready && (status.state === 'backup' || restoring || setup) && <View style={styles.card}>
@@ -275,7 +277,7 @@ function LocalAccountContent() {
 
             <Text style={styles.text}>{restoring
 
-              ? t("Enter your 12 recovery words in their original order, separated by spaces. Do not type numbers or punctuation. If your original backup has 24 words, enter all 24 instead. Recovery replaces previous devices; it does not restore messages stored only on a lost phone.")
+              ? t("Enter your 12 recovery words in their original order, separated by spaces. Do not type numbers or punctuation. Recovery replaces previous devices; it does not restore messages stored only on a lost phone.")
 
               : t("Write these words down in order and keep them somewhere safe. Anyone with these words can control your identity.")}</Text>
 

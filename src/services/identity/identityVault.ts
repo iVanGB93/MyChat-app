@@ -12,18 +12,19 @@ import { advertiseGroupCustody, accountId, validRecordHistory, issueRecord, publ
 export type SecureRandom = (size: number) => Promise<Uint8Array>;
 /** Platform adapter must implement exactly scrypt N=131072, r=8, p=1, dkLen=32. */
 export type PasswordDerivation = (password: string, salt: Uint8Array) => Promise<Uint8Array>;
+const RECOVERY_ENTROPY_BYTES = 16;
 const portableDerivation: PasswordDerivation = (password, salt) =>
   scryptAsync(password, salt, { N: 131072, r: 8, p: 1, dkLen: 32, maxmem: 160 * 1024 * 1024 });
 export interface IdentityVault {
-  version: 1 | 2; kdf: 'scrypt-131072-8-1'; cipher: 'xchacha20poly1305';
+  version: 2; kdf: 'scrypt-131072-8-1'; cipher: 'xchacha20poly1305';
   salt: string; nonce: string; ciphertext: string; record: IdentityRecord; history?: IdentityRecord[];
 }
 export interface UnlockedIdentity {
   entropy: Uint8Array; signingSeed: Uint8Array; encryptionSeed: Uint8Array; record: IdentityRecord; history?: IdentityRecord[];
 }
-/** 128 or 256 random bits encoded as BIP39 words; Axonic HKDF derivation, not a wallet derivation path. */
+/** Axonic derives the account authority from the entropy encoded by 12 BIP39 words. */
 export function rootFromEntropy(entropy: Uint8Array): Uint8Array {
-  if (entropy.length !== 16 && entropy.length !== 32) throw Error('Use a valid 12- or 24-word recovery phrase');
+  if (entropy.length !== RECOVERY_ENTROPY_BYTES) throw Error('Use a valid 12-word recovery phrase');
   return hkdf(sha256, entropy, utf8ToBytes('axonic-root-v1'), utf8ToBytes('ed25519-account-authority'), 32);
 }
 export function destroyIdentity(identity: UnlockedIdentity): void {
@@ -64,10 +65,10 @@ export async function sealIdentity(identity: UnlockedIdentity, password: string,
   random: SecureRandom, now: number, derive: PasswordDerivation = portableDerivation): Promise<IdentityVault> {
   validateIdentity(identity, now); checkPassword(password);
   const salt = await randomBytes(random, 32), nonce = await randomBytes(random, 24);
-  const v: IdentityVault = { version: identity.entropy.length === 16 ? 2 : 1, kdf: 'scrypt-131072-8-1', cipher: 'xchacha20poly1305',
+  const v: IdentityVault = { version: 2, kdf: 'scrypt-131072-8-1', cipher: 'xchacha20poly1305',
     salt: bytesToHex(salt), nonce: bytesToHex(nonce), ciphertext: '', ...(identity.history?.length ? { history: JSON.parse(JSON.stringify(identity.history)) } : {}), record: JSON.parse(JSON.stringify(identity.record)) };
-  const plaintext = new Uint8Array(identity.entropy.length + 64);
-  plaintext.set(identity.entropy); plaintext.set(identity.signingSeed, identity.entropy.length); plaintext.set(identity.encryptionSeed, identity.entropy.length + 32);
+  const plaintext = new Uint8Array(RECOVERY_ENTROPY_BYTES + 64);
+  plaintext.set(identity.entropy); plaintext.set(identity.signingSeed, RECOVERY_ENTROPY_BYTES); plaintext.set(identity.encryptionSeed, RECOVERY_ENTROPY_BYTES + 32);
   let key: Uint8Array | undefined;
   try {
     key = await wrappingKey(password, salt, deviceSecret, derive);
@@ -84,14 +85,14 @@ export async function unlockIdentity(raw: string, password: string, deviceSecret
   try {
     if (raw.length > 12_000) throw Error('Invalid vault');
     const v = JSON.parse(raw) as IdentityVault;
-    if ((v.version !== 1 && v.version !== 2) || v.kdf !== 'scrypt-131072-8-1' || v.cipher !== 'xchacha20poly1305'
+    if (v.version !== 2 || v.kdf !== 'scrypt-131072-8-1' || v.cipher !== 'xchacha20poly1305'
       || typeof v.salt !== 'string' || !/^[0-9a-f]{64}$/.test(v.salt)
       || typeof v.nonce !== 'string' || !/^[0-9a-f]{48}$/.test(v.nonce)
-      || typeof v.ciphertext !== 'string' || !(v.version === 1 ? /^[0-9a-f]{224}$/ : /^[0-9a-f]{192}$/).test(v.ciphertext)
+      || typeof v.ciphertext !== 'string' || !/^[0-9a-f]{192}$/.test(v.ciphertext)
       || !verifyRecord(v.record, now, true)) throw Error('Invalid vault');
     key = await wrappingKey(password, hexToBytes(v.salt), deviceSecret, derive);
     plaintext = xchacha20poly1305(key, hexToBytes(v.nonce), aad(v)).decrypt(hexToBytes(v.ciphertext));
-    const size = v.version === 1 ? 32 : 16;
+    const size = RECOVERY_ENTROPY_BYTES;
     identity = { entropy: plaintext.slice(0, size), signingSeed: plaintext.slice(size, size + 32), encryptionSeed: plaintext.slice(size + 32, size + 64), record: v.record, history: v.history ?? [] };
     validateIdentity(identity, now);
     return identity;
@@ -101,7 +102,7 @@ export async function unlockIdentity(raw: string, password: string, deviceSecret
   } finally { key?.fill(0); plaintext?.fill(0); }
 }
 export async function createLocalIdentity(random: SecureRandom, now: number): Promise<{ identity: UnlockedIdentity; recoveryPhrase: string }> {
-  const entropy = await randomBytes(random, 16);
+  const entropy = await randomBytes(random, RECOVERY_ENTROPY_BYTES);
   try {
     const identity = await identityFromEntropy(entropy, random, now);
     return { identity, recoveryPhrase: entropyToMnemonic(entropy, wordlist) };
@@ -117,18 +118,23 @@ async function identityFromEntropy(entropy: Uint8Array, random: SecureRandom, no
   } catch { signingSeed?.fill(0); encryptionSeed?.fill(0); throw Error('Unable to create local identity'); }
   finally { root.fill(0); }
 }
+function decodeRecoveryEntropy(phrase: string): Uint8Array {
+  if (typeof phrase !== 'string' || phrase.length > 512) throw Error('Use a valid 12-word recovery phrase');
+  const normalized = phrase.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (normalized.split(' ').length !== 12) throw Error('Use a valid 12-word recovery phrase');
+  return mnemonicToEntropy(normalized, wordlist);
+}
 /** Recovery replaces all authorized devices in the supplied latest record. Never invent a new genesis. */
 export async function recoverReplacingDevices(phrase: string, previous: IdentityRecord, random: SecureRandom, now: number): Promise<UnlockedIdentity> {
-  if (typeof phrase !== 'string' || phrase.length > 512 || !verifyRecord(previous, now, true)) throw Error('Valid recovery words and an identity record are required');
-  const entropy = mnemonicToEntropy(phrase.trim().toLowerCase().replace(/\s+/g, ' '), wordlist);
+  if (!verifyRecord(previous, now, true)) throw Error('Valid recovery words and an identity record are required');
+  const entropy = decodeRecoveryEntropy(phrase);
   try { return await identityFromEntropy(entropy, random, now, previous); }
   finally { entropy.fill(0); }
 }
 
 /** Only the public identifier leaves this device during recovery. */
 export function accountFromRecoveryPhrase(phrase: string): string {
-  if (typeof phrase !== 'string' || phrase.length > 512) throw Error('Invalid recovery words');
-  const entropy = mnemonicToEntropy(phrase.trim().toLowerCase().replace(/\s+/g, ' '), wordlist);
+  const entropy = decodeRecoveryEntropy(phrase);
   let root: Uint8Array | undefined;
   try { root = rootFromEntropy(entropy); return accountId(bytesToHex(ed25519.getPublicKey(root))); }
   finally { entropy.fill(0); root?.fill(0); }

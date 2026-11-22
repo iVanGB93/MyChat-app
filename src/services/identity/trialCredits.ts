@@ -56,13 +56,15 @@ export function createTrialCredits(store:TrialStore,changed:()=>void=()=>{},now=
  let tail=Promise.resolve(true);const enqueue=(e?:TrialEvent)=>{const copy=e?{...e}:undefined;const run=tail.then(async()=>{
   if(copy&&!validEvent(copy))return false;
   // Replay older observations first so their original order determines refills.
-  for(const [key,event] of [...pending].slice(0,8)){if(!await apply(event))break;pending.delete(key);recoveredWrites++;}
+  for(const [key,event] of pending){if(!await apply(event))break;pending.delete(key);recoveredWrites++;}
   const ok=pending.size===0&&await apply(copy);
   if(copy&&copy.kind!=='trial-top-up'){
    const key=copy.kind+':'+copy.reference;
    if(ok){if(pending.delete(key))recoveredWrites++;}
-   else if(pending.size<128||pending.has(key))pending.set(key,copy);
-   else droppedRetries++;
+   else if(!pending.has(key)){
+    if(pending.size<128)pending.set(key,copy);
+    else droppedRetries++;
+   }
   }
   notify();return ok;
  });tail=run;return run;};

@@ -18,7 +18,7 @@ export type CallExpansionLink={available:boolean;request(room:GroupCallRoom):Pro
 
 /** The room is the sole owner of capture/audio/OS lifetime. Leg components retain
  * media while minimized, and release only their senders when a participant leaves. */
-export default function RootGroupCallMedia({call,end,minimized,minimize,restore}:{call:NeuronCallView<string>;end():void;minimized:boolean;minimize():void;restore():void}){
+export default function RootGroupCallMedia({call,end,minimized,closing,minimize,restore}:{call:NeuronCallView<string>;end():void;minimized:boolean;closing:boolean;minimize():void;restore():void}){
  const {audioRoutes,routeAudio,audioError,foreground}=useCallAudioSession(call.id,call.media==='video',end);
  const [options,setOptions]=useState(false);
  const {colors}=useTheme(),{contacts}=useChatContacts(true);
@@ -45,11 +45,11 @@ export default function RootGroupCallMedia({call,end,minimized,minimize,restore}
  const participants:CallParticipant[]=peers.map(peer=>{const own=peer===owner,leg=room.legs.find(l=>l.peerUser===peer),entry=remote[peer];return {id:peer,name:label(peer),local:own,connected:own||(leg?.status==='ready'&&entry?.connected===true),stream:own?stream?.toURL():entry?.url,cameraOff:own&&cameraOff,status:own?muted?t("Muted"):t("You"):entry?.status??(leg?.status==='ended'?leg.reason??'Left':leg?.status??'Waiting'),speaking:own?!muted&&Object.entries(speakers).some(([id,s])=>s.local&&room.legs.some(l=>l.peerUser===id&&l.status==='ready')):leg?.status==='ready'&&!!speakers[peer]?.remote};});
  return <>
   {stream&&room.legs.filter(l=>l.status==='ready'&&l.transport).map(leg=><GroupLeg key={leg.id} leg={leg} stream={stream} update={update} connected={connected} speaking={speaking}/>)}
- <CallSessionScreen name={room.name} status={'Group '+call.media+' call'} video={video} participants={participants} minimized={minimized} homeWindow={Platform.OS==='android'&&!foreground} homeStream={participants.find(p=>!p.local&&p.stream)?.stream} end={end} restore={restore} minimize={()=>{setOptions(false);minimize();}}>
+ <CallSessionScreen name={room.name} status={'Group '+call.media+' call'} video={video} incoming={!call.outgoing} participants={participants} minimized={minimized} closing={closing} homeWindow={Platform.OS==='android'&&!foreground} homeStream={participants.find(p=>!p.local&&p.stream)?.stream} end={end} restore={restore} minimize={()=>{setOptions(false);minimize();}}>
  {!!(error||audioError)&&<Text accessibilityRole="alert" style={{color:colors.error,textAlign:'center'}}>{error||audioError}</Text>}
  <CallControls video={video} muted={muted} mute={()=>{capture.current.mute(!muted);setMuted(!muted);}} cameraOff={cameraOff} camera={()=>{capture.current.cameraOff(!cameraOff);setCameraOff(!cameraOff);}} flip={()=>{for(const track of stream?.getVideoTracks()??[])track._switchCamera();}} options={()=>setOptions(true)} audioBluetooth={audioRoutes?.devices.find(d=>d.id===audioRoutes.selectedId)?.kind==='bluetooth'} end={end}/>
  </CallSessionScreen>
- <CallOptions visible={foreground&&!minimized&&options} video={video} close={()=>setOptions(false)} audioRoutes={audioRoutes} routeAudio={routeAudio} error={audioError}/>
+ <CallOptions visible={!closing&&foreground&&!minimized&&options} video={video} close={()=>setOptions(false)} audioRoutes={audioRoutes} routeAudio={routeAudio} error={audioError}/>
  </>;
 }
 

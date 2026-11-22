@@ -64,6 +64,7 @@ import {subscribeCallJournalWrites} from '../services/identity/mobileCallJournal
 import type {NeuronCallView} from '../services/identity/neuronCallCoordinator';
 import {startRootPushRegistration} from '../services/identity/rootPushRegistration';
 import {subscribeRootCallWakes} from '../services/identity/rootCallWake';
+import {takeRootCallNotificationAction} from '../services/identity/rootCallNotificationAction';
 import {createAttachmentCustody} from '../services/identity/attachmentCustody';
 import {createMobileAttachmentStore} from '../services/identity/mobileAttachmentStore';
 import {startRootAttachmentRuntime} from '../services/identity/rootAttachmentRuntime';
@@ -118,7 +119,7 @@ export async function localAccountRelayInventory(){
  return relayInventory(account,Date.now(),messages,groups,media.rows,media.chunks,activeCalls?.relayMetadata()??[]);
 }
 /** Independent root-identity participation; no legacy user ID, JWT, or Axion session. */
-function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefined) {
+function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefined,foregroundStartup:boolean) {
   diagnosticNetworkStartedAt=Date.now();
   const recoveryListeners=new Set<(sender:string,id:string)=>void>();
   const receiptAccepted=(sender:string,id:string)=>{for(const listener of recoveryListeners){try{listener(sender,id);}catch{/* Independent recovery waiters. */}}};
@@ -204,7 +205,7 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
   const operationalRecords={...records,read:async(account:string)=>{
     const result=await peerResolver.resolve(account);return result.status==='found'?result.record??null:null;
   }};
-  const runtime = createLanIdentityRuntime({recoveryPeers,onQualityChanged:networkChanges.changed,onWorkChanged:()=>{transportWork.changed();networkChanges.changed();}, remembered:()=>rememberedPeers,
+  const runtime = createLanIdentityRuntime({recoveryPeers,foregroundStartup,onStartupPhase:phase=>diagnosticJournal.record(phase==='bootstrap'?'network_bootstrap_started':'network_discovery_expanded'),onQualityChanged:networkChanges.changed,onWorkChanged:()=>{transportWork.changed();networkChanges.changed();}, remembered:()=>rememberedPeers,
     onConnected:peer=>{const account=owner();if(account)void remembered.remember(account,peer).catch(()=>{});},
     identity: localAccount, native, store: records, now: Date.now, limit: allowedAxons(),
     // Advertise the registration protocol as a client; ordinary phones do not mint FCM leases.
@@ -284,7 +285,9 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
   }});
   const untopology=runtime.subscribeTopology(()=>{presence.topology();ownAttachments?.wake();networkChanges.changed();capabilityWork.changed();groupWork.changed();directoryWork.changed();syncPushRegistration();delivery.topologyChanged();calls?.runtime.changed();wakeWorkers();});
   stateWork.changed();
-  const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>{profileRecovery.connected(peer);groupRecovery.connected(peer);groupWork.changed();courier.resume(peer);groupCourier.resume(peer);custody?.wake.connected(peer);custody?.groupWake.connected(peer);ownAttachments?.wake();wakeWorkers();});
+  const receiptConfirmation=createReceiptConfirmation({owner,now:Date.now,request:runtime.custodyRequest,accepted:receiptAccepted,
+    available:peer=>runtime.snapshot().sessions.some(s=>s.account===peer&&s.state==='connected')});
+  const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>{receiptConfirmation.connected(peer);profileRecovery.connected(peer);groupRecovery.connected(peer);groupWork.changed();courier.resume(peer);groupCourier.resume(peer);custody?.wake.connected(peer);custody?.groupWake.connected(peer);ownAttachments?.wake();wakeWorkers();});
   profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});
   const transportWork=createEventDeadlineTask({now:Date.now,run:async()=>{runtime.tick();networkChanges.changed();return owner()?runtime.nextDeadline():Infinity;}});
   const privateInboxWork=createEventDeadlineTask({now:Date.now,run:async()=>{const before=courier.diagnostics().startedPasses;const pass=courier.tick();if(courier.diagnostics().startedPasses!==before)void pass.finally(()=>privateInboxWork.changed()).catch(()=>{});return courier.nextDeadline();}});
@@ -325,13 +328,12 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
     const message=state.messages.find(row=>row.id===id&&row.peer===recipient&&row.direction==='outgoing');
     return message?.messageStorageRelays?.[0]??(message?.descriptorDelivered?undefined:null);
    },wss:{binary:runtime.supportsWssBinary,sendBinary:runtime.sendWssBinary,peer:runtime.wssStreamPeer,send:runtime.sendWssStream,request:runtime.attachmentRequest},streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
-  const receiptConfirmation=createReceiptConfirmation({owner,now:Date.now,request:runtime.custodyRequest,accepted:receiptAccepted});
-  return { snapshot: runtime.snapshot, recoveryStatus:delivery.snapshot,
+  return { snapshot: runtime.snapshot, finishStartup:runtime.finishStartup, subscribeConnected:runtime.subscribeConnected, recoveryStatus:delivery.snapshot,
     subscribeRecovery:(listener:(sender:string,id:string)=>void)=>{recoveryListeners.add(listener);return()=>{recoveryListeners.delete(listener);};},
     receiveWakeEnvelope:async(envelope:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>{
       const receipt=await localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,custodian??''),payload);
-      // Hint is not authority: only send a verified recipient receipt, over an
-      // already authenticated connection. Polling retries if this socket is absent.
+      // Hint is not authority: send the verified receipt once the custodian
+      // authenticates, even if its inbox was already drained by direct delivery.
       // Admission is already durable. Receipt acceptance wakes recovery separately;
       // a slow reverse request must not hold setup or delay connection resume.
       if(receipt&&custodian)void receiptConfirmation.confirm(receipt,custodian,payload?.id);
@@ -344,6 +346,25 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
       return state.messages.some(message=>message.id===id&&message.peer===sender&&message.direction==='incoming'&&(message.deleted||!message.attachment||message.status==='delivered'));
     },
     recoveryComplete:(sender:string,id:string)=>{if(receiptConfirmation.complete(sender,id))return true;return courier.receiptAccepted(sender,id)||groupCourier.receiptAccepted(sender,id);},
+    async declineIncomingNotification(account:string,id:string,expiresAt:number){
+      if(owner()!==account)return;
+      const call=callService();if(!call)return;
+      await call.recoverWakes();
+      const view=call.coordinator.snapshot();
+      const canDecline=()=>{const active=call.coordinator.snapshot();return owner()===account&&(!active||active.id===id&&!active.outgoing&&active.status==='ringing');};
+      if(!await takeRootCallNotificationAction(account,id,canDecline,'root-call-decline'))return;
+      if(view?.id===id)await call.coordinator.end(id,true);
+      const budget=Math.min(8000,expiresAt-Date.now());if(budget<=0||owner()!==account)return;
+      const available=()=>runtime.relayPeers().length>0||runtime.callPeers().some(peer=>peer.account===view?.peerUser);
+      let off=()=>{},timer:ReturnType<typeof setTimeout>|undefined;
+      const deadline=Native?.axonCallWait?.(budget)??new Promise<void>(resolve=>{timer=setTimeout(resolve,budget);});
+      try{
+        if(!available())await Promise.race([deadline,new Promise<void>(resolve=>{
+          off=runtime.subscribeConnected(()=>{if(available())resolve();});
+        })]);
+        if(available()&&owner()===account)await Promise.race([deadline,call.flushTerminalCall(id)]);
+      }finally{off();clearTimeout(timer);}
+    },
     resumeRecovery(peer:string) {
       courier.resume(peer);groupCourier.resume(peer);
       privateInboxWork.changed();groupInboxWork.changed();
@@ -366,14 +387,15 @@ function recoveryRoutes(leases:Map<symbol,string|null|undefined>){
  return routes.includes(undefined)?undefined:new Set(routes.filter((value):value is string=>typeof value==='string'));
 }
 let sharedNetwork:{runtime:ReturnType<typeof createLocalAccountNetwork>;leases:Map<symbol,string|null|undefined>;scope:{peers:ReadonlySet<string>|undefined}}|null=null;
-export function startLocalAccountNetwork(recovery?:{custodian?:string}){
- const lease=Symbol(),peer=recovery?configuredWakeCustodian(recovery.custodian)?.account??null:undefined;
+export function startLocalAccountNetwork(options?:{custodian?:string}|{foreground:true}){
+ const foreground=options!==undefined&&'foreground' in options;
+ const lease=Symbol(),peer=options&&!('foreground' in options)?configuredWakeCustodian(options.custodian)?.account??null:undefined;
  const existing=sharedNetwork,leases=existing?.leases??new Map<symbol,string|null|undefined>();
  leases.set(lease,peer);
  const scope=existing?.scope??{peers:undefined};
  scope.peers=recoveryRoutes(leases);
- const shared=sharedNetwork??={leases,scope,runtime:createLocalAccountNetwork(()=>scope.peers)};
- if(existing)shared.runtime.refreshRoutes();
+ const shared=sharedNetwork??={leases,scope,runtime:createLocalAccountNetwork(()=>scope.peers,foreground)};
+ if(existing){shared.runtime.finishStartup();shared.runtime.refreshRoutes();}
  return {...shared.runtime,stop(){
   if(!leases.delete(lease))return;
   if(leases.size){scope.peers=recoveryRoutes(leases);shared.runtime.refreshRoutes();return;}

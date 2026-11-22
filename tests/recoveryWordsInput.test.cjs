@@ -11,3 +11,27 @@ function editor(initial=''){
 test('spaces create numbered boxes without adding numbers to the phrase; paste retains order',()=>{const e=editor();e.render().find(n=>n.props?.accessibilityLabel==='Next recovery word').props.onChangeText('apple banana ');assert.equal(e.value,'apple banana ');assert.equal(e.render().filter(n=>n.type==='Pressable').length,2);e.render().find(n=>n.props?.accessibilityLabel==='Next recovery word').props.onChangeText('cherry');assert.equal(e.value,'apple banana cherry');});
 test('editing a completed word preserves the remaining words and their order',()=>{const e=editor('apple banana cherry');e.render().find(n=>n.type==='Pressable').props.onPress();e.render().find(n=>n.props?.accessibilityLabel==='Edit recovery word 1').props.onChangeText('apricot');assert.equal(e.value,'apricot banana cherry');});
 test('backspace on empty input selects the last boxed word; deleting it does not reorder others',()=>{const e=editor('apple banana ');e.render().find(n=>n.props?.accessibilityLabel==='Next recovery word').props.onKeyPress({nativeEvent:{key:'Backspace'}});e.render().find(n=>n.props?.accessibilityLabel==='Edit recovery word 2').props.onChangeText('');assert.equal(e.value,'apple ');});
+test('completing word 12 closes the next field and leaves the last word editable',()=>{
+ const e=editor('apple '.repeat(11)+'banana');
+ const tail=()=>e.render().find(n=>n.props?.accessibilityLabel==='Next recovery word');
+ assert.equal(tail().props.placeholder,'Word 12');
+ tail().props.onChangeText('banana ');
+ assert.equal(tail(),undefined);
+ assert.equal(e.value.trim().split(' ').length,12);
+ e.render().filter(n=>n.type==='Pressable').at(-1).props.onPress();
+ e.render().find(n=>n.props?.accessibilityLabel==='Edit recovery word 12').props.onChangeText('cherry');
+ assert.ok(e.value.endsWith('cherry '));
+ assert.equal(tail(),undefined);
+});
+test('a paste with more than 12 words leaves the phrase unchanged and shows an error',()=>{
+ const e=editor();
+ const tail=()=>e.render().find(n=>n.props?.accessibilityLabel==='Next recovery word');
+ tail().props.onChangeText('apple '.repeat(23)+'banana ');
+ assert.equal(e.value,'');
+ assert.ok(e.render().some(n=>n.props?.accessibilityRole==='alert'&&n.children.includes('Enter exactly 12 recovery words.')));
+ const valid='apple '.repeat(11)+'banana ';
+ tail().props.onChangeText(valid);
+ assert.equal(e.value,valid);
+ assert.equal(tail(),undefined);
+ assert.ok(!e.render().some(n=>n.props?.accessibilityRole==='alert'));
+});

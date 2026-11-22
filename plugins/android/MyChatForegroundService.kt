@@ -13,7 +13,12 @@ import android.os.IBinder
 import android.os.Build
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.BitmapShader
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Shader
 import android.graphics.drawable.Icon
 import android.net.Uri
 import android.util.Base64
@@ -152,7 +157,17 @@ class MyChatForegroundService : Service() {
             options.inSampleSize = 1
             while (longestSide / options.inSampleSize > 256) options.inSampleSize *= 2
             options.inJustDecodeBounds = false
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            val source = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+            val size = minOf(source.width, source.height)
+            val radius = size / 2f
+            val shader = BitmapShader(source, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+            shader.setLocalMatrix(Matrix().apply {
+                setTranslate((size - source.width) / 2f, (size - source.height) / 2f)
+            })
+            val avatar = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { this.shader = shader }
+            Canvas(avatar).drawCircle(radius, radius, radius, paint)
+            avatar
         } catch (_: IllegalArgumentException) {
             null
         }

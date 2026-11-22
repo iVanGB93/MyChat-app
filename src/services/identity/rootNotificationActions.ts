@@ -1,4 +1,6 @@
-import {queueRootCallNotificationAction} from './rootCallNotificationAction';
+import {queueRootCallNotificationAction,rootCallNotificationTarget} from './rootCallNotificationAction';
+import {dismissRootCallNotice,rootWakeContext} from './rootCallWake';
+import {acquireMessageWakeLease} from './messageWakeLease';
 import {AppState} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {cancelRootMessageNotification} from './rootMessageNotification';
@@ -9,9 +11,26 @@ import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
 import {rootNotificationTarget,queueRootNotificationOpen} from './rootNotificationRoute';
 import {rootChatView} from './rootChatActions';
 let tail:Promise<unknown>=Promise.resolve();
+async function declineCall(data:unknown){
+ const target=rootCallNotificationTarget(data);
+ if(!target||(await rootWakeContext())?.account!==target.account)return;
+ if(!await queueRootCallNotificationAction('root-call-decline',data))return;
+ await dismissRootCallNotice(target.callId);
+ if(AppState.currentState==='active')return; // The visible call screen consumes the queued action.
+ await startLocalAccount();
+ const current=localAccount.status();
+ if(current.state!=='unlocked'||current.account!==target.account)return;
+ const release=acquireMessageWakeLease();
+ let runtime:ReturnType<typeof startLocalAccountNetwork>|undefined;
+ try{
+  runtime=startLocalAccountNetwork();
+  await runtime.declineIncomingNotification(target.account,target.callId,target.expiresAt);
+ }finally{try{runtime?.stop();}finally{release();}}
+}
 /** OS actions operate only on a message already admitted into this device's own inbox. */
 export function handleRootNotificationAction(action:string,data:unknown,input?:string){
- if(action==='root-call-open'||action==='root-call-answer'||action==='root-call-decline')return queueRootCallNotificationAction(action,data).then(()=>{});
+ if(action==='root-call-decline')return declineCall(data);
+ if(action==='root-call-open'||action==='root-call-answer')return queueRootCallNotificationAction(action,data).then(()=>{});
  if(!['root-reply','root-mark-read'].includes(action))return Promise.resolve();
  const task=tail.then(async()=>{
   const target=rootNotificationTarget(data),messageId=(data as {messageId?:string})?.messageId;

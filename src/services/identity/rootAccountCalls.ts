@@ -92,13 +92,7 @@ export function createRootAccountCalls(d:{
     const raw=await d.network().callRelayRequest(provider,JSON.stringify({version:1,operation:'ice'}));
     const config=raw&&parseNeuronIceConfig(raw,d.now());if(config)return config;
    }return neuronStunConfig();
-  },changed,terminalSaved:invite=>{
-   // Independent of a slow periodic relay poll; failure leaves the durable outbox intact.
-   const remote=invite.caller===account?invite.callee:invite.caller;
-   for(const peer of d.network().callPeers().filter(p=>p.account===remote&&p.expiresAt>d.now()).slice(0,10))
-    void control.drain(invite,peer).catch(()=>{});
-   void pump.flushTerminal(invite).catch(()=>{});
-  }})});
+  },changed,terminalSaved:invite=>{void flushTerminal(invite);}})});
  const relay=createCallControlRelay({changed:d.inboxChanged,records:d.records,now:d.now,current,blocked});
  const endpoint=createCallRelayEndpoint(relay);
  const mediaRelay=createCallMediaRelay({records:d.records,now:d.now,current,blocked,forward:(...args)=>d.network().forwardMedia(...args)});
@@ -108,6 +102,14 @@ export function createRootAccountCalls(d:{
   receive:async(raw,peer)=>{await refresh();await coordinator.ready();const receipt=await control.receiveRelayed(raw,peer);
    if(receipt)await coordinator.observe(JSON.parse(raw));return receipt;}});
  const retry=createCallRetryScheduler({account,current,now:d.now,list:d.listPending??d.list,peers:()=>d.network().callPeers(),drain:control.drain,pending:control.pending});
+ const terminalFlights=new Map<string,Promise<void>>();
+ function flushTerminal(invite:CallControl){
+  const previous=terminalFlights.get(invite.callId);if(previous)return previous;
+  const remote=invite.caller===account?invite.callee:invite.caller;
+  const peers=d.network().callPeers().filter(p=>p.account===remote&&p.expiresAt>d.now()).slice(0,10);
+  const work=Promise.allSettled([...peers.map(peer=>control.drain(invite,peer)),pump.flushTerminal(invite)]).then(()=>{}).finally(()=>terminalFlights.delete(invite.callId));
+  terminalFlights.set(invite.callId,work);return work;
+ }
  let ticking:Promise<void>|null=null;
  async function drainWakes(){
   if(!d.wakes)return;await coordinator.ready();
@@ -133,6 +135,11 @@ export function createRootAccountCalls(d:{
  }
  return {
   coordinator,recoverWakes,clock:coordinator.tick,nextClockDeadline:coordinator.nextDeadline,
+  async flushTerminalCall(id:string){
+   if(!current())return;
+   const invite=(await (d.listPending??d.list)()).find(e=>e.callId===id&&e.kind==='invite');
+   if(invite&&current())await flushTerminal(invite);
+  },
   changed(){retry.changed();pump.changed();},
   nextDeadline:()=>Math.min(coordinator.nextDeadline(),retry.nextDeadline(),pump.nextDeadline()),
   relayMetadata:()=>relay.metadata(account),

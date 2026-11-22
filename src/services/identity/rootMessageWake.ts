@@ -15,7 +15,7 @@ import * as SQLite from 'expo-sqlite';
 import {AppState} from 'react-native';
 import notifee,{AndroidImportance,AndroidVisibility,AndroidStyle} from '@notifee/react-native';
 import {validAccountId,recordDigest,verifyRecord} from './identityProtocol';
-import {verifyCustodyWake,custodyWakeEnvelope,type CustodyEnvelope} from './custodyProtocol';
+import {verifyCustodyWake,custodyWakeEnvelope,custodyWakeTraceId,type CustodyEnvelope} from './custodyProtocol';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {rootWakeContext,rootWakeBlocked} from './rootCallWake';
 import {validWakeLookup} from './wakeSenderRecovery';
@@ -87,7 +87,7 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
   record=await records.read(sender);
  }
  const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||await rootWakeBlocked(owner.account,sender)){reject('context-changed');return;}
- const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event){reject('signature-or-record-invalid');return;}setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified');
+ const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event){reject('signature-or-record-invalid');return;}setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified',{wakeTrace:custodyWakeTraceId(event.digest)});
  const deadline=createMessageNotificationDeadline();
  const hint=(data as {custodian?:unknown})?.custodian;
  const custodian=typeof hint==='string'&&validAccountId(hint)?hint:undefined;

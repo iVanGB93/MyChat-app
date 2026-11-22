@@ -23,7 +23,7 @@ function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClo
  imports['./internetAxonTransport']={configuredWakeCustodian:account=>account==='relay'?{account}:undefined};
  const originalStart=imports['../../composition/neuronRuntime'].startLocalAccountNetwork;
  const routes=[];let inlinePending=false,resumedWhileInline=false;
- imports['../../composition/neuronRuntime'].startLocalAccountNetwork=scope=>{routes.push(scope);const network=originalStart();return {...network,resumeRecovery:()=>{resumedWhileInline||=inlinePending;network.resume();},hasRecoveredContent:async()=>completeAfter!==null&&now-100000>=completeAfter&&(attachmentAfter===null||now-100000>=attachmentAfter),subscribeRecovery:f=>{subscribers.receipt.add(f);return()=>subscribers.receipt.delete(f);},...(attachmentAfter===null?{}:{attachmentRecoveryState:async()=>descriptorAfter!==null&&now-100000<descriptorAfter?'descriptor-missing':now-100000>=attachmentAfter?'complete':'ready'}),receiveWakeEnvelope:async e=>{now+=inlineDelay;inlinePending=true;try{return await network.receiveWakeEnvelope(e);}finally{inlinePending=false;}},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
+ imports['../../composition/neuronRuntime'].startLocalAccountNetwork=scope=>{routes.push(scope);const network=originalStart();return {...network,snapshot:()=>({sessions:[]}),subscribeConnected:()=>()=>{},resumeRecovery:()=>{resumedWhileInline||=inlinePending;network.resume();},hasRecoveredContent:async()=>completeAfter!==null&&now-100000>=completeAfter&&(attachmentAfter===null||now-100000>=attachmentAfter),subscribeRecovery:f=>{subscribers.receipt.add(f);return()=>subscribers.receipt.delete(f);},...(attachmentAfter===null?{}:{attachmentRecoveryState:async()=>descriptorAfter!==null&&now-100000<descriptorAfter?'descriptor-missing':now-100000>=attachmentAfter?'complete':'ready'}),receiveWakeEnvelope:async e=>{now+=inlineDelay;inlinePending=true;try{return await network.receiveWakeEnvelope(e);}finally{inlinePending=false;}},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
  const out={};new Function('exports','require','Date','setTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageRecovery.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>imports[n],{now:()=>now},(cb,ms)=>{jsTimers++;now+=ms;queueMicrotask(cb);});
  const recover=out.recoverRootMessage;out.recoverRootMessage=(...args)=>{if(args.length<7)args[6]='relay';return recover(...args);};
  return {out,leases,inline,diagnostics,waits,subscribers,routes,advance:ms=>now+=ms,emitReceipt:(sender='peer',id='id')=>{for(const f of subscribers.receipt)f(sender,id);},emit:()=>{for(const f of subscribers.job)f({owner:'own',id:'id',phase:'complete'});},counts:()=>({started,resumed,resumedWhileInline,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
@@ -131,6 +131,19 @@ test('terminal checkpoint event completes recovery without waiting for the nativ
  assert.equal(f.counts().elapsed,100);assert.equal(f.counts().stopped,1);assert.deepEqual(f.leases,[30000,0]);
  for(const set of Object.values(f.subscribers))assert.equal(set.size,0);
  f.waits[0].resolve();await Promise.resolve();assert.equal(f.counts().stopped,1);
+});
+
+test('early recovery events reuse the in-flight native safety timer',async()=>{
+ const f=fixture({events:true,manualClock:true,completeAfter:500});
+ const work=f.out.recoverRootMessage('own','peer','id',160000);
+ const settle=async()=>{for(let n=0;n<20;n++)await Promise.resolve();};
+ await settle();
+ for(let n=0;n<4;n++){f.advance(100);f.emit();await settle();}
+ assert.equal(f.waits.length,1);
+ f.advance(100);f.emit();
+ await work;
+ assert.equal(f.counts().stopped,1);
+ f.waits[0].resolve();
 });
 
 test('event recovery preserves its deadline when no completion event arrives and reduces polling',async()=>{

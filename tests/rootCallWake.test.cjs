@@ -8,6 +8,7 @@ function fixture(callWindow=false,avatar=null){
  const now=Date.now(),device=p.publicDevice(seed(2),seed(3)),recipientDevice=p.publicDevice(seed(5),seed(6));
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
  const storage=new Map([['@axonic_local_account_v1',JSON.stringify({record:recipient})]]),shown=[],cancelled=[],clearedWindows=[],connectedWindows=[];
+ let pendingDecline=false;
  const database=new DatabaseSync(':memory:');
  const db={execAsync:async sql=>database.exec(sql),runAsync:async(sql,...args)=>database.prepare(sql).run(...args),
   getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
@@ -20,6 +21,7 @@ function fixture(callWindow=false,avatar=null){
   'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'},NativeModules:callWindow?{MyChatService:{clearIncomingCallWindow:id=>clearedWindows.push(id),markIncomingCallConnected:id=>connectedWindows.push(id)}}:{}},
   '@notifee/react-native':{default:native,AndroidCategory:{CALL:'call'},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0}},
   './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>id===sender.account?sender:null})},
+  './rootCallNotificationAction':{hasPendingRootCallDecline:async()=>pendingDecline},
   './rootNotificationAvatar':{rootNotificationAvatar:async (owner,peer)=>{
    assert.equal(owner,recipient.account);assert.equal(peer,sender.account);return avatar;
   }},
@@ -30,7 +32,7 @@ function fixture(callWindow=false,avatar=null){
  const fields={record:sender,callId:'ab'.repeat(32),caller:sender.account,callee:recipient.account,callerDevice:device.id,media:'voice',kind:'invite',invitation:null,sequence:0,issuedAt:now,expiresAt:now+60000};
  const invite=c.signCallControl(fields,seed(2),now),data=w.createCallWake(invite,recipientDevice.id,now);
  return {mod,native,storage,shown,cancelled,clearedWindows,connectedWindows,recipient,recipientDevice,data,invite,sender,
-  foreground:()=>{imports['react-native'].AppState.currentState='active';},
+  foreground:()=>{imports['react-native'].AppState.currentState='active';},decline:()=>{pendingDecline=true;},
   cancel:()=>w.createCallWake(c.signCallControl({...fields,kind:'cancel',invitation:c.callControlDigest(JSON.parse(invite)),sequence:1},seed(2),now),recipientDevice.id,now),
   block:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[{account:sender.account,blocked:true}]})),
   init:()=>mod.registerRootCallWakeOwner(recipient.account,recipientDevice.id)};
@@ -164,10 +166,20 @@ test('Android call window uses the private activity and clears only the ended ca
  const notice=f.shown[0],activity='com.axonic.CallNotificationActivity';
  assert.equal(notice.android.fullScreenAction.launchActivity,activity);
  assert.equal(notice.android.pressAction.launchActivity,activity);
- assert(notice.android.actions.every(action=>action.pressAction.launchActivity===activity));
+ assert.equal(notice.android.actions[0].pressAction.launchActivity,undefined);
+ assert.equal(notice.android.actions[1].pressAction.launchActivity,activity);
  assert.equal(notice.data.expiresAt,String(JSON.parse(f.invite).expiresAt));
  await f.mod.receiveRootCallWake(f.cancel());
  assert.deepEqual(f.clearedWindows,[notice.data.callId]);
+});
+test('a pending decline dismisses the incoming notification and prevents it from ringing again',async()=>{
+ const f=fixture(true);await f.init();await f.mod.receiveRootCallWake(f.data);
+ const view={id:JSON.parse(f.invite).callId,peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing'};
+ f.decline();await f.mod.dismissRootCallNotice(view.id);
+ assert.deepEqual(f.cancelled,['root-call:'+view.id]);
+ assert.deepEqual(f.clearedWindows,[view.id]);
+ assert.equal(await f.mod.syncRootCallNotification(f.recipient.account,view),false);
+ assert.equal(f.shown.length,1);
 });
 test('expired incoming call cannot recreate a ringing notification',async()=>{
  const f=fixture();await f.init();await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing',expiresAt:Date.now()-1});assert.equal(f.shown.length,0);

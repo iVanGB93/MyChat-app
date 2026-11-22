@@ -1,7 +1,7 @@
 import {t} from '../../localization/language';
 import DraggableCallPreview from './DraggableCallPreview';
 import React from 'react';
-import {Modal,View,Text,Pressable,StyleSheet,ScrollView} from 'react-native';
+import {Modal,Platform,View,Text,Pressable,StyleSheet,ScrollView} from 'react-native';
 import {RTCView} from 'react-native-webrtc';
 import {Ionicons} from '@expo/vector-icons';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
@@ -10,14 +10,15 @@ import {CallLayout,EndButton} from './CallStage';
 import {ActionButton,makeStyles} from './CallAppearance';
 export interface CallParticipant {id:string;name:string;status:string;stream?:string;local?:boolean;connected?:boolean;speaking?:boolean;cameraOff?:boolean}
 export interface CallSessionScreenProps {
- name:string;status:string;video:boolean;avatarUri?:string|null;avatar?:boolean;background?:React.ReactNode;participants?:CallParticipant[];
- show?:boolean;minimized:boolean;homeWindow?:boolean;hideHome?:boolean;homeStream?:string;homeMirror?:boolean;
+ name:string;status:string;video:boolean;incoming?:boolean;avatarUri?:string|null;avatar?:boolean;background?:React.ReactNode;participants?:CallParticipant[];
+ show?:boolean;minimized:boolean;closing?:boolean;homeWindow?:boolean;hideHome?:boolean;homeStream?:string;homeMirror?:boolean;
  restore():void;minimize():void;end():void;children:React.ReactNode;specialStage?:React.ReactNode;minimizedContent?:React.ReactNode;
 }
 /** One presentation for voice/video, private/room and minimized/system windows.
  * Media owners stay mounted outside this screen when its modal is hidden. */
 export default function CallSessionScreen(p:CallSessionScreenProps){
  const {colors}=useTheme(),insets=useSafeAreaInsets(),show=p.show!==false;
+ if(p.closing)return null;
  const content=p.participants&&!p.video?<ScrollView contentContainerStyle={{flexDirection:'row',flexWrap:'wrap',padding:12,gap:10,flexGrow:1}}>{p.participants.map(person=><View key={person.id} accessibilityLabel={person.name+(person.speaking?', speaking':'')} style={{width:p.participants!.length>2?'48%':'100%',minHeight:p.video?220:140,borderRadius:24,borderWidth:2,borderColor:person.speaking?colors.primary:colors.neonBorder,boxShadow:person.speaking?'0 0 14px '+colors.primary:undefined,backgroundColor:colors.surface,overflow:'hidden'}}>
  {p.video&&person.stream&&!person.cameraOff?<RTCView streamURL={person.stream} objectFit="cover" mirror={!!person.local} style={StyleSheet.absoluteFill} zOrder={0}/>:<View style={{flex:1,alignItems:'center',justifyContent:'center',minHeight:100}}><Ionicons name="person-circle-outline" size={64} color={colors.primary}/></View>}
  <View style={{padding:12,backgroundColor:'#031426cc',marginTop:'auto'}}><Text numberOfLines={1} style={{color:'#fff',fontWeight:'600'}}>{person.name}</Text><Text style={{color:'#a4cad4',fontSize:12}}>{person.speaking?t("Speaking…"):person.status}</Text></View></View>)}</ScrollView>:undefined;
@@ -40,7 +41,8 @@ export default function CallSessionScreen(p:CallSessionScreenProps){
  return <>
  {p.homeWindow&&!p.hideHome&&<View testID="axonic-system-call-window" pointerEvents="none" style={[StyleSheet.absoluteFill,{backgroundColor:'#020413',zIndex:100,elevation:20,alignItems:'center',justifyContent:'center',gap:8}]}>{p.video&&p.homeStream?<RTCView streamURL={p.homeStream} objectFit="contain" mirror={p.homeMirror} style={StyleSheet.absoluteFill} zOrder={0}/>:<><Ionicons name={p.video?'videocam':'call'} size={36} color={colors.primary}/><Text style={{color:'#fff'}}>{p.name}</Text><Text style={{color:'#fff'}}>{p.status}</Text></>}</View>}
  {!p.homeWindow&&p.minimized&&(p.minimizedContent!==undefined?p.minimizedContent:<MinimizedCall name={p.name} status={p.status} video={p.video} stream={p.homeStream} restore={p.restore} end={p.end}/>)}
- <Modal visible={!p.homeWindow&&!p.minimized} animationType="slide" onRequestClose={p.minimize}>
+ {/* Android video surfaces can outlast a window animation during the ringing-to-media handoff. */}
+ <Modal visible={!p.homeWindow&&!p.minimized} animationType={p.incoming&&p.video&&Platform.OS==='android'?'none':'slide'} onRequestClose={p.minimize}>
  {p.specialStage??<CallLayout name={p.name} avatarUri={p.avatarUri} status={p.status} video={p.video} background={groupVideo??p.background} show={show} avatar={p.participants?false:p.avatar} content={content}>{p.children}</CallLayout>}
  {show&&!p.specialStage&&<Pressable accessibilityRole="button" accessibilityLabel={t("Minimize call")} testID="axonic-minimize-call" onPress={p.minimize} style={{position:'absolute',top:insets.top+12,left:insets.left+12,width:44,height:44,borderRadius:22,backgroundColor:'#0009',alignItems:'center',justifyContent:'center'}}><Ionicons name="chevron-forward" size={28} color="#fff"/></Pressable>}
  </Modal>
