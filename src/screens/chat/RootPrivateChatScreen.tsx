@@ -1,30 +1,24 @@
 import ChatHistoryLoading from '../../components/chat/ChatHistoryLoading';
 import {t,languageSnapshot} from '../../localization/language';
-import DeletedMessage from '../../components/chat/DeletedMessage';
-import RootMessageStatus from '../../components/chat/RootMessageStatus';
+import ChatMessageRow from '../../components/chat/ChatMessageRow';
 import {attachmentTimeline,type PreparationRow} from '../../modules/ui/useChatSnapshot';
 import ChatScrollToBottom from '../../components/chat/ChatScrollToBottom';
 import {useChatScroll,CHAT_REVEAL_SPACE} from '../../modules/ui/useChatSnapshot';
 import {useReplyNavigation} from '../../modules/ui/useChatSnapshot';
 import {createChatReplyLookup} from '../../modules/ui/useChatSnapshot';
 import ChatDateSeparator from '../../components/chat/ChatDateSeparator';
-import MessageTextWithFooter from '../../components/chat/MessageTextWithFooter';
 import RootReplyContent from '../../components/chat/RootReplyContent';
 import ComposerReplyPreview from '../../components/chat/ComposerReplyPreview';
 import AttachmentPreparation from '../../components/chat/AttachmentPreparation';
-import {pendingMessages} from '../../modules/messaging';
 import {ChatComposer,type ChatComposerHandle} from '../../components/chat/ChatComposer';
 import {createMessageTimeFormatter} from '../../utils/message-time';
 import {submitComposer} from '../../components/chat/submitComposer';
-import RootMediaSize from '../../components/chat/RootMediaSize';
-import RootMessageReactions from '../../components/chat/RootMessageReactions';
 import {dismissRootConversationNotifications} from '../../modules/messaging/notifications';
 import {KeyboardAvoidingScreen} from '../../components/ui/KeyboardForm';
 import {useChatActivity} from '../../modules/ui/useChatActivity';
 import {usePagedChat as useOwnChat,useChatLayoutTiming,usePrivateCallHistory,privateChatTimeline,type PrivateChatRow} from '../../modules/ui/useChatSnapshot';
 import {useAttachmentPreview} from '../../components/chat/AttachmentPreview';
 import {pickRootAttachment} from '../../modules/ui/documentPicker';
-import ReplySwipe from '../../components/chat/ReplySwipe';
 import {ThemedAlert as Alert} from '../../components/ui/ThemedAlert';
 import ChatHeaderIdentity from '../../components/chat/ChatHeaderIdentity';
 import RootMessageMenu from '../../components/chat/RootMessageMenu';
@@ -32,9 +26,8 @@ import {type RootActionKind} from '../../modules/messaging';
 import RootForwardPicker from '../../components/chat/RootForwardPicker';
 import {rootStickerDraft} from '../../modules/messaging';
 import StickerPicker from '../../components/chat/sticker-picker';
-import StickerArt from '../../components/chat/sticker-art';
 import StickerPreview from '../../components/chat/sticker-preview';
-import {stickerMessage,parseSticker,type Sticker} from '../../services/stickers';
+import {stickerMessage,type Sticker} from '../../services/stickers';
 import {importedStickerUri,stickerFileMime,type ImportedSticker} from '../../services/imported-stickers';
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import AttachmentMenu from '../../components/chat/AttachmentMenu';
@@ -47,8 +40,6 @@ import {useHeaderHeight} from '@react-navigation/elements';
 import {Ionicons} from '@expo/vector-icons';
 import {useTheme} from '../../contexts/ThemeContext';
 import {chatRoomStyles as roomStyles} from '../../components/chat/chat-room-styles';
-import {CHAT_STICKER_SIZE,messageBubbleStyles as bubbleStyles} from '../../components/chat/message-bubble-styles';
-import RootAttachmentBubble from '../../components/RootAttachmentBubble';
 import {messaging} from '../../modules/messaging';
 import {localAccount} from '../../modules/identity';
 import {conversations} from '../../modules/messaging';
@@ -84,19 +75,19 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
 
  const [busy,setBusy]=useState(false),selections=useChatTransferSelections(peer);
- const [mediaRevision,refreshMedia]=React.useReducer((n:number)=>n+1,0);
 
  const name=nickname(state,peer),contact=state.contacts.find(c=>c.account===peer),messages=useMemo(()=>state.messages.filter(m=>m.peer===peer&&!m.group).slice().reverse(),[state.messages,peer,languageSnapshot()]);
 
  const composer=useRef<ChatComposerHandle>(null),sending=useRef(false);
  const setText=(next:string|((current:string)=>string))=>composer.current?.setText(next);
  useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
- const openMessageMenu=(message:RootChatMessage,event:{nativeEvent:{pageY:number}})=>{if(message.deleted||message.localPending)return;setMenuY(event.nativeEvent.pageY);setMenu(message);};
+ const openMessageMenu=React.useCallback((message:RootChatMessage,event:{nativeEvent:{pageY:number}})=>{if(message.deleted||message.localPending)return;setMenuY(event.nativeEvent.pageY);setMenu(message);},[]);
+ const replyToMessage=React.useCallback((message:RootChatMessage)=>{setEditing(undefined);setReplyTo(message);},[]);
  const calls=usePrivateCallHistory(peer,false,!initialLoading),timeline=useMemo(()=>attachmentTimeline(privateChatTimeline(messages,calls.rows,peer,hasMore),selections,s=>'message:outgoing:'+s.id),[messages,calls.rows,peer,hasMore,selections]);
  useEffect(()=>{acknowledgeAttachmentHandoffs(messages);},[messages]);
  const list=useRef<FlatList<PrivateChatRow|PreparationRow>>(null),owner=localAccount.status().account;
  const [composerHeight,setComposerHeight]=useState(90);
- const {listProps:chatScroll,showScrollToBottom,scrollToBottom,stopFollowing}=useChatScroll(list,owner+':'+peer,timeline[0]?.key);
+ const {listProps:chatScroll,showScrollToBottom,scrollToBottom,stopFollowing,keyboardAnimationChanged}=useChatScroll(list,owner+':'+peer,timeline[0]?.key);
  const replyNavigation=useReplyNavigation({beforeJump:stopFollowing,scope:owner+':'+peer,rows:timeline,message:row=>row.message,list,loading,error,reveal:revealMessage,report});
 
  useEffect(()=>{if(focused&&foreground&&owner)void dismissRootConversationNotifications(owner,{peer}).catch(()=>{});},[focused,foreground,owner,peer]);
@@ -108,13 +99,14 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
  const clearReply=React.useCallback(()=>setReplyTo(undefined),[languageSnapshot()]);
  const mediaSent=React.useCallback(()=>{clearReply();scrollToBottom();},[clearReply,scrollToBottom,languageSnapshot()]);
 
- async function act(m:RootChatMessage,kind:RootActionKind,value=''){
+ const act=React.useCallback(async(m:RootChatMessage,kind:RootActionKind,value='')=>{
 
   if(!owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error(t("Unlock your account"));
 
   await messaging.act(peer,{id:m.id,author:m.direction==='outgoing'?owner:peer},kind,value,owner);
 
- }
+ },[owner,peer]);
+ const reactToMessage=React.useCallback((m:RootChatMessage,value:string)=>{void act(m,'reaction',value).catch(report);},[act]);
 
  const unread=messages.filter(m=>m.direction==='incoming'&&m.status==='delivered'&&!m.read&&!m.deleted);
 
@@ -158,19 +150,14 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
  const findReply=useMemo(()=>createChatReplyLookup(state.messages,references,owner,peer),[state.messages,references,owner,peer]);
  const messageList=useMemo(()=>(<FlatList {...messageListRendering} {...chatScroll} ListHeaderComponent={<View style={{height:CHAT_REVEAL_SPACE+composerHeight}}/>} onEndReached={loadMore} onEndReachedThreshold={0.25} maintainVisibleContentPosition={{minIndexForVisible:1}} ListFooterComponent={hasMore?<Pressable disabled={loading} onPress={loadMore} style={{padding:16}}><Text style={{color:colors.primary}}>{loading?t("Loading older messages..."):t("Load older messages")}</Text></Pressable>:null} ref={list} onScrollToIndexFailed={replyNavigation.failed} inverted data={timeline} keyExtractor={row=>row.key} style={roomStyles.messageList} contentContainerStyle={[roomStyles.messagesList,chatScroll.contentContainerStyle,{paddingBottom:header+8}]} keyboardShouldPersistTaps="handled"
 
-   renderItem={({item:row,index})=>{const date=<ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/>;if('preparation' in row)return <View>{date}<AttachmentPreparation selection={row.preparation} colors={colors} report={report}/></View>;if(row.call){const call=row.call,label=(call.outgoing?t("Outgoing"):t("Incoming"))+' '+(call.media==='video'?'video':'voice')+' call',when=new Date(call.at).toLocaleDateString()+' · '+messageTime(call.at);return <View>{date}<Pressable accessibilityRole="button" accessibilityLabel={label+', '+when+'. Call again'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind:call.media})} style={{alignSelf:call.outgoing?'flex-end':'flex-start',flexDirection:'row',alignItems:'center',gap:12,marginVertical:8,marginHorizontal:12,padding:14,borderRadius:16,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:call.outgoing?colors.bubbleSent:colors.bubbleReceived}}><Ionicons name={call.media==='video'?'videocam-outline':'call-outline'} size={24} color={colors.primary}/><View><Text style={{color:colors.text}}>{label}</Text><Text style={{color:colors.textSecondary,fontSize:12,marginTop:4}}>{when}</Text></View></Pressable></View>;}const m=row.message;const mine=m.direction==='outgoing',sticker=!m.attachment?parseSticker(m.text):undefined,quoted=m.reply?findReply(m.reply):undefined;return <View>{date}<ReplySwipe disabled={m.deleted||contact?.blocked||m.localPending} onReply={()=>{setEditing(undefined);setReplyTo(m);}}><View onLayout={m.direction==='outgoing'?pendingMessages.layoutCallback(owner,m.group?.messageId??m.id):undefined} style={[bubbleStyles.bubbleRow,mine?bubbleStyles.bubbleRowRight:bubbleStyles.bubbleRowLeft]}><RootMessageReactions message={m} owner={owner} disabled={!!contact?.blocked||m.localPending} onReact={value=>void act(m,'reaction',value).catch(report)}><Pressable accessibilityLabel={!m.attachment?m.text:undefined} onLongPress={event=>openMessageMenu(m,event)} style={[bubbleStyles.bubble,mine?bubbleStyles.bubbleSent:bubbleStyles.bubbleReceived,{borderColor:replyNavigation.isHighlighted(m)?colors.primary:colors.neonBorder,minWidth:m.attachment?260:96,backgroundColor:replyNavigation.isHighlighted(m)?colors.highlight:mine?colors.bubbleSent:colors.bubbleReceived},!m.deleted&&m.attachment&&bubbleStyles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbleStyles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbleStyles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbleStyles.stickerBubble,replyNavigation.isHighlighted(m)&&{backgroundColor:colors.highlight}]}>
+   renderItem={({item:row,index})=>{const date=<ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/>;if('preparation' in row)return <View>{date}<AttachmentPreparation selection={row.preparation} colors={colors} report={report}/></View>;if(row.call){const call=row.call,label=(call.outgoing?t("Outgoing"):t("Incoming"))+' '+(call.media==='video'?'video':'voice')+' call',when=new Date(call.at).toLocaleDateString()+' · '+messageTime(call.at);return <View>{date}<Pressable accessibilityRole="button" accessibilityLabel={label+', '+when+'. Call again'} disabled={contact?.blocked} onPress={()=>navigation.navigate('OutgoingCall',{peer,kind:call.media})} style={{alignSelf:call.outgoing?'flex-end':'flex-start',flexDirection:'row',alignItems:'center',gap:12,marginVertical:8,marginHorizontal:12,padding:14,borderRadius:16,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:call.outgoing?colors.bubbleSent:colors.bubbleReceived}}><Ionicons name={call.media==='video'?'videocam-outline':'call-outline'} size={24} color={colors.primary}/><View><Text style={{color:colors.text}}>{label}</Text><Text style={{color:colors.textSecondary,fontSize:12,marginTop:4}}>{when}</Text></View></Pressable></View>;}const message=row.message;
+    return <ChatMessageRow message={message} at={row.at} olderAt={timeline[index+1]?.at} time={messageTime(message.at)}
+     owner={owner} disabled={!!contact?.blocked} highlighted={replyNavigation.isHighlighted(message)}
+     quoted={message.reply?findReply(message.reply):undefined} onJump={replyNavigation.jump}
+     onReply={replyToMessage} onMenu={openMessageMenu} onReact={reactToMessage} onSticker={setStickerPreview} onError={report}/>;
+   }}/>),[timeline,findReply,hasMore,loading,loadMore,peer,owner,colors,contact?.blocked,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,replyToMessage,openMessageMenu,reactToMessage,languageSnapshot()]);
 
-    {!m.deleted&&m.reply&&<Pressable accessibilityRole="button" accessibilityLabel={t("Go to original message")} onPress={()=>replyNavigation.jump(quoted)} style={{borderLeftWidth:3,borderLeftColor:colors.primary,backgroundColor:m.reply.author===owner?colors.bubbleSent:colors.bubbleReceived,borderRadius:8,padding:8,marginBottom:6}}><RootReplyContent message={quoted}/></Pressable>}
-
-    {m.deleted?<DeletedMessage color={colors.textSecondary}/>:m.attachment?<RootAttachmentBubble onLongPress={event=>openMessageMenu(m,event)} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbleStyles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>:undefined} message={m} onError={report}/>:sticker?<Pressable accessibilityLabel={sticker.label+' sticker'} onLongPress={event=>openMessageMenu(m,event)} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:<MessageTextWithFooter text={m.text} style={[bubbleStyles.messageText,{color:colors.text}]} linkColor={colors.primary} footer={<View style={[bubbleStyles.metaRow,{marginTop:0}]}>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}/>}
-
-
-
-    {(m.deleted||!!sticker||!!m.attachment&&!m.attachment.mime.startsWith('audio/'))&&<View style={bubbleStyles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbleStyles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}
-
-   </Pressable></RootMessageReactions></View></ReplySwipe></View>;}}/>),[timeline,findReply,hasMore,loading,loadMore,peer,owner,name,colors,contact?.blocked,mediaRevision,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,languageSnapshot()]);
-
- return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0}>
+ return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0} animateKeyboard onKeyboardAnimationChange={keyboardAnimationChanged}>
 
   <View style={{marginTop:(error||calls.error||contact?.blocked||contact&&!contact.accepted&&messages.some(m=>m.direction==='incoming'))?header:0}}>
   {!!(error||calls.error)&&<Text accessibilityRole="alert" style={{color:colors.error,padding:12}}>{error||calls.error}</Text>}
@@ -192,7 +179,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
   {stickerPreview&&owner&&<StickerPreview sticker={stickerPreview} userId={owner} onClose={()=>setStickerPreview(undefined)}/>}
 
-  {menu&&<RootMessageMenu message={menu} onMediaChanged={refreshMedia} createSticker={uri=>{setStickerSource(uri);setStickersOpen(true);}} pageY={menuY} info={()=>navigation.navigate('MessageInfo',{peer:menu.peer,id:menu.id,direction:menu.direction})} close={()=>setMenu(undefined)} copy={()=>void Clipboard.setStringAsync(menu.text).catch(report)}
+  {menu&&<RootMessageMenu message={menu} createSticker={uri=>{setStickerSource(uri);setStickersOpen(true);}} pageY={menuY} info={()=>navigation.navigate('MessageInfo',{peer:menu.peer,id:menu.id,direction:menu.direction})} close={()=>setMenu(undefined)} copy={()=>void Clipboard.setStringAsync(menu.text).catch(report)}
 
     reply={()=>{setEditing(undefined);setReplyTo(menu);}} forward={()=>setForwardMessage(menu)}
 

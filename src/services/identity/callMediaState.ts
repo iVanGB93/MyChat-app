@@ -1,6 +1,6 @@
 import {createStore} from 'zustand/vanilla';
 import {retainEqual} from './sharedState';
-export type CallMediaStatus={id:string;connection:'connecting'|'p2p'|'relayed';recovering:boolean;muted:boolean;cameraOff:boolean;sharing:boolean;remoteSharing:boolean;sharingBusy:boolean;quality:'unknown'|'poor'|'fair'|'good'};
+export type CallMediaStatus={id:string;connection:'connecting'|'connected'|'p2p'|'relayed';recovering:boolean;muted:boolean;cameraOff:boolean;sharing:boolean;remoteSharing:boolean;sharingBusy:boolean;quality:'unknown'|'poor'|'fair'|'good'};
 export const callMediaState=createStore<{value:CallMediaStatus|null}>(()=>({value:null}));
 let generation=0;
 export function clearCallMediaState(){generation++;callMediaState.setState({value:null});}

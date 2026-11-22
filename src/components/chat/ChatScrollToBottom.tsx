@@ -6,7 +6,7 @@ import {useTheme} from '../../contexts/ThemeContext';
 
 export default function ChatScrollToBottom({bottom,onPress}:{bottom:number;onPress():void}){
  const {colors}=useTheme();
- return <TouchableOpacity accessibilityRole="button" accessibilityLabel={t("Go to latest messages")} activeOpacity={0.75} onPress={onPress} style={[styles.button,{bottom,backgroundColor:colors.headerBg,borderColor:colors.neonBorder,shadowColor:colors.primary}]}>
+ return <TouchableOpacity testID="axonic-chat-latest" accessibilityRole="button" accessibilityLabel={t("Go to latest messages")} activeOpacity={0.75} onPress={onPress} style={[styles.button,{bottom,backgroundColor:colors.headerBg,borderColor:colors.neonBorder,shadowColor:colors.primary}]}>
   <Ionicons name="arrow-down" size={24} color={colors.primary}/>
  </TouchableOpacity>;
 }

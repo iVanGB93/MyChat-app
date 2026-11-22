@@ -9,6 +9,7 @@ export function useChatScroll<T>(list:RefObject<FlatList<T>|null>,scope:string,n
  const [height,setHeight]=useState(0),[showScrollToBottom,setShowScrollToBottom]=useState(false);
  const scrollButtonVisible=useRef(false);
  const state=useRef({offset:CHAT_REVEAL_SPACE,following:true,touching:false,dragging:false,momentum:false,jumping:false});
+ const viewport=useRef({height:0,keyboardAnimating:false});
  const frame=useRef<number|undefined>(undefined);
  const pendingFollow=useRef(false),requestFollow=useRef(()=>{});
  const publishScrollButton=useMemo(()=>(visible:boolean)=>{
@@ -21,11 +22,12 @@ export function useChatScroll<T>(list:RefObject<FlatList<T>|null>,scope:string,n
   const follow=()=>{
    if(!state.current.following){pendingFollow.current=false;return;}
    pendingFollow.current=true;
+   if(viewport.current.keyboardAnimating)return;
    if(state.current.touching||state.current.dragging||state.current.momentum)return;
    if(frame.current!==undefined)cancelAnimationFrame(frame.current);
    frame.current=requestAnimationFrame(()=>{
     frame.current=undefined;
-    if(state.current.following&&!state.current.touching&&!state.current.dragging&&!state.current.momentum){pendingFollow.current=false;list.current?.scrollToOffset({offset:CHAT_REVEAL_SPACE,animated:false});}
+    if(!viewport.current.keyboardAnimating&&state.current.following&&!state.current.touching&&!state.current.dragging&&!state.current.momentum){pendingFollow.current=false;list.current?.scrollToOffset({offset:CHAT_REVEAL_SPACE,animated:false});}
    });
   };
   requestFollow.current=follow;
@@ -62,7 +64,12 @@ export function useChatScroll<T>(list:RefObject<FlatList<T>|null>,scope:string,n
    onScrollEndDrag:settle,
    onMomentumScrollBegin:()=>{state.current.momentum=true;},
    onMomentumScrollEnd:()=>{state.current.momentum=false;settle();},
-   onLayout:(event:LayoutChangeEvent)=>{setHeight(event.nativeEvent.layout.height);follow();},
+   onLayout:(event:LayoutChangeEvent)=>{
+    viewport.current.height=event.nativeEvent.layout.height;
+    // The native layout still moves each frame. Publish the virtual list's
+    // minimum height once the IME settles instead of rebuilding rows per frame.
+    if(!viewport.current.keyboardAnimating){setHeight(viewport.current.height);follow();}
+   },
    onContentSizeChange:follow,
   };
  },[list,scope,height,publishScrollButton]);
@@ -83,5 +90,10 @@ export function useChatScroll<T>(list:RefObject<FlatList<T>|null>,scope:string,n
   list.current?.scrollToOffset({offset:CHAT_REVEAL_SPACE,animated:true});
  },[list,scope]);
  const stopFollowing=useMemo(()=>()=>{state.current.following=false;state.current.jumping=false;if(frame.current!==undefined)cancelAnimationFrame(frame.current);publishScrollButton(true);},[scope,publishScrollButton]);
- return {listProps,showScrollToBottom,scrollToBottom,stopFollowing};
+ const keyboardAnimationChanged=useMemo(()=>(active:boolean)=>{
+  if(viewport.current.keyboardAnimating===active)return;
+  viewport.current.keyboardAnimating=active;
+  if(!active){setHeight(viewport.current.height);requestFollow.current();}
+ },[]);
+ return {listProps,showScrollToBottom,scrollToBottom,stopFollowing,keyboardAnimationChanged};
 }

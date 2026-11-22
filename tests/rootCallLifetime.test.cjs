@@ -8,6 +8,22 @@ test('ongoing notification actions are bound to the current call ID',async()=>{
  assert.equal(await f.mod.startRootCallLease('current-call','video'),true);
  assert.deepEqual(f.events.find(event=>event[0]==='video'),['video','current-call']);
 });
+test('ongoing notification avatar waits for native startup and ignores the previous call',async()=>{
+ const f=fixture(),uri='data:image/jpeg;base64,/9j/2Q==';let release;
+ f.service.setCallNotificationAvatar=async(id,image)=>f.events.push(['avatar',id,image]);
+ f.delay(()=>new Promise(resolve=>release=resolve));
+ const starting=f.mod.startRootCallLease('current','voice');
+ while(!release)await Promise.resolve();
+ f.mod.setRootCallNotificationAvatar('previous',uri);
+ f.mod.setRootCallNotificationAvatar('current',uri);
+ assert(!f.events.some(event=>event[0]==='avatar'));
+ release();await starting;await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(f.events.filter(event=>event[0]==='avatar'),[['avatar','current','/9j/2Q==']]);
+ f.mod.stopRootCallLease('current');
+ f.mod.setRootCallNotificationAvatar('current',uri);
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.events.filter(event=>event[0]==='avatar').length,1);
+});
 test('background protection requires a foreground-started service and connected media',async()=>{
  const f=fixture();assert.equal(f.mod.rootCallMayRunBackground(),false);await f.mod.startRootCallLease('one','voice');assert.equal(f.mod.rootCallMayRunBackground(),false);
  f.mod.markRootCallConnected('wrong');assert.equal(f.mod.rootCallMayRunBackground(),false);f.mod.markRootCallConnected('one');assert.equal(f.mod.rootCallMayRunBackground(),true);

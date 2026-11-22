@@ -52,14 +52,25 @@ async function callerName(owner:string,sender:string){
 let liveNotice:string|null=null;
 const callLaunchActivity=()=>NativeModules?.MyChatService?.clearIncomingCallWindow?'com.axonic.CallNotificationActivity':'default';
 const clearIncomingCallWindow=(id:string)=>NativeModules?.MyChatService?.clearIncomingCallWindow?.(id);
+async function cancelIncomingNotice(id:string){
+ await notifee.cancelNotification(id);
+ if(liveNotice===id)liveNotice=null;
+}
 
 async function showIncomingCall(account:string, sender:string, callId:string, media:CallControl['media'], expiresAt:number) {
  const id='root-call:'+callId;
+ const canShow=async()=>AppState.currentState!=='active'&&expiresAt>Date.now()&&(await context())?.account===account&&!await blocked(account,sender);
+ if(!await canShow())return false;
+ if(!(await readRootNotificationPreferences(account)).calls)return false;
+ const settings=await notifee.getNotificationSettings?.();
+ if(settings&&settings.authorizationStatus<1)return false;
+ if(liveNotice===id)return true;
+ await ensureCallChannel();
+ const channel=await notifee.getChannel?.('incoming-calls-v2');if(channel?.blocked)return false;
  const name=await callerName(account,sender);
  const avatar=await rootNotificationAvatar(account,sender);
  try {
-  if(AppState.currentState==='active'||(await context())?.account!==account||
-     await blocked(account,sender)||expiresAt<=Date.now())return false;
+  if(!await canShow())return false;
   const launchActivity=callLaunchActivity();
   const notice={
    id,title:name,body:'Incoming '+media+' call',
@@ -74,10 +85,11 @@ async function showIncomingCall(account:string, sender:string, callId:string, me
   if(avatar){
    try{await notifee.displayNotification({...notice,android:{...notice.android,largeIcon:avatar.uri,circularLargeIcon:true}});}
    catch(error){
-    if(expiresAt<=Date.now()||(await context())?.account!==account||await blocked(account,sender))return false;
+    if(!await canShow())return false;
     await notifee.displayNotification(notice);
    }
   }else await notifee.displayNotification(notice);
+  liveNotice=id;
   await Native?.notificationCallStyle?.(id,name,media==='video');
   return true;
  }finally{avatar?.remove();}
@@ -85,21 +97,14 @@ async function showIncomingCall(account:string, sender:string, callId:string, me
 /** Called only with the verified coordinator view, including direct axon delivery. */
 export async function syncRootCallNotification(account:string,view:NeuronCallView<string>|null){
  return serial(async()=>{
+  if(view?.status==='ready'&&!view.outgoing)NativeModules?.MyChatService?.markIncomingCallConnected?.(view.id);
   if(view?.status==='ended'&&!view.outgoing)clearIncomingCallWindow(view.id);
   const ringing=view&&!view.outgoing&&view.status==='ringing'&&(view.expiresAt??Infinity)>Date.now()&&AppState.currentState!=='active';
   const id=view?'root-call:'+view.id:null;
-  if(liveNotice&&(!ringing||liveNotice!==id)){await notifee.cancelNotification(liveNotice);liveNotice=null;}
-  if(!ringing){if(id)await notifee.cancelNotification(id);return false;}
-  if((await context())?.account!==account||await blocked(account,view.peerUser))return false;
-  if(!(await readRootNotificationPreferences(account)).calls)return false;
-  const settings=await notifee.getNotificationSettings?.();
-  if(settings&&settings.authorizationStatus<1)return false;
-  if(liveNotice===id)return true;
-  await ensureCallChannel();
-  const channel=await notifee.getChannel?.('incoming-calls-v2');if(channel?.blocked)return false;
-  if(!await showIncomingCall(account,view.peerUser,view.id,view.media,view.expiresAt??Date.now()+60000))return false;
-  liveNotice=id;
-  return true;
+  const previous=liveNotice;
+  if(previous&&(!ringing||previous!==id))await cancelIncomingNotice(previous);
+  if(!ringing){if(id&&id!==previous)await cancelIncomingNotice(id);return false;}
+  return showIncomingCall(account,view.peerUser,view.id,view.media,view.expiresAt??Date.now()+60000);
  });
 }
 /** Signed wake metadata and local contact labels are read while locked; no private keys. */
@@ -120,15 +125,13 @@ export async function receiveRootCallWake(data:unknown){
    const count=await tx.getFirstAsync<{n:number}>('SELECT COUNT(*) AS n FROM wakes');if(!prior&&(count?.n??64)>=64)return;
    await tx.runAsync('INSERT INTO wakes(owner,call_id,sequence,expires,raw) VALUES (?,?,?,?,?) ON CONFLICT(owner,call_id) DO UPDATE SET sequence=excluded.sequence,expires=excluded.expires,raw=excluded.raw,consumed=0',owner.account,event.callId,event.sequence,event.expiresAt,raw);changed=true;
   });
-  if(changed)for(const listener of wakeListeners)try{listener(owner.account);}catch{/* Durable wake remains queued. */}
+  if(!changed)return;
+  for(const listener of wakeListeners)try{listener(owner.account);}catch{/* Durable wake remains queued. */}
   const id='root-call:'+event.callId;
   if(event.kind!=='invite'){
    if(event.kind==='cancel'||event.kind==='end')clearIncomingCallWindow(event.callId);
-   await notifee.cancelNotification(id);return;
+   await cancelIncomingNotice(id);return;
   }
-  if(!(await readRootNotificationPreferences(owner.account)).calls)return;
-  if(!changed||AppState.currentState==='active'||event.expiresAt<=Date.now()||await blocked(owner.account,sender))return;
-  await ensureCallChannel();
   await showIncomingCall(owner.account,sender,event.callId,event.media,event.expiresAt);
 
  });
@@ -138,7 +141,9 @@ export async function pendingRootCallWakes(account:string){
  return serial(async()=>(await db()).getAllAsync<{raw:string}>('SELECT raw FROM wakes WHERE owner=? AND expires>? AND consumed=0 ORDER BY sequence DESC LIMIT 8',account,Date.now()));
 }
 export async function finishRootCallWake(account:string,id:string,keepNotification=false){
- await serial(async()=>{await(await db()).runAsync('UPDATE wakes SET consumed=1 WHERE owner=? AND call_id=?',account,id);});
- if(!keepNotification)await notifee.cancelNotification('root-call:'+id);
+ await serial(async()=>{
+  await(await db()).runAsync('UPDATE wakes SET consumed=1 WHERE owner=? AND call_id=?',account,id);
+  if(!keepNotification)await cancelIncomingNotice('root-call:'+id);
+ });
 }
 import {ownChatStore} from '../../modules/storage/chatStore';

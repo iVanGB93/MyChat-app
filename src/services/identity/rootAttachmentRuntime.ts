@@ -16,6 +16,7 @@ import {indexAttachmentPolicy,createAttachmentSnapshot,readAttachmentAdmissionSn
 import {attachmentDigest} from './attachmentProtocol';
 import {createAttachmentTiming} from './attachmentTiming';
 import {rootGroupAllowed} from './rootGroups';
+import {rootChatView} from './rootChatActions';
 
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
@@ -47,8 +48,8 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
  preparationDiagnostics={prepared:0,invalidated:0,rejected:0,stateWriteErrors:0};
  const timingStarted=Date.now(),snapshotTimings=()=>({startedAt:timingStarted,observedAt:Date.now(),stages:timing.snapshot()});
  if(timingEnabled)activeTimings=snapshotTimings;
- let reuseCatalog:{owner:string;revision:number;rows:Promise<{checksum:string;bytes:number;digest:string}[]>}|undefined;
- const records=createMobileIdentityRecordStore(Date.now),journal=createMobileAttachmentJobs(Date.now,timing.measure);
+ let reuseCandidates:{owner:string;revision:number;checksum:string;bytes:number;digests:Promise<string[]>}|undefined;
+ const records=createMobileIdentityRecordStore(Date.now),journal=createMobileAttachmentJobs(Date.now,timing.measure,wake);
  const store={...journal,save:(...args:Parameters<typeof journal.save>)=>timing.measure('checkpoint',()=>journal.save(...args)),
   ...(timingEnabled&&journal.isCurrent?{isCurrent:(...args:Parameters<NonNullable<typeof journal.isCurrent>>)=>timing.measure('leaseCheck',()=>journal.isCurrent!(...args))}:{})};let stopped=false,busy=false,epoch=0,selectionCursor=0;
  const accepted=new Set<string>();const owner=()=>!stopped&&localAccount.status().state==='unlocked'&&!localAccount.status().busy?localAccount.status().account:null;
@@ -121,15 +122,25 @@ completed:async(job:AttachmentJob,current)=>{if(!current())throw Error('Account 
    mediaExport.wake();
    if(timingEnabled)console.info('[Axonic attachment timing]',JSON.stringify({direction:job.direction,bytes:job.descriptor.manifest.bytes,stages:timing.snapshot()}));},
  storage:{jobs:store,files:{reuseFile:async(job,current)=>{
-  const revision=ownChatRevision(job.owner);
-  if(reuseCatalog?.owner!==job.owner||reuseCatalog.revision!==revision)reuseCatalog={owner:job.owner,revision,rows:localRootChat().mediaSnapshot().then(state=>state.messages.filter(m=>!m.deleted&&m.attachment&&(m.direction==='outgoing'||m.status==='delivered')).map(m=>({checksum:m.attachment!.checksum,bytes:m.attachment!.manifest.bytes,digest:attachmentDigest(m.attachment!.manifest)})))};
-  let rows;try{rows=await reuseCatalog.rows;}catch{reuseCatalog=undefined;return false;}if(!current())return false;
-  const candidates=rows.filter(m=>m.checksum===job.descriptor.checksum&&m.bytes===job.descriptor.manifest.bytes).map(m=>m.digest);
   return timing.measure('localReuse',async()=>{
    // Clear a stale library link before allowing ordinary file publication.
    const stickers=job.descriptor.name===IMPORTED_STICKER_CONTENT?await loadImportedStickers(job.owner).catch(()=>[]):[];
    if(await reuseRootStickerFile(job,stickers,current))return true;
-   return reuseRootAttachmentFile(job,[...new Set(candidates)],current);
+   if(!current())return false;
+   const owner=job.owner,revision=ownChatRevision(owner),checksum=job.descriptor.checksum,bytes=job.descriptor.manifest.bytes;
+   if(reuseCandidates?.owner!==owner||reuseCandidates.revision!==revision||reuseCandidates.checksum!==checksum||reuseCandidates.bytes!==bytes){
+    const digests=localRootChat().mediaSnapshot({checksum,bytes}).then(state=>rootChatView(owner,{...state,messages:state.messages.filter(m=>!m.deleted)}).messages.flatMap(m=>{
+     const a=m.attachment;
+     return m.deleted||!a||a.checksum!==checksum||a.manifest.bytes!==bytes||m.direction==='incoming'&&m.status!=='delivered'?[]:[attachmentDigest(a.manifest)];
+    }));
+    reuseCandidates={owner,revision,checksum,bytes,digests};
+   }
+   const candidates=reuseCandidates;
+   let digests;try{digests=await candidates.digests;}catch{if(reuseCandidates===candidates)reuseCandidates=undefined;return false;}
+   const unchanged=()=>current()&&ownChatRevision(owner)===revision;
+   if(!unchanged())return false;
+   try{return await reuseRootAttachmentFile(job,[...new Set(digests)],unchanged);}
+   catch(error){if(current()&&!unchanged())return false;throw error;}
   });
  },readChunk:(...args)=>timing.measure('readFile',()=>readRootAttachmentChunk(...args)),
 readChunks:(...args)=>timing.measure('readFile',()=>readRootAttachmentChunks(...args)),
@@ -296,7 +307,9 @@ request:(...args)=>{
    applyPolicy(cached.state,account,cached.revision);
   }
   if(owner()!==account||epoch!==generation)return null;
-  const result=await worker.receive(...args);wake();return result;
+  // Read-only status and block requests do not need another queue scan.
+  // The journal wakes on a committed receipt; stream adapters emit their own events.
+  return worker.receive(...args);
  }),stop(){if(inspectScheduler===pump.snapshot)inspectScheduler=null;if(activeTimings===snapshotTimings)activeTimings=null;if(activeControls===controls)activeControls=null;stopped=true;snapshots.clear();streams?.stop();wss?.stop();mediaExport.stop();epoch++;pump.stop();offWrites();offSelections();offCommitted();unsubscribe();worker.stop();},cancel:controls.cancel};
 }
 

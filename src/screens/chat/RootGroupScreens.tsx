@@ -7,26 +7,21 @@ import {usePrivateCallHistory,groupChatTimeline} from '../../modules/ui/useChatS
 import GroupCallPicker from '../calls/GroupCallPicker';
 import {calling,localAccountCalls,GROUP_CALLS_ENABLED} from '../../modules/calls';
 import {ensureRootCallPermissions} from '../calls/RootAccountCallScreen';
-import DeletedMessage from '../../components/chat/DeletedMessage';
-import RootMessageStatus from '../../components/chat/RootMessageStatus';
+import ChatMessageRow from '../../components/chat/ChatMessageRow';
 import {attachmentTimeline} from '../../modules/ui/useChatSnapshot';
 import ChatScrollToBottom from '../../components/chat/ChatScrollToBottom';
 import {useChatScroll,CHAT_REVEAL_SPACE} from '../../modules/ui/useChatSnapshot';
 import {useReplyNavigation} from '../../modules/ui/useChatSnapshot';
 import {createChatReplyLookup} from '../../modules/ui/useChatSnapshot';
 import ChatDateSeparator from '../../components/chat/ChatDateSeparator';
-import MessageTextWithFooter from '../../components/chat/MessageTextWithFooter';
 import RootReplyContent from '../../components/chat/RootReplyContent';
 import ComposerReplyPreview from '../../components/chat/ComposerReplyPreview';
 import AttachmentPreparation from '../../components/chat/AttachmentPreparation';
-import {pendingMessages} from '../../modules/messaging';
 import {useChatTransferSelections,acknowledgeAttachmentHandoffs} from '../../modules/ui/transferState';
 import {ChatComposer,type ChatComposerHandle} from '../../components/chat/ChatComposer';
 import {createMessageTimeFormatter} from '../../utils/message-time';
 import {submitComposer} from '../../components/chat/submitComposer';
 import ScreenHeader from '../../components/ui/ScreenHeader';
-import RootMediaSize from '../../components/chat/RootMediaSize';
-import RootMessageReactions from '../../components/chat/RootMessageReactions';
 import {dismissRootConversationNotifications} from '../../modules/messaging/notifications';
 
 import {KeyboardAvoidingScreen,KeyboardFormScrollView} from '../../components/ui/KeyboardForm';
@@ -47,7 +42,6 @@ import {useGroupDetails,usePagedChat,useChatLayoutTiming} from '../../modules/ui
 
 import {pickRootGroupAttachment} from '../../modules/ui/documentPicker';
 
-import ReplySwipe from '../../components/chat/ReplySwipe';
 
 import {ThemedAlert as Alert} from '../../components/ui/ThemedAlert';
 
@@ -98,9 +92,6 @@ import type {RootAccountRoutes} from '../../navigation/rootAccountRoutes';
 
 import {chatRoomStyles as styles} from '../../components/chat/chat-room-styles';
 
-import {CHAT_STICKER_SIZE,messageBubbleStyles as bubbles} from '../../components/chat/message-bubble-styles';
-
-import RootAttachmentBubble from '../../components/RootAttachmentBubble';
 
 
 
@@ -108,9 +99,7 @@ import AttachmentMenu from '../../components/chat/AttachmentMenu';
 
 import StickerPicker from '../../components/chat/sticker-picker';
 
-import StickerArt from '../../components/chat/sticker-art';
-
-import {parseSticker,stickerMessage} from '../../services/stickers';
+import {stickerMessage} from '../../services/stickers';
 
 import {rootStickerDraft} from '../../modules/messaging';
 
@@ -230,7 +219,6 @@ export function RootGroupInfo({route,navigation}:Screen<'GroupInfo'>){
 
 export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {colors}=useTheme(),page=usePagedChat('group:'+route.params.id),state=page.state,g=state.groups?.find(g=>g.id===route.params.id),owner=localAccount.status().account,header=useHeaderHeight(),[reply,setReply]=useState<RootChatReply>(),[editing,setEditing]=useState<RootChatMessage>(),[menu,setMenu]=useState<RootChatMessage>(),[busy,setBusy]=useState(false),[attach,setAttach]=useState(false),[stickers,setStickers]=useState(false),selections=useChatTransferSelections(route.params.id,true);
  const [callKind,setCallKind]=useState<'voice'|'video'>();
- const [mediaRevision,refreshMedia]=React.useReducer((n:number)=>n+1,0);
  const onChatLayout=useChatLayoutTiming('group_chat_layout');
  useEffect(()=>{if(page.error)report(page.error);},[page.error]);
 
@@ -264,16 +252,19 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
  useEffect(()=>{if(focused&&foreground&&owner)void dismissRootConversationNotifications(owner,{group:route.params.id}).catch(()=>{});},[focused,foreground,owner,route.params.id]);
 
  const working=React.useRef(false);
- async function work(fn:()=>Promise<unknown>){if(working.current)return;working.current=true;setBusy(true);try{await fn();}catch(e){report(e);}finally{working.current=false;setBusy(false);}}
+ const work=React.useCallback(async(fn:()=>Promise<unknown>)=>{if(working.current)return;working.current=true;setBusy(true);try{await fn();}catch(e){report(e);}finally{working.current=false;setBusy(false);}},[]);
 
  const clearReply=React.useCallback(()=>setReply(current=>current===reply?undefined:current),[reply,languageSnapshot()]);
- const target=(m:RootChatMessage):RootChatReply=>({id:m.group!.messageId,author:m.direction==='outgoing'?owner!:m.peer});
+ const target=React.useCallback((m:RootChatMessage):RootChatReply=>({id:m.group!.messageId,author:m.direction==='outgoing'?owner!:m.peer}),[owner]);
 
- const act=(m:RootChatMessage,kind:'edit'|'delete'|'reaction',value='')=>work(async()=>{await messaging.actGroup(route.params.id,target(m),kind,value,owner);});
+ const act=React.useCallback((m:RootChatMessage,kind:'edit'|'delete'|'reaction',value='')=>work(async()=>{await messaging.actGroup(route.params.id,target(m),kind,value,owner);}),[route.params.id,target,owner,work]);
+ const reactToMessage=React.useCallback((m:RootChatMessage,value:string)=>{void act(m,'reaction',value);},[act]);
+ const replyToMessage=React.useCallback((m:RootChatMessage)=>{setEditing(undefined);setReply(target(m));},[target]);
+ const openSender=React.useCallback((peer:string)=>navigation.navigate('Contact',{peer}),[navigation]);
 
  const send=(value:string)=>{const update=composer.current?.setText;composer.current?.focus();return work(async()=>{if(!update)return;composer.current?.clear();await submitComposer(value,update,()=>editing?messaging.actGroup(route.params.id,target(editing),'edit',value,owner):messaging.sendGroupText(route.params.id,value,reply,owner));for(const peer of g?.members??[])if(peer!==owner)activity.notify(peer,false);setReply(undefined);setEditing(undefined);scrollToBottom();});};
 
- const openMessageMenu=(message:RootChatMessage,event:{nativeEvent:{pageY:number}})=>{if(disabled||message.deleted||message.localPending)return;setMenuY(event.nativeEvent.pageY);setMenu(message);};
+ const openMessageMenu=React.useCallback((message:RootChatMessage,event:{nativeEvent:{pageY:number}})=>{if(disabled||message.deleted||message.localPending)return;setMenuY(event.nativeEvent.pageY);setMenu(message);},[disabled]);
  const messages=React.useMemo(()=>rootGroupMessages(state,route.params.id).reverse(),[state,route.params.id,languageSnapshot()]);
  useEffect(()=>{acknowledgeAttachmentHandoffs(messages);},[messages]);
  const calls=usePrivateCallHistory(route.params.id,true,!page.initialLoading);
@@ -282,7 +273,7 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
  const timeline=React.useMemo(()=>attachmentTimeline(groupChatTimeline(messages,calls.rows,route.params.id,page.hasMore),selections,s=>'own:'+s.group!.messageId),[messages,calls.rows,page.hasMore,selections,route.params.id]);
  const list=React.useRef<FlatList<(typeof timeline)[number]>>(null);
  const [composerHeight,setComposerHeight]=useState(90);
- const {listProps:chatScroll,showScrollToBottom,scrollToBottom,stopFollowing}=useChatScroll(list,owner+':group:'+route.params.id,timeline[0]?.key);
+ const {listProps:chatScroll,showScrollToBottom,scrollToBottom,stopFollowing,keyboardAnimationChanged}=useChatScroll(list,owner+':group:'+route.params.id,timeline[0]?.key);
  const mediaSent=React.useCallback(()=>{clearReply();scrollToBottom();},[clearReply,scrollToBottom,languageSnapshot()]);
  const replyNavigation=useReplyNavigation({beforeJump:stopFollowing,scope:owner+':'+route.params.id,rows:timeline,message:row=>row.message,list,loading:page.loading,error:page.error,reveal:page.revealMessage,report});
  const memberName=(account:string)=>account===owner?t("You"):state.contacts.find(c=>c.account===account)?.alias||shortIdentity(account);
@@ -290,9 +281,16 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
 
 
- const messageList=React.useMemo(()=>(<FlatList {...messageListRendering} {...chatScroll} ListHeaderComponent={<View style={{height:CHAT_REVEAL_SPACE+composerHeight}}/>} onEndReached={page.loadMore} onEndReachedThreshold={0.25} maintainVisibleContentPosition={{minIndexForVisible:1}} ListFooterComponent={page.hasMore?<Pressable disabled={page.loading} onPress={page.loadMore} style={{padding:16}}><Text style={{color:colors.primary}}>{page.loading?t("Loading older messages..."):t("Load older messages")}</Text></Pressable>:null} ref={list} onScrollToIndexFailed={replyNavigation.failed} inverted data={timeline} keyExtractor={row=>row.key} style={styles.messageList} contentContainerStyle={[styles.messagesList,chatScroll.contentContainerStyle,{paddingBottom:header+8}]} keyboardShouldPersistTaps="handled" renderItem={({item:row,index})=>{if('preparation' in row)return <View><ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/><AttachmentPreparation selection={row.preparation} colors={colors} report={report}/></View>;if(row.call){const c=row.call,label=(c.media==='video'?t("Group video call"):t("Group voice call"));return <View><ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/><Pressable accessibilityRole="button" accessibilityLabel={label+'. Choose members to call again'} onPress={()=>setCallKind(c.media)} disabled={disabled||!GROUP_CALLS_ENABLED} style={{alignSelf:c.outgoing?'flex-end':'flex-start',flexDirection:'row',alignItems:'center',gap:12,margin:12,padding:14,borderRadius:20,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:c.outgoing?colors.bubbleSent:colors.bubbleReceived}}><Ionicons name={c.media==='video'?'videocam-outline':'call-outline'} size={24} color={colors.primary}/><View><Text style={{color:colors.text}}>{label}</Text><Text style={{color:colors.textSecondary}}>{memberName(c.peer)} · {c.members?.length??0} {t("participants")}</Text><Text style={{color:colors.textTertiary,fontSize:12}}>{messageTime(c.at)}</Text>{GROUP_CALLS_ENABLED&&!disabled&&joinAvailable&&c.room&&c.room.revision===g?.revision&&c.id===calls.rows[0]?.id&&<Pressable accessibilityRole="button" accessibilityLabel={t("Join group call")} disabled={busy} onPress={event=>{event.stopPropagation();void work(async()=>{await ensureRootCallPermissions(c.media);await localAccountCalls()?.joinGroup(c.room!,c.media);});}} style={{alignSelf:'flex-start',paddingHorizontal:16,paddingVertical:8,marginTop:8,borderRadius:16,borderWidth:1,borderColor:colors.primary}}><Text style={{color:colors.primary}}>{t("Join")}</Text></Pressable>}</View></Pressable></View>;}const m=row.message;const mine=m.direction==='outgoing',sticker=parseSticker(m.text),previous=timeline[index+1]?.message,showSender=!mine&&(!previous||previous.direction==='outgoing'||previous.peer!==m.peer);return <View><ChatDateSeparator at={m.at} olderAt={timeline[index+1]?.at}/><ReplySwipe disabled={disabled||m.deleted||m.localPending} onReply={()=>{setEditing(undefined);setReply(target(m));}}><View onLayout={m.direction==='outgoing'?pendingMessages.layoutCallback(owner,m.group?.messageId??m.id):undefined} style={[bubbles.bubbleRow,mine?bubbles.bubbleRowRight:bubbles.bubbleRowLeft]}>{showSender&&<Pressable accessibilityRole="button" accessibilityLabel={t("Open details for ")+memberName(m.peer)} onPress={()=>navigation.navigate('Contact',{peer:m.peer})} style={bubbles.groupSenderLink} hitSlop={4}><Text numberOfLines={1} style={[bubbles.senderName,{color:colors.primary}]}>{memberName(m.peer)}</Text></Pressable>}<RootMessageReactions message={m} owner={owner} disabled={disabled} onReact={value=>void act(m,'reaction',value)}><Pressable onLongPress={event=>openMessageMenu(m,event)} style={[bubbles.bubble,mine?bubbles.bubbleSent:bubbles.bubbleReceived,{backgroundColor:replyNavigation.isHighlighted(m)?colors.highlight:mine?colors.bubbleSent:colors.bubbleReceived,borderColor:replyNavigation.isHighlighted(m)?colors.primary:colors.neonBorder,minWidth:m.attachment?260:96},!m.deleted&&m.attachment&&bubbles.mediaBubble,!m.deleted&&m.attachment?.mime.startsWith('audio/')&&bubbles.voiceBubble,!m.deleted&&m.attachment&&/^(image|video)\//.test(m.attachment.mime)&&m.attachment.name!==IMPORTED_STICKER_CONTENT&&bubbles.photoBubble,!m.deleted&&(sticker||m.attachment?.name===IMPORTED_STICKER_CONTENT)&&bubbles.stickerBubble,replyNavigation.isHighlighted(m)&&{backgroundColor:colors.highlight}]}>{!m.deleted&&m.reply&&<Pressable accessibilityRole="button" accessibilityLabel={t("Go to original message")} onPress={()=>replyNavigation.jump(findReply(m.reply!))} style={[bubbles.quoteBlock,{borderLeftColor:colors.primary,backgroundColor:m.reply.author===owner?colors.bubbleSent:colors.bubbleReceived}]}><Text numberOfLines={1} style={[bubbles.quoteName,{color:colors.primary}]}>{memberName(m.reply.author)}</Text><RootReplyContent message={findReply(m.reply)}/></Pressable>}{m.attachment&&!m.deleted?<RootAttachmentBubble onLongPress={event=>openMessageMenu(m,event)} audioFooter={m.attachment?.mime.startsWith('audio/')?<View style={[bubbles.metaRow,{marginTop:0,flexShrink:0}]}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>:undefined} message={m} onError={report}/>:sticker&&!m.deleted?<Pressable accessibilityLabel={sticker.label+' sticker'} onLongPress={event=>openMessageMenu(m,event)} onPress={()=>setStickerPreview(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:m.deleted?<DeletedMessage color={colors.textSecondary}/>:<MessageTextWithFooter text={m.text} style={[bubbles.messageText,{color:colors.text}]} linkColor={colors.primary} footer={<View style={[bubbles.metaRow,{marginTop:0}]}>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}/>}{(m.deleted||!!sticker||!!m.attachment&&!m.attachment.mime.startsWith('audio/'))&&<View style={bubbles.metaRow}><RootMediaSize message={m}/>{m.edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{t("Edited")}</Text>}<Text style={[bubbles.timeText,{color:colors.textTertiary}]}>{messageTime(m.at)}</Text><RootMessageStatus message={m} onError={report}/></View>}</Pressable></RootMessageReactions></View></ReplySwipe></View>;}}/>),[joinAvailable,busy,calls.rows,timeline,messages,state,findReply,page.hasMore,page.loading,page.loadMore,owner,colors,disabled,mediaRevision,navigation,route.params.id,messageTime,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,languageSnapshot()]);
+ const messageList=React.useMemo(()=>(<FlatList {...messageListRendering} {...chatScroll} ListHeaderComponent={<View style={{height:CHAT_REVEAL_SPACE+composerHeight}}/>} onEndReached={page.loadMore} onEndReachedThreshold={0.25} maintainVisibleContentPosition={{minIndexForVisible:1}} ListFooterComponent={page.hasMore?<Pressable disabled={page.loading} onPress={page.loadMore} style={{padding:16}}><Text style={{color:colors.primary}}>{page.loading?t("Loading older messages..."):t("Load older messages")}</Text></Pressable>:null} ref={list} onScrollToIndexFailed={replyNavigation.failed} inverted data={timeline} keyExtractor={row=>row.key} style={styles.messageList} contentContainerStyle={[styles.messagesList,chatScroll.contentContainerStyle,{paddingBottom:header+8}]} keyboardShouldPersistTaps="handled" renderItem={({item:row,index})=>{if('preparation' in row)return <View><ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/><AttachmentPreparation selection={row.preparation} colors={colors} report={report}/></View>;if(row.call){const c=row.call,label=(c.media==='video'?t("Group video call"):t("Group voice call"));return <View><ChatDateSeparator at={row.at} olderAt={timeline[index+1]?.at}/><Pressable accessibilityRole="button" accessibilityLabel={label+'. Choose members to call again'} onPress={()=>setCallKind(c.media)} disabled={disabled||!GROUP_CALLS_ENABLED} style={{alignSelf:c.outgoing?'flex-end':'flex-start',flexDirection:'row',alignItems:'center',gap:12,margin:12,padding:14,borderRadius:20,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:c.outgoing?colors.bubbleSent:colors.bubbleReceived}}><Ionicons name={c.media==='video'?'videocam-outline':'call-outline'} size={24} color={colors.primary}/><View><Text style={{color:colors.text}}>{label}</Text><Text style={{color:colors.textSecondary}}>{memberName(c.peer)} · {c.members?.length??0} {t("participants")}</Text><Text style={{color:colors.textTertiary,fontSize:12}}>{messageTime(c.at)}</Text>{GROUP_CALLS_ENABLED&&!disabled&&joinAvailable&&c.room&&c.room.revision===g?.revision&&c.id===calls.rows[0]?.id&&<Pressable accessibilityRole="button" accessibilityLabel={t("Join group call")} disabled={busy} onPress={event=>{event.stopPropagation();void work(async()=>{await ensureRootCallPermissions(c.media);await localAccountCalls()?.joinGroup(c.room!,c.media);});}} style={{alignSelf:'flex-start',paddingHorizontal:16,paddingVertical:8,marginTop:8,borderRadius:16,borderWidth:1,borderColor:colors.primary}}><Text style={{color:colors.primary}}>{t("Join")}</Text></Pressable>}</View></Pressable></View>;}const message=row.message,previous=timeline[index+1]?.message;
+  const showSender=message.direction==='incoming'&&(!previous||previous.direction==='outgoing'||previous.peer!==message.peer);
+  return <ChatMessageRow message={message} at={row.at} olderAt={timeline[index+1]?.at} time={messageTime(message.at)}
+   owner={owner} disabled={disabled} highlighted={replyNavigation.isHighlighted(message)}
+   senderName={showSender?memberName(message.peer):undefined} onSender={openSender}
+   quoted={message.reply?findReply(message.reply):undefined} quoteAuthorName={message.reply?memberName(message.reply.author):undefined}
+   onJump={replyNavigation.jump} onReply={replyToMessage} onMenu={openMessageMenu} onReact={reactToMessage} onSticker={setStickerPreview} onError={report}/>;
+ }} />),[joinAvailable,busy,calls.rows,timeline,state.contacts,findReply,page.hasMore,page.loading,page.loadMore,owner,colors,disabled,navigation,route.params.id,messageTime,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,g?.revision,work,openSender,replyToMessage,openMessageMenu,reactToMessage,languageSnapshot()]);
 
- return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0}>
+ return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0} animateKeyboard onKeyboardAnimationChange={keyboardAnimationChanged}>
 
   <View style={{marginTop:g&&(!g.accepted||g.blocked||!g.members.includes(owner!))?header:0}}>
   {g&&!g.accepted&&!g.blocked&&<View style={[styles.requestBanner,{backgroundColor:colors.surface}]}><Text style={{color:colors.text,flex:1}}>{g.recoveryPending?t("Confirm recovered group"):t("Group invitation")}</Text><Pressable accessibilityLabel={g.recoveryPending?t("Review recovered group"):t("Accept group")} onPress={()=>g.recoveryPending?Alert.alert(t("Confirm recovered group"),g.name+'\n\nThese older group details came from another member and have no creator signature. Confirm only if the name and members are correct.\n\n'+g.members.join('\n'),[{text:t("Cancel"),style:'cancel'},{text:'Confirm',onPress:()=>void conversations().configureGroup(g.id,{accepted:true}).catch(report)}]):void conversations().configureGroup(g.id,{accepted:true}).catch(report)}><Text style={{color:colors.primary}}>{g.recoveryPending?'Review':t("Accept")}</Text></Pressable></View>}
@@ -312,7 +310,7 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
   {stickerPreview&&<StickerPreview sticker={stickerPreview} userId={owner??undefined} onClose={()=>setStickerPreview(undefined)}/>}
 
-  {menu&&<RootMessageMenu info={()=>navigation.navigate('GroupMessageInfo',{group:route.params.id,messageId:menu.group!.messageId,author:menu.direction==='outgoing'?owner!:menu.peer})} pageY={menuY} message={menu} onMediaChanged={refreshMedia} createSticker={uri=>{setStickerSource(uri);setStickers(true);}} forward={()=>setForwardMessage(menu)} close={()=>setMenu(undefined)} copy={()=>void Clipboard.setStringAsync(menu.text).catch(report)} reply={()=>{setEditing(undefined);setReply(target(menu));}} edit={()=>{setReply(undefined);setEditing(menu);setText(menu.text);}} remove={()=>Alert.alert(t("Delete message?"),t("Group members will see a deleted-message placeholder."),[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>void act(menu,'delete')}])} react={value=>void act(menu,'reaction',value)}/>}
+  {menu&&<RootMessageMenu info={()=>navigation.navigate('GroupMessageInfo',{group:route.params.id,messageId:menu.group!.messageId,author:menu.direction==='outgoing'?owner!:menu.peer})} pageY={menuY} message={menu} createSticker={uri=>{setStickerSource(uri);setStickers(true);}} forward={()=>setForwardMessage(menu)} close={()=>setMenu(undefined)} copy={()=>void Clipboard.setStringAsync(menu.text).catch(report)} reply={()=>{setEditing(undefined);setReply(target(menu));}} edit={()=>{setReply(undefined);setEditing(menu);setText(menu.text);}} remove={()=>Alert.alert(t("Delete message?"),t("Group members will see a deleted-message placeholder."),[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>void act(menu,'delete')}])} react={value=>void act(menu,'reaction',value)}/>}
 
 
   {forwardMessage&&<RootForwardPicker message={forwardMessage} contacts={state.contacts} groups={state.groups} onClose={()=>setForwardMessage(undefined)}/>}

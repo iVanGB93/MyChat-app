@@ -7,7 +7,7 @@ const seed=n=>new Uint8Array(32).fill(n);
 function fixture(callWindow=false,avatar=null){
  const now=Date.now(),device=p.publicDevice(seed(2),seed(3)),recipientDevice=p.publicDevice(seed(5),seed(6));
  const sender=p.issueRecord(seed(1),[device],now),recipient=p.issueRecord(seed(4),[recipientDevice],now);
- const storage=new Map([['@axonic_local_account_v1',JSON.stringify({record:recipient})]]),shown=[],cancelled=[],clearedWindows=[];
+ const storage=new Map([['@axonic_local_account_v1',JSON.stringify({record:recipient})]]),shown=[],cancelled=[],clearedWindows=[],connectedWindows=[];
  const database=new DatabaseSync(':memory:');
  const db={execAsync:async sql=>database.exec(sql),runAsync:async(sql,...args)=>database.prepare(sql).run(...args),
   getFirstAsync:async(sql,...args)=>database.prepare(sql).get(...args)??null,getAllAsync:async(sql,...args)=>database.prepare(sql).all(...args),
@@ -17,7 +17,7 @@ function fixture(callWindow=false,avatar=null){
   '../../../modules/axonic-nearby':{default:{notificationCallStyle:async()=>true}},
   '../../modules/storage/chatStore':{ownChatStore:owner=>({read:async()=>storage.get('@axonic_root_chat_v1:'+owner)??null})},
   '@react-native-async-storage/async-storage':{default:{getItem:async k=>storage.get(k)??null,setItem:async(k,v)=>storage.set(k,v)}},
-  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'},NativeModules:callWindow?{MyChatService:{clearIncomingCallWindow:id=>clearedWindows.push(id)}}:{}},
+  'expo-sqlite':{openDatabaseAsync:async()=>db},'react-native':{AppState:{currentState:'background'},NativeModules:callWindow?{MyChatService:{clearIncomingCallWindow:id=>clearedWindows.push(id),markIncomingCallConnected:id=>connectedWindows.push(id)}}:{}},
   '@notifee/react-native':{default:native,AndroidCategory:{CALL:'call'},AndroidImportance:{HIGH:4},AndroidVisibility:{PRIVATE:0}},
   './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async id=>id===sender.account?sender:null})},
   './rootNotificationAvatar':{rootNotificationAvatar:async (owner,peer)=>{
@@ -29,7 +29,7 @@ function fixture(callWindow=false,avatar=null){
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootCallWake.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>imports[n]??protocol(n.slice(2)));
  const fields={record:sender,callId:'ab'.repeat(32),caller:sender.account,callee:recipient.account,callerDevice:device.id,media:'voice',kind:'invite',invitation:null,sequence:0,issuedAt:now,expiresAt:now+60000};
  const invite=c.signCallControl(fields,seed(2),now),data=w.createCallWake(invite,recipientDevice.id,now);
- return {mod,native,storage,shown,cancelled,clearedWindows,recipient,recipientDevice,data,invite,sender,
+ return {mod,native,storage,shown,cancelled,clearedWindows,connectedWindows,recipient,recipientDevice,data,invite,sender,
   foreground:()=>{imports['react-native'].AppState.currentState='active';},
   cancel:()=>w.createCallWake(c.signCallControl({...fields,kind:'cancel',invitation:c.callControlDigest(JSON.parse(invite)),sequence:1},seed(2),now),recipientDevice.id,now),
   block:()=>storage.set('@axonic_root_chat_v1:'+recipient.account,JSON.stringify({version:1,contacts:[{account:sender.account,blocked:true}]})),
@@ -98,6 +98,14 @@ test('consuming a wake during background ringing retains the answer notification
  await f.mod.finishRootCallWake(f.recipient.account,'ab'.repeat(32),true);
  assert.equal((await f.mod.pendingRootCallWakes(f.recipient.account)).length,0);assert.equal(f.cancelled.length,0);
 });
+test('a signed wake and recovered call share one Android notification',async()=>{
+ const f=fixture();await f.init();await f.mod.receiveRootCallWake(f.data);
+ const view={id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing'};
+ assert.equal(await f.mod.syncRootCallNotification(f.recipient.account,view),true);
+ assert.equal(f.shown.length,1);
+ await f.mod.receiveRootCallWake(f.cancel());await f.mod.receiveRootCallWake(f.cancel());
+ assert.equal(f.cancelled.length,1);
+});
 test('root wake verifies signatures, persists once and retains a consumed replay tombstone',async()=>{
  const f=fixture();await f.init();await f.mod.receiveRootCallWake(f.data);await f.mod.receiveRootCallWake(f.data);
  assert.equal(f.shown.length,1);assert.equal((await f.mod.pendingRootCallWakes(f.recipient.account)).length,1);
@@ -163,6 +171,18 @@ test('Android call window uses the private activity and clears only the ended ca
 });
 test('expired incoming call cannot recreate a ringing notification',async()=>{
  const f=fixture();await f.init();await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing',expiresAt:Date.now()-1});assert.equal(f.shown.length,0);
+});
+test('only a ready incoming call keeps its existing lock-screen window past ringing',async()=>{
+ const f=fixture(true);await f.init();
+ const view={id:'ab'.repeat(32),peerUser:f.sender.account,media:'video',outgoing:false,status:'ringing',expiresAt:Date.now()+5000};
+ await f.mod.syncRootCallNotification(f.recipient.account,view);
+ await f.mod.syncRootCallNotification(f.recipient.account,{...view,status:'connecting'});
+ await f.mod.syncRootCallNotification(f.recipient.account,{...view,status:'ready',outgoing:true});
+ assert.deepEqual(f.connectedWindows,[]);
+ await f.mod.syncRootCallNotification(f.recipient.account,{...view,status:'ready'});
+ assert.deepEqual(f.connectedWindows,[view.id]);
+ await f.mod.syncRootCallNotification(f.recipient.account,{...view,status:'ended'});
+ assert.deepEqual(f.clearedWindows,[view.id]);
 });
 test('direct incoming notification preserves remaining invitation deadline',async()=>{
  const f=fixture();await f.init();await f.mod.syncRootCallNotification(f.recipient.account,{id:'ab'.repeat(32),peerUser:f.sender.account,media:'voice',outgoing:false,status:'ringing',expiresAt:Date.now()+5000});assert.equal(f.shown.length,1);assert.ok(f.shown[0].android.timeoutAfter<=5000);

@@ -15,7 +15,7 @@ export function indexedChatStore(owner:string,legacy:()=>Promise<string|null>){
   read:()=>serial(async()=>(await use()).read()),write:(raw:string)=>serial(async()=>(await use()).write(raw)),
   readScope:(...args:Parameters<ReturnType<typeof createIndexedOwnHistory>['readScope']>)=>serial(async()=>(await use()).readScope(...args)),
   writeScope:(...args:Parameters<ReturnType<typeof createIndexedOwnHistory>['writeScope']>)=>serial(async()=>(await use()).writeScope(...args)),
-  readMedia:()=>serial(async()=>(await use()).readMedia()),
+  readMedia:(...args:Parameters<ReturnType<typeof createIndexedOwnHistory>['readMedia']>)=>serial(async()=>(await use()).readMedia(...args)),
   readUnread:(peers:string[])=>serial(async()=>(await use()).readUnread(peers)),
   readAttachments:()=>serial(async()=>(await use()).readAttachments()),
   readMessage:(peer:string,id:string,direction?:'incoming'|'outgoing')=>serial(async()=>(await use()).readMessage(peer,id,direction)),

@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript');
 function fixture(mode,appState='active',route){
- const timers=[],events=[];let committedListener,historyReads=0,release,lookupCount=0,prepares=0,listener,writeListener,locked=false,revision=0,workerDeps;
+ const timers=[],events=[];let committedListener,historyReads=0,release,lookupCount=0,prepares=0,listener,writeListener,locked=false,revision=0,workerDeps,receiptCommitted;
  const gate=new Promise(r=>release=r),owner='axonic:1:'+'a'.repeat(64),peer='axonic:1:'+'b'.repeat(64);
  const selection={id:'c'.repeat(64),peer,name:'test',mime:'image/jpeg',failed:false};
  let rows=[selection];
@@ -30,7 +30,7 @@ function fixture(mode,appState='active',route){
  './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async p=>mode==='lookup'||mode==='lookup-two'&&p===peer?null:{}})},
  './rootGroups':{validGroupContext:()=>true,rootGroupAllowed:()=>true},
  './identityProtocol':{validAccountId:()=>true,verifyRecord:()=>true},
- './mobileAttachmentJobs':{createMobileAttachmentJobs:()=>({})},
+ './mobileAttachmentJobs':{createMobileAttachmentJobs:(_now,_measure,onReceipt)=>{receiptCommitted=onReceipt;return {};}},
  './attachmentTransfer':{createAttachmentTransfer:d=>{workerDeps=d;return worker;}},
  './rootAttachmentFiles':{rootAttachmentFile:()=>({exists:false}),prepareRootAttachment:async()=>{prepares++;await gate;return incoming;},removeRootAttachmentSource:()=>events.push('remove')},
  '@react-native-async-storage/async-storage':{default:{getItem:async()=>JSON.stringify(rows),setItem:async(_k,s)=>rows=JSON.parse(s)}},
@@ -39,7 +39,7 @@ function fixture(mode,appState='active',route){
  const out={};new Function('require','exports','setTimeout','clearTimeout','__DEV__',ts.transpileModule(fs.readFileSync('src/services/identity/rootAttachmentRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>deps[n]??{},out,f=>{timers.push(f);return f;},()=>{},false);
  const runtime=out.startRootAttachmentRuntime({...(route?{streams:{available:()=>route.rtcReady},wss:{peer:()=>({device:route.device??'device'})}}:{}),peers:()=>[],request:async()=>null,lookup:async()=>{lookupCount++;await gate;}});
  const pump=async()=>{assert(timers.length);timers.shift()();for(let n=0;n<12;n++)await new Promise(setImmediate);};
- return {runtime,events,pump,release,deps,complete:(job,current=()=>true)=>workerDeps.completed(job,current),pull:()=>workerDeps.connections.directStream({descriptor:{manifest:{sender:peer,senderDevice:'device'}}},async()=>true),historyReads:()=>historyReads,commitBlocked(){snapshot.contacts[0].blocked=true;revision++;writeListener(owner);committedListener(owner,revision,snapshot);},change(){revision++;writeListener(owner);},block(){snapshot.contacts[0].blocked=true;revision++;},lock(){locked=true;listener();},lookupCount:()=>lookupCount,prepares:()=>prepares,rows:()=>rows};
+ return {runtime,events,pump,release,deps,receipt:()=>receiptCommitted(),complete:(job,current=()=>true)=>workerDeps.completed(job,current),pull:()=>workerDeps.connections.directStream({descriptor:{manifest:{sender:peer,senderDevice:'device'}}},async()=>true),historyReads:()=>historyReads,commitBlocked(){snapshot.contacts[0].blocked=true;revision++;writeListener(owner);committedListener(owner,revision,snapshot);},change(){revision++;writeListener(owner);},block(){snapshot.contacts[0].blocked=true;revision++;},lock(){locked=true;listener();},lookupCount:()=>lookupCount,prepares:()=>prepares,rows:()=>rows};
 }
 test('outgoing receipt completion does not require the deleted source; incoming and invalid receipts remain held',async t=>{
  const f=fixture('lookup');t.after(()=>{f.runtime.stop();f.release();});let verified=0,accept=true;
@@ -122,6 +122,18 @@ test('serving refreshes policy before the first pump and immediately honors bloc
  assert.equal(await f.runtime.receive('request',{}),'ready');
  f.block();assert.equal(await f.runtime.receive('request',{}),'rejected');
  f.lock();assert.equal(await f.runtime.receive('request',{}),null);
+});
+test('read-only serving does not schedule another transfer scan but a committed receipt does',async t=>{
+ const f=fixture('lookup','background');t.after(()=>{f.runtime.stop();f.release();});
+ await f.pump();
+ const scans=()=>f.events.filter(x=>x==='tick').length;
+ const before=scans();
+ assert.equal(await f.runtime.receive('request',{}),'ready');
+ await new Promise(setImmediate);
+ assert.equal(scans(),before);
+ f.receipt();
+ for(let step=0;step<12;step++)await new Promise(setImmediate);
+ assert.equal(scans(),before+1);
 });
 
 test('missing identity is visible and lookup remains single flight',async t=>{

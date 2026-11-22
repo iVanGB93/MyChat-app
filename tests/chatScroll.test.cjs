@@ -1,6 +1,16 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function setup(){let next;const effects=[],cleanups=[],keyboard={};const calls=[],list={current:{scrollToOffset:v=>calls.push(v)}},out={};const react={useState:v=>[v,()=>{}],useRef:v=>({current:v}),useMemo:f=>f(),useEffect:f=>{effects.push(f);const c=f();if(c)cleanups.push(c);}};new Function('require','exports','requestAnimationFrame','cancelAnimationFrame',ts.transpileModule(fs.readFileSync('src/modules/ui/useChatScroll.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText) (name=>name==='react-native'?{Keyboard:{addListener:(event,f)=>{keyboard[event]=f;return {remove(){delete keyboard[event];}};}}}:react,out,f=>(next=f,1),()=>next=undefined);const hook=out.useChatScroll(list,'test'),props=hook.listProps;next?.();next=undefined;calls.length=0;return {hook,props,calls,flush:()=>{const f=next;next=undefined;f?.();},cleanup:()=>cleanups.forEach(f=>f()),keyboard:event=>keyboard[event]?.(),arrival:()=>effects[1](),scroll:y=>props.onScroll({nativeEvent:{contentOffset:{y}}}),drag:y=>{props.onScrollBeginDrag();props.onScroll({nativeEvent:{contentOffset:{y}}});props.onScrollEndDrag();}};}
 test('keyboard resize and new content keep the latest row above the composer',()=>{const t=setup();t.props.onLayout({nativeEvent:{layout:{height:600}}});t.flush();assert.deepEqual(t.calls.pop(),{offset:56,animated:false});t.props.onContentSizeChange();t.flush();assert.equal(t.calls.length,1);});
+test('IME animation batches bottom corrections until the resize settles',()=>{
+ const t=setup();t.hook.keyboardAnimationChanged(true);
+ for(const height of [600,580,550]){
+  t.props.onLayout({nativeEvent:{layout:{height}}});t.props.onContentSizeChange();t.flush();
+ }
+ t.keyboard('keyboardDidShow');t.flush();assert.equal(t.calls.length,0);
+ t.hook.keyboardAnimationChanged(false);t.flush();assert.deepEqual(t.calls,[{offset:56,animated:false}]);
+ t.drag(400);t.hook.keyboardAnimationChanged(true);t.props.onLayout({nativeEvent:{layout:{height:600}}});
+ t.hook.keyboardAnimationChanged(false);t.flush();assert.equal(t.calls.length,1);
+});
 test('older reading position and active drags are not pulled to newest',()=>{const t=setup();t.drag(300);t.props.onContentSizeChange();t.props.onLayout({nativeEvent:{layout:{height:600}}});t.flush();assert.equal(t.calls.length,0);t.scroll(56);t.props.onScrollBeginDrag();t.props.onLayout({nativeEvent:{layout:{height:600}}});t.flush();assert.equal(t.calls.length,0);});
 test('extra reveal space settles on release, ordinary history scroll does not',()=>{const t=setup();t.props.onScrollBeginDrag();t.scroll(0);t.props.onScrollEndDrag();assert.deepEqual(t.calls.pop(),{offset:56,animated:false});t.drag(300);t.props.onMomentumScrollEnd();assert.equal(t.calls.length,0);});
 

@@ -29,6 +29,15 @@ export function startRootCallLease(id:string,kind:'voice'|'video'){
  });
 }
 export function markRootCallConnected(id:string){if(lease?.id===id){const own=lease;own.connected=true;Native?.axonConnectedCall?.(own.ready);void serialize(async()=>{if(lease===own&&own.ready)await pictureInPicture(!own.sharing);});}}
+export function setRootCallNotificationAvatar(id:string,uri:string|null){
+ const own=lease;
+ if(own?.id!==id||Platform.OS!=='android')return;
+ const prefix='data:image/jpeg;base64,';
+ const avatar=uri?.startsWith(prefix)?uri.slice(prefix.length):null;
+ void serialize(async()=>{
+  if(lease===own&&own.ready)await NativeModules.MyChatService?.setCallNotificationAvatar?.(id,avatar);
+ }).catch(()=>{/* The ongoing call remains usable without its avatar. */});
+}
 export function setRootCallSharing(id:string,sharing:boolean){
  if(lease?.id!==id)return Promise.resolve();const own=lease;own.sharing=sharing;
  return serialize(async()=>{if(lease===own)await pictureInPicture(own.ready&&own.connected&&!own.sharing);});

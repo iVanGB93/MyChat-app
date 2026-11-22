@@ -3,8 +3,7 @@ import Native from '../../modules/axonic-nearby';
 import {localAccount,startLocalAccount} from '../services/identity/localAccount';
 import {selections,subscribeAttachmentSelections} from '../services/identity/rootAttachmentSelections';
 import {createMobileAttachmentJobs,subscribeAttachmentJobProgress} from '../services/identity/mobileAttachmentJobs';
-import {localRootChat} from '../services/identity/localRootChat';
-import {subscribeRootChatCommitted} from '../services/identity/localRootChat';
+import {localRootChat,subscribeRootChatCommitted} from '../services/identity/localRootChat';
 import {rootMessageStatus} from '../services/identity/rootMessageStatus';
 import {rootChatView} from '../services/identity/rootChatActions';
 import {rootGroupAllowed} from '../services/identity/rootGroups';
@@ -15,14 +14,16 @@ import {startLocalAccountNetwork} from './neuronRuntime';
 const unlocked=(owner:string)=>localAccount.status().account===owner&&localAccount.status().state==='unlocked'&&!localAccount.status().busy;
 export async function readBackgroundUploadWork(owner:string){
  const [selected,jobs]=await Promise.all([selections(owner),createMobileAttachmentJobs().list(owner)]);
- let count=selected.filter(s=>!s.failed).length,held=selected.filter(s=>s.failed).length,bytes=0,sent=0,uploading=0;
+ const selectedIds=new Set(selected.map(s=>s.id));
+ const preparing=selected.filter(s=>!s.failed).length;
+ let count=preparing,held=selected.length-preparing,bytes=0,sent=0,uploading=0;
  let expiresAt=Infinity;
  const snapshots=new Map<string,Awaited<ReturnType<ReturnType<typeof localRootChat>['messageIdSnapshot']>>>();
  for(const job of jobs){
   if(job.direction!=='outgoing'||job.phase==='complete')continue;
   // Preparation persists a serving job before publishing the descriptor. Until
   // that selection commits, it alone owns pending/held accounting.
-  if(selected.some(s=>s.id===job.descriptor.manifest.id))continue;
+  if(selectedIds.has(job.descriptor.manifest.id))continue;
   if(job.phase==='cancelled'||job.phase==='expired'||job.descriptor.manifest.expires<=Date.now()){held++;continue;}
   const id=job.descriptor.manifest.id;
   let state=snapshots.get(id);
@@ -32,18 +33,19 @@ export async function readBackgroundUploadWork(owner:string){
   // published message too. Preserve stranded jobs for recovery, but do not
   // keep Android's transfer service alive for work the worker cannot admit.
   if(!message){held++;continue;}
-  if(message&&(message.deleted||message.networkCancelledAt!==undefined))continue;
-  if(message&&['stored','delivered','read'].includes(rootMessageStatus(message)))continue;
+  if(message.deleted||message.networkCancelledAt!==undefined)continue;
+  if(['stored','delivered','read'].includes(rootMessageStatus(message)))continue;
   const contact=state.contacts.find(c=>c.account===job.descriptor.manifest.recipient);
-  if(!contact?.accepted||contact.blocked){held++;continue;}
-  if(message.group&&(!state.groups?.find(g=>g.id===message.group!.id)?.accepted||!rootGroupAllowed(state,owner,message.peer,message.group))){held++;continue;}
+  const group=message.group;
+  const permitted=group?state.groups?.find(g=>g.id===group.id)?.accepted&&rootGroupAllowed(state,owner,message.peer,group):contact?.accepted;
+  if(contact?.blocked||!permitted){held++;continue;}
   count++;bytes+=job.descriptor.manifest.bytes;
   expiresAt=Math.min(expiresAt,job.descriptor.manifest.expires);
   if(job.phase==='uploading')uploading++;
   sent+=Math.min(job.descriptor.manifest.bytes,job.cursor*attachmentBlockBytes(job.descriptor.manifest));
  }
- const state=selected.some(s=>!s.failed)?'preparing':uploading?'sending':'waiting';
- return {state,expiresAt,pending:count,held,percent:selected.some(s=>!s.failed)||!bytes?-1:Math.min(99,Math.floor(sent/bytes*100))};
+ const state=preparing?'preparing':uploading?'sending':'waiting';
+ return {state,expiresAt,pending:count,held,percent:preparing||!bytes?-1:Math.min(99,Math.floor(sent/bytes*100))};
 }
 
 export const backgroundUploadNeedsRefresh=(cached:{expiresAt:number}|undefined,dirty:boolean,now:number)=>!cached||dirty||now>=cached.expiresAt;

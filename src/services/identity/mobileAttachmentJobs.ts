@@ -53,7 +53,7 @@ function parse(row:{raw:string;revision:number}|null){
 }
 /** Private own-transfer journal. Public custodians never see file keys or this database. */
 export function createMobileAttachmentJobs(now:()=>number=Date.now,
- measure:JournalMeasure=unmeasured):AttachmentJobStore {
+ measure:JournalMeasure=unmeasured,onOutgoingReceipt?:()=>void):AttachmentJobStore {
  let retiredOwner:string|null=null,retiredRevision=-1,retireAfter=0;
  function observed(owner:string,jobs:AttachmentJob[]){retiredOwner=owner;retiredRevision=revision(owner);retireAfter=jobs.reduce((at,j)=>Math.min(at,j.descriptor.manifest.expires),Infinity);}
  return {
@@ -101,7 +101,7 @@ export function createMobileAttachmentJobs(now:()=>number=Date.now,
   },
   save(job,expected,current){
    const next=clone(job);if(!validAttachmentJob(next)||next.revision!==(expected===null?0:expected+1)||JSON.stringify(next).length>10000)return Promise.resolve(false);
-   const work=measure('checkpointQueue',()=>tail).then(async()=>{let saved=false,maintenanceChanged=false;if(!current())return false;
+   const work=measure('checkpointQueue',()=>tail).then(async()=>{let saved=false,maintenanceChanged=false,newOutgoingReceipt=false;if(!current())return false;
     await measure('checkpointTransaction',()=>transaction(async tx=>{
      // Bounded indexed metadata read on the private transaction connection.
      // Avoid an extra native scheduling turn; durable writes remain asynchronous.
@@ -118,8 +118,12 @@ export function createMobileAttachmentJobs(now:()=>number=Date.now,
       if((count?.n??limit)>=limit&&(!finished||!tx.getFirstSync<{revision:number}>('SELECT revision FROM finished_jobs WHERE owner=? AND digest=?',next.owner,next.digest)))return;}
      await measure('checkpointWrite',()=>tx.runAsync(`INSERT INTO ${table}(owner,digest,revision,raw) VALUES(?,?,?,?) ON CONFLICT(owner,digest) DO UPDATE SET revision=excluded.revision,raw=excluded.raw`,next.owner,next.digest,next.revision,JSON.stringify(next)));
      if(finished)await measure('checkpointWrite',()=>tx.runAsync('DELETE FROM jobs WHERE owner=? AND digest=?',next.owner,next.digest));
-     if(!current())throw Error('Attachment account locked');maintenanceChanged=!previous||finished;saved=true;
-    },measure));if(saved){if(maintenanceChanged)changed(next.owner);await measure('checkpointPublish',async()=>{publishProgress(next);attachmentChanged();});}return saved;
+     if(!current())throw Error('Attachment account locked');
+     newOutgoingReceipt=next.direction==='outgoing'&&!!next.receipt&&!previous?.receipt;
+     maintenanceChanged=!previous||finished;saved=true;
+    },measure));if(saved){if(maintenanceChanged)changed(next.owner);await measure('checkpointPublish',async()=>{publishProgress(next);attachmentChanged();});
+     if(newOutgoingReceipt)onOutgoingReceipt?.();
+    }return saved;
    });tail=work.catch(()=>{});return work;
   },
  };

@@ -200,6 +200,21 @@ class MyChatServiceModule(private val reactContext: ReactApplicationContext) :
         startCallService(callType, callId, promise)
     }
 
+    @ReactMethod
+    fun setCallNotificationAvatar(callId: String, avatar: String?, promise: Promise) {
+        try {
+            val intent = Intent(reactContext, MyChatForegroundService::class.java).apply {
+                action = MyChatForegroundService.ACTION_UPDATE_AVATAR
+                putExtra(MyChatForegroundService.EXTRA_CALL_ID, callId)
+                putExtra(MyChatForegroundService.EXTRA_CALL_AVATAR, avatar)
+            }
+            reactContext.startService(intent)
+            promise.resolve(null)
+        } catch (e: Exception) {
+            promise.reject("CALL_NOTIFICATION_ERROR", e.message, e)
+        }
+    }
+
     private fun startCallService(callType: String, callId: String?, promise: Promise) {
         if (androidx.core.content.ContextCompat.checkSelfPermission(reactContext, android.Manifest.permission.RECORD_AUDIO)
             != android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -233,6 +248,12 @@ class MyChatServiceModule(private val reactContext: ReactApplicationContext) :
     fun clearIncomingCallWindow(callId: String) {
         val activity = reactContext.currentActivity as? MainActivity ?: return
         activity.runOnUiThread { activity.clearIncomingCallWindow(callId) }
+    }
+
+    @ReactMethod
+    fun markIncomingCallConnected(callId: String) {
+        val activity = reactContext.currentActivity as? MainActivity ?: return
+        activity.runOnUiThread { activity.markIncomingCallConnected(callId) }
     }
 
     /**

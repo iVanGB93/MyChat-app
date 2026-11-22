@@ -9,7 +9,7 @@ export const calling=createCallCommands({owner,calls:activeCallSession,
 export function localAccountCalls():Pick<NonNullable<ReturnType<typeof activeCallSession>>,'snapshot'|'accept'|'end'|'confirmRinging'|'endParticipant'|'joinGroup'|'prepareExpansion'|'adoptExpansion'>|null{return activeCallSession();}
 export {subscribeLocalAccountCalls} from '../../composition/neuronRuntime';
 export type {NeuronCallView} from '../../services/identity/neuronCallCoordinator';
-export {startRootCallLease,stopRootCallLease,markRootCallConnected,rootCallMayRunBackground} from '../../services/identity/rootCallLifetime';
+export {startRootCallLease,stopRootCallLease,markRootCallConnected,rootCallMayRunBackground,setRootCallNotificationAvatar} from '../../services/identity/rootCallLifetime';
 
 export {MAX_GROUP_CALL_PARTICIPANTS} from '../../services/identity/groupCallRoom';
 export {GROUP_CALLS_ENABLED} from './features';

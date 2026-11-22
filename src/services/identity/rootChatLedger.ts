@@ -1,4 +1,4 @@
-import type {OwnHistoryStore,OwnHistoryScope,OwnHistorySlice} from './ownHistoryStore.ts';
+import type {MediaContentMatch,OwnHistoryStore,OwnHistoryScope,OwnHistorySlice} from './ownHistoryStore.ts';
 import {retiredAttachment} from './retiredAttachment.ts';
 import {validDeliveryEvidence,type DeliveryEvidence} from './deliveryEvidence.ts';
 import {rootMessageStatus} from './rootMessageStatus.ts';
@@ -242,7 +242,7 @@ if(!group)c.accepted=true;
   },
   groupSnapshot:(group:string,logicalId?:string)=>run(async()=>{check();if(!idValid(group)||logicalId!==undefined&&!idValid(logicalId))throw Error('Invalid group reference');const revision=d.revision?.(),state=d.indexed?parseRootChatStorage(d.owner,await d.indexed.readGroup(group,logicalId)):await read();check();if(revision!==d.revision?.())throw Error('History changed; retry');return state;},true),
   messageIdSnapshot:(id:string)=>run(async()=>{check();if(!idValid(id))throw Error('Invalid message ID');const revision=d.revision?.(),state=d.indexed?parseRootChatStorage(d.owner,await d.indexed.readId(id)):await read();check();if(revision!==d.revision?.())throw Error('History changed; retry');return state;},true),
-  mediaSnapshot:()=>run(async()=>{check();const revision=d.revision?.(),state=d.indexed?parseRootChatStorage(d.owner,await d.indexed.readMedia()):await read();check();if(revision!==d.revision?.())throw Error('History changed; retry');return state;},true),
+  mediaSnapshot:(match?:MediaContentMatch)=>run(async()=>{check();const revision=d.revision?.(),state=d.indexed?parseRootChatStorage(d.owner,await d.indexed.readMedia(match)):await read();check();if(revision!==d.revision?.())throw Error('History changed; retry');return state;},true),
   unreadSnapshot:(peers:string[])=>run(async()=>{check();if(peers.some(p=>!validPeer(p)))throw Error('Invalid peer');const revision=d.revision?.(),state=d.indexed?parseRootChatStorage(d.owner,await d.indexed.readUnread(peers)):await read();check();if(revision!==d.revision?.())throw Error('History changed; retry');return state;},true),
   /** Attachment policy/reconciliation needs descriptors and policy, never text history. */
   attachmentRevisionSnapshot:(revision:()=>number)=>run(async()=>{

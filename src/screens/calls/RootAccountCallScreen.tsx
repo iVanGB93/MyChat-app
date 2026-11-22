@@ -41,8 +41,17 @@ export async function ensureRootCallPermissions(kind:'voice'|'video'){
 export default function RootAccountCallScreen(){
  const currentCall=useCallState(),[dismissed,setDismissed]=useState<string|null>(null),call=currentCall?.id===dismissed?null:currentCall,[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const confirmationCall=useRef<string|null>(null);
- const [avatarUri,setAvatarUri]=useState<string|null>(null);
- useEffect(()=>{let active=true;setAvatarUri(null);const owner=localAccount.status().account,peer=call?.peerUser;const refresh=async()=>{if(!owner||!peer)return;const uri=await readSharedAvatar(owner,peer);if(active)setAvatarUri(uri);};void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};},[call?.peerUser]);
+ const owner=localAccount.status().account,peer=call?.peerUser;
+ const [avatar,setAvatar]=useState<{owner:string;peer:string;uri:string|null}|null>(null);
+ const avatarUri=avatar&&avatar.owner===owner&&avatar.peer===peer?avatar.uri:null;
+ useEffect(()=>{
+  if(!owner||!peer)return;
+  let active=true,revision=0;
+  const refresh=async()=>{const current=++revision;const uri=await readSharedAvatar(owner,peer);if(active&&revision===current)setAvatar({owner,peer,uri});};
+  void refresh().catch(()=>{});
+  const off=subscribeSharedAvatars(change=>{if(!change||(change.owner===owner&&change.peer===peer))void refresh().catch(()=>{});});
+  return()=>{active=false;off();};
+ },[owner,peer]);
  const running=useRef(false),{colors}=useTheme(),[minimizedId,setMinimizedId]=useState<string|null>(null);
  const {contacts}=useChatContacts(!!call),name=call?.room?.name??(call?contacts.find(c=>c.account===call.peerUser)?.alias||shortIdentity(call.peerUser):'');
  useEffect(()=>{
@@ -128,7 +137,8 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  const expansionAllowed=useRef(true);
  const adopt=useCallback((room:GroupCallRoom)=>expansionAllowed.current?localAccountCalls()?.adoptExpansion(anchor.id,room,anchor.peerUser)??Promise.resolve(false):Promise.resolve(false),[anchor.id,anchor.peerUser,languageSnapshot()]);
  const commitExpansion=useCallback((room:GroupCallRoom)=>owner?localAccountCalls()?.adoptExpansion(anchor.id,room,owner)??Promise.resolve(false):Promise.resolve(false),[anchor.id,owner,languageSnapshot()]);
- const {audioRoutes,routeAudio,audioError,foreground}=useCallAudioSession(call.id,call.media==='video');
+ const hangupPending=useRef(false);
+ const {audioRoutes,routeAudio,audioError,foreground}=useCallAudioSession(call.id,call.media==='video',hangup,avatarUri??null);
  const {colors}=useTheme(),styles=makeStyles(colors),[connected,setConnected]=useState(false),[error,setError]=useState('');
  const started=useRef(false),connectedAt=useRef<number|null>(null);
  const insets=useSafeAreaInsets(),[seconds,setSeconds]=useState(0),[controls,setControls]=useState(true),[options,setOptions]=useState(false);
@@ -154,8 +164,7 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  const presentation=useRef<ReturnType<typeof beginCallMediaState>|null>(null);
  useEffect(()=>{const lease=beginCallMediaState(call.id);presentation.current=lease;return()=>{lease.stop();if(presentation.current===lease)presentation.current=null;};},[call.id]);
  useEffect(()=>{presentation.current?.update({connection:rtc.connectionType,recovering:rtc.recovering,muted:rtc.isMuted,cameraOff:rtc.isCameraOff,sharing:rtc.isScreenSharing,remoteSharing:rtc.remoteScreenSharing,sharingBusy:rtc.screenShareBusy,quality:rtc.callQuality.level});},[call.id,rtc.connectionType,rtc.recovering,rtc.isMuted,rtc.isCameraOff,rtc.isScreenSharing,rtc.remoteScreenSharing,rtc.screenShareBusy,rtc.callQuality.level]);
- const hangupPending=useRef(false);
- const hangup=()=>{if(hangupPending.current)return;hangupPending.current=true;void rtc.notifyCallEnded().finally(()=>endRef.current());};
+ function hangup(){if(hangupPending.current)return;hangupPending.current=true;void rtc.notifyCallEnded().finally(()=>endRef.current());}
  const [barFraction,setBarFraction]=useState(0),[excludedFraction,setExcludedFraction]=useState<number|null>(null);
  useScreenShareOverlay(call.id,rtc.isScreenSharing,rtc.isMuted,rtc.setScreenControlsExcluded,rtc.toggleMute,rtc.stopScreenSharing,hangup,setError);
  const nativeShareControls=hasScreenShareOverlay();
@@ -198,7 +207,7 @@ function RootMedia({call,name,avatarUri,end,minimized,minimize,restore}:{call:Ne
  const audienceReady=audience.every(peer=>peer===owner||peer===anchor.peerUser||!!expansionLinks[peer!]?.available);
  const participants:CallParticipant[]|undefined=call.room?.descriptor.members.map(peer=>{
   const own=peer===owner,leg=call.room!.legs.find(l=>l.peerUser===peer),original=peer===anchor.peerUser;
-  return {id:peer,name:own?t("You"):participantName(peer),local:own,connected:own||(leg?.status==='ready'&&(original?!rtc.recovering&&(rtc.connectionType==='p2p'||rtc.connectionType==='relayed'):extraRemote[peer]?.connected===true)),stream:own?localVisible:leg?.status==='ready'?(original?remote:extraRemote[peer]?.url):undefined,cameraOff:own&&rtc.isCameraOff,
+  return {id:peer,name:own?t("You"):participantName(peer),local:own,connected:own||(leg?.status==='ready'&&(original?!rtc.recovering&&rtc.connectionType!=='connecting':extraRemote[peer]?.connected===true)),stream:own?localVisible:leg?.status==='ready'?(original?remote:extraRemote[peer]?.url):undefined,cameraOff:own&&rtc.isCameraOff,
    status:own?rtc.isMuted?t("Muted"):t("You"):leg?.status==='ended'?leg.reason??'Left':original?t("Connected"):extraRemote[peer]?.status??leg?.status??'Waiting',
    speaking:own?!rtc.isMuted&&Object.values(speakers).some(s=>s.local):leg?.status==='ready'&&!!speakers[peer]?.remote};
  });

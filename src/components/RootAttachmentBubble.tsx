@@ -12,13 +12,13 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import {useTheme} from '../contexts/ThemeContext';
 import {localAccount} from '../modules/identity';
 import {attachmentDigest,attachmentBlockBytes} from '../modules/media';
-import {rootAttachmentFile} from '../modules/storage';
 import {hasConfirmedDelivery,type RootChatMessage} from '../modules/messaging';
 import FullscreenImageViewer from './chat/fullscreen-image-viewer';
 import {messageBubbleStyles as styles} from './chat/message-bubble-styles';
 import {Ionicons} from '@expo/vector-icons';
 import {useTransferProgress} from '../modules/ui/transferState';
 import {outgoingMediaStatus} from '../utils/outgoing-media-status';
+import {useAttachmentFile} from './chat/useAttachmentFile';
 export default function RootAttachmentBubble({message,progress:initialProgress,showSize=false,onError,onLongPress,audioFooter}:{message:RootChatMessage;progress?:{phase:string;cursor:number;bytes:number;failures:number;canPause:boolean};showSize?:boolean;audioFooter?:React.ReactNode;onLongPress?(event:GestureResponderEvent):void;onError(error:string):void}){
  const [preview,setPreview]=useState(false),[imagePreview,setImagePreview]=useState(false);
  const {colors}=useTheme(),descriptor=message.attachment!,owner=localAccount.status().account;
@@ -33,9 +33,8 @@ export default function RootAttachmentBubble({message,progress:initialProgress,s
  },[descriptor.manifest.expires,confirmed]);
  const digest=useMemo(()=>attachmentDigest(descriptor.manifest),[descriptor.manifest,languageSnapshot()]);
  const progress=useTransferProgress(digest)??initialProgress;
- // File availability and shared payload paths can change; never cache them.
- const file=owner?rootAttachmentFile(owner,digest):null;
- const exists=!!file?.exists;
+ const file=useAttachmentFile(owner,digest,message.status);
+ const exists=!!file;
  const sticker=descriptor.name===IMPORTED_STICKER_CONTENT&&descriptor.manifest.bytes<=MAX_STICKER_BYTES&&/^image\/(png|webp|gif)$/.test(descriptor.mime);
  const ready=exists&&(message.direction==='outgoing'||confirmed);
  const percent=progress?Math.min(100,Math.floor(progress.cursor*attachmentBlockBytes(descriptor.manifest)/descriptor.manifest.bytes*100)):0;

@@ -28,3 +28,11 @@ test('cached status refreshes at expiry without requiring a progress event',()=>
 test('blocked or unaccepted recipients are held without mutating jobs',async()=>{const t=fixture();t.rows.push(t.job);t.messages.push(t.message);for(const change of [()=>t.contacts[0].blocked=true,()=>{t.contacts[0].blocked=false;t.contacts[0].accepted=false;}]){change();const work=await t.read();assert.equal(work.pending,0);assert.equal(work.held,1);assert.equal(t.job.phase,'confirming');}t.contacts[0].accepted=true;assert.equal((await t.read()).pending,1);});
 
 test('group work held by membership, approval or recovery does not keep uploads active',async()=>{const t=fixture();t.rows.push(t.job);t.messages.push({...t.message,group:{id:'group',messageId:'logical',revision:1}});const g={id:'group',members:['owner','peer'],accepted:true,revision:1};t.groups.push(g);assert.equal((await t.read()).pending,1);for(const patch of [{blocked:true},{recoveryPending:true},{accepted:false},{members:['owner']},{revision:0}]){t.groups[0]={...g,...patch};assert.equal((await t.read()).pending,0);assert.equal((await t.read()).held,1);}t.groups[0]=g;assert.equal((await t.read()).pending,1);});
+test('accepted group membership can keep uploads active without private contact approval',async()=>{
+ const t=fixture();t.rows.push(t.job);t.messages.push({...t.message,group:{id:'group',messageId:'logical',revision:1}});
+ t.groups.push({id:'group',members:['owner','peer'],accepted:true,revision:1});
+ t.contacts[0].accepted=false;
+ assert.equal((await t.read()).pending,1);
+ t.contacts[0].blocked=true;
+ assert.equal((await t.read()).held,1);
+});

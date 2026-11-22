@@ -32,19 +32,21 @@ export function createCallCommands(d: {
     if(!d.connected())throw Error('Connecting to Axonic. Calls need an active axon; try again once the network connects.');
     return {owner,calls};
   }
+  async function resolvePeers(members:string[],owner:string,calls:Calls){
+    const identities=await Promise.all([...new Set(members)].map(peer=>d.resolve(peer)));
+    if(d.owner()!==owner||calls!==d.calls())throw Error('Account changed');
+    for(const identity of identities)if(identity.status!=='found')throw Error(peerIdentityUnavailableMessage(identity.status));
+  }
   return {
     async prepareExpansion(id:string,members:string[]){
       const {owner,calls}=await ready(async()=>{});
-      for(const peer of members){const identity=await d.resolve(peer);if(identity.status!=='found')throw Error(peerIdentityUnavailableMessage(identity.status));if(d.owner()!==owner||calls!==d.calls())throw Error('Account changed');}
+      await resolvePeers(members,owner,calls);
       if(!calls.prepareExpansion)throw Error('Adding people is unavailable');
       return calls.prepareExpansion(id,members);
     },
     async startGroup(group:{id:string;revision:number;members:string[]},kind:'voice'|'video',permission:()=>Promise<void>){
       const {owner,calls}=await ready(permission);
-      for(const peer of group.members.filter(p=>p!==owner)){
-        const identity=await d.resolve(peer);if(identity.status!=='found')throw Error(peerIdentityUnavailableMessage(identity.status));
-        if(d.owner()!==owner||calls!==d.calls())throw Error('Account changed');
-      }
+      await resolvePeers(group.members.filter(p=>p!==owner),owner,calls);
       if(!calls.startGroup)throw Error('Group calls unavailable');
       return calls.startGroup(group,kind);
     },

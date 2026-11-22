@@ -20,6 +20,21 @@ test('retained history beyond 5000 permits scoped send and receive after restart
  }finally{f.db.close();}
 });
 
+test('content reuse reads only the matching checksum, size and deletion events',async()=>{
+ const {db,sql}=fixture(0);
+ try{
+  const checksum='d'.repeat(64),make=(n,hash,bytes)=>({id:id(n),peer:b,direction:'outgoing',status:'delivered',at:1000+n,text:'',attachment:{checksum:hash,manifest:{bytes}}});
+  const messages=[make(1,checksum,120),make(2,checksum,121),...Array.from({length:150},(_,i)=>make(i+3,id(i),120))];
+  const actions=[{peer:b,id:id(999),direction:'outgoing',status:'delivered',kind:'delete',target:{id:id(1),author:a},revision:1}];
+  const history=createIndexedOwnHistory(a,{sql,legacy:async()=>JSON.stringify({version:1,contacts:[],messages,actions}),validate:JSON.parse});
+  const selected=JSON.parse(await history.readMedia({checksum,bytes:120}));
+  assert.deepEqual(selected.messages,[messages[0]]);
+  assert.deepEqual(selected.actions,actions);
+  assert.equal(history.diagnostics().rowsRead,2);
+  assert.equal(load('rootChatActions').rootChatView(a,selected).messages[0].deleted,true);
+ }finally{db.close();}
+});
+
 test('migration is atomic and cold reopen reads pending work without historical bodies',async()=>{const f=fixture(1000);const l=f.ledger();const initial=JSON.parse(f.source());await l.metadataSnapshot();assert.equal(f.legacyReads(),1);assert.deepEqual(await l.snapshot(),initial);f.reopen();const cold=f.ledger(),before=f.store().diagnostics();await cold.metadataSnapshot();await cold.deliverySnapshot();assert.equal(f.legacyReads(),1);assert.equal(f.store().diagnostics().fullReads,before.fullReads);assert.equal(f.store().diagnostics().rowsRead,before.rowsRead);assert.equal(JSON.parse(f.source()).messages.length,1000);f.db.close();});
 
 test('failed migration preserves source and rolls back every record before retry',async()=>{const f=fixture(25);f.fail();await assert.rejects(f.ledger().metadataSnapshot(),/disk/);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM own_history_accounts').get().n,0);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM own_history_records').get().n,0);assert.equal(JSON.parse(f.source()).messages.length,25);await f.ledger().metadataSnapshot();assert.equal((await f.ledger().snapshot()).messages.length,25);f.db.close();});

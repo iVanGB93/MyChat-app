@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.media.AudioDeviceInfo
 import android.os.Build
 import android.view.WindowInsets
+import android.view.WindowInsetsAnimation
 import android.view.View
 import android.view.ViewTreeObserver
 import androidx.core.os.bundleOf
@@ -26,7 +27,23 @@ class AxonicAppUpdateModule : Module() {
   private fun stopKeyboardObserver(tag: Int) {
     keyboardObservers.remove(tag)?.let { (view, listener) ->
       if (view.viewTreeObserver.isAlive) view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+      if (Build.VERSION.SDK_INT >= 30) view.setWindowInsetsAnimationCallback(null)
     }
+  }
+
+  @androidx.annotation.RequiresApi(30)
+  private fun keyboardLayout(view: View, insets: WindowInsets?, animated: Boolean = false, windowBottom: Int? = null): Pair<Boolean, Float>? {
+    val activity = appContext.currentActivity ?: return null
+    if (!view.isAttachedToWindow || insets == null) return null
+    val imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom
+    val visible = if (animated) imeBottom > 0 else insets.isVisible(WindowInsets.Type.ime())
+    if (!visible || imeBottom <= 0) return visible to 0f
+    val position = IntArray(2)
+    view.getLocationOnScreen(position)
+    // Subtract only the overlap left after the window's own resize.
+    val keyboardTop = (windowBottom ?: activity.windowManager.currentWindowMetrics.bounds.bottom) - imeBottom
+    val overlap = (position[1] + view.height - keyboardTop).coerceIn(0, view.height)
+    return visible to overlap / view.resources.displayMetrics.density
   }
   private var chatStorageRecovery: ChatStorageRecovery? = null
   private var flowPending = false
@@ -83,14 +100,39 @@ class AxonicAppUpdateModule : Module() {
       stopKeyboardObserver(tag)
       val view = appContext.findView<View>(tag)
       if (view != null && Build.VERSION.SDK_INT >= 30) {
-        var previous = ""
-        val listener = ViewTreeObserver.OnGlobalLayoutListener {
-          val insets = view.rootWindowInsets
-          val position = IntArray(2)
-          view.getLocationOnScreen(position)
-          val state = "${insets?.isVisible(WindowInsets.Type.ime())}:${insets?.getInsets(WindowInsets.Type.ime())?.bottom}:${position[1]}:${view.height}"
-          if (state != previous) { previous = state; sendEvent("onKeyboardLayout", bundleOf("viewTag" to tag)) }
+        var previous: Pair<Boolean, Float>? = null
+        var previousAnimated = false
+        var animationWindowBottom: Int? = null
+        fun publish(insets: WindowInsets?, animated: Boolean) {
+          val layout = keyboardLayout(view, insets, animated, if (animated) animationWindowBottom else null) ?: return
+          if (layout == previous && animated == previousAnimated) return
+          previous = layout
+          previousAnimated = animated
+          sendEvent("onKeyboardLayout", bundleOf("viewTag" to tag, "visible" to layout.first,
+            "overlap" to layout.second, "animated" to animated))
         }
+        val imeAnimations = mutableSetOf<WindowInsetsAnimation>()
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+          if (imeAnimations.isEmpty()) publish(view.rootWindowInsets, false)
+        }
+        view.setWindowInsetsAnimationCallback(object :
+          WindowInsetsAnimation.Callback(WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+          override fun onPrepare(animation: WindowInsetsAnimation) {
+            if ((animation.typeMask and WindowInsets.Type.ime()) != 0) {
+              if (imeAnimations.isEmpty()) animationWindowBottom = appContext.currentActivity?.windowManager?.currentWindowMetrics?.bounds?.bottom
+              imeAnimations.add(animation)
+            }
+          }
+
+          override fun onProgress(insets: WindowInsets, runningAnimations: MutableList<WindowInsetsAnimation>): WindowInsets {
+            if (imeAnimations.isNotEmpty()) publish(insets, true)
+            return insets
+          }
+
+          override fun onEnd(animation: WindowInsetsAnimation) {
+            if (imeAnimations.remove(animation) && imeAnimations.isEmpty()) publish(view.rootWindowInsets, false)
+          }
+        })
         view.viewTreeObserver.addOnGlobalLayoutListener(listener)
         keyboardObservers[tag] = Pair(view, listener)
         listener.onGlobalLayout()
@@ -125,26 +167,12 @@ class AxonicAppUpdateModule : Module() {
         promise.resolve(null)
       } else activity.runOnUiThread {
         try {
-          val context = requireNotNull(appContext.reactContext)
           // React Native Modal views live in a Dialog window, outside the
           // activity decor. Resolve the React tag and read that view's insets.
           val view = appContext.findView<View>(viewTag)
             ?: activity.window.decorView.findViewById<View>(viewTag)
-          val insets = view?.rootWindowInsets
-          if (view == null || !view.isAttachedToWindow || insets == null) {
-            promise.resolve(null)
-          } else {
-            val visible = insets.isVisible(WindowInsets.Type.ime())
-            val imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom
-            val position = IntArray(2)
-            view.getLocationOnScreen(position)
-            // WindowMetrics includes system/IME areas even when adjustResize
-            // has already reduced the content view. Do not subtract IME twice.
-            val keyboardTop = activity.windowManager.currentWindowMetrics.bounds.bottom - imeBottom
-            val overlap = if (visible && imeBottom > 0)
-              (position[1] + view.height - keyboardTop).coerceIn(0, view.height) else 0
-            promise.resolve(mapOf("visible" to visible, "overlap" to overlap / context.resources.displayMetrics.density))
-          }
+          val layout = view?.let { keyboardLayout(it, it.rootWindowInsets) }
+          promise.resolve(layout?.let { mapOf("visible" to it.first, "overlap" to it.second) })
         } catch (_: Exception) { promise.resolve(null) }
       }
     }

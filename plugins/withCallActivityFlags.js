@@ -96,15 +96,21 @@ const withCallPictureInPictureActivity = (config) =>
     super.onNewIntent(intent)
   }
 
-  override fun onStop() {
-    incomingCallWindow.clear()
-    super.onStop()
+  fun clearIncomingCallWindow(callId: String) = incomingCallWindow.clear(callId)
+  fun markIncomingCallConnected(callId: String) = incomingCallWindow.markConnected(callId)
+
+  override fun onWindowFocusChanged(hasFocus: Boolean) {
+    super.onWindowFocusChanged(hasFocus)
+    incomingCallWindow.onWindowFocusChanged(hasFocus)
   }
 
-  fun clearIncomingCallWindow(callId: String) = incomingCallWindow.clear(callId)
+  override fun onDestroy() {
+    incomingCallWindow.clear()
+    super.onDestroy()
+  }
 
-  override fun onCreate(savedInstanceState: Bundle?) {
-    incomingCallWindow.apply(intent)`);
+  override fun onCreate(savedInstanceState: Bundle?) {`);
+        source = source.replace('    super.onCreate(null)', '    super.onCreate(null)\n    incomingCallWindow.apply(intent)');
       }
 
       if (!source.includes('import android.app.PictureInPictureParams')) {

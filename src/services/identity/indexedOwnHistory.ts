@@ -1,4 +1,4 @@
-import type {OwnHistoryScope,OwnHistorySlice} from './ownHistoryStore.ts';
+import type {MediaContentMatch,OwnHistoryScope,OwnHistorySlice} from './ownHistoryStore.ts';
 import type {RootChatState} from './rootChatTypes.ts';
 const collections=['messages','actions','groupActions','groupPackets','groupSeen'] as const;
 type Collection=typeof collections[number];
@@ -16,6 +16,7 @@ export const indexedHistorySchema=`
  CREATE INDEX IF NOT EXISTS own_history_action_target ON own_history_records(owner,peer,target_id);
  CREATE INDEX IF NOT EXISTS own_history_pending ON own_history_records(owner,status,direction);
  CREATE INDEX IF NOT EXISTS own_history_attachment ON own_history_records(owner,collection,(json_type(raw,'$.attachment') IS NOT NULL));
+ CREATE INDEX IF NOT EXISTS own_history_media_content ON own_history_records(owner,json_extract(raw,'$.attachment.checksum'),json_extract(raw,'$.attachment.manifest.bytes')) WHERE collection='messages' AND json_type(raw,'$.attachment') IS NOT NULL;
  CREATE INDEX IF NOT EXISTS own_history_logical ON own_history_records(owner,(json_extract(raw,'$.group.messageId')));
  CREATE INDEX IF NOT EXISTS own_history_group_action_target ON own_history_records(owner,group_id,target_id);
  CREATE INDEX IF NOT EXISTS own_history_room ON own_history_records(owner,group_id,peer);
@@ -71,9 +72,15 @@ export function createIndexedOwnHistory(owner:string,d:{sql:HistorySQL;legacy():
   write:(raw:string)=>serial(async()=>{await ensure();const parts=split(d.validate(raw));await transaction(async()=>{const old=await records(),wanted=new Set(parts.rows.map(r=>r.collection+':'+r.key)),byKey=new Map(old.map(r=>[r.collection+':'+r.row_key,r]));for(const row of parts.rows){const prior=byKey.get(row.collection+':'+row.key);if(prior?.raw!==row.raw||prior.position!==row.position)await put(row);}for(const row of old)if(!wanted.has(row.collection+':'+row.row_key))await db.runAsync('DELETE FROM own_history_records WHERE owner=? AND collection=? AND row_key=?',owner,row.collection,row.row_key);await db.runAsync('UPDATE own_history_accounts SET metadata=?,version=version+1 WHERE owner=?',parts.metadata,owner);});}),
   readScope:(scope:OwnHistoryScope)=>serial(()=>readScope(scope)),
   writeScope:(scope:OwnHistoryScope,before:OwnHistorySlice,raw:string)=>serial(()=>commitScope(scope,before,raw)),
-  readMedia:()=>serial(async()=>{await ensure();const a=await account(),media="(json_type(m.raw,'$.attachment') IS NOT NULL OR json_type(m.raw,'$.retiredAttachment') IS NOT NULL)",rows=await records("AND collection='messages' AND (json_type(raw,'$.attachment') IS NOT NULL OR json_type(raw,'$.retiredAttachment') IS NOT NULL)");
+  readMedia:(match?:MediaContentMatch)=>serial(async()=>{
+   await ensure();
+   const a=await account(),args=match?[match.checksum,match.bytes]:[];
+   const media=(column:string)=>match
+    ?`json_type(${column},'$.attachment') IS NOT NULL AND json_extract(${column},'$.attachment.checksum')=? AND json_extract(${column},'$.attachment.manifest.bytes')=?`
+    :`(json_type(${column},'$.attachment') IS NOT NULL OR json_type(${column},'$.retiredAttachment') IS NOT NULL)`;
+   const rows=await records("AND collection='messages' AND "+media('raw'),args);
    for(const kind of ['actions','groupActions']){const on=kind==='actions'?"a.peer=m.peer AND a.target_id=m.id AND m.group_id=''":"a.group_id=m.group_id AND a.target_id=json_extract(m.raw,'$.group.messageId') AND m.group_id<>''";
-    const events=await db.getAllAsync<{collection:Collection;row_key:string;position:number;raw:string}>("SELECT DISTINCT a.collection,a.row_key,a.position,a.raw FROM own_history_records m JOIN own_history_records a ON a.owner=m.owner AND a.collection=? AND "+on+" WHERE m.owner=? AND m.collection='messages' AND "+media+" ORDER BY a.position",kind,owner);metrics.rowsRead+=events.length;rows.push(...events);
+    const events=await db.getAllAsync<{collection:Collection;row_key:string;position:number;raw:string}>("SELECT DISTINCT a.collection,a.row_key,a.position,a.raw FROM own_history_records m JOIN own_history_records a ON a.owner=m.owner AND a.collection=? AND "+on+" WHERE m.owner=? AND m.collection='messages' AND "+media('m.raw')+" ORDER BY a.position",kind,owner,...args);metrics.rowsRead+=events.length;rows.push(...events);
    }current();return assemble(a.metadata,rows);}),
   readUnread:(peers:string[])=>serial(async()=>{await ensure();const a=await account(),rows=await records("AND peer IN (SELECT value FROM json_each(?)) AND ((collection='messages' AND group_id='' AND direction='incoming' AND COALESCE(json_extract(raw,'$.read'),0)=0) OR (collection='actions' AND EXISTS (SELECT 1 FROM own_history_records m WHERE m.owner=own_history_records.owner AND m.collection='messages' AND m.group_id='' AND m.direction='incoming' AND COALESCE(json_extract(m.raw,'$.read'),0)=0 AND m.peer=own_history_records.peer AND m.id=own_history_records.target_id)))",[JSON.stringify(peers)]);current();return assemble(a.metadata,rows);}),
   readAttachments:()=>serial(async()=>{await ensure();const a=await account(),rows=await records("AND collection='messages' AND json_type(raw,'$.attachment') IS NOT NULL");current();return assemble(a.metadata,rows);}),

@@ -1,9 +1,9 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),ts=require('typescript');
 function harness(failConfig=false,missing=false,rejectCandidates=false,shared=false,noShared=false,room=false){
-  const effects=[],cleanups=[],sent=[],legacySent=[],pcs=[];
-  let configReads=0,subscriptions=0,listener,closed=0,stopped=0,disconnected=0,released=0,detached=0;
-  const track={kind:'audio',stop(){stopped++;}},stream={getTracks:()=>[track]};
+  const effects=[],cleanups=[],sent=[],legacySent=[],pcs=[],paths=[];
+  let configReads=0,subscriptions=0,listener,closed=0,stopped=0,disconnected=0,released=0,detached=0,streamsReleased=0;
+  const track={kind:'audio',stop(){stopped++;}},stream={getTracks:()=>[track],release(){streamsReleased++;}};
   class PC {
     constructor(config){this.config=config;this.iceGatheringState='complete';this.signalingState='stable';pcs.push(this);}
     createDataChannel(label){return {label,readyState:"connecting",bufferedAmount:0,send(){},close(){}};}
@@ -28,7 +28,8 @@ function harness(failConfig=false,missing=false,rejectCandidates=false,shared=fa
     if(name==='./useWebRTCCore')return loadHook('useWebRTCCore');
     if(name.includes('call-screen-capture'))return {callScreenCaptureAvailable:true,excludeScreenControls:async()=>{}};
     if(name.includes('callCameraPreview'))return {callCameraPreview:{stop:async()=>{}}};
-    if(name==='react')return {useRef:v=>({current:v}),useCallback:f=>f,useEffect:f=>effects.push(f),useState:v=>[v,()=>{}]};
+    if(name.endsWith('/rtcAxonTransport'))return require('./helpers/attachment.cjs').load('rtcAxonTransport');
+    if(name==='react')return {useRef:v=>({current:v}),useCallback:f=>f,useEffect:f=>effects.push(f),useState:v=>[v,next=>{if(v==='connecting')paths.push(typeof next==='function'?next(paths.at(-1)??v):next);}]};
     if(name==='react-native-webrtc')return {RTCPeerConnection:PC,RTCSessionDescription:class {constructor(d){Object.assign(this,d);}},
       RTCIceCandidate:class {constructor(d){Object.assign(this,d);}},mediaDevices:{getUserMedia:async()=>stream}};
     if(name.includes('NotificationContext'))return {useNotificationContext:()=>({sendSignal:(...args)=>legacySent.push(args),
@@ -50,16 +51,33 @@ function harness(failConfig=false,missing=false,rejectCandidates=false,shared=fa
   const hook=exports.default({callId:'one-call',peerUserId:14,callType:'voice',isOutgoing:true,
     roomStream:room?stream:undefined,mediaTransport:missing?undefined:transport,onDisconnected:()=>{disconnected++;}});
   for(const effect of effects){const cleanup=effect();if(cleanup)cleanups.push(cleanup);}
-  return {hook,sent,legacySent,pcs,emit:(...a)=>listener?.(...a),unmount:()=>cleanups.forEach(f=>f()),
-    counts:()=>({configReads,subscriptions,closed,stopped,disconnected,released,detached})};
+  return {hook,sent,legacySent,pcs,paths,emit:(...a)=>listener?.(...a),unmount:()=>cleanups.forEach(f=>f()),
+    counts:()=>({configReads,subscriptions,closed,stopped,disconnected,released,detached,streamsReleased})};
 }
 const settle=()=>new Promise(r=>setImmediate(r));
+test('call path follows the selected ICE pair and discards a late sample after loss',async()=>{
+ const h=harness();try{
+  await h.hook.startAsOfferer();
+  const pc=h.pcs[0];pc.iceConnectionState='connected';pc.oniceconnectionstatechange();await settle();
+  assert.equal(h.paths.at(-1),'connected');
+  const stats=new Map([
+   ['old',{type:'candidate-pair',state:'succeeded',localCandidateId:'host',remoteCandidateId:'host'}],
+   ['transport',{type:'transport',selectedCandidatePairId:'selected'}],
+   ['selected',{type:'candidate-pair',state:'succeeded',localCandidateId:'host',remoteCandidateId:'relay'}],
+   ['host',{candidateType:'host'}],['relay',{candidateType:'relay'}],
+  ]);
+  pc.getStats=async()=>stats;pc.oniceconnectionstatechange();await settle();assert.equal(h.paths.at(-1),'relayed');
+  let release;pc.getStats=()=>new Promise(resolve=>release=resolve);pc.oniceconnectionstatechange();
+  pc.iceConnectionState='disconnected';pc.oniceconnectionstatechange();release(stats);await settle();
+  assert.equal(h.paths.at(-1),'connecting');
+ }finally{h.unmount();}
+});
 test('shared call borrows the network PC and hangup detaches tracks without closing it',async()=>{
  const h=harness(false,false,false,true);
  await h.hook.startAsOfferer();await settle();assert.equal(h.pcs.length,1);assert.equal(h.pcs[0].config.network,true);
  h.emit('answer',{type:'answer',sdp:'v=0\r\na=x-axonic-call-peer:shared\r\n'});await settle();assert.equal(h.pcs[0].remoteDescription.type,'answer');
  h.unmount();await settle();assert.equal(h.counts().closed,0);assert.equal(h.counts().released,1);
- assert.equal(h.counts().detached,1);assert.equal(h.counts().stopped,1);
+ assert.equal(h.counts().detached,1);assert.equal(h.counts().stopped,1);assert.equal(h.counts().streamsReleased,1);
  assert.equal(h.pcs[0].ontrack,null);assert.equal(h.pcs[0].onicecandidate,null);
 });
 test('neuron adapter exclusively owns signaling and ICE; cleanup stops native media',async()=>{
@@ -104,4 +122,4 @@ test('failed optional trickle candidate does not tear down established media',as
  const h=harness(false,false,true);try{await h.hook.startAsOfferer();const pc=h.pcs[0];pc.iceConnectionState='connected';pc.oniceconnectionstatechange();pc.onicecandidate({candidate:{toJSON:()=>({candidate:'late candidate'})}});await settle();assert.equal(h.sent.at(-1)[0],'ice-candidate');assert.equal(h.counts().disconnected,0);assert.equal(h.counts().stopped,0);}finally{h.unmount();}
 });
 
-test('a group leg detaches its senders without stopping room-owned capture',async()=>{const h=harness(false,false,false,true,false,true);await h.hook.startAsOfferer();h.unmount();await settle();assert.equal(h.counts().stopped,0);assert.equal(h.counts().released,1);assert.equal(h.counts().closed,0);assert.equal(h.counts().detached,1);});
+test('a group leg detaches its senders without stopping room-owned capture',async()=>{const h=harness(false,false,false,true,false,true);await h.hook.startAsOfferer();h.unmount();await settle();assert.equal(h.counts().stopped,0);assert.equal(h.counts().streamsReleased,0);assert.equal(h.counts().released,1);assert.equal(h.counts().closed,0);assert.equal(h.counts().detached,1);});

@@ -11,8 +11,12 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.os.Build
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.drawable.Icon
 import android.net.Uri
+import android.util.Base64
 import com.facebook.react.ReactApplication
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.util.UUID
@@ -21,6 +25,7 @@ import androidx.core.app.ServiceCompat
 
 class MyChatForegroundService : Service() {
     private var callId: String? = null
+    private var callType: String? = null
     private var actionToken: String? = null
 
     companion object {
@@ -29,6 +34,8 @@ class MyChatForegroundService : Service() {
         const val EXTRA_CALL_TYPE = "call_type"
         const val CALL_TYPE_VIDEO = "video"
         const val EXTRA_CALL_ID = "call_id"
+        const val EXTRA_CALL_AVATAR = "call_avatar"
+        const val ACTION_UPDATE_AVATAR = "com.axonic.UPDATE_ONGOING_CALL_AVATAR"
         private const val ACTION_HANG_UP = "com.axonic.HANG_UP_ONGOING_CALL"
 
         private fun openAppIntent(context: Context): PendingIntent {
@@ -62,27 +69,62 @@ class MyChatForegroundService : Service() {
             }
             return START_NOT_STICKY
         }
-        val callType = intent?.getStringExtra(EXTRA_CALL_TYPE)
+        if (intent?.action == ACTION_UPDATE_AVATAR) {
+            if (actionToken == null) {
+                stopSelf(startId)
+            } else if (callId != null && intent.getStringExtra(EXTRA_CALL_ID) == callId) {
+                try {
+                    getSystemService(NotificationManager::class.java).notify(
+                        NOTIFICATION_ID, buildNotification(decodeAvatar(intent.getStringExtra(EXTRA_CALL_AVATAR)))
+                    )
+                } catch (_: SecurityException) {
+                    // Notification permission may change during the call.
+                }
+            }
+            return START_NOT_STICKY
+        }
+        callType = intent?.getStringExtra(EXTRA_CALL_TYPE)
         callId = intent?.getStringExtra(EXTRA_CALL_ID)
-        val token = UUID.randomUUID().toString()
-        actionToken = token
+        actionToken = UUID.randomUUID().toString()
+        var foregroundTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        if (callType == CALL_TYPE_VIDEO) {
+            foregroundTypes = foregroundTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+        }
+        try {
+            ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(), foregroundTypes)
+        } catch (error: SecurityException) {
+            // Android can revoke foreground eligibility before this service starts.
+            actionToken = null
+            android.util.Log.w("AxonicCallService", "Call foreground service permission unavailable", error)
+            stopSelf(startId)
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun buildNotification(avatar: Bitmap? = null): Notification {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Axonic")
             .setContentText("Call in progress")
             .setSmallIcon(R.drawable.notification_icon)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(openAppIntent(this))
             .setAutoCancel(false)
+        if (avatar != null) builder.setLargeIcon(avatar)
+        val token = actionToken
         var notification = builder.build()
-        if (callId != null) {
+        if (callId != null && token != null) {
             val hangUp = PendingIntent.getService(this, 0,
                 Intent(this, MyChatForegroundService::class.java).apply {
                     action = ACTION_HANG_UP
                     data = Uri.parse("axonic-call://hang-up/$token")
                 }, PendingIntent.FLAG_IMMUTABLE)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val caller = Person.Builder().setName("Axonic").setImportant(true).build()
+                val caller = Person.Builder().setName("Axonic").setImportant(true).apply {
+                    if (avatar != null) setIcon(Icon.createWithBitmap(avatar))
+                }.build()
                 val style = Notification.CallStyle.forOngoingCall(caller, hangUp)
                     .setDeclineButtonColorHint(Color.RED).setIsVideo(callType == CALL_TYPE_VIDEO)
                 notification = Notification.Builder.recoverBuilder(this, notification)
@@ -95,19 +137,25 @@ class MyChatForegroundService : Service() {
             }
         }
 
-        var foregroundTypes = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-        if (callType == CALL_TYPE_VIDEO) {
-            foregroundTypes = foregroundTypes or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-        }
+        return notification
+    }
 
-        try {
-            ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, foregroundTypes)
-        } catch (error: SecurityException) {
-            // Android can revoke foreground eligibility before this service starts.
-            android.util.Log.w("AxonicCallService", "Call foreground service permission unavailable", error)
-            stopSelf(startId)
+    private fun decodeAvatar(encoded: String?): Bitmap? {
+        // Shared contact avatars are limited to 16 KiB before base64 encoding.
+        if (encoded.isNullOrEmpty() || encoded.length > 22_000) return null
+        return try {
+            val bytes = Base64.decode(encoded, Base64.DEFAULT)
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+            if (options.outMimeType != "image/jpeg" || minOf(options.outWidth, options.outHeight) <= 0) return null
+            val longestSide = maxOf(options.outWidth, options.outHeight)
+            options.inSampleSize = 1
+            while (longestSide / options.inSampleSize > 256) options.inSampleSize *= 2
+            options.inJustDecodeBounds = false
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        } catch (_: IllegalArgumentException) {
+            null
         }
-        return START_NOT_STICKY
     }
 
     override fun onDestroy() {

@@ -23,7 +23,7 @@ function fixture(status='ready'){
   observeCallAudioRoutes:fn=>{routeListener=fn;return {remove(){}};},selectCallAudioRoute:async id=>{chosen.push(id);return {...routes,automatic:id==='automatic',selectedId:id==='automatic'?'bt':id};}};
  let permission=async()=>true;
  imports['../../hooks/useScreenShareOverlay']={hasScreenShareOverlay:()=>false,allowScreenShareOverlay:()=>permission(),useScreenShareOverlay:()=>{}};
- imports['../../modules/calls'].startRootCallLease=async()=>{};imports['../../modules/calls'].stopRootCallLease=()=>{};imports['../../services/call-audio-route'].restoreCallAudio=()=>{};
+ imports['../../modules/calls'].startRootCallLease=async()=>{};imports['../../modules/calls'].stopRootCallLease=()=>{};imports['../../modules/calls'].setRootCallNotificationAvatar=()=>{};imports['../../services/call-audio-route'].restoreCallAudio=()=>{};
  for(const name of ['useCallAudioSession','CallSessionScreen','CallOptions']){const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/'+name+(name==='useCallAudioSession'?'.ts':'.tsx'),'utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(mod,n=>(require('./helpers/localization.cjs')(n)??(imports[n]??{})));imports['./'+name]=mod;}
  const shared=new Set([imports['./CallSessionScreen'].default,imports['./CallSessionScreen'].CallControls,imports['./CallOptions'].default]);
  function expand(tree){if(Array.isArray(tree))return tree.map(expand);if(!tree||typeof tree!=='object')return tree;if(shared.has(tree.type))return expand(tree.type(tree.props));return {...tree,props:{...tree.props,children:expand(tree.props?.children)}};}

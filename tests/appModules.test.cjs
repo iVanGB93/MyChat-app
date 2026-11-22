@@ -70,7 +70,7 @@ test('a stalled direct preparation falls back and a late authenticated ACK settl
 test('two stalled direct routes cannot block a third recipient custody handoff',async()=>{
  const f=setup(),other='axonic:1:'+'d'.repeat(64);for(const peer of [b,c,other])await f.commands.sendText(peer,'stalled');
  let sends=0;const releases=[];const d=delivery(f,{directTimeoutMs:10,connectedPeers:()=>[b,c,other],send:()=>{sends++;return new Promise(r=>releases.push(r));}});
- for(let i=0;i<3;i++)await d.worker.tick();assert.equal(sends,2);assert.equal(d.events.filter(e=>e[0]==='deposit').length,3);
+ await d.worker.tick();await until(()=>d.events.filter(e=>e[0]==='deposit').length===3&&!d.worker.snapshot().busy);assert.equal(sends,2);
  assert.equal(d.worker.snapshot().busy,false);d.worker.stop();for(const release of releases)release(false);
 });
 
@@ -108,6 +108,23 @@ test('background discovery releases delivery slots and stopping cannot send agai
 test('network errors preserve the outbox and release the tick for retry',async()=>{const f=setup();await f.commands.sendText(b,'hello');let n=0,now=10000;const d=delivery(f,{now:()=>now,send:async()=>{if(++n<=1)throw Error('offline');return true;}});await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');now+=2000;await d.worker.tick();assert.equal((await f.ledger.snapshot()).messages[0].status,'delivered');});
 test('blocked peers do not enter the transport or custody queue',async()=>{const f=setup();await f.commands.sendText(b,'hello');await f.ledger.configure(b,{blocked:true});const d=delivery(f);await d.worker.tick();assert.ok(!d.events.some(e=>e[0]==='send'));assert.deepEqual(d.events[0],['blocked',[b]]);});
 function callFixture(){let owner=a,connected=true,resolve=async()=>({status:'found'}),started=0;const session={start:async()=>{started++;return 'call';}};let active=session;const calls=createCallCommands({owner:()=>owner,calls:()=>active,connected:()=>connected,readinessTimeoutMs:20,resolve:peer=>resolve(peer)});return {calls,setOwner:v=>owner=v,setConnected:v=>connected=v,setResolve:v=>resolve=v,setCalls:v=>active=v,started:()=>started};}
+test('group call and expansion preflight resolve member identities together and recheck runtime ownership',async()=>{
+ const members=[a,b,'third-peer'];
+ for(const operation of ['startGroup','prepareExpansion']){
+  let active,invocations=0;
+  const runtime={start:async()=>{},[operation]:async()=>{invocations++;}};
+  active=runtime;
+  const lookups=new Map();
+  const calls=createCallCommands({owner:()=>a,calls:()=>active,connected:()=>true,resolve:peer=>new Promise(resolve=>lookups.set(peer,resolve))});
+  const work=operation==='startGroup'?calls.startGroup({id:'group',revision:1,members},'video',async()=>{}):calls.prepareExpansion('call',members.slice(1));
+  await new Promise(setImmediate);
+  assert.deepEqual([...lookups.keys()],members.slice(1));
+  active={...runtime};
+  for(const resolve of lookups.values())resolve({status:'found'});
+  await assert.rejects(work,/Account changed/);
+  assert.equal(invocations,0);
+ }
+});
 test('call startup waits for the permission-induced reconnect before starting once',async()=>{
  let connected=true,started=0,waits=0;
  const session={start:async()=>{started++;return 'call';}};
@@ -179,6 +196,16 @@ test('an offline recipient does not block a newly queued connected conversation'
  const id=await f.commands.sendText(c,'urgent');d.worker.wake(c,id);
  await until(async()=> (await f.ledger.snapshot()).messages.find(m=>m.id===id).status==='delivered');
  assert.equal((await f.ledger.snapshot()).messages[0].status,'pending');d.worker.stop();release();await first;
+});
+test('durable backlog fills the second delivery lane without a new-message hint',async()=>{
+ const f=setup();await f.commands.sendText(b,'Offline recipient');
+ const id=await f.commands.sendText(c,'Connected recipient');let release;
+ const d=delivery(f,{connectedPeers:()=>[c],send:async()=>true,deposit:()=>new Promise(resolve=>release=resolve)});
+ const first=d.worker.tick();
+ try{
+  await until(()=>!!release);
+  await until(async()=> (await f.ledger.snapshot()).messages.find(m=>m.id===id).status==='delivered');
+ }finally{d.worker.stop();release?.(false);await first;}
 });
 test('concurrent recipients remain bounded and a third queued recipient resumes when capacity returns',async()=>{
  const f=setup(),other='axonic:1:'+'d'.repeat(64),ids=[];for(const peer of [b,c,other])ids.push(await f.commands.sendText(peer,'hello'));

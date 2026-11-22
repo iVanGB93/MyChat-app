@@ -9,6 +9,7 @@ import {excludeScreenControls} from '../services/call-screen-capture';
 import {callVideoState,readCallVideoState} from '../services/callVideoPresentation';
 import type RTCDataChannel from 'react-native-webrtc/lib/typescript/RTCDataChannel';
 import {callCameraPreview} from '../services/callCameraPreview';
+import {rtcPathSummary} from '../services/identity/rtcAxonTransport';
 import {createCallPeerSelection,callPeerMode,callPeerDescription,type SelectedCallPeer,type CallPeerMode} from '../services/callPeerSelection';
 /** Prefer the authenticated network peer; negotiate a call-only ICE fallback
  * when it cannot connect. Signaling stays bound to the accepted call. Cleanup
@@ -34,7 +35,11 @@ import type { CallMediaTransport } from '../services/call-media-transport';
 
 /** The ICE gather timeout — same as web app */
 const ICE_GATHER_TIMEOUT = 5000;
-export type ConnectionType = 'connecting' | 'p2p' | 'relayed';
+function releaseLocalMedia(stream:MediaStream){
+  for(const track of stream.getTracks())track.stop();
+  stream.release();
+}
+export type ConnectionType = 'connecting' | 'connected' | 'p2p' | 'relayed';
 
 export type {CallQuality,CallQualityLevel} from '../services/callQualityMonitor';
 export interface UseWebRTCOptions {
@@ -215,6 +220,7 @@ export default function useWebRTCCore({
       } catch (err) {
         // Some emulators and older devices reject ideal constraints. Keep the
         // call usable with the previous low-bandwidth profile as a fallback.
+        if(cleanedUp.current||callType!=='video')throw err;
         console.warn('[WebRTC] preferred camera constraints failed, using fallback:', err);
         return await mediaDevices.getUserMedia({
           audio: true,
@@ -228,7 +234,7 @@ export default function useWebRTCCore({
     try {
       const stream = await mediaAcquirePromiseRef.current;
       if (cleanedUp.current) {
-        stream.getTracks().forEach((track) => track.stop());
+        releaseLocalMedia(stream);
         throw new Error('Call ended while acquiring local media');
       }
       localStreamRef.current = stream;
@@ -293,46 +299,16 @@ export default function useWebRTCCore({
     }
   }, []);
 
-  /**
-   * Examine the active candidate pair via getStats() and set connectionType.
-   * 'relayed' means at least one side is using a TURN relay.
-   * 'p2p' means both sides are direct (host / srflx / prflx candidates).
-   */
+  const pathRevision=useRef(0);
   const detectConnectionType = useCallback(async (pc: RTCPeerConnection) => {
+    const revision=++pathRevision.current;
+    setConnectionType(previous=>previous==='connecting'?'connected':previous);
     try {
-      const stats: RTCStatsReport = await (pc as any).getStats();
-      const candidates: Record<string, any> = {};
-
-      stats.forEach((report: any) => {
-        if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
-          candidates[report.id] = report;
-        }
-      });
-
-      let detected = false;
-      stats.forEach((report: any) => {
-        if (
-          !detected &&
-          report.type === 'candidate-pair' &&
-          (report.state === 'succeeded' || report.nominated)
-        ) {
-          const local = candidates[report.localCandidateId];
-          const remote = candidates[report.remoteCandidateId];
-          const isRelayed =
-            local?.candidateType === 'relay' || remote?.candidateType === 'relay';
-          setConnectionType(isRelayed ? 'relayed' : 'p2p');
-          debugLog(
-            `[WebRTC] connection path: ${isRelayed ? 'relayed via TURN' : 'direct P2P'}`,
-            `(local: ${local?.candidateType ?? '?'}, remote: ${remote?.candidateType ?? '?'})`
-          );
-          detected = true;
-        }
-      });
-
-      if (!detected) {
-        // Stats not yet ready — default to p2p if we're connected
-        setConnectionType('p2p');
-      }
+      const stats=await pc.getStats();
+      if(cleanedUp.current||pcRef.current!==pc||pathRevision.current!==revision)return;
+      const {localType,remoteType}=rtcPathSummary(stats);
+      if(localType==='relay'||remoteType==='relay')setConnectionType('relayed');
+      else if(localType&&remoteType)setConnectionType('p2p');
     } catch (err) {
       console.warn('[WebRTC] getStats failed, cannot determine connection type:', err);
     }
@@ -441,6 +417,7 @@ export default function useWebRTCCore({
           onConnected?.();
           void detectConnectionType(pc);
         } else if (state === 'disconnected' || state === 'failed') {
+          pathRevision.current++;
           setConnectionType('connecting');
         }
       };
@@ -585,20 +562,9 @@ export default function useWebRTCCore({
 
   /* ---- Kick off the right flow on mount ---- */
   useEffect(() => {
-    if (isOutgoing) {
-      // Caller: pre-warm the camera so the user sees their selfie preview
-      // immediately while ringing. The actual peer connection / offer is
-      // created later when call_accepted fires (startAsOfferer reuses this
-      // already-acquired stream).
-      if (callType === 'video') {
-        acquireMedia().catch((err) =>
-          console.warn('[WebRTC] caller preview acquireMedia failed:', err),
-        );
-      }
-    } else {
-      // Callee: acquire media immediately, wait for offer
-      startAsAnswerer();
-    }
+    // The ringing screen already owns the preview. Once accepted, the offer
+    // starts the caller's capture and the callee prepares for incoming media.
+    if (!isOutgoing) void startAsAnswerer();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -672,7 +638,7 @@ export default function useWebRTCCore({
     }
 
     if (localStreamRef.current) {
-      if(!roomStream)localStreamRef.current.getTracks().forEach((t) => t.stop());
+      if(!roomStream)releaseLocalMedia(localStreamRef.current);
       localStreamRef.current = null;
     }
 

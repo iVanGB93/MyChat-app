@@ -19,7 +19,7 @@ export type CallExpansionLink={available:boolean;request(room:GroupCallRoom):Pro
 /** The room is the sole owner of capture/audio/OS lifetime. Leg components retain
  * media while minimized, and release only their senders when a participant leaves. */
 export default function RootGroupCallMedia({call,end,minimized,minimize,restore}:{call:NeuronCallView<string>;end():void;minimized:boolean;minimize():void;restore():void}){
- const {audioRoutes,routeAudio,audioError,foreground}=useCallAudioSession(call.id,call.media==='video');
+ const {audioRoutes,routeAudio,audioError,foreground}=useCallAudioSession(call.id,call.media==='video',end);
  const [options,setOptions]=useState(false);
  const {colors}=useTheme(),{contacts}=useChatContacts(true);
  const owner=localAccount.status().account,room=call.room!,video=call.media==='video';
@@ -64,12 +64,12 @@ export function GroupLeg({leg,stream,update,connected,speaking,expansion}:{leg:N
  // confirms. This leg acknowledges its own exchange without replacing media.
  const acknowledged=useCallback(async()=>true,[]);
  const rtc=useWebRTCCore({callId:leg.id,callType:leg.media,isOutgoing:leg.outgoing,peerUserId:leg.peerUser,mediaTransport:leg.transport,roomStream:stream,onExpandCall:adopt,onExpansionAccepted:acknowledged,onSpeaking,onConnected,onDisconnected:disconnected});
- useEffect(()=>{expansion?.(leg.peerUser,{available:rtc.canExpandCall&&!rtc.recovering&&(rtc.connectionType==='p2p'||rtc.connectionType==='relayed'),request:rtc.expandCall});return()=>expansion?.(leg.peerUser,null);},[expansion,leg.peerUser,rtc.canExpandCall,rtc.recovering,rtc.connectionType,rtc.expandCall]);
+ useEffect(()=>{expansion?.(leg.peerUser,{available:rtc.canExpandCall&&!rtc.recovering&&rtc.connectionType!=='connecting',request:rtc.expandCall});return()=>expansion?.(leg.peerUser,null);},[expansion,leg.peerUser,rtc.canExpandCall,rtc.recovering,rtc.connectionType,rtc.expandCall]);
  // A signaling-ready leg may never establish media (for example exhausted TURN
  // allocations). End only that leg instead of leaving an infinite Connecting tile.
  useEffect(()=>{if(!established.current)setupDeadline.current=setTimeout(disconnected,45000);return()=>{if(setupDeadline.current!==null)clearTimeout(setupDeadline.current);};},[leg.id,disconnected]);
  useEffect(()=>{if(leg.outgoing)void rtc.startAsOfferer();},[leg.id]);
- useEffect(()=>{update(leg.peerUser,{url:rtc.remoteStream?.toURL(),connected:!rtc.recovering&&(rtc.connectionType==='p2p'||rtc.connectionType==='relayed'),status:rtc.recovering?'Reconnecting…':rtc.connectionType==='p2p'?'Direct':rtc.connectionType==='relayed'?'TURN relay':'Connecting…'});},[leg.peerUser,rtc.remoteStream,rtc.recovering,rtc.connectionType,update]);
+ useEffect(()=>{update(leg.peerUser,{url:rtc.remoteStream?.toURL(),connected:!rtc.recovering&&rtc.connectionType!=='connecting',status:rtc.recovering?t("Reconnecting…"):rtc.connectionType==='p2p'?'Direct':rtc.connectionType==='relayed'?'TURN relay':rtc.connectionType==='connected'?t("Connected"):t("Connecting…")});},[leg.peerUser,rtc.remoteStream,rtc.recovering,rtc.connectionType,update]);
  useEffect(()=>()=>{update(leg.peerUser,null);speaking(leg.peerUser,false,false);},[leg.peerUser,update,speaking]);
  return null;
 }

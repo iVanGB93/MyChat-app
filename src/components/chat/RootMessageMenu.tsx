@@ -15,7 +15,7 @@ import {useTheme} from '../../contexts/ThemeContext';
 import {ROOT_REACTIONS} from '../../modules/messaging';
 import type {RootChatMessage} from '../../modules/messaging';
 import {chatRoomStyles as styles} from './chat-room-styles';
-export default function RootMessageMenu({message,close,copy,reply,forward,edit,remove,react,info,pageY,createSticker,onMediaChanged}:{message:RootChatMessage;close():void;copy():void;reply():void;forward?():void;edit():void;remove():void;react(text:string):void;info?():void;pageY?:number;createSticker?(uri:string):void;onMediaChanged?():void}){
+export default function RootMessageMenu({message,close,copy,reply,forward,edit,remove,react,info,pageY,createSticker}:{message:RootChatMessage;close():void;copy():void;reply():void;forward?():void;edit():void;remove():void;react(text:string):void;info?():void;pageY?:number;createSticker?(uri:string):void}){
  const {colors}=useTheme(),{height}=useWindowDimensions();
  const owner=localAccount.status().account,a=message.attachment,digest=a?attachmentDigest(a.manifest):null;
  const file=owner&&digest?rootAttachmentFile(owner,digest):null;
@@ -39,7 +39,7 @@ export default function RootMessageMenu({message,close,copy,reply,forward,edit,r
   {!message.attachment&&!isSticker&&option('Copy message',copy)}{option('Reply',reply)}{forward&&option('Forward',forward)}
   {ready&&!alreadySaved&&a&&option('Save attachment',()=>perform(async()=>{await saveRootDownloadedMedia(owner!,digest!,a.name,a.mime);Alert.alert(t("Media saved"),a.mime.startsWith('image/')||a.mime.startsWith('video/')?t("Saved in Gallery."):t("Saved in Downloads/Axonic."));}))}
   {ready&&!isSticker&&a?.mime.startsWith('image/')&&createSticker&&option('Create sticker',()=>createSticker(rootAttachmentFile(owner!,digest!).uri))}
-  {ready&&message.direction==='incoming'&&option('Delete downloaded media',()=>Alert.alert(t("Delete downloaded media?"),t("Remove this downloaded file and its Axonic Gallery copy? The message remains."),[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>perform(async()=>{await removeRootDownloadedMedia(owner!,digest!);onMediaChanged?.();})}]),true)}
+  {ready&&message.direction==='incoming'&&option('Delete downloaded media',()=>Alert.alert(t("Delete downloaded media?"),t("Remove this downloaded file and its Axonic Gallery copy? The message remains."),[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>perform(()=>removeRootDownloadedMedia(owner!,digest!))}]),true)}
   {message.direction==='outgoing'&&!message.attachment&&!isSticker&&option('Edit message',edit)}
   {message.direction==='outgoing'&&option('Delete message',remove,true)}{!!message.reactions?.length&&option('Remove my reaction',()=>react(''))}
  </ScrollView></Pressable></Pressable></Modal>;

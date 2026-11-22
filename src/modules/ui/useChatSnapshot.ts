@@ -1,7 +1,8 @@
 export {useConversationIndex} from './useConversationPages';
 export {createChatReplyLookup} from './chatReplyLookup';
+export {retainEqual as retainEqualChatProps} from '../../services/identity/sharedState';
 import {useGroupSnapshot} from './useGroupSnapshot';
-import {useConversationIndex,useConversationSummaries,useConversationWindow} from './useConversationPages';
+import {useConversationSelection,useConversationSummaries,useConversationWindow} from './useConversationPages';
 import {readProfileAvatar,readSharedAvatar,subscribeSharedAvatars} from '../storage';
 import {useCallback,useEffect,useState,useMemo,useRef,useSyncExternalStore} from 'react';
 import {AppState} from 'react-native';
@@ -12,6 +13,7 @@ import {createAvatarSnapshotCache} from './avatarSnapshotCache';
 import {diagnosticJournal} from '../../services/diagnosticJournal';
 import {useForeground} from './liveState';
 import {useStore} from 'zustand';
+import {useShallow} from 'zustand/react/shallow';
 import {chatState} from './chatState';
 import {createConversationSelector} from './chatReadModel';
 
@@ -24,7 +26,7 @@ localAccount.subscribe(()=>{const status=localAccount.status();if(status.state!=
 
 /** Names and approvals do not subscribe to message or transfer changes. */
 export function useChatContacts(enabled=true){
- const value=useConversationIndex(enabled);return {contacts:value.index?.state.contacts??emptyContacts,hiddenChats:value.index?.state.hiddenChats,error:value.error};
+ return useConversationSelection(enabled,useShallow(value=>({contacts:value.index?.state.contacts??emptyContacts,hiddenChats:value.index?.state.hiddenChats,error:value.error})));
 }
 const emptyContacts:import('../messaging').RootChatState['contacts']=[];
 

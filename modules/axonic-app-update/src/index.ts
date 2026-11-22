@@ -27,7 +27,7 @@ interface AxonicAppUpdateNativeModule {
   getKeyboardOverlap?: (viewTag:number)=>Promise<{visible:boolean;overlap:number}|null>;
   watchKeyboardLayout?:(viewTag:number)=>Promise<boolean>;
   unwatchKeyboardLayout?:(viewTag:number)=>Promise<void>;
-  addListener?: (event: string, listener: (state: { installStatus: number;bytesDownloaded?:number;totalBytesToDownload?:number;viewTag?:number }) => void) => { remove(): void };
+  addListener?: (event: string, listener: (state: { installStatus: number;bytesDownloaded?:number;totalBytesToDownload?:number;viewTag?:number;visible?:boolean;overlap?:number;animated?:boolean }) => void) => { remove(): void };
   getUpdateInfoAsync(): Promise<PlayUpdateInfo>;
   startUpdateAsync?: (immediate: boolean) => Promise<PlayUpdateStartResult>;
   completeUpdateAsync?: () => Promise<void>;
@@ -40,9 +40,13 @@ export const clearChatRecoverySnapshot=async()=>{await nativeModule?.clearChatRe
 export const readNativeChatStorage=(owner:string)=>{if(!nativeModule?.readChatStorage)throw Error('Chat recovery requires an updated native build');return nativeModule.readChatStorage(owner);};
 export async function getDiagnosticBuildInfo(){try{return await nativeModule?.getDiagnosticBuildInfo?.()??null;}catch{return null;}}
 export const supportsKeyboardOverlap=()=>typeof nativeModule?.getKeyboardOverlap==='function';
-export async function observeKeyboardLayout(tag:number,changed:()=>void):Promise<{remove():void}|null>{
+export async function observeKeyboardLayout(tag:number,changed:(layout?:{visible:boolean;overlap:number},animated?:boolean)=>void):Promise<{remove():void}|null>{
  if(!nativeModule?.watchKeyboardLayout||!nativeModule.addListener)return null;
- const listener=nativeModule.addListener('onKeyboardLayout',event=>{if(event.viewTag===tag)changed();});
+ const listener=nativeModule.addListener('onKeyboardLayout',event=>{
+  if(event.viewTag!==tag)return;
+  if(typeof event.visible==='boolean'&&typeof event.overlap==='number')changed({visible:event.visible,overlap:event.overlap},event.animated);
+  else changed();
+ });
  try{if(await nativeModule.watchKeyboardLayout(tag))return {remove(){listener.remove();void nativeModule?.unwatchKeyboardLayout?.(tag).catch(()=>{});}};}catch{}
  listener.remove();return null;
 }

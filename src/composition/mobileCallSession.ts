@@ -19,6 +19,11 @@ export function createMobileCallSession(account:string,d:{
  activate(runtime:ReturnType<typeof createRootAccountCalls>):void;changed(view:NeuronCallView<string>|null):void;
 }){
  let stopped=false;const current=()=>!stopped&&d.owner()===account;
+      const syncNotice=(view:NeuronCallView<string>|null)=>{
+        void syncRootCallNotification(account,view).then(shown=>{
+          if(shown&&view&&current())return callRuntime.coordinator.confirmRinging(view.id);
+        }).catch(()=>{});
+      };
       const callRuntime=createRootAccountCalls({identity:localAccount,network:d.network,records:d.records,
         store:createMobileCallJournalStore(),list:()=>listMobileCallJournals(account),
         listPending:()=>listMobileCallJournals(account,Date.now()),current,
@@ -29,9 +34,9 @@ export function createMobileCallSession(account:string,d:{
           const view=callRuntime.coordinator.snapshot();
           return finishRootCallWake(account,id,AppState.currentState!=='active'&&view?.id===id&&!view.outgoing&&view.status==='ringing');
         }},
-        changed:view=>{if(!current())return;Native?.axonCallSetupWindow?.(view&&view.status!=='ready'&&view.status!=='ended'?Math.max(0,Math.min(65000,(view.expiresAt??Date.now())-Date.now())):view?.status==='ended'?5000:0);d.wake();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&current())return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});d.changed(view);}});
+        changed:view=>{if(!current())return;Native?.axonCallSetupWindow?.(view&&view.status!=='ready'&&view.status!=='ended'?Math.max(0,Math.min(65000,(view.expiresAt??Date.now())-Date.now())):view?.status==='ended'?5000:0);d.wake();syncNotice(view);d.changed(view);}});
       d.activate(callRuntime);
-      const noticeLifecycle=AppState.addEventListener('change',()=>{if(!current())return;if(AppState.currentState==='active')void callRuntime.recoverWakes().catch(()=>{});d.wake();const view=callRuntime.coordinator.snapshot();void syncRootCallNotification(account,view).then(shown=>{if(shown&&view&&current())return callRuntime.coordinator.confirmRinging(view.id);}).catch(()=>{});});
+      const noticeLifecycle=AppState.addEventListener('change',()=>{if(!current())return;if(AppState.currentState==='active')void callRuntime.recoverWakes().catch(()=>{});d.wake();syncNotice(callRuntime.coordinator.snapshot());});
       const stopNotice=()=>noticeLifecycle.remove();
       const device=localAccount.callDevice()!;
       void registerRootCallWakeOwner(account,device).catch(()=>{});

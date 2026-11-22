@@ -55,7 +55,13 @@ export function createMessageDelivery(d: {
   const active=new Map<string,{phase:string;started:number}>();
   const urgent: {peer:string;id:string}[]=[];
   let wakeTimer:ReturnType<typeof setTimeout>|undefined;
-  function schedule(progress=false){if(stopped||selecting||active.size>=2||wakeTimer!==undefined||!progress&&!urgent.some(m=>!active.has(m.peer)&&(retries.get(m.peer+':'+m.id)?.after??0)<=now()))return;wakeTimer=setTimeout(()=>{wakeTimer=undefined;void dispatch();},0);}
+  function schedule(backlog=false,failedPeer?:string){
+    const at=now();
+    if(stopped||selecting||active.size>=2||wakeTimer!==undefined||dispatchAfter>at)return;
+    const due=(m:{peer:string;id:string})=>!active.has(m.peer)&&(retries.get(m.peer+':'+m.id)?.after??0)<=at;
+    if(!urgent.some(due)&&(!backlog||!cached?.view.rows.some(m=>m.peer!==failedPeer&&due(m))))return;
+    wakeTimer=setTimeout(()=>{wakeTimer=undefined;void dispatch();},0);
+  }
   async function collect() {
     const owner = d.owner(), epoch = generation;
     if (collecting || !owner || stopped) return;
@@ -72,7 +78,7 @@ export function createMessageDelivery(d: {
       const owner = d.owner(), epoch = generation;
       if (selecting || active.size>=2 || !owner || stopped) return;
       if(now()<dispatchAfter)return;
-      selecting = true;let ownsSelection=true,peer:string|undefined,retryKey:string|undefined,delivered=false,handedOff=false;
+      selecting = true;let ownsSelection=true,peer:string|undefined,retryKey:string|undefined,delivered=false,handedOff=false,backlog=false;
       const attempt={phase:'storage',started:now()};
       const current = () => !stopped && generation === epoch && d.owner() === owner;
       try {
@@ -90,12 +96,13 @@ export function createMessageDelivery(d: {
         const hint=urgent.find(h=>pending.some(m=>m.peer===h.peer&&m.id===h.id));
         const message = (hint?pending.find(m=>m.peer===hint.peer&&m.id===hint.id):null)??(pending.length ? pending[cursor++ % pending.length] : null);
         if (!message) return;
+        backlog=!hint;
         const markDirect=async()=>{
           await d.acceptDirect(message.peer,message.id,now());
-          if(d.directDelivery&&state.outgoingKeys.has(message.peer+':'+message.id))d.directDelivery(owner,message.peer,message.id);
+          if(current()&&state.outgoingKeys.has(message.peer+':'+message.id))d.directDelivery?.(owner,message.peer,message.id);
         };
         retryKey=message.peer+':'+message.id;
-        peer=message.peer;active.set(peer,attempt);selecting=false;ownsSelection=false;schedule();
+        peer=message.peer;active.set(peer,attempt);selecting=false;ownsSelection=false;schedule(backlog);
         attempts++;lastTraffic=message.raw.startsWith('["axonic-avatar-')?'avatar':'chat';lastOutcome='attempting';
         let direct=false;
         // The route decision is a local session lookup, never a discovery wait.
@@ -122,13 +129,20 @@ export function createMessageDelivery(d: {
             void Promise.resolve().then(()=>current()?d.resolve(message.peer):undefined).catch(()=>{}).finally(()=>resolving.delete(message.peer));
           }
         }
-      } catch(error) { dispatchAfter=now()+5000;lastOutcome=error instanceof Error?'error:'+error.name:'error'; /* Durable outbox remains pending for a later tick/session. */ }
+      } catch(error) {
+        // Failed storage reads have no selected recipient. An individual
+        // transport failure backs off only that intent, leaving the other lane usable.
+        if(!retryKey)dispatchAfter=now()+5000;
+        lastOutcome=error instanceof Error?'error:'+error.name:'error';
+      }
       finally {
         if(retryKey&&peer&&current()){
           if(delivered)retries.delete(retryKey);
           else {const failures=Math.min(4,(retries.get(retryKey)?.failures??0)+1);if(retries.size>=512&&!retries.has(retryKey))retries.delete(retries.keys().next().value!);retries.set(retryKey,{peer,failures,after:now()+(handedOff?60000:Math.min(15000,1000*2**failures))});}
         }
-        if(ownsSelection)selecting=false;if(peer&&active.get(peer)===attempt)active.delete(peer);schedule(delivered||handedOff);if(peer)d.changed?.();
+        if(ownsSelection)selecting=false;
+        if(peer&&active.get(peer)===attempt)active.delete(peer);
+        if(peer){const progressed=delivered||handedOff;schedule(progressed||backlog,progressed?undefined:peer);d.changed?.();}
       }
   }
   return {
