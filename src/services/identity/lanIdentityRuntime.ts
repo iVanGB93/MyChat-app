@@ -14,13 +14,13 @@ export interface NativeAxonLan extends NativeAxonTransport {
 type Dependencies = Omit<Parameters<typeof createIdentityNetwork>[0], 'connect'> & {
   remembered?():import('./neuronConnections').NeuronCandidate[];
   recoveryPeers?(): ReadonlySet<string> | undefined;
-  foregroundStartup?:boolean;
   onStartupPhase?(phase:'bootstrap'|'expanded'):void;
   native: NativeAxonLan;
   rtc?: Pick<Parameters<typeof createRtcAxonTransport>[0], 'random' | 'createConnection' | 'sign' | 'authenticated' | 'wait' | 'mediaLane' | 'streamCredit'>;
-  internet?: { connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
+  internet?: { ready?():boolean; connect: Parameters<typeof createIdentityNetwork>[0]['connect'];
     peers: { account: string; endpoint: string; preferredBootstrap?: boolean }[] };
 };
+const BOOTSTRAP_HEAD_START_MS=3000;
 const validAccount = (id: string) => /^axonic:1:[0-9a-f]{64}$/.test(id);
 /** One current signaling route per destination, using the existing local peer
  * ranking. Discovery iteration order must not silently override that choice. */
@@ -39,12 +39,12 @@ export function rankedRtcIntroductions<T extends {account:string;via:string;expi
 /** Combines LAN discovery with authenticated Internet routes. */
 export function createLanIdentityRuntime(d: Dependencies) {
   const lan = createNativeAxonConnector(d.native);
-  let bootstrapOnly=d.foregroundStartup===true, startupUntil=Infinity;
+  // The first unrestricted route pass reserves discovery for the saved AoN.
+  // Recovery can already have its own authenticated session when normal work joins.
+  let startupUntil:number|undefined;
+  const routesReady=()=>d.internet?.ready?.()!==false;
   const preferredBootstrap=()=>d.internet?.peers.find(peer=>peer.preferredBootstrap);
-  function finishStartup(){
-    if(!bootstrapOnly)return;
-    bootstrapOnly=false;startupUntil=Infinity;d.onStartupPhase?.('expanded');d.onWorkChanged?.();
-  }
+  const bootstrapOnly=()=>startupUntil!==0&&!!preferredBootstrap();
   // Discovery can retain a vanished Wi-Fi peer. A failed dial must not let
   // that advertisement suppress an independently authenticated RTC route.
   const failedLan = new Map<string, number>();
@@ -59,7 +59,8 @@ export function createLanIdentityRuntime(d: Dependencies) {
     allowRoute: candidate=>{
       const peers=d.recoveryPeers?.();
       if(peers)return peers.has(candidate.account)&&d.internet?.peers.some(peer=>peer.account===candidate.account&&peer.endpoint===candidate.endpoint)===true;
-      if(!bootstrapOnly)return true;
+      if(!routesReady())return false;
+      if(!bootstrapOnly())return true;
       const preferred=preferredBootstrap();
       return candidate.route==='internet'&&candidate.account===preferred?.account&&candidate.endpoint===preferred.endpoint;
     },
@@ -109,7 +110,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
   function reconcile() {
     const state = network.snapshot();
     if (rtcAccount !== state.account || state.state !== 'active') { rtc?.stop();streamRequests.clear(); rtcAccount = state.account; }
-    const desired = !disposed && !bootstrapOnly && !d.recoveryPeers?.() && state.state === 'active' ? state.account : null;
+    const desired = !disposed && routesReady() && !bootstrapOnly() && !d.recoveryPeers?.() && state.state === 'active' ? state.account : null;
     if (active && active.account !== desired) stopLan();
     if (!desired || active || starting || d.now() < retryAt) return state;
     starting = true;
@@ -126,16 +127,18 @@ export function createLanIdentityRuntime(d: Dependencies) {
   const eventDiscovery=d.native.axonLanEvents?.()===true&&!!d.native.addListener;
   const discoveryListener=eventDiscovery?d.native.addListener!('axonLanChanged',()=>d.onWorkChanged?.()):null;
   return {
-    nextDeadline:()=>disposed?Infinity:Math.min(network.nextDeadline(),startupUntil,retryAt>d.now()?retryAt:Infinity,d.now()+(eventDiscovery?30000:5000)),
+    nextDeadline:()=>disposed?Infinity:Math.min(network.nextDeadline(),startupUntil||Infinity,retryAt>d.now()?retryAt:Infinity,d.now()+(eventDiscovery?30000:5000)),
     tick() {
       if (disposed) return;
       const recoveryPeers = d.recoveryPeers?.();
-      const now=d.now(),preferred=preferredBootstrap();
-      if(bootstrapOnly&&!recoveryPeers){
-        if(!preferred||now>=startupUntil)finishStartup();
-        else if(!Number.isFinite(startupUntil)&&network.snapshot().state==='active'){
-          startupUntil=now+5000;d.onStartupPhase?.('bootstrap');
-        }
+      if(!recoveryPeers&&!routesReady())return;
+      const now=d.now(),preferred=recoveryPeers?undefined:preferredBootstrap();
+      if(startupUntil===undefined&&network.snapshot().state==='active'){
+        startupUntil=preferred?now+BOOTSTRAP_HEAD_START_MS:0;
+        if(preferred)d.onStartupPhase?.('bootstrap');
+      }
+      if(startupUntil&&now>=startupUntil){
+        startupUntil=0;d.onStartupPhase?.('expanded');
       }
       const state=reconcile();
       if (recoveryPeers) {
@@ -145,7 +148,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
         network.tick();
         return;
       }
-      if(bootstrapOnly&&preferred){
+      if(bootstrapOnly()&&preferred){
         network.offer({...preferred,route:'internet',expiresAt:now+60000});
         network.tick();
         return;
@@ -193,7 +196,6 @@ export function createLanIdentityRuntime(d: Dependencies) {
     setLimit: network.setLimit,
     // A real local foreground transition permits a fresh LAN attempt. Periodic
     // discovery refreshes still preserve the stale-peer backoff.
-    finishStartup,
     resume() { retryAt = 0; failedLan.clear(); network.resume(); },
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,

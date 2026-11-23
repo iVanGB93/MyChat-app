@@ -23,11 +23,11 @@ export async function queueRootNotificationOpen(data:unknown){
   // Legacy generic alerts have a message ID but no decrypted preview metadata.
   if(d.messageId&&!d.messageAt&&!d.messagePreviews&&/^[a-f0-9]{64}$/.test(d.messageId))target.hintId=d.messageId;
   await serial(()=>AsyncStorage.setItem(KEY,JSON.stringify(target)));
-  if(d.messageId&&/^[a-f0-9]{64}$/.test(d.messageId)){
-   const id=rootMessageNotificationId(target.account,target.sender,target.group);
-   await Native?.forgetMessageNoticeRestore?.(id,d.messageId).catch(()=>{});
-  }
   for(const fn of listeners)try{fn();}catch{};
+  if(d.messageId&&/^[a-f0-9]{64}$/.test(d.messageId)){
+   const id=rootMessageNotificationId(target.account,target.sender,target.group),messageId=d.messageId;
+   void Promise.resolve().then(()=>Native?.forgetMessageNoticeRestore?.(id,messageId)).catch(()=>{});
+  }
  }
 }
 export async function pendingRootNotificationOpen(account:string){
@@ -37,9 +37,14 @@ export async function pendingRootNotificationOpen(account:string){
   // A decrypted private preview already identifies its destination. Do not wait
   // behind unrelated message writes merely to open that screen.
   if(!target.group)return target;
-  const store=ownChatStore(account),saved=store.indexed?(await store.indexed.readScope({metadata:true})).raw:await store.read();
-  const state=saved?JSON.parse(saved):null;
-  return state?.groups?.some((g:{id:string})=>g.id===target.group)?target:{...target,inbox:true,unavailable:'group_unknown' as const};
+  const store=ownChatStore(account);
+  let exists=await store.indexed?.notificationGroupExists?.(target.group);
+  if(exists===undefined){
+   const saved=store.indexed?(await store.indexed.readScope({metadata:true})).raw:await store.read();
+   const state=saved?JSON.parse(saved):null;
+   exists=state?.groups?.some((group:{id:string})=>group.id===target.group)===true;
+  }
+  return exists?target:{...target,inbox:true,unavailable:'group_unknown' as const};
  }
  // A signed wake identifies a delivery, not its conversation or unread status.
  const store=ownChatStore(account),saved=store.indexed?await store.indexed.readMessage(target.sender,target.hintId):await store.read();

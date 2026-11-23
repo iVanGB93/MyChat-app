@@ -1,3 +1,4 @@
+import {diagnosticJournal} from '../services/diagnosticJournal';
 import {t} from '../localization/language';
 import NetworkPage from '../screens/profile/NetworkPage';
 import {FloatingStackHeader} from './FloatingHeader';
@@ -51,10 +52,14 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
 
   let alive=true,opening=false,dirty=false,failures=0,retry:ReturnType<typeof setTimeout>|undefined;
 
+  let initialTarget:Awaited<ReturnType<typeof pendingRootNotificationOpen>>=null;
   const open=async()=>{if(opening){dirty=true;return;}if(AppState.currentState!=='active'||opening||!alive||!ref.isReady()||localAccount.status().state!=='unlocked')return;clearTimeout(retry);opening=true;dirty=false;let failed=false;
 
-   try{const link=takeIdentityLink();if(link&&link!==localAccount.status().account){ref.navigate('NewChat',{identity:displayIdentity(link)});return;}const account=localAccount.status().account!,target=await pendingRootNotificationOpen(account);if(!target||!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
+   try{
+    if(initialTarget){const opened=initialTarget;await finishRootNotificationOpen(opened);initialTarget=null;}
+    const link=takeIdentityLink();if(link&&link!==localAccount.status().account){ref.navigate('NewChat',{identity:displayIdentity(link)});return;}const account=localAccount.status().account!,routing=performance.now(),target=await pendingRootNotificationOpen(account);if(!target||!alive||AppState.currentState!=='active'||localAccount.status().account!==account||localAccount.status().state!=='unlocked')return;
 
+    diagnosticJournal.record('notification_route_resolved',{milliseconds:performance.now()-routing});
     if(target.inbox)ref.navigate('Tabs',{screen:'Chats'});else if(target.group)ref.navigate('GroupRoom',{id:target.group});else ref.navigate('ChatRoom',{peer:target.sender});
 
     await finishRootNotificationOpen(target);
@@ -71,12 +76,16 @@ export default function RootAccountNavigator({profile,network}:{profile:React.Re
   // screen loads its own pages; notification opening does not await that work.
   const launchAccount=localAccount.status().account;
   void (async()=>{
-   const initial=await notifee.getInitialNotification();
+   const began=performance.now(),initial=await notifee.getInitialNotification();
+   if(alive)diagnosticJournal.record('notification_intent_read',{milliseconds:performance.now()-began});
+   const routing=performance.now();
    if(initial){await handleRootNotificationAction(initial.pressAction?.id??'',initial.notification.data);await queueRootNotificationOpen(initial.notification.data);}
    const target=launchAccount?await pendingRootNotificationOpen(launchAccount):null;
    if(!alive)return;
+   diagnosticJournal.record('notification_route_resolved',{milliseconds:performance.now()-routing});
    const valid=localAccount.status().state==='unlocked'&&localAccount.status().account===launchAccount;
    const destination=valid&&target&&!target.inbox?(target.group?{name:'GroupRoom',params:{id:target.group}}:{name:'ChatRoom',params:{peer:target.sender}}):null;
+   if(destination)initialTarget=target;
    setLaunchState({index:destination?1:0,routes:[{name:'Tabs'},...(destination?[destination]:[])]});
   })().catch(()=>{if(alive)setLaunchState({index:0,routes:[{name:'Tabs'}]});});
 

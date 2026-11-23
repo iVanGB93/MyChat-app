@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 const cache=new Map();function load(name){if(cache.has(name))return cache.get(name);const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/'+name+'.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>n.startsWith('./')?load(n.slice(2).replace(/\.ts$/,'')):require(n));cache.set(name,out);return out;}
-function fixture(indexed){const storage=new Map(),out={},account='axonic:1:'+'aa'.repeat(32),sender='axonic:1:'+'bb'.repeat(32),id='cc'.repeat(32),group='dd'.repeat(32);
- new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationRoute.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>n==='../../modules/storage/chatStore'?{ownChatStore:owner=>({...(indexed?{indexed:{readMessage:indexed}}:{}),read:async()=>{if(indexed)throw Error('Full history must not be read');return storage.get('@axonic_root_chat_v1:'+owner)??null;}})}:n.includes('async-storage')?{default:{getItem:async k=>storage.get(k)??null,setItem:async(k,v)=>storage.set(k,v),removeItem:async k=>storage.delete(k)}}:n==='./rootChatActions'?load('rootChatActions'):n==='./rootMessageNotification'?{rootMessageNotificationId:()=> 'notice'}:{validAccountId:v=>typeof v==='string'&&/^axonic:1:[a-f0-9]{64}$/.test(v)});
+function fixture(indexed,native={}){const storage=new Map(),out={},account='axonic:1:'+'aa'.repeat(32),sender='axonic:1:'+'bb'.repeat(32),id='cc'.repeat(32),group='dd'.repeat(32);
+ new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationRoute.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>n==='../../modules/storage/chatStore'?{ownChatStore:owner=>({...(indexed?{indexed:typeof indexed==='function'?{readMessage:indexed}:indexed}:{}),read:async()=>{if(indexed)throw Error('Full history must not be read');return storage.get('@axonic_root_chat_v1:'+owner)??null;}})}:n.includes('async-storage')?{default:{getItem:async k=>storage.get(k)??null,setItem:async(k,v)=>storage.set(k,v),removeItem:async k=>storage.delete(k)}}:n.includes('/axonic-nearby')?{default:native}:n==='./rootChatActions'?load('rootChatActions'):n==='./rootMessageNotification'?{rootMessageNotificationId:()=> 'notice'}:{validAccountId:v=>typeof v==='string'&&/^axonic:1:[a-f0-9]{64}$/.test(v)});
  return {out,account,sender,id,group,data:{type:'root_neuron_message',account,sender,messageId:id},save:state=>storage.set('@axonic_root_chat_v1:'+account,JSON.stringify({version:1,messages:[],...state}))};}
 test('generic wake opens the inbox until its actual unread conversation is known',async()=>{
  const f=fixture();await f.out.queueRootNotificationOpen(f.data);assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,true);
@@ -56,4 +56,24 @@ test('decrypted private previews never read message history before routing',asyn
 test('known group preview with missing local group opens inbox instead of sender private chat',async()=>{
  const f=fixture();f.save({groups:[]});await f.out.queueRootNotificationOpen({...f.data,messageAt:'123',group:f.group});
  const target=await f.out.pendingRootNotificationOpen(f.account);assert.equal(target.inbox,true);assert.equal(target.unavailable,'group_unknown');
+});
+
+test('known group preview uses the committed group check, with canonical fallback only when unavailable',async()=>{
+ let result=true,fallbacks=0;
+ const f=fixture({notificationGroupExists:async()=>result,readScope:async()=>{fallbacks++;return {raw:JSON.stringify({groups:[{id:f.group}]})};}});
+ await f.out.queueRootNotificationOpen({...f.data,messageAt:'123',group:f.group});
+ assert.equal((await f.out.pendingRootNotificationOpen(f.account)).group,f.group);
+ result=false;assert.equal((await f.out.pendingRootNotificationOpen(f.account)).unavailable,'group_unknown');
+ assert.equal(fallbacks,0);
+ result=undefined;assert.equal((await f.out.pendingRootNotificationOpen(f.account)).inbox,undefined);
+ assert.equal(fallbacks,1);
+});
+test('notification restoration cleanup cannot block destination routing',async()=>{
+ let started=false,release;
+ const cleanup=new Promise(resolve=>release=resolve),f=fixture(undefined,{forgetMessageNoticeRestore:()=>{started=true;return cleanup;}});
+ try{
+  await f.out.queueRootNotificationOpen({...f.data,messageAt:'123'});
+  assert.equal(started,true);
+  assert.equal((await f.out.pendingRootNotificationOpen(f.account)).sender,f.sender);
+ }finally{release();}
 });

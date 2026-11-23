@@ -23,7 +23,7 @@ import {confirmMessageReceipt,recordGroupCustody,recordMessageCustody} from '../
 import {diagnosticJournal} from '../services/diagnosticJournal';
 import {relayInventory} from '../services/identity/relayInventory';
 import type {CustodyEnvelope} from '../services/identity/custodyProtocol';
-import {bootstrapPeers} from '../services/identity/bootstrapSettings';
+import {bootstrapPeers,loadBootstrapEndpoint} from '../services/identity/bootstrapSettings';
 import {loadRecoverySettings} from '../services/recoverySettings';
 import {createGroupCustodyCourier} from '../services/identity/groupCustodyCourier';
 import type {IdentityPeer} from '../services/identity/identityClient';
@@ -119,7 +119,7 @@ export async function localAccountRelayInventory(){
  return relayInventory(account,Date.now(),messages,groups,media.rows,media.chunks,activeCalls?.relayMetadata()??[]);
 }
 /** Independent root-identity participation; no legacy user ID, JWT, or Axion session. */
-function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefined,foregroundStartup:boolean) {
+function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefined) {
   diagnosticNetworkStartedAt=Date.now();
   const recoveryListeners=new Set<(sender:string,id:string)=>void>();
   const receiptAccepted=(sender:string,id:string)=>{for(const listener of recoveryListeners){try{listener(sender,id);}catch{/* Independent recovery waiters. */}}};
@@ -205,7 +205,8 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
   const operationalRecords={...records,read:async(account:string)=>{
     const result=await peerResolver.resolve(account);return result.status==='found'?result.record??null:null;
   }};
-  const runtime = createLanIdentityRuntime({recoveryPeers,foregroundStartup,onStartupPhase:phase=>diagnosticJournal.record(phase==='bootstrap'?'network_bootstrap_started':'network_discovery_expanded'),onQualityChanged:networkChanges.changed,onWorkChanged:()=>{transportWork.changed();networkChanges.changed();}, remembered:()=>rememberedPeers,
+  let bootstrapLoaded=false;
+  const runtime = createLanIdentityRuntime({recoveryPeers,onStartupPhase:phase=>diagnosticJournal.record(phase==='bootstrap'?'network_bootstrap_started':'network_discovery_expanded'),onQualityChanged:networkChanges.changed,onWorkChanged:()=>{transportWork.changed();networkChanges.changed();}, remembered:()=>rememberedPeers,
     onConnected:peer=>{const account=owner();if(account)void remembered.remember(account,peer).catch(()=>{});},
     identity: localAccount, native, store: records, now: Date.now, limit: allowedAxons(),
     // Advertise the registration protocol as a client; ordinary phones do not mint FCM leases.
@@ -231,7 +232,7 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
     }:undefined,
     onDirectory: (raw, peer) => directory.receive(peer.account, raw),
     onCustody: Object.assign(async(raw:string,peer:{account:string})=>{const notice=inboxEvents.receive(peer.account,raw);if(notice!==null)return notice;const callNotice=callEvents.receive(peer.account,raw);if(callNotice!==null)return callNotice;service();let group=false;try{group=String(JSON.parse(raw)?.operation).startsWith('group-');}catch{}try{return await (group?custody?.group.receive(peer.account,raw):custody?.service.receive(peer.account,raw))??JSON.stringify({status:'rejected'});}finally{relayChanges.changed();}},{groupCustody:true,custodyEvents:true,callInboxEvents:true}),
-    internet: { get peers() { return recoveryPeers() ? [...BOOTSTRAP_NEURONS] : bootstrapPeers(); }, connect: createInternetAxonConnector(native, owner, () => recoveryPeers() ? BOOTSTRAP_NEURONS : bootstrapPeers()) } });
+    internet: { ready:()=>bootstrapLoaded, get peers() { return recoveryPeers() ? [...BOOTSTRAP_NEURONS] : bootstrapPeers(); }, connect: createInternetAxonConnector(native, owner, () => recoveryPeers() ? BOOTSTRAP_NEURONS : bootstrapPeers()) } });
   const blocked=new Set<string>();
   const ownCustody=createOwnCustodyStore();
   const wakeCustodians=(ranked:string[],raw?:string)=>{
@@ -290,6 +291,7 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
   const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>{receiptConfirmation.connected(peer);profileRecovery.connected(peer);groupRecovery.connected(peer);groupWork.changed();courier.resume(peer);groupCourier.resume(peer);custody?.wake.connected(peer);custody?.groupWake.connected(peer);ownAttachments?.wake();wakeWorkers();});
   profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});
   const transportWork=createEventDeadlineTask({now:Date.now,run:async()=>{runtime.tick();networkChanges.changed();return owner()?runtime.nextDeadline():Infinity;}});
+  void loadBootstrapEndpoint().catch(()=>{}).finally(()=>{bootstrapLoaded=true;transportWork.changed();});
   const privateInboxWork=createEventDeadlineTask({now:Date.now,run:async()=>{const before=courier.diagnostics().startedPasses;const pass=courier.tick();if(courier.diagnostics().startedPasses!==before)void pass.finally(()=>privateInboxWork.changed()).catch(()=>{});return courier.nextDeadline();}});
   const groupInboxWork=createEventDeadlineTask({now:Date.now,run:async()=>{const before=groupCourier.diagnostics().startedPasses;const pass=groupCourier.tick();if(groupCourier.diagnostics().startedPasses!==before)void pass.finally(()=>groupInboxWork.changed()).catch(()=>{});return groupCourier.nextDeadline();}});
   const deliveryWork=createEventDeadlineTask({now:Date.now,run:async()=>{await delivery.dispatch();return delivery.nextDeadline();}});
@@ -328,7 +330,7 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
     const message=state.messages.find(row=>row.id===id&&row.peer===recipient&&row.direction==='outgoing');
     return message?.messageStorageRelays?.[0]??(message?.descriptorDelivered?undefined:null);
    },wss:{binary:runtime.supportsWssBinary,sendBinary:runtime.sendWssBinary,peer:runtime.wssStreamPeer,send:runtime.sendWssStream,request:runtime.attachmentRequest},streams:runtime.attachmentStreams,lookup:peerResolver.resolve});
-  return { snapshot: runtime.snapshot, finishStartup:runtime.finishStartup, subscribeConnected:runtime.subscribeConnected, recoveryStatus:delivery.snapshot,
+  return { snapshot: runtime.snapshot, subscribeConnected:runtime.subscribeConnected, recoveryStatus:delivery.snapshot,
     subscribeRecovery:(listener:(sender:string,id:string)=>void)=>{recoveryListeners.add(listener);return()=>{recoveryListeners.delete(listener);};},
     receiveWakeEnvelope:async(envelope:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>{
       const receipt=await localAccount.receiveCustody(envelope,operationalRecords,m=>receiveMessage(m,custodian??''),payload);
@@ -387,15 +389,14 @@ function recoveryRoutes(leases:Map<symbol,string|null|undefined>){
  return routes.includes(undefined)?undefined:new Set(routes.filter((value):value is string=>typeof value==='string'));
 }
 let sharedNetwork:{runtime:ReturnType<typeof createLocalAccountNetwork>;leases:Map<symbol,string|null|undefined>;scope:{peers:ReadonlySet<string>|undefined}}|null=null;
-export function startLocalAccountNetwork(options?:{custodian?:string}|{foreground:true}){
- const foreground=options!==undefined&&'foreground' in options;
- const lease=Symbol(),peer=options&&!('foreground' in options)?configuredWakeCustodian(options.custodian)?.account??null:undefined;
+export function startLocalAccountNetwork(recovery?:{custodian?:string}){
+ const lease=Symbol(),peer=recovery?configuredWakeCustodian(recovery.custodian)?.account??null:undefined;
  const existing=sharedNetwork,leases=existing?.leases??new Map<symbol,string|null|undefined>();
  leases.set(lease,peer);
  const scope=existing?.scope??{peers:undefined};
  scope.peers=recoveryRoutes(leases);
- const shared=sharedNetwork??={leases,scope,runtime:createLocalAccountNetwork(()=>scope.peers,foreground)};
- if(existing){shared.runtime.finishStartup();shared.runtime.refreshRoutes();}
+ const shared=sharedNetwork??={leases,scope,runtime:createLocalAccountNetwork(()=>scope.peers)};
+ if(existing)shared.runtime.refreshRoutes();
  return {...shared.runtime,stop(){
   if(!leases.delete(lease))return;
   if(leases.size){scope.peers=recoveryRoutes(leases);shared.runtime.refreshRoutes();return;}

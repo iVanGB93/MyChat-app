@@ -27,7 +27,7 @@ export function subscribeOwnChatWrites(listener:(owner:string,visible?:boolean)=
 export const ownChatRevision=(owner:string)=>revisions.get(owner)??0;
 
 /** Own chat data keeps its existing schema/key. Temporary relay custody uses separate stores. */
-export function ownChatStore(owner: string):OwnHistoryStore & {indexed?:Pick<ReturnType<typeof indexedChatStore>,'readRooms'>} {
+export function ownChatStore(owner: string):OwnHistoryStore & {indexed?:Pick<ReturnType<typeof indexedChatStore>,'readRooms'|'notificationGroupExists'>} {
   const key = '@axonic_root_chat_v1:' + owner;
   let gate=gates.get(owner);if(!gate){if(gates.size>=8)gates.delete(gates.keys().next().value!);gate=createStorageReadGate();gates.set(owner,gate);}
   const legacy=()=>supportsChatStorageRecovery()?readNativeChatStorage(owner):AsyncStorage.getItem(key);

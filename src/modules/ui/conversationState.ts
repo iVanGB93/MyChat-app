@@ -19,10 +19,3 @@ export const conversationState={getState:store.getState,getInitialState:store.ge
  subscribe(listener:Parameters<typeof store.subscribe>[0]){const off=store.subscribe(listener);if(readers++===0){const writes=subscribeOwnChatWrites((account,visible)=>{if(visible!==false)refresh?.wake(account);}),app=AppState.addEventListener('change',start);detach=()=>{writes();app.remove();};start();}
   return()=>{off();if(--readers===0){refresh?.stop();refresh=undefined;detach?.();detach=undefined;}};
  }};
-
-export const hasConversationIndex=()=>{const state=store.getState();return !!state.index&&state.owner===owner();};
-export function observeConversationReady(listener:()=>void){
- return store.subscribe((state,previous)=>{
-  if(state.index&&state.owner===owner()&&(!previous.index||previous.owner!==state.owner))listener();
- });
-}

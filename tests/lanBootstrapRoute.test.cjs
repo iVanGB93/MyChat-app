@@ -17,7 +17,7 @@ test('peer introductions cannot replace a configured Internet endpoint with an R
 });
 
 function streamFixture(options={}){
- const id=n=>'axonic:1:'+n.toString(16).padStart(64,'0'),device='ab'.repeat(32),offers=[],source={};let now=1000,state='active';
+ const id=n=>'axonic:1:'+n.toString(16).padStart(64,'0'),device='ab'.repeat(32),offers=[],source={};let now=1000,state=options.locked?'locked':'active';
  const own=id(options.higher?9:1),peer=id(4),seed=id(2),capable=options.capable!==false;
  let ticks=0,snapshots=0;
  const network={snapshot:()=>({state,account:state==='active'?own:null,pool:{connections:[{account:seed,state:'connected'}]},introductions:[{account:peer,via:seed,expiresAt:now+60000}]}),
@@ -25,9 +25,9 @@ function streamFixture(options={}){
  const deps={'./identityNetwork':{createIdentityNetwork:()=>network},'./nativeAxonTransport':{createNativeAxonConnector:()=>()=>{}},'./rtcAxonTransport':{createRtcAxonTransport:()=>({stop(){},canStream:()=>false})}};
  new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/lanIdentityRuntime.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(source,n=>deps[n]);
  let lanStarts=0;
- const runtime=source.createLanIdentityRuntime({recoveryPeers:options.recoveryPeers,foregroundStartup:options.foregroundStartup,remembered:options.remembered,identity:{subscribe:()=>()=>{}},native:{axonLanStart:()=>{lanStarts++;return options.readyLan?Promise.resolve():new Promise(()=>{});},axonAccept:()=>new Promise(()=>{}),axonLanStop(){},axonLanSnapshot:()=>{snapshots++;return {active:true,peers:[{account:peer,host:'10.0.0.2',port:12345}]};}},now:()=>now,rtc:options.noGuard?{}:{streamCredit:async()=>true},internet:{peers:[{account:seed,endpoint:'wss://seed.test',preferredBootstrap:true},...(options.extraSeeds??[])],connect(){}}});
+ const runtime=source.createLanIdentityRuntime({recoveryPeers:options.recoveryPeers,remembered:options.remembered,identity:{subscribe:()=>()=>{}},native:{axonLanStart:()=>{lanStarts++;return options.readyLan?Promise.resolve():new Promise(()=>{});},axonAccept:()=>new Promise(()=>{}),axonLanStop(){},axonLanSnapshot:()=>{snapshots++;return {active:true,peers:[{account:peer,host:'10.0.0.2',port:12345}]};}},now:()=>now,rtc:options.noGuard?{}:{streamCredit:async()=>true},internet:{ready:options.routesReady,peers:[{account:seed,endpoint:'wss://seed.test',preferredBootstrap:options.preferredBootstrap},...(options.extraSeeds??[])],connect(){}}});
  runtime.tick();offers.length=0;
- return {runtime,id,peer,seed,device,offers,lanStarts:()=>lanStarts,counts:()=>({ticks,snapshots}),advance:n=>now+=n,lock:()=>state='locked'};
+ return {runtime,id,peer,seed,device,offers,lanStarts:()=>lanStarts,counts:()=>({ticks,snapshots}),advance:n=>now+=n,lock:()=>state='locked',unlock:()=>state='active'};
 }
 test('foreground discovery batches native LAN and Internet candidates in one pool pass',async()=>{
  const f=streamFixture({readyLan:true});
@@ -42,7 +42,7 @@ test('foreground discovery batches native LAN and Internet candidates in one poo
 test('headless recovery offers only requested configured peers until normal routing resumes',()=>{
  const other='axonic:1:'+'8'.repeat(64);
  let scope=new Set([other]);
- const f=streamFixture({recoveryPeers:()=>scope,extraSeeds:[{account:other,endpoint:'wss://other.test'}],remembered:()=>[{account:'remembered',expiresAt:60000}]});
+ const f=streamFixture({recoveryPeers:()=>scope,preferredBootstrap:true,extraSeeds:[{account:other,endpoint:'wss://other.test'}],remembered:()=>[{account:'remembered',expiresAt:60000}]});
  try{
   f.runtime.tick();assert.deepEqual(f.offers.map(c=>c.account),[other]);assert.equal(f.lanStarts(),0);
   scope.add(f.seed);f.offers.length=0;f.runtime.tick();assert.deepEqual(f.offers.map(c=>c.account),[f.seed,other]);
@@ -82,21 +82,25 @@ test('stream demand is bounded, respects dialing tie break, and is cleared on lo
  }finally{f.runtime.stop();}
 });
 
-test('foreground startup waits on the saved bootstrap, then expands on chat readiness',()=>{
- const f=streamFixture({foregroundStartup:true,extraSeeds:[{account:'secondary',endpoint:'wss://other.test'}]});
+test('network startup gives the saved endpoint a three-second head start before LAN and other peers',()=>{
+ const f=streamFixture({preferredBootstrap:true,extraSeeds:[{account:'secondary',endpoint:'wss://other.test'}]});
  try{
-  f.runtime.tick();assert.deepEqual(f.offers.map(candidate=>candidate.account),[f.seed]);assert.equal(f.lanStarts(),0);
-  f.offers.length=0;f.runtime.finishStartup();f.runtime.tick();
-  assert(f.offers.some(candidate=>candidate.account==='secondary'));assert.equal(f.lanStarts(),1);
- }finally{f.runtime.stop();}
-});
-test('foreground startup expands at the five-second deadline even if chat or bootstrap is unavailable',()=>{
- const f=streamFixture({foregroundStartup:true,extraSeeds:[{account:'secondary',endpoint:'wss://other.test'}]});
- try{
-  assert.equal(f.runtime.nextDeadline(),6000);
-  f.advance(4999);f.runtime.tick();
+  assert.equal(f.runtime.nextDeadline(),4000);
+  f.advance(2999);f.runtime.tick();
   assert.deepEqual(f.offers.map(candidate=>candidate.account),[f.seed]);assert.equal(f.lanStarts(),0);
   f.offers.length=0;f.advance(1);f.runtime.tick();
   assert(f.offers.some(candidate=>candidate.account==='secondary'));assert.equal(f.lanStarts(),1);
+ }finally{f.runtime.stop();}
+});
+
+test('the head start begins only when saved routes are loaded and the account is active',()=>{
+ let loaded=false;
+ const f=streamFixture({preferredBootstrap:true,locked:true,routesReady:()=>loaded});
+ try{
+  f.advance(10000);f.unlock();f.runtime.tick();
+  assert.deepEqual(f.offers,[]);assert.equal(f.lanStarts(),0);
+  loaded=true;f.runtime.tick();
+  assert.deepEqual(f.offers.map(candidate=>candidate.account),[f.seed]);
+  assert.equal(f.runtime.nextDeadline(),14000);
  }finally{f.runtime.stop();}
 });

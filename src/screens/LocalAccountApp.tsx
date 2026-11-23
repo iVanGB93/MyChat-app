@@ -1,6 +1,7 @@
+import {diagnosticJournal} from '../services/diagnosticJournal';
 import {t} from '../localization/language';
 import {Chrome} from '../theme';
-import {useAccountState,useNetworkState,hasConversationIndex,observeConversationReady} from '../modules/ui/liveState';
+import {useAccountState,useNetworkState} from '../modules/ui/liveState';
 import RenderBoundary from '../components/ui/RenderBoundary';
 import {requestInitialNotificationPermission} from '../services/notificationPermission';
 import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
@@ -49,7 +50,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 import { identityUnlockErrorMessage, localAccount, removeAccountFromDevice, closeForDeviceRemoval, startLocalAccount, localAccountBiometrics as biometrics, localAccountUsername, localAccountSession } from '../modules/identity';
 
-import { loadBootstrapEndpoint, startLocalAccountNetwork } from '../modules/network';
+import { startLocalAccountNetwork } from '../modules/network';
 import {createForegroundNetworkLease} from '../services/foregroundNetworkLease';
 
 
@@ -127,11 +128,12 @@ function LocalAccountContent() {
 
   async function inspect() {
 
-    await loadBootstrapEndpoint().catch(() => {});
+    const began=performance.now();
     await startLocalAccount(); autoLockRef.current = localAccountSession.autoLock(); setAutoLock(autoLockRef.current);
 
     const account = localAccount.status().account;
 
+    diagnosticJournal.record('app_shell_ready',{milliseconds:performance.now()-began});
     setReady(true);
     // The display name is optional and must not gate account startup.
     if(account)void localAccountUsername.read(account).then(name=>{
@@ -143,12 +145,7 @@ function LocalAccountContent() {
   useEffect(() => {
 
 
-    const network=createForegroundNetworkLease(()=>{
-      const runtime=startLocalAccountNetwork({foreground:true});
-      if(hasConversationIndex())runtime.finishStartup();
-      return runtime;
-    });
-    const stopConversationReady=observeConversationReady(network.ready);
+    const network=createForegroundNetworkLease(startLocalAccountNetwork);
     const stopCallState=subscribeLocalAccountCalls(view=>{network.call(!!view&&view.status!=='ended');if(autoLockRef.current&&AppState.currentState==='background'&&(!view||view.status==='ended'))biometrics.lock();});
 
     void inspect().catch(() => setError(t("Unable to read local account storage. Retry without creating a replacement account.")));
@@ -171,7 +168,7 @@ function LocalAccountContent() {
 
     });
 
-    return () => { generation.current++; state.remove(); stopCallState(); stopConversationReady(); recovery.current?.stop(); recovery.current = null; network.stop(); biometrics.lock(); };
+    return () => { generation.current++; state.remove(); stopCallState(); recovery.current?.stop(); recovery.current = null; network.stop(); biometrics.lock(); };
 
   }, []);
 
