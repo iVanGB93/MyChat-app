@@ -1,37 +1,31 @@
 import {t} from '../../localization/language';
 import {Chrome} from '../../theme';
 import ScreenHeader from '../ui/ScreenHeader';
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useMemo,useState} from 'react';
 import {ActivityIndicator,FlatList,Keyboard,Modal,Pressable,StyleSheet,Text,View} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useTheme} from '../../contexts/ThemeContext';
-import {localAccount} from '../../modules/identity';
-import {useConversationIndex} from '../../modules/ui/useChatSnapshot';
-import {readSharedAvatar,subscribeSharedAvatars} from '../../modules/storage';
+import {useConversationIndex,useRecipientAvatar} from '../../modules/ui/useChatSnapshot';
 import Avatar from '../ui/Avatar';
 import {KeyboardAvoidingScreen,KeyboardAwareTextInput} from '../ui/KeyboardForm';
 
 export type ConversationRecipient={id:string;name:string;group?:boolean};
+function RecipientAvatar({peer,name}:{peer:string;name:string}){
+ return <Avatar name={name} uri={useRecipientAvatar(peer)} size={44}/>;
+}
 export default function ConversationRecipientPicker({visible=true,title,description,choices,selected,busy,locked=false,loading=false,error,preview,submitLabel,onSelect,onSubmit,onClose}:{
  visible?:boolean;title:string;description:string;choices:ConversationRecipient[];selected:string;busy:boolean;locked?:boolean;loading?:boolean;
  error?:string;preview?:React.ReactNode;submitLabel:string;onSelect(id:string):void;onSubmit():void;onClose():void;
 }){
- const {colors}=useTheme(),insets=useSafeAreaInsets(),[query,setQuery]=useState(''),[avatars,setAvatars]=useState<Record<string,string|null>>({}),[keyboardShown,setKeyboardShown]=useState(false);
+ const {colors}=useTheme(),insets=useSafeAreaInsets(),[query,setQuery]=useState(''),[keyboardShown,setKeyboardShown]=useState(false);
  const {index}=useConversationIndex(visible);
  useEffect(()=>{const show=Keyboard.addListener('keyboardDidShow',()=>setKeyboardShown(true)),hide=Keyboard.addListener('keyboardDidHide',()=>setKeyboardShown(false));return()=>{show.remove();hide.remove();};},[]);
- const owner=localAccount.status().account,peers=choices.filter(c=>!c.group).map(c=>c.id).sort().join(',');
- useEffect(()=>{
-  if(!visible)return;let active=true,revision=0;setQuery('');setAvatars({});
-  const refresh=async()=>{const epoch=++revision;if(!owner)return;
-   const pairs=await Promise.all(peers.split(',').filter(Boolean).map(async peer=>[peer,await readSharedAvatar(owner,peer)] as const));
-   if(active&&epoch===revision&&localAccount.status().account===owner&&localAccount.status().state==='unlocked')setAvatars(Object.fromEntries(pairs));
-  };
-  void refresh().catch(()=>{});const off=subscribeSharedAvatars(()=>void refresh().catch(()=>{}));return()=>{active=false;off();};
- },[owner,peers,visible]);
+ useEffect(()=>{if(visible)setQuery('');},[visible]);
  // Use Social's existing summary index, never read message history to order recipients.
- const term=query.trim().toLocaleLowerCase(),filtered=choices.filter(c=>c.name.toLocaleLowerCase().includes(term)||c.id.toLocaleLowerCase().includes(term))
-  .sort((a,b)=>(index?.summaries[b.id]?.last?.at??0)-(index?.summaries[a.id]?.last?.at??0));
+ const term=query.trim().toLocaleLowerCase();
+ const ordered=useMemo(()=>[...choices].sort((a,b)=>(index?.summaries[b.id]?.last?.at??0)-(index?.summaries[a.id]?.last?.at??0)),[choices,index?.summaries]);
+ const filtered=useMemo(()=>term?ordered.filter(c=>c.name.toLocaleLowerCase().includes(term)||c.id.toLocaleLowerCase().includes(term)):ordered,[ordered,term]);
  const target=choices.find(c=>c.id===selected),disabled=busy||!target;
  return <Modal visible={visible} animationType="slide" onRequestClose={()=>{if(!busy)onClose();}}>
   <KeyboardAvoidingScreen style={{backgroundColor:colors.background,paddingBottom:insets.bottom}}>
@@ -48,7 +42,7 @@ export default function ConversationRecipientPicker({visible=true,title,descript
    <FlatList data={filtered} keyExtractor={item=>item.id} style={{flex:1,minHeight:0}} contentContainerStyle={{paddingHorizontal:16,paddingLeft:insets.left+16,paddingRight:insets.right+16,paddingVertical:12,flexGrow:1}} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag"
     ListEmptyComponent={<View style={styles.empty}>{loading?<ActivityIndicator color={colors.primary}/>:<><Ionicons name={term?'search-outline':'chatbubbles-outline'} size={40} color={colors.textTertiary}/><Text style={[styles.emptyTitle,{color:colors.text}]}>{term?t("No conversations found"):t("No conversations yet")}</Text><Text style={[styles.emptyHint,{color:colors.textSecondary}]}>{term?t("Try another name or identity code."):t("Start a conversation in Axonic, then try again.")}</Text></>}</View>}
     renderItem={({item})=>{const checked=item.id===selected;return <Pressable accessibilityRole="radio" accessibilityLabel={item.name} accessibilityState={{checked,disabled:busy||locked}} disabled={busy||locked} onPress={()=>onSelect(item.id)} style={({pressed})=>[styles.row,{backgroundColor:checked?colors.highlight:colors.surface,borderColor:checked?colors.primary:colors.divider,opacity:pressed?0.75:1}]}>
-     {item.group?<View style={[styles.groupAvatar,{backgroundColor:colors.surfaceVariant,borderColor:colors.primary}]}><Ionicons name="people-outline" size={23} color={colors.primary}/></View>:<Avatar name={item.name} uri={avatars[item.id]} size={44}/>}
+     {item.group?<View style={[styles.groupAvatar,{backgroundColor:colors.surfaceVariant,borderColor:colors.primary}]}><Ionicons name="people-outline" size={23} color={colors.primary}/></View>:<RecipientAvatar peer={item.id} name={item.name}/>}
      <View style={{flex:1,gap:3}}><Text numberOfLines={1} style={[styles.name,{color:colors.text}]}>{item.name}</Text><Text style={{color:colors.textSecondary,fontSize:12}}>{item.group?t("Group"):t("Private conversation")}</Text></View>
      <Ionicons name={checked?'radio-button-on':'radio-button-off'} size={22} color={checked?colors.primary:colors.textTertiary}/>
     </Pressable>;}}/>

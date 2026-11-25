@@ -26,7 +26,7 @@ export default function ZoomablePhotoPreview({uri,active,onZoomChange,onError}:{
  const doubleTap=()=>{const now=Date.now();if(!lastTap.current||now-lastTap.current>280){lastTap.current=now;return;}lastTap.current=0;if(state.current.scale>1)reset();else{apply(DOUBLE_TAP_IMAGE_ZOOM);callback.current(true);}};
  return <View style={{flex:1,overflow:'hidden'}} {...handlers.panHandlers} onLayout={e=>{const {width,height}=e.nativeEvent.layout;if(width!==state.current.width||height!==state.current.height){state.current.width=width;state.current.height=height;reset();}}}>
   <Pressable style={{flex:1}} onPress={doubleTap} accessibilityRole="imagebutton" accessibilityLabel={t("Photo preview. Double-tap or pinch to zoom.")} accessibilityActions={[{name:'activate',label:t("Toggle zoom")}]} onAccessibilityAction={()=>{if(state.current.scale>1)reset();else{apply(DOUBLE_TAP_IMAGE_ZOOM);callback.current(true);}}}>
-   <Animated.View style={{flex:1,transform:[{translateX:x},{translateY:y},{scale}]}}><Image source={{uri}} contentFit="contain" style={{width:'100%',height:'100%'}} onError={onError}/></Animated.View>
+   <Animated.View style={{flex:1,transform:[{translateX:x},{translateY:y},{scale}]}}><Image source={{uri}} recyclingKey={uri} cachePolicy="memory" allowDownscaling contentFit="contain" style={{width:'100%',height:'100%'}} onError={onError}/></Animated.View>
   </Pressable>
  </View>;
 }

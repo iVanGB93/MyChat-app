@@ -6,9 +6,10 @@ function fixture(input=photo()){
  const account={account:'owner',state:'unlocked'},intent={hasShareIntent:true,shareIntent:input,error:null,resetShareIntent(){intent.resets=(intent.resets||0)+1;}};
  const react={createElement:(type,props,...children)=>({type,props:{...props,children}}),createContext:()=>({Provider:'Provider'}),useContext:()=>context,
  useRef:v=>{const i=cursor++;return slots[i]??=( {current:v});},useState:v=>{const i=cursor++;if(!(i in slots))slots[i]=v;return[slots[i],n=>slots[i]=typeof n==='function'?n(slots[i]):n];},
- useEffect:fn=>{const i=cursor++;if(!(i in slots)){slots[i]=true;const cleanup=fn();if(cleanup)cleanups.push(cleanup);}}};
- const imports={react,'react-native':{Image:'Image',Text:'Text',View:'View'},'@expo/vector-icons':{Ionicons:'Icon'},'expo-share-intent':{useShareIntent:()=>intent},
+ useMemo:fn=>fn(),useEffect:fn=>{const i=cursor++;if(!(i in slots)){slots[i]=true;const cleanup=fn();if(cleanup)cleanups.push(cleanup);}}};
+ const imports={react,'expo-image':{Image:'Image'},'react-native':{Text:'Text',View:'View'},'@expo/vector-icons':{Ionicons:'Icon'},'expo-share-intent':{useShareIntent:()=>intent},
  './ConversationRecipientPicker':{__esModule:true,default:'Picker'},'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../modules/identity':{localAccount:{status:()=>account},shortIdentity:x=>x},'../../modules/ui/sharedContent':shared,
+ '../../modules/ui/useChatSnapshot':{useConversationIndex:()=>({index:{state:{contacts:[{account:'peer',accepted:true}],groups:[]}},error:''})},
  '../../modules/messaging':{conversations:()=>({metadataSnapshot:async()=>{reads++;if(metadataGate)await metadataGate;return{contacts:[{account:'peer',accepted:true}],groups:[]};}}),messaging:{sendText:async(...args)=>sent.push(['text',...args]),sendGroupText:async()=>{}}},
  '../../modules/media':{queueRootAttachmentSource:async(...args)=>sent.push(['file',...args])},'../../modules/storage':{withRootSharedFile:async(_o,uri,fn)=>{if(copyGate)await copyGate;return fn(uri);}},
  './AttachmentPreview':{useAttachmentPreview:()=>({isOpen:false,modal:null,confirm:files=>{reviewed.push(files);return new Promise(r=>resolvePreview=r);}})}};
@@ -44,3 +45,14 @@ test('native error cannot expose or send the previous content',async()=>{
  const f=fixture({text:'Old link'});f.intent.error='New photo cannot be read';const ui=f.select();assert.equal(ui.preview,null);ui.onSubmit();await settle();assert.equal(f.sent.length,0);
 });
 
+
+test('an Android PDF keeps its exact URI and MIME type through confirmation',async()=>{
+ const file={path:'content://docs/report',fileName:'Report.pdf',mimeType:'application/pdf',size:123};
+ const f=fixture({files:[file]}),ui=f.select();
+ assert.equal(f.reads(),0,'recipient rendering reuses the existing index');
+ assert.notEqual(ui.preview.props.children[0].type,'Image');
+ ui.onSubmit();await settle();
+ assert.deepEqual(f.reviewed[0],[{uri:file.path,name:file.fileName,mime:file.mimeType,size:file.size}]);
+ f.resolve(f.reviewed[0]);await settle();
+ assert.deepEqual(f.sent[0].slice(0,5),['file','peer',file.path,file.fileName,file.mimeType]);
+});

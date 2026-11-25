@@ -1,15 +1,17 @@
 import {t} from '../../localization/language';
 import {withRootSharedFile} from '../../modules/storage';
 import {useAttachmentPreview} from './AttachmentPreview';
-import React,{createContext,useContext,useRef,useState,useEffect} from 'react';
-import {Image,Text,View} from 'react-native';
+import React,{createContext,useContext,useRef,useState,useEffect,useMemo} from 'react';
+import {Text,View} from 'react-native';
+import {Image} from 'expo-image';
 import {Ionicons} from '@expo/vector-icons';
 import ConversationRecipientPicker from './ConversationRecipientPicker';
 import {useShareIntent} from 'expo-share-intent';
 import {localAccount,shortIdentity} from '../../modules/identity';
-import {conversations,messaging,type RootChatState} from '../../modules/messaging';
+import {conversations,messaging} from '../../modules/messaging';
 import {queueRootAttachmentSource,queueRootGroupAttachmentSource,rootGroupAttachmentAudience} from '../../modules/media';
 import {sharedItems,sharedBatch} from '../../modules/ui/sharedContent';
+import {useConversationIndex} from '../../modules/ui/useChatSnapshot';
 import {useTheme} from '../../contexts/ThemeContext';
 
 type Pending={reviewed?:boolean;key:string;items:ReturnType<typeof sharedItems>;batch:ReturnType<typeof sharedBatch>};
@@ -25,22 +27,27 @@ export function RootShareProvider({children}:{children:React.ReactNode}){
 }
 export default function RootSharePicker({onSent}:{onSent(target:string):void}){
  const context=useContext(Context)!;
+ if(!context.intent.hasShareIntent&&!context.intent.error)return null;
  return <ShareSession key={context.revision} onSent={onSent}/>;
 }
 function ShareSession({onSent}:{onSent(target:string):void}){
  const context=useContext(Context)!,{intent,pending}=context,{colors}=useTheme();
- const [state,setState]=useState<RootChatState>(),[error,setError]=useState(''),[busy,setBusy]=useState(false),[selected,setSelected]=useState('');
+ const {index,error:directoryError}=useConversationIndex(intent.hasShareIntent),state=index?.state;
+ const [error,setError]=useState(''),[busy,setBusy]=useState(false),[selected,setSelected]=useState('');
  const preview=useAttachmentPreview();
  const mounted=useRef(true),sending=useRef(false);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
- useEffect(()=>{if(!intent.hasShareIntent)return;let alive=true;void conversations().metadataSnapshot().then(s=>{if(alive)setState(s);}).catch(()=>{if(alive)setError(t("Unable to read conversations."));});return()=>{alive=false;};},[intent.hasShareIntent]);
- if(!intent.hasShareIntent&&!intent.error)return null;
+
  const key=String(context.revision);
  let validation=intent.error||'';
  try{if(!validation&&(!pending.current||pending.current.key!==key)){const items=sharedItems(intent.shareIntent);pending.current={key,items,batch:sharedBatch(items)};}}catch(e){validation=e instanceof Error?e.message:t("Unable to read shared content.");}
  const draft=validation?null:pending.current;
  const close=()=>{if(sending.current||busy||pending.current?.batch.busy)return;pending.current=null;setSelected('');setError('');intent.resetShareIntent();};
- const choices=[...(state?.contacts??[]).filter(c=>!c.blocked).map(c=>({id:c.account,name:c.alias||shortIdentity(c.account)})),...(state?.groups??[]).filter(g=>g.accepted&&!g.blocked&&g.members.includes(localAccount.status().account!)).map(g=>({id:'group:'+g.id,name:g.name,group:true}))];
+ const owner=localAccount.status().account;
+ const choices=useMemo(()=>[
+  ...(state?.contacts??[]).filter(c=>!c.blocked).map(c=>({id:c.account,name:c.alias||shortIdentity(c.account)})),
+  ...(state?.groups??[]).filter(g=>owner&&g.accepted&&!g.blocked&&g.members.includes(owner)).map(g=>({id:'group:'+g.id,name:g.name,group:true})),
+ ],[state?.contacts,state?.groups,owner]);
  const target=draft?.batch.target||selected;
  async function send(){
   if(!draft||!target||busy||sending.current)return;
@@ -71,10 +78,10 @@ function ShareSession({onSent}:{onSent(target:string):void}){
  const first=draft?.items.find(item=>!('text' in item))??draft?.items[0],file=first&&!('text' in first)?first:null;
  const content=first&&'text' in first?first.text:file?.caption||file?.name||t("Shared content");
  const previewContent=draft&&<View style={{flexDirection:'row',alignItems:'center',gap:12}}>
-  {file?.mime.startsWith('image/')?<Image source={{uri:file.uri}} accessibilityLabel={t("Shared image preview")} style={{width:56,height:56,borderRadius:10}}/>:<Ionicons name={file?file.mime.startsWith('video/')?'videocam-outline':file.mime.startsWith('audio/')?'musical-notes-outline':'document-outline':'chatbubble-outline'} size={28} color={colors.primary}/>}
+  {file?.mime.startsWith('image/')?<Image source={{uri:file.uri}} recyclingKey={file.uri} cachePolicy="none" contentFit="cover" accessibilityLabel={t("Shared image preview")} style={{width:56,height:56,borderRadius:10}}/>:<Ionicons name={file?file.mime.startsWith('video/')?'videocam-outline':file.mime.startsWith('audio/')?'musical-notes-outline':'document-outline':'chatbubble-outline'} size={28} color={colors.primary}/>}
   <View style={{flex:1,gap:4}}><Text style={{color:colors.primary,fontSize:12,fontWeight:'600'}}>{draft.items.length===1?t("SHARED CONTENT"):`${draft.items.length} ITEMS TO SHARE`}</Text><Text numberOfLines={2} style={{color:colors.text,fontSize:14}}>{content}</Text></View>
  </View>;
- return <><ConversationRecipientPicker visible={!preview.isOpen} title={t("Share to Axonic")} choices={choices} selected={draft?target:''} busy={busy} locked={!!draft?.batch.target} loading={!state&&!error} preview={previewContent}
+ return <><ConversationRecipientPicker visible={!preview.isOpen} title={t("Share to Axonic")} choices={choices} selected={draft?target:''} busy={busy} locked={!!draft?.batch.target} loading={intent.hasShareIntent&&!state&&!directoryError} preview={previewContent}
   description={draft?.batch.completed?`${draft.batch.completed} of ${draft.items.length} items queued. Retry sends the remaining items.`:t("Select a conversation. You can review media before sending.")}
-  error={error||validation||intent.error||undefined} submitLabel="Send" onSelect={setSelected} onSubmit={()=>void send()} onClose={close}/>{preview.modal}</>;
+  error={error||validation||directoryError||undefined} submitLabel="Send" onSelect={setSelected} onSubmit={()=>void send()} onClose={close}/>{preview.modal}</>;
 }

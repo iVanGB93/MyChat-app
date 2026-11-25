@@ -1,6 +1,8 @@
 import ChatHistoryLoading from '../../components/chat/ChatHistoryLoading';
 import {t,languageSnapshot} from '../../localization/language';
 import ChatMessageRow from '../../components/chat/ChatMessageRow';
+import {nextVoiceMessage} from '../../services/voicePlayback';
+import {useChatMediaViewer} from '../../components/chat/useChatMediaViewer';
 import {attachmentTimeline,type PreparationRow} from '../../modules/ui/useChatSnapshot';
 import ChatScrollToBottom from '../../components/chat/ChatScrollToBottom';
 import {useChatScroll,CHAT_REVEAL_SPACE} from '../../modules/ui/useChatSnapshot';
@@ -19,7 +21,7 @@ import {useChatActivity} from '../../modules/ui/useChatActivity';
 import {usePagedChat as useOwnChat,useChatLayoutTiming,usePrivateCallHistory,privateChatTimeline,type PrivateChatRow} from '../../modules/ui/useChatSnapshot';
 import {useAttachmentPreview} from '../../components/chat/AttachmentPreview';
 import {pickRootAttachment} from '../../modules/ui/documentPicker';
-import {ThemedAlert as Alert} from '../../components/ui/ThemedAlert';
+import {useConfirm} from '../../contexts/ConfirmContext';
 import ChatHeaderIdentity from '../../components/chat/ChatHeaderIdentity';
 import RootMessageMenu from '../../components/chat/RootMessageMenu';
 import {type RootActionKind} from '../../modules/messaging';
@@ -50,6 +52,7 @@ import {useChatTransferSelections,acknowledgeAttachmentHandoffs} from '../../mod
 import type {RootAccountScreen as Screen} from '../../navigation/rootAccountRoutes';
 import {report,nickname} from '../rootScreenSupport';
 export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
+ const {confirm}=useConfirm();
 
  const activity=useChatActivity();
 
@@ -78,6 +81,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  const name=nickname(state,peer),contact=state.contacts.find(c=>c.account===peer),messages=useMemo(()=>state.messages.filter(m=>m.peer===peer&&!m.group).slice().reverse(),[state.messages,peer,languageSnapshot()]);
 
+ const {open:openMedia,modal:mediaViewer}=useChatMediaViewer(peer,messages,hasMore?{loading,error,load:loadMore}:undefined);
  const composer=useRef<ChatComposerHandle>(null),sending=useRef(false);
  const setText=(next:string|((current:string)=>string))=>composer.current?.setText(next);
  useEffect(()=>{const blur=()=>composer.current?.blur();const remove=navigation.addListener('beforeRemove',blur),unfocus=navigation.addListener('blur',blur);return()=>{remove();unfocus();};},[navigation]);
@@ -154,8 +158,8 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
     return <ChatMessageRow message={message} at={row.at} olderAt={timeline[index+1]?.at} time={messageTime(message.at)}
      owner={owner} disabled={!!contact?.blocked} highlighted={replyNavigation.isHighlighted(message)}
      quoted={message.reply?findReply(message.reply):undefined} onJump={replyNavigation.jump}
-     onReply={replyToMessage} onMenu={openMessageMenu} onReact={reactToMessage} onSticker={setStickerPreview} onError={report}/>;
-   }}/>),[timeline,findReply,hasMore,loading,loadMore,peer,owner,colors,contact?.blocked,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,replyToMessage,openMessageMenu,reactToMessage,languageSnapshot()]);
+     onReply={replyToMessage} onMenu={openMessageMenu} onReact={reactToMessage} onSticker={setStickerPreview} onMedia={openMedia} nextVoice={nextVoiceMessage(message,timeline[index-1]?.message)} onError={report}/>;
+   }}/>),[timeline,findReply,hasMore,loading,loadMore,peer,owner,colors,contact?.blocked,messageTime,navigation,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,replyToMessage,openMessageMenu,reactToMessage,openMedia,languageSnapshot()]);
 
  return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0} animateKeyboard onKeyboardAnimationChange={keyboardAnimationChanged}>
 
@@ -185,7 +189,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
     edit={()=>{setReplyTo(undefined);setEditing(menu);setText(menu.text);}}
 
-    remove={()=>Alert.alert(t("Delete message?"),t("The message will be shown as deleted on both devices."),[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>void act(menu,'delete').catch(report)}])}
+    remove={()=>confirm({title:t("Delete message?"),message:t("The message will be shown as deleted on both devices."),icon:'trash-outline',buttons:[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>void act(menu,'delete').catch(report)}]})}
 
     react={value=>void act(menu,'reaction',value).catch(report)}/>}
 
@@ -194,6 +198,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
   {forwardMessage&&<RootForwardPicker message={forwardMessage} contacts={state.contacts} groups={state.groups} onClose={()=>setForwardMessage(undefined)}/>}
 
   {attachmentPreview.modal}
+  {mediaViewer}
 
   <AttachmentMenu visible={attachOpen} onClose={()=>setAttachOpen(false)} onCamera={()=>void attach('camera')} onMultimedia={()=>void attach('library')} onFiles={()=>void attach('files')}/>
 

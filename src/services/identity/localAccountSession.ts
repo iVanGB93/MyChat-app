@@ -27,39 +27,48 @@ export function createLocalAccountSession(d: {
   return {
     autoLock: () => autoLock,
     remember,
+    /** Let the in-app updater finish queued secure writes before Play can restart us. */
+    async settle(){
+      let pending:Promise<void>;
+      do{pending=queue;await pending;}while(pending!==queue);
+    },
     async initialize() {
       const own = epoch;
       const policy = await d.readPolicy();
-      if (own !== epoch) return;
+      if (own !== epoch) return 'interrupted';
       // Only an absent preference (the default) or an explicit opt-out allows resume.
       manuallyLocked = policy === 'locked';
       autoLock = policy !== null && policy !== '0' && !manuallyLocked;
       if (autoLock || manuallyLocked) {
         // Persisted policy denies automatic login even when optional cleanup fails.
-        await serialize(d.removeCredential).catch(() => {}); return;
+        await serialize(d.removeCredential).catch(() => {});
+        return autoLock?'auto-lock':'manual-lock';
       }
       const account = d.identity.status().account;
       // Repeated notification wakes still read lock policy, but an already
       // unlocked session has no credential to resume. Avoid a keystore round
       // trip (and its possible transient failure) on every incoming wake.
-      if (!account || d.identity.status().state !== 'locked') return;
+      if (!account) return 'no-account';
+      if (d.identity.status().state !== 'locked') return 'already-unlocked';
       const raw = await d.readCredential();
-      if (!raw || !account || own !== epoch || d.identity.status().state !== 'locked') return;
+      if (own !== epoch || d.identity.status().state !== 'locked') return 'interrupted';
+      if (!raw) return 'saved-session-missing';
       let saved: {version:number;account:string;password:string;derivation?:unknown};
       try {
         saved = JSON.parse(raw);
         if (saved.version !== 1 || saved.account !== account || typeof saved.password !== 'string') throw Error('Invalid remembered login');
-      } catch { if (own === epoch) await serialize(d.removeCredential); return; }
-      if (own !== epoch || autoLock) return;
+      } catch { if (own === epoch) await serialize(d.removeCredential); return 'saved-session-invalid'; }
+      if (own !== epoch || autoLock) return 'interrupted';
       // A failed native/storage operation is not proof that the saved credential
       // is invalid. Preserve it for Retry; manual/automatic lock still removes it.
       if(d.identity.resume)await d.identity.resume(saved.password,saved.derivation);
       else await d.identity.unlock(saved.password);
-      if (own !== epoch || autoLock) {d.identity.lock();return;}
+      if (own !== epoch || autoLock) {d.identity.lock();return 'interrupted';}
       // Upgrade old remembered credentials, or refresh after a vault re-seal.
       const derivation=d.identity.rememberedDerivation?.(saved.password);
       if(derivation&&JSON.stringify(derivation)!==JSON.stringify(saved.derivation))
         await remember(saved.password);
+      return 'restored';
     },
     async setAutoLock(enabled: boolean, password?: string) {
       const own = ++epoch;

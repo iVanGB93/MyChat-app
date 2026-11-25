@@ -21,7 +21,8 @@ const replacement=`        ${marker}
                 name = file.name
                 if (file.isFile) size = file.length().toString()
             }
-            val mime = resolver.getType(uri)
+            val reported = resolver.getType(uri)?.substringBefore(';')?.lowercase()
+            val mime = reported?.takeUnless { it == "application/octet-stream" }
                 ?: MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
                 ?: "application/octet-stream"
             return mapOf("contentUri" to uri.toString(),
@@ -35,45 +36,138 @@ const replacement=`        ${marker}
         }
 
 `;
-function patch(input){const source=input.replace(/\r\n/g,'\n');if(source.includes(marker)){if(!source.includes(replacement))throw Error('Share-intent patch changed; review required');return patchLifecycle(source);}
+const metadata=replacement.slice(0,replacement.indexOf('        fun handleShareIntent'));
+function patch(input){
+ let source=input.replace(/\r\n/g,'\n');
+ if(source.includes(marker)){
+  const legacyMetadata=metadata.replace(`val reported = resolver.getType(uri)?.substringBefore(';')?.lowercase()\n            val mime = reported?.takeUnless { it == "application/octet-stream" }`,'val mime = resolver.getType(uri)');
+  if(source.includes(legacyMetadata))source=source.replace(legacyMetadata,metadata);
+  if(!source.includes(metadata))throw Error('Share-intent patch changed; review required');
+  return patchDelivery(source);
+ }
  if(crypto.createHash('sha256').update(source).digest('hex')!==original)throw Error('Unsupported share-intent source; review required');
  const start=source.indexOf('        @SuppressLint("Range")'),end=source.indexOf('        fun handleShareIntent(intent: Intent) {',start);
  if(start<0||end<0)throw Error('Share-intent patch anchor missing');
- return patchLifecycle((source.slice(0,start)+replacement+source.slice(end).replace('fun handleShareIntent(intent: Intent)','private fun handleShareIntentChecked(intent: Intent)')).replace('mapOf( "files" to arrayOf(getFileInfo(uri), "type" to "file"))','mapOf( "files" to arrayOf(getFileInfo(uri)), "type" to "file")'));
+ return patchDelivery(source.slice(0,start)+replacement+source.slice(end).replace('fun handleShareIntent(intent: Intent)','private fun handleShareIntentChecked(intent: Intent)'));
 }
 function replaceChecked(source,from,to){if(source.includes(to))return source;if(!source.includes(from))throw Error('Unsupported share-intent lifecycle source; review required');return source.replace(from,to);}
-function patchLifecycle(source){
- source=replaceChecked(source,`        OnNewIntent {
-            handleShareIntent(it)
-        }`,`        OnNewIntent {
-            // Axonic: a fresh share supersedes any unconsumed launch intent.
-            ExpoShareIntentSingleton.intent = null
-            ExpoShareIntentSingleton.isPending = false
-            currentActivity?.intent = it
-            handleShareIntent(it)
-        }`);
- source=replaceChecked(source,`            ExpoShareIntentSingleton.intent = null
-        }
-
-        Function("hasShareIntent")`,`            ExpoShareIntentSingleton.intent = null
-            ExpoShareIntentSingleton.isPending = false
-            val activity = currentActivity
-            val action = activity?.intent?.action
-            if (action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE) {
-                activity?.let { it.intent = Intent(Intent.ACTION_MAIN).setComponent(it.intent.component) }
+const deliveryMarker='// Axonic: consume the newest Android share once on the native modules queue.';
+function patchDelivery(source){
+ if(source.includes(deliveryMarker))return source;
+ const notify=source.indexOf('        private fun notifyShareIntent');
+ const intake=source.indexOf('        '+marker);
+ const handler=source.indexOf('        fun handleShareIntent(intent: Intent)');
+ const parcel=source.indexOf('        /*\n         * https://stackoverflow',handler);
+ const start=source.indexOf('        AsyncFunction("getShareIntent")');
+ const end=source.indexOf('        OnCreate {',start);
+ if(notify<0||intake<notify||handler<intake||parcel<handler||start<parcel||end<start)throw Error('Unsupported share-intent delivery source');
+ const lifecycle=`        ${deliveryMarker}
+        AsyncFunction("getShareIntent") { _: String ->
+            val pending = synchronized(ExpoShareIntentSingleton) {
+                val intent = ExpoShareIntentSingleton.intent
+                ExpoShareIntentSingleton.intent = null
+                ExpoShareIntentSingleton.isPending = false
+                intent?.let { it to generation }
+            } ?: return@AsyncFunction
+            val payload = try { readShare(pending.first) } catch (_: Exception) { null }
+            synchronized(ExpoShareIntentSingleton) {
+                if (pending.second == generation && instance === this@ExpoShareIntentModule) {
+                    if (payload == null) sendEvent("onError", mapOf("value" to "Unable to read this share. Try sharing it again."))
+                    else sendEvent("onChange", mapOf("value" to payload))
+                }
             }
         }
 
-        Function("hasShareIntent")`);
- source=replaceChecked(source,`if (intent.type!!.startsWith("text/plain")) {`,`if (intent.type!!.startsWith("text/plain") && !intent.hasExtra(Intent.EXTRA_STREAM) && intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri == null) {`);
- source=replaceChecked(source,`val uri = intent.parcelable<Uri>(Intent.EXTRA_STREAM);`,`val uri = intent.parcelable<Uri>(Intent.EXTRA_STREAM) ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri;`);
- source=replaceChecked(source,`mapOf( "files" to arrayOf(getFileInfo(uri)), "type" to "file")`,`mapOf( "files" to arrayOf(getFileInfo(uri)), "text" to intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString(), "type" to "file")`);
- source=replaceChecked(source,`val uris = intent.parcelableArrayList<Uri>(Intent.EXTRA_STREAM)`,`val uris = intent.parcelableArrayList<Uri>(Intent.EXTRA_STREAM) ?: intent.clipData?.let { clip -> ArrayList((0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }) }`);
- source=replaceChecked(source,`if (uris != null) {`,`if (!uris.isNullOrEmpty()) {`);
- source=replaceChecked(source,`mapOf( "files" to uris.map { getFileInfo(it) }, "type" to "file")`,`mapOf( "files" to uris.map { getFileInfo(it) }, "text" to intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString(), "type" to "file")`);
- return source;
+        Function("clearShareIntent") { _: String ->
+            synchronized(ExpoShareIntentSingleton) {
+                generation++
+                ExpoShareIntentSingleton.intent = null
+                ExpoShareIntentSingleton.isPending = false
+            }
+        }
+
+        Function("hasShareIntent") { _: String ->
+            synchronized(ExpoShareIntentSingleton) { ExpoShareIntentSingleton.isPending }
+        }
+
+        OnNewIntent { incoming ->
+            if (incoming.action == Intent.ACTION_SEND || incoming.action == Intent.ACTION_SEND_MULTIPLE) {
+                synchronized(ExpoShareIntentSingleton) {
+                    generation++
+                    ExpoShareIntentSingleton.intent = Intent(incoming)
+                    ExpoShareIntentSingleton.isPending = true
+                    sendEvent("onStateChange", mapOf("value" to "pending"))
+                }
+            }
+        }
+
+`;
+ const read=`        private fun readShare(intent: Intent): Map<String, Any?>? {
+            val clip = intent.clipData
+            val uris = when (intent.action) {
+                Intent.ACTION_SEND -> listOfNotNull(intent.parcelable<Uri>(Intent.EXTRA_STREAM)
+                    ?: intent.data?.takeIf { it.scheme == "content" || it.scheme == "file" }
+                    ?: clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri)
+                Intent.ACTION_SEND_MULTIPLE -> intent.parcelableArrayList<Uri>(Intent.EXTRA_STREAM)
+                    ?.takeIf { it.isNotEmpty() }
+                    ?: clip?.let { (0 until it.itemCount).mapNotNull { index -> it.getItemAt(index).uri } }.orEmpty()
+                else -> return null
+            }
+            val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            if (uris.isEmpty()) {
+                if (intent.action != Intent.ACTION_SEND || intent.hasExtra(Intent.EXTRA_STREAM) ||
+                    intent.type?.startsWith("text/") != true || text.isNullOrBlank()) return null
+                return mapOf("text" to text, "type" to "text", "meta" to mapOf("title" to intent.getCharSequenceExtra(Intent.EXTRA_TITLE)?.toString()))
+            }
+            require(uris.size <= 4)
+            val files = uris.map { uri ->
+                val file = getFileInfo(uri)
+                if (intent.type?.substringBefore(';')?.equals("application/pdf", ignoreCase = true) == true) {
+                    val mime = file["mimeType"]
+                    require(mime == "application/pdf" || mime == "application/octet-stream")
+                    file + ("mimeType" to "application/pdf")
+                } else file
+            }
+            return mapOf("files" to files, "text" to text, "type" to "file")
+        }
+
+`;
+ return source.slice(0,notify)+'        private var generation = 0L\n        private fun notifyError(message: String) { instance?.sendEvent("onError", mapOf("value" to message)) }\n\n'+source.slice(intake,handler)+read+source.slice(parcel,start)+lifecycle+source.slice(end);
+}
+function patchActivity(source){
+ return replaceChecked(source,`        // only store when the new intent is not empty
+        if (activity?.intent?.type != null) {
+            ExpoShareIntentSingleton.intent = activity?.intent
+            ExpoShareIntentSingleton.isPending = true
+        }`,`        val intent = activity?.intent ?: return
+        if (savedInstanceState == null && (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE)) {
+            synchronized(ExpoShareIntentSingleton) {
+                ExpoShareIntentSingleton.intent = Intent(intent)
+                ExpoShareIntentSingleton.isPending = true
+            }
+        }`);
 }
 function patchHook(source){
+ source=replaceChecked(source,`        clearNativeModule &&`,`        clearNativeModule && Platform.OS !== "android" &&`);
+ source=replaceChecked(source,`        else if (Platform.OS === "android") {
+            ExpoShareIntentModule?.getShareIntent("");
+        }
+        else if (Platform.OS === "ios") {`,`        // Android drains after the native listeners are registered.
+        else if (Platform.OS === "ios") {`);
+ source=replaceChecked(source,`        setIsReady(true);
+        return () => {
+            changeSubscription.remove();`,`        const pendingSubscription = Platform.OS === "android" ? ExpoShareIntentModule.addListener("onStateChange", (event) => {
+            if (event.value !== "pending") return;
+            setSharedIntent(SHAREINTENT_DEFAULTVALUE);
+            setError(null);
+            ExpoShareIntentModule.getShareIntent("");
+        }) : null;
+        if (Platform.OS === "android") ExpoShareIntentModule.getShareIntent("");
+        setIsReady(true);
+        return () => {
+            pendingSubscription?.remove();
+            changeSubscription.remove();`);
+
  source=replaceChecked(source,`setSharedIntent(parseShareIntent(event.value, options));`,`setError(null);
                 setSharedIntent(parseShareIntent(event.value, options));`);
  source=replaceChecked(source,`setError("Cannot parse share intent value !");`,`setSharedIntent(SHAREINTENT_DEFAULTVALUE);
@@ -95,7 +189,7 @@ function patchParser(source){
 }
 if(require.main===module){
  const root=path.resolve(__dirname,'../node_modules/expo-share-intent');
- for(const [name,transform] of [['android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt',patch],['build/useShareIntent.js',patchHook],['build/utils.js',patchParser]]){
+ for(const [name,transform] of [['android/src/main/java/expo/modules/shareintent/ExpoShareIntentModule.kt',patch],['android/src/main/java/expo/modules/shareintent/ExpoShareIntentReactActivityLifecycleListener.kt',patchActivity],['build/useShareIntent.js',patchHook],['build/utils.js',patchParser]]){
   const file=path.join(root,name),source=fs.readFileSync(file,'utf8'),next=transform(source);if(source!==next)fs.writeFileSync(file,next);
  }
  console.log('Share-intent intake and lifecycle ready');

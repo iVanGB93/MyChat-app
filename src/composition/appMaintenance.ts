@@ -6,13 +6,18 @@ import {getPlayUpdateInfoAsync,startPlayUpdateAsync,completePlayUpdateAsync,obse
 import {createPlayUpdates} from '../services/playUpdates';
 import {openAppDestination} from '../services/appDestinations';
 import {localAccountCalls} from './neuronRuntime';
+import {localAccountSession} from '../modules/identity';
 import {rootVoiceRecordingActive} from '../services/identity/rootVoiceRecorder';
 import {queueIdentityLink} from '../services/identity/identityLinks';
 let owners=0,stopMaintenance:(()=>void)|undefined;
 const KEY='@axonic_play_prompt_v1';
 export const appUpdates=createPlayUpdates({now:Date.now,foreground:()=>owners>0&&Platform.OS==='android'&&!__DEV__&&AppState.currentState==='active',
  // Attachment jobs and selections are durable and resume after restart.
- safeToRestart:async()=>maintenanceIdle(),
+ safeToRestart:async()=>{
+  if(!maintenanceIdle())return false;
+  await localAccountSession.settle();
+  return maintenanceIdle();
+ },
  info:getPlayUpdateInfoAsync,start:startPlayUpdateAsync,complete:completePlayUpdateAsync,read:()=>AsyncStorage.getItem(KEY),write:value=>AsyncStorage.setItem(KEY,value),
  openStore:()=>openAppDestination('store')});
 function maintenanceIdle(){const call=localAccountCalls()?.snapshot();return !rootVoiceRecordingActive()&&(!call||call.status==='ended');}

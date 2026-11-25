@@ -92,7 +92,12 @@ export const localAccountUsername = {
 
 export const startLocalAccount = createLocalAccountStartup({
  inspect:async()=>{const began=Date.now();await removal.beforeStartup();await networkReset.beforeStartup();if(!localAccount.status().account)await localAccount.inspect();console.info('[Axonic account timing] inspect-ms',Date.now()-began);},
- initialize:async()=>{const began=Date.now();await localAccountSession.initialize();console.info('[Axonic account timing] resume-ms',Date.now()-began);},
+ initialize:async()=>{
+  const began=Date.now();
+  let outcome='resume-failed';
+  try{outcome=await localAccountSession.initialize();}
+  finally{console.info('[Axonic account timing] resume-ms',Date.now()-began,outcome);}
+ },
 });
 
 /** UI must show the scope and require explicit confirmation plus the current password.

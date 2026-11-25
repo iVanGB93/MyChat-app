@@ -8,6 +8,8 @@ import GroupCallPicker from '../calls/GroupCallPicker';
 import {calling,localAccountCalls,GROUP_CALLS_ENABLED} from '../../modules/calls';
 import {ensureRootCallPermissions} from '../calls/RootAccountCallScreen';
 import ChatMessageRow from '../../components/chat/ChatMessageRow';
+import {nextVoiceMessage} from '../../services/voicePlayback';
+import {useChatMediaViewer} from '../../components/chat/useChatMediaViewer';
 import {attachmentTimeline} from '../../modules/ui/useChatSnapshot';
 import ChatScrollToBottom from '../../components/chat/ChatScrollToBottom';
 import {useChatScroll,CHAT_REVEAL_SPACE} from '../../modules/ui/useChatSnapshot';
@@ -267,6 +269,7 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
  const openMessageMenu=React.useCallback((message:RootChatMessage,event:{nativeEvent:{pageY:number}})=>{if(disabled||message.deleted||message.localPending)return;setMenuY(event.nativeEvent.pageY);setMenu(message);},[disabled]);
  const messages=React.useMemo(()=>rootGroupMessages(state,route.params.id).reverse(),[state,route.params.id,languageSnapshot()]);
+ const {open:openMedia,modal:mediaViewer}=useChatMediaViewer('group:'+route.params.id,messages,page.hasMore?{loading:page.loading,error:page.error,load:page.loadMore}:undefined);
  useEffect(()=>{acknowledgeAttachmentHandoffs(messages);},[messages]);
  const calls=usePrivateCallHistory(route.params.id,true,!page.initialLoading);
  const joinAvailable=useGroupCallAvailable(calls.rows[0]?.room);
@@ -295,8 +298,8 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
    owner={owner} disabled={disabled} highlighted={replyNavigation.isHighlighted(message)}
    senderName={showSender?memberName(message.peer):undefined} onSender={openSender}
    quoted={message.reply?findReply(message.reply):undefined} quoteAuthorName={message.reply?memberName(message.reply.author):undefined}
-   onJump={replyNavigation.jump} onReply={replyToMessage} onMenu={openMessageMenu} onReact={reactToMessage} onSticker={setStickerPreview} onError={report}/>;
- }} />),[joinAvailable,busy,calls.rows,timeline,state.contacts,findReply,page.hasMore,page.loading,page.loadMore,owner,colors,disabled,navigation,route.params.id,messageTime,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,g?.revision,g?.photo,g?.admin,work,openSender,replyToMessage,openMessageMenu,reactToMessage,languageSnapshot()]);
+   onJump={replyNavigation.jump} onReply={replyToMessage} onMenu={openMessageMenu} onReact={reactToMessage} onSticker={setStickerPreview} onMedia={openMedia} nextVoice={nextVoiceMessage(message,timeline[index-1]?.message)} onError={report}/>;
+ }} />),[joinAvailable,busy,calls.rows,timeline,state.contacts,findReply,page.hasMore,page.loading,page.loadMore,owner,colors,disabled,navigation,route.params.id,messageTime,replyNavigation.highlight,replyNavigation.jump,chatScroll,header,composerHeight,g?.revision,g?.photo,g?.admin,work,openSender,replyToMessage,openMessageMenu,reactToMessage,openMedia,languageSnapshot()]);
 
  return <KeyboardAvoidingScreen onLayout={onChatLayout} style={{flex:1,backgroundColor:colors.chatBg}} keyboardVerticalOffset={0} animateKeyboard onKeyboardAnimationChange={keyboardAnimationChanged}>
 
@@ -325,6 +328,7 @@ export function RootGroupRoom({route,navigation}:Screen<'GroupRoom'>){const {col
 
   {callKind&&g&&owner&&<GroupCallPicker name={g.name} initialKind={callKind} members={g.members.filter(id=>id!==owner).map(id=>({id,name:state.contacts.find(c=>c.account===id)?.alias||shortIdentity(id),avatar:state.avatarUris[id],blocked:!!state.contacts.find(c=>c.account===id)?.blocked}))} onClose={()=>setCallKind(undefined)} onCall={(ids,kind)=>calling.startGroup({...g,members:[owner,...ids]},kind,()=>ensureRootCallPermissions(kind)).then(()=>{})}/>}
   {attachmentPreview.modal}
+  {mediaViewer}
 
   <AttachmentMenu visible={attach} onClose={()=>setAttach(false)} onCamera={()=>{setAttach(false);void work(async()=>{const queued=await pickRootGroupMedia(route.params.id,'camera',attachmentPreview.confirm,reply,attachmentPreview.capture);if(queued){clearReply();scrollToBottom();}});}} onMultimedia={()=>{setAttach(false);void work(async()=>{const queued=await pickRootGroupMedia(route.params.id,'library',attachmentPreview.confirm,reply);if(queued){clearReply();scrollToBottom();}});}} onFiles={()=>{setAttach(false);void work(async()=>{const queued=await pickRootGroupAttachment(route.params.id,attachmentPreview.confirm,reply);if(queued){clearReply();scrollToBottom();}});}}/>
 

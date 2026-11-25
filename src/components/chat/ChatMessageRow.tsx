@@ -7,6 +7,7 @@ import {pendingMessages,type RootChatMessage} from '../../modules/messaging';
 import {parseSticker,type Sticker} from '../../services/stickers';
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import {retainEqualChatProps} from '../../modules/ui/useChatSnapshot';
+import {voiceMessageKey} from '../../services/voicePlayback';
 import RootAttachmentBubble from '../RootAttachmentBubble';
 import ChatDateSeparator from './ChatDateSeparator';
 import DeletedMessage from './DeletedMessage';
@@ -24,11 +25,11 @@ type Props={
  time:string;quoted?:RootChatMessage;quoteAuthorName?:string;senderName?:string;
  onSender?(account:string):void;onJump(message?:RootChatMessage):void;onReply(message:RootChatMessage):void;
  onMenu(message:RootChatMessage,event:GestureResponderEvent):void;onReact(message:RootChatMessage,value:string):void;
- onSticker(sticker:Sticker):void;onError(error:string):void;
+ onSticker(sticker:Sticker):void;onMedia(message:RootChatMessage):void;nextVoice?:string;onError(error:string):void;
 };
 
 /** Row props are message-scoped. List layout and unrelated receipt changes can leave this row intact. */
-export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled,highlighted,time,quoted,quoteAuthorName,senderName,onSender,onJump,onReply,onMenu,onReact,onSticker,onError}:Props){
+export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled,highlighted,time,quoted,quoteAuthorName,senderName,onSender,onJump,onReply,onMenu,onReact,onSticker,onMedia,nextVoice,onError}:Props){
  useLanguage();
  const {colors}=useTheme(),mine=m.direction==='outgoing',attachment=m.attachment,group=!!m.group;
  const sticker=!attachment?parseSticker(m.text):undefined;
@@ -63,7 +64,7 @@ export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled
        <RootReplyContent message={quoted}/>
       </Pressable>}
       {m.deleted?<DeletedMessage color={colors.textSecondary}/>:attachment?
-       <RootAttachmentBubble message={m} onLongPress={menu} audioFooter={audio?meta(true):undefined} onError={onError}/>:sticker?
+       <RootAttachmentBubble message={m} onMedia={onMedia} voiceKey={audio?voiceMessageKey(m):undefined} nextVoice={nextVoice} onLongPress={menu} audioFooter={audio?meta(true):undefined} onError={onError}/>:sticker?
        <Pressable accessibilityLabel={sticker.label+' sticker'} onLongPress={menu} onPress={()=>onSticker(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:
        <MessageTextWithFooter text={m.text} style={[styles.messageText,{color:colors.text}]} linkColor={colors.primary} footer={meta(true)} footerKey={JSON.stringify([time,edited,mine])}/>}
       {(m.deleted||!!sticker||!!attachment&&!audio)&&meta()}

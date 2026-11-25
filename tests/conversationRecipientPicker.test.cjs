@@ -3,7 +3,7 @@ function fixture(file,extra={}){
  const slots=[];let index=0;const effects=[];
  const react={createElement:(type,props,...children)=>({type,props:{...props,children}}),
   useState:initial=>{const i=index++;if(!(i in slots))slots[i]=initial;return [slots[i],value=>slots[i]=typeof value==='function'?value(slots[i]):value];},
-  useRef:initial=>{const i=index++;return slots[i]??={current:initial};},useEffect:fn=>effects.push(fn)};
+  useMemo:fn=>fn(),useRef:initial=>{const i=index++;return slots[i]??={current:initial};},useEffect:fn=>effects.push(fn)};
  const keyboard={};
  const imports={'../../modules/ui/useChatSnapshot':{useConversationIndex:()=>({index:null})},'../../theme':require('./helpers/theme.cjs'),react:{default:react,...react},'react-native':{View:'View',Text:'Text',Pressable:'Pressable',FlatList:'FlatList',Modal:'Modal',ActivityIndicator:'Spinner',StyleSheet:{create:x=>x},Keyboard:{addListener:(event,fn)=>{keyboard[event]=fn;return {remove(){}};}}},
   '@expo/vector-icons':{Ionicons:'Icon'},'expo-status-bar':{StatusBar:'StatusBar'},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:24,bottom:20,left:0,right:0})},

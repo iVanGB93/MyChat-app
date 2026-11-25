@@ -22,6 +22,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer, useAudioPlayerStatus, setAudioModeAsync } from 'expo-audio';
 
+import {createVoicePlayback} from '../services/voicePlayback';
 import { Spacing, Radius, Font } from '../theme';
 import {
   audioPositionFromTrack,
@@ -49,6 +50,7 @@ interface Props {
   subscribePlaybackAllowed?:(changed:()=>void)=>()=>void;
   onPlaybackError?:(error:string)=>void;
   messageFooter?:React.ReactNode;
+  sequence?:{owner:string;key:string;next?:string};
 }
 
 function fmtTime(ms: number): string {
@@ -75,27 +77,36 @@ function VoiceMessagePlayback({
   subscribePlaybackAllowed,
   onPlaybackError,
   messageFooter,
+  sequence,
 }: Props) {
  useLanguage();
   const player = useAudioPlayer(null, { updateInterval: 250 });
   const status = useAudioPlayerStatus(player);
-  // Attach the source after subscribing so a fast local prepare can report its duration.
-  useEffect(() => {
-    if (fileUri) player.replace(fileUri);
-  }, [fileUri, player]);
+  const [preparing,setPreparing]=useState(false);
+  const options=useRef({fileUri,playbackAllowed,subscribePlaybackAllowed,onPlaybackError,sequence});
+  options.current={fileUri,playbackAllowed,subscribePlaybackAllowed,onPlaybackError,sequence};
+  const playback=useMemo(()=>createVoicePlayback({
+    player,
+    prepare:()=>setAudioModeAsync({playsInSilentMode:true,shouldPlayInBackground:false}),
+    allowed:()=>!!options.current.fileUri&&(options.current.playbackAllowed?.()??true),
+    observe:check=>options.current.subscribePlaybackAllowed?.(check)??(()=>{}),
+    preparing:setPreparing,
+    error:reason=>options.current.onPlaybackError?.(reason==='blocked'?t("Finish your call or voice recording, then try again."):t("Could not play this voice message. Try again.")),
+    next:()=>{const next=options.current.sequence;return next?.next?{owner:next.owner,key:next.next}:undefined;},
+  }),[player]);
+  useEffect(()=>{
+    if(!fileUri)return;
+    const subscription=player.addListener('playbackStatusUpdate',playback.status);
+    try{player.replace(fileUri);}catch{options.current.onPlaybackError?.(t("Could not play this voice message. Try again."));}
+    return()=>{subscription.remove();playback.stop();};
+  },[fileUri,player,playback]);
+  useEffect(()=>sequence&&fileUri?playback.bind(sequence.owner,sequence.key):undefined,[fileUri,sequence?.owner,sequence?.key,playback]);
+  useEffect(()=>{playback.check();},[playback,playbackAllowed]);
+
   const trackWidth = useRef(0);
   const seekPreviewRef = useRef<number | null>(null);
   const [seekPreviewMs, setSeekPreviewMs] = useState<number | null>(null);
   const [playbackRate, setPlaybackRate] = useState<VoicePlaybackRate>(1);
-
-  // Ensure audio routes to the speaker (not call earpiece) when playing
-  useEffect(() => {
-    if(!fileUri||playbackAllowed&&!playbackAllowed())return;
-    setAudioModeAsync({
-      playsInSilentMode: true,
-      shouldPlayInBackground: false,
-    }).catch(() => {});
-  }, [fileUri]);
 
   const isPlaying = !!status?.playing;
   // expo-audio status reports seconds; convert to ms for display.
@@ -105,33 +116,6 @@ function VoiceMessagePlayback({
     : durationMs) || 0;
   const displayedMs = seekPreviewMs ?? curMs;
   const progress = totalMs > 0 ? Math.min(1, displayedMs / totalMs) : 0;
-
-  const onToggle = () => {
-    if (!fileUri) return;
-    if (isPlaying) {
-      player.pause();
-    } else {
-      if(playbackAllowed&&!playbackAllowed()){onPlaybackError?.('Finish your call or recording before playing a voice message.');return;}
-      // Restart from the beginning if it had finished playing
-      if (status?.didJustFinish || (totalMs > 0 && curMs >= totalMs - 50)) {
-        player.seekTo(0).then(() => {if(!playbackAllowed||playbackAllowed())player.play();}).catch(() => {if(!playbackAllowed||playbackAllowed())player.play();});
-      } else {
-        player.play();
-      }
-    }
-  };
-
-  // Idle bubbles must not poll call/recording state four times a second.
-  // Starting playback checks synchronously above; only active playback needs
-  // the ongoing interruption guard.
-  useEffect(()=>{if(!playbackAllowed||!isPlaying)return;const check=()=>{if(!playbackAllowed())player.pause();};const off=subscribePlaybackAllowed?.(check);check();if(off)return off;const timer=setInterval(check,250);return()=>clearInterval(timer);},[playbackAllowed,subscribePlaybackAllowed,player,isPlaying]);
-
-  // Stop playback if the file disappears (e.g. message deleted)
-  useEffect(() => {
-    if (!fileUri && isPlaying) {
-      try { player.pause(); } catch {}
-    }
-  }, [fileUri, isPlaying, player]);
 
   useEffect(() => {
     seekPreviewRef.current = null;
@@ -154,8 +138,9 @@ function VoiceMessagePlayback({
     const nextMs = clampAudioPosition(positionMs, totalMs);
     seekPreviewRef.current = null;
     setSeekPreviewMs(null);
+    playback.seek(nextMs / 1000,totalMs / 1000);
     player.seekTo(nextMs / 1000).catch(() => {});
-  }, [disabled, player, totalMs,languageSnapshot()]);
+  }, [disabled, playback, player, totalMs,languageSnapshot()]);
 
   const seekFromTap = useCallback((locationX: number) => {
     const nextMs = audioPositionFromTrack(locationX, trackWidth.current, totalMs);
@@ -197,7 +182,10 @@ function VoiceMessagePlayback({
   return (
     <View style={styles.container}>
       <TouchableOpacity
-        onPress={onToggle}
+        onPress={playback.toggle}
+        accessibilityRole="button"
+        accessibilityLabel={t(isPlaying||preparing?'Pause voice message':'Play voice message')}
+        accessibilityState={{disabled,busy:preparing}}
         activeOpacity={0.7}
         disabled={disabled}
         style={[
@@ -207,7 +195,7 @@ function VoiceMessagePlayback({
         ]}
         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
       >
-        {loading&&!fileUri?<ActivityIndicator size="small" color={tint}/>:<Ionicons
+        {preparing||loading&&!fileUri?<ActivityIndicator size="small" color={tint}/>:<Ionicons
           name={isPlaying ? 'pause' : 'play'}
           size={18}
           color={tint}
@@ -241,7 +229,7 @@ function VoiceMessagePlayback({
               if (event.nativeEvent.actionName === 'decrement') accessibilitySeek('backward');
             }}
           >
-            <View style={[styles.track, { backgroundColor: trackBg }]}>
+            <View pointerEvents="none" style={[styles.track, { backgroundColor: trackBg }]}>
               <View
                 style={[
                   styles.trackFill,

@@ -47,25 +47,28 @@ function useIndexedAvatars(state:import('../messaging').RootChatState,conversati
     [...state.contacts.map(c=>c.account),...(state.groups??[]).flatMap(g=>g.members)];
   return [...new Set(members)].sort().join(',');
  },[conversation,state.contacts,state.groups,visiblePeers]);
- const avatarUris=useAvatarUris(peers);
+ const avatarUris=useAvatarUris(peers,useIsFocused());
  return useMemo(()=>({...state,avatarUris}),[state,avatarUris]);
 }
 const noAvatars:Record<string,string|null>={};
-function useAvatarUris(peers:string){
- const focused=useIsFocused(),foreground=useForeground(),owner=localAccount.status().state==='unlocked'?localAccount.status().account:null;
+function useAvatarUris(peers:string,enabled:boolean){
+ const foreground=useForeground(),owner=localAccount.status().state==='unlocked'?localAccount.status().account:null;
  const accounts=useMemo(()=>peers?peers.split(','):[],[peers]);
  const [avatars,setAvatars]=useState<{owner:string|null;uris:Record<string,string|null>}>(()=>{const uris:Record<string,string|null>={};if(owner)for(const peer of accounts){const value=avatarSnapshots.peek(owner,peer);if(value!==undefined)uris[peer]=value;}return {owner,uris};});
- useEffect(()=>{if(!focused||!foreground||!owner||!accounts.length)return;let active=true,revision=0;
+ useEffect(()=>{if(!enabled||!foreground||!owner||!accounts.length)return;let active=true,revision=0;
   const refresh=async()=>{const version=++revision,pairs=await Promise.all(accounts.map(async peer=>[peer,await avatarSnapshots.read(owner,peer)] as const));if(active&&version===revision)setAvatars(previous=>previous.owner===owner&&Object.keys(previous.uris).length===pairs.length&&pairs.every(([peer,uri])=>previous.uris[peer]===uri)?previous:{owner,uris:Object.fromEntries(pairs)});};
   void refresh().catch(()=>{});const off=subscribeSharedAvatars(change=>{if(!change||change.owner===owner&&accounts.includes(change.peer))void refresh().catch(()=>{});});return()=>{active=false;off();};
- },[focused,foreground,owner,accounts]);
+ },[enabled,foreground,owner,accounts]);
  return peers&&owner&&avatars.owner===owner?avatars.uris:noAvatars;
 }
 export function usePeerContact(peer:string,withAvatar=false){
  const focused=useIsFocused();
  const value=useConversationSelection(focused,useShallow(state=>({contact:state.index?.state.contacts.find(c=>c.account===peer),error:state.error})));
- const avatarUris=useAvatarUris(withAvatar?peer:'');
+ const avatarUris=useAvatarUris(withAvatar?peer:'',focused);
  return {...value,avatarUri:avatarUris[peer]};
+}
+export function useRecipientAvatar(peer:string){
+ return useAvatarUris(peer,true)[peer];
 }
 export function useChatListSnapshot(onlyConversations=false){
  const value=useConversationSummaries();

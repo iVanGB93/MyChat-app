@@ -153,3 +153,19 @@ test('malformed or different-account remembered credentials are discarded',async
   const f=fixture();f.identity.lock();f.storage.credential=raw;await f.session.initialize();assert.equal(f.storage.credential,null);assert.equal(f.identity.status().state,'locked');
  }
 });
+
+test('restart waits for the secure write and manual-lock marker to clear before restoring',async()=>{
+ let finish,entered;const begun=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>finish=resolve);
+ const f=fixture({writeCredential:async value=>{entered();await gate;f.storage.credential=value;}});
+ await f.session.lock();assert.equal(await f.session.initialize(),'manual-lock');await f.identity.unlock(password);
+ const save=f.session.remember(password);await begun;
+ let settled=false;const restart=f.session.settle().then(()=>{settled=true;});
+ await Promise.resolve();assert.equal(settled,false);assert.equal(f.storage.policy,'locked');
+ finish();await Promise.all([save,restart]);assert.equal(f.storage.policy,'0');
+ f.identity.lock();assert.equal(await f.session.initialize(),'restored');
+});
+test('cold startup distinguishes a missing remembered sign-in from intentional locking',async()=>{
+ const f=fixture();f.identity.lock();
+ assert.equal(await f.session.initialize(),'saved-session-missing');
+ f.storage.policy='1';assert.equal(await f.session.initialize(),'auto-lock');
+});
