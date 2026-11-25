@@ -1,5 +1,5 @@
 import {t,languageSnapshot} from '../../localization/language';
-import React,{useMemo} from 'react';
+import React,{useEffect,useMemo,useState} from 'react';
 import {ScrollView,Text,TouchableOpacity,View} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {StatusBar} from 'expo-status-bar';
@@ -10,7 +10,25 @@ import {makeStyles} from './CallAppearance';
 export function EndButton({ended=false,video=false,onPress}:{ended?:boolean;video?:boolean;onPress:()=>void}){
  const {colors}=useTheme();return <View style={{alignItems:'center'}}><TouchableOpacity testID="axonic-end-call" accessibilityRole="button" accessibilityLabel={ended?t("Close call"):t("End call")} onPress={onPress} activeOpacity={0.8} style={[makeStyles(colors).endBtn,video&&{width:64,height:64,borderRadius:32}]}><Ionicons name={ended?'close':'call'} color="#fff" size={28} style={ended?undefined:{transform:[{rotate:'135deg'}]}}/></TouchableOpacity><Text style={makeStyles(colors).actionLabel}>{ended?t("Close"):'End'}</Text></View>;
 }
-export function CallLayout({name,avatarUri,status,video,children,background,show=true,avatar=true,content}:{name:string;avatarUri?:string|null;status:string;video?:boolean;children:React.ReactNode;background?:React.ReactNode;show?:boolean;avatar?:boolean;content?:React.ReactNode}){
+function elapsedCallTime(startedAt:number){
+ const seconds=Math.max(0,Math.floor((Date.now()-startedAt)/1000));
+ return String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');
+}
+
+/** Refresh only the visible label, without rendering the call media tree. */
+export function CallElapsedTime({startedAt,foreground}:{startedAt:number;foreground:boolean}){
+ const [label,setLabel]=useState(()=>elapsedCallTime(startedAt));
+ useEffect(()=>{
+  if(!foreground)return;
+  const refresh=()=>setLabel(elapsedCallTime(startedAt));
+  refresh();
+  const timer=setInterval(refresh,1000);
+  return()=>clearInterval(timer);
+ },[startedAt,foreground]);
+ return label;
+}
+
+export function CallLayout({name,avatarUri,status,video,children,background,show=true,avatar=true,content}:{name:string;avatarUri?:string|null;status:React.ReactNode;video?:boolean;children:React.ReactNode;background?:React.ReactNode;show?:boolean;avatar?:boolean;content?:React.ReactNode}){
  const {colors}=useTheme(),insets=useSafeAreaInsets(),styles=useMemo(()=>makeStyles(colors),[colors,languageSnapshot()]);
  const compact=!!content||video&&!avatar;
  return <View style={styles.container}><StatusBar style="light"/>{background}{show&&<View style={[styles.overlay,{paddingTop:insets.top+24,paddingBottom:Math.max(insets.bottom,16)+16,paddingLeft:insets.left,paddingRight:insets.right}]} pointerEvents="box-none">

@@ -4,7 +4,7 @@ import Native from '../../../modules/axonic-nearby';
 import type {OwnHistoryStore} from '../../services/identity/ownHistoryStore';
 import {supportsChatStorageRecovery,readNativeChatStorage,checkNativeChatWrite} from '../../../modules/axonic-app-update/src';
 import {createStorageReadGate} from './storageReadSafety';
-import {projectionHash,conversationPresentationChanged} from '../../services/identity/conversationProjection';
+import {conversationKey,projectionHash,conversationPresentationChanged} from '../../services/identity/conversationProjection';
 import {createConversationPageStore} from '../../services/identity/conversationPageStore';
 const pages=new Map<string,ReturnType<typeof createConversationPageStore>>();
 export function ownConversationPages(owner:string){let store=pages.get(owner);if(!store){store=createConversationPageStore(owner,{
@@ -19,9 +19,10 @@ export function ownConversationPages(owner:string){let store=pages.get(owner);if
  });pages.set(owner,store);}return store;}
 const revisions=new Map<string,number>();
 const gates=new Map<string,ReturnType<typeof createStorageReadGate>>();
-const listeners=new Set<(owner:string,visible?:boolean)=>void>();
-/** Notification only after durable success; listeners cannot fail a committed write. */
-export function subscribeOwnChatWrites(listener:(owner:string,visible?:boolean)=>void){listeners.add(listener);return()=>{listeners.delete(listener);};}
+type ChatWriteListener=(owner:string,visible:boolean,rooms?:readonly string[])=>void;
+const listeners=new Set<ChatWriteListener>();
+/** Notify after durable success. Missing rooms means the write was not scoped. */
+export function subscribeOwnChatWrites(listener:ChatWriteListener){listeners.add(listener);return()=>{listeners.delete(listener);};}
 /** Process-local change token: long transfers can refresh permission snapshots
  * after a chat write without rereading the complete ledger for every buffer. */
 export const ownChatRevision=(owner:string)=>revisions.get(owner)??0;
@@ -33,7 +34,7 @@ export function ownChatStore(owner: string):OwnHistoryStore & {indexed?:Pick<Ret
   const legacy=()=>supportsChatStorageRecovery()?readNativeChatStorage(owner):AsyncStorage.getItem(key);
   const indexed=indexedChatEnabled()?indexedChatStore(owner,legacy):undefined;
   const committed=()=>{gate.invalidate();revisions.set(owner,ownChatRevision(owner)+1);};
-  const notify=(visible=true)=>{for(const listener of listeners){try{listener(owner,visible);}catch{}}};
+  const notify=(visible=true,rooms?:readonly string[])=>{for(const listener of listeners){try{listener(owner,visible,rooms);}catch{}}};
   return {read: () => gate.read(()=>indexed?indexed.read():legacy()),
    ...(indexed?{indexed:{...indexed,writeScope:async(scope,before,raw)=>{
     await checkNativeChatWrite(owner,new TextEncoder().encode(raw).length);
@@ -41,11 +42,17 @@ export function ownChatStore(owner: string):OwnHistoryStore & {indexed?:Pick<Ret
     if(!conversationPresentationChanged(owner,states[0],states[1])){
      await indexed.writeScope(scope,before,raw);committed();notify(false);return;
     }
-    for(const state of states)for(const m of state.messages)rooms.add(m.group?'group:'+m.group.id:m.peer);
+    for(const state of states){
+     for(const message of state.messages)rooms.add(conversationKey(message));
+     // An action can change an unloaded message, including an older quoted reply.
+     for(const action of state.actions??[])rooms.add(action.peer);
+     for(const action of state.groupActions??[])rooms.add('group:'+action.group.id);
+    }
     for(const group of states[1].groups??[]){const old=states[0].groups?.find((g:{id:string})=>g.id===group.id);if(old?.photo!==group.photo||old?.accepted!==group.accepted||old?.blocked!==group.blocked)rooms.add('group:'+group.id);}
-    // Action targets affect the selected conversation's visible state as well.
-    if('peer' in scope)rooms.add(scope.peer);if('group' in scope)rooms.add('group:'+scope.group);if('groupRead' in scope)rooms.add('group:'+scope.groupRead);
-    await ownConversationPages(owner).patch([...rooms],()=>indexed.readRooms([...rooms]),async()=>{await indexed.writeScope(scope,before,raw);committed();});notify();
+    if('group' in scope)rooms.add('group:'+scope.group);if('groupRead' in scope)rooms.add('group:'+scope.groupRead);
+    const affected=[...rooms];
+    await ownConversationPages(owner).patch(affected,()=>indexed.readRooms(affected),async()=>{await indexed.writeScope(scope,before,raw);committed();});
+    notify(true,affected);
    }}}:{}) ,write: async (raw: string) => {
     await checkNativeChatWrite(owner,new TextEncoder().encode(raw).length);
     await ownConversationPages(owner).write(raw,async()=>{if(indexed)await indexed.write(raw);else await AsyncStorage.setItem(key,raw);committed();});notify();

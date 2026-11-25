@@ -1,8 +1,7 @@
 import {storageRetryDelay} from '../storage/storageReadSafety';
 /** One focused screen: coalesce committed changes, retry failed reads, and
  * never replace the last good view with an empty view on a storage failure. */
-export function createChatRefresh<T>(d:{owner():string|null;read(owner:string):Promise<T|undefined>;
- fresh?(owner:string,value:T):boolean;
+export function createChatRefresh<T>(d:{owner():string|null;read(owner:string):Promise<T>;
  ready(value:T,milliseconds:number):void;failed(error:unknown):void;
  now?:()=>number;schedule?:(run:()=>void,delay:number)=>ReturnType<typeof setTimeout>;cancel?:(timer:ReturnType<typeof setTimeout>)=>void}){
  const now=d.now??Date.now,schedule=d.schedule??((run:()=>void,delay:number)=>setTimeout(run,delay)),cancel=d.cancel??((timer:ReturnType<typeof setTimeout>)=>clearTimeout(timer));
@@ -14,8 +13,7 @@ export function createChatRefresh<T>(d:{owner():string|null;read(owner:string):P
    if(stopped||d.owner()!==owner)return;
    // A consistent read may precede a newer commit. Show it, then catch up,
    // rather than starving the screen while messages continuously arrive.
-   if(value!==undefined){d.ready(value,now()-start);if(d.fresh&&!d.fresh(owner,value))dirty=true;}
-   else dirty=true;
+   d.ready(value,now()-start);
    failures=0;
   }catch(error){if(!stopped&&d.owner()===owner){failures++;d.failed(error);}}
   finally{running=false;if(!stopped&&(dirty||failures))arm(failures?storageRetryDelay(failures):0);}

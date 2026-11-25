@@ -2,6 +2,7 @@ import {Chrome} from '../../theme';
 import {t,languageSnapshot} from '../../localization/language';
 import {useHeaderHeight} from '@react-navigation/elements';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {isGroupAvatarFile} from '../../services/group-avatar-file';
 import {attachmentLabel} from '../../utils/attachment-label';
 import {groupPhotoUri} from '../../components/chat/group-photo';
 import {useChatActivity} from '../../modules/ui/useChatActivity';
@@ -40,11 +41,16 @@ export default function ChatList({navigation}:Screen<'Tabs'>){
  const openCall=useCallback((peer:string,kind:'voice'|'video')=>navigation.navigate('OutgoingCall',{peer,kind}),[navigation,languageSnapshot()]);
  const markOneRead=useCallback((peer:string)=>void markRead([peer]).catch(report),[markRead,languageSnapshot()]);
 
- const unreadCounts=useMemo(()=>new Map(Object.values(summaries).map(s=>[s.key,s.unread])),[summaries,languageSnapshot()]);
- const latest=useMemo(()=>new Map(Object.values(summaries).map(s=>[s.key,s.last])),[summaries,languageSnapshot()]);
+ const hasUnread=useMemo(()=>Object.values(summaries).some(s=>s.unread>0),[summaries]);
 
 
- const contacts=useMemo(()=>[...state.contacts,...(state.groups??[]).map(g=>({account:'group:'+g.id,alias:g.name,blocked:g.blocked,accepted:g.accepted}))].filter(c=>!state.hiddenChats?.includes(c.account)).sort((a,b)=>(latest.get(b.account)?.at??0)-(latest.get(a.account)?.at??0)),[state.contacts,state.groups,state.hiddenChats,latest,languageSnapshot()]);
+ const directory=useMemo(()=>{
+  const hidden=new Set(state.hiddenChats);
+  return [...state.contacts,...(state.groups??[]).map(g=>({account:'group:'+g.id,alias:g.name,blocked:g.blocked,accepted:g.accepted,muted:g.muted}))]
+   .filter(c=>!hidden.has(c.account));
+ },[state.contacts,state.groups,state.hiddenChats]);
+ const contacts=useMemo(()=>[...directory].sort((a,b)=>(summaries[b.account]?.last?.at??0)-(summaries[a.account]?.last?.at??0)),[directory,summaries]);
+ const separator=useCallback(()=><View style={[listStyles.separator,{backgroundColor:colors.divider}]}/>,[colors.divider]);
 
 
  const selectionMode=selected.size>0;
@@ -60,15 +66,15 @@ export default function ChatList({navigation}:Screen<'Tabs'>){
 
    ListEmptyComponent={loading?<View accessibilityRole="progressbar" accessibilityLabel={t("Loading chats")} accessibilityState={{busy:true}} style={{alignItems:'center',gap:12,padding:32}}><ActivityIndicator color={colors.primary} size="small"/><Text style={{color:colors.textSecondary}}>{t("Loading chats…")}</Text></View>:error?null:<EmptyState iconName="chatbubbles-outline" title={t("No channels open")} subtitle={t("Start a chat with someone's identity code")}/>}
 
-   ItemSeparatorComponent={()=><View style={[listStyles.separator,{backgroundColor:colors.divider}]}/>}
+   ItemSeparatorComponent={separator}
 
-   renderItem={({item:c})=>{const m=latest.get(c.account);return <ChatListRow roomId={c.account} displayName={c.alias||shortIdentity(c.account)} avatarUri={c.account.startsWith('group:')?groupPhotoUri(state,c.account.slice(6),localAccount.status().account):state.avatarUris[c.account]} isDirect={!c.account.startsWith('group:')} isOnline={activity.online.includes(c.account)}
+   renderItem={({item:c})=>{const summary=summaries[c.account],m=summary?.last;return <ChatListRow roomId={c.account} displayName={c.alias||shortIdentity(c.account)} avatarUri={c.account.startsWith('group:')?groupPhotoUri(state,c.account.slice(6),localAccount.status().account):state.avatarUris[c.account]} isDirect={!c.account.startsWith('group:')} isOnline={activity.online.includes(c.account)}
 
-    lastMsgContent={c.blocked?t('Blocked'):!c.accepted?(c.account.startsWith('group:')?t("Group invitation"):t("Message request")):m?.deleted?t("Message deleted"):m?.attachment?(m.attachment.caption||attachmentLabel(m.attachment)):parseSticker(m?.text??'')?t("Sticker"):m?.text??null} lastMsgTime={m?formatHistoryTime(m.at):null}
+    lastMsgContent={c.blocked?t('Blocked'):!c.accepted?(c.account.startsWith('group:')?t("Group invitation"):t("Message request")):m?.deleted?t("Message deleted"):m?.attachment?(c.account.startsWith('group:')&&isGroupAvatarFile(m.attachment)?t('Group avatar'):m.attachment.caption||attachmentLabel(m.attachment)):parseSticker(m?.text??'')?t("Sticker"):m?.text??null} lastMsgTime={m?formatHistoryTime(m.at):null}
 
-    lastMsgFromMe={m?.direction==='outgoing'} lastMsgStatus={m?messagePresentationStatus(m):undefined} unread={unreadCounts.get(c.account)??0} typingLabel={activity.typing.includes(c.account)?t("Typing…"):null} isMuted={c.account.startsWith('group:')?state.groups?.find(g=>g.id===c.account.slice(6))?.muted===true:state.contacts.find(contact=>contact.account===c.account)?.muted===true} selectionMode={selected.size>0} selected={selected.has(c.account)} Colors={colors}
+    lastMsgFromMe={m?.direction==='outgoing'} lastMsgStatus={m?messagePresentationStatus(m):undefined} unread={summary?.unread??0} typingLabel={activity.typing.includes(c.account)?t("Typing…"):null} isMuted={c.muted===true} selectionMode={selected.size>0} selected={selected.has(c.account)} Colors={colors}
 
-    onOpen={openChat} onAvatarPress={setAvatarPeer} onLongPress={toggle} onToggleSelection={toggle} onMarkRead={markOneRead} onCall={openCall}/>;}}/>),[contacts,colors,state,latest,unreadCounts,activity.online,activity.typing,selected,openChat,toggle,markOneRead,openCall,listTop,bottomClearance,error,loading,languageSnapshot()]);
+    onOpen={openChat} onAvatarPress={setAvatarPeer} onLongPress={toggle} onToggleSelection={toggle} onMarkRead={markOneRead} onCall={openCall}/>;}}/>),[contacts,colors,state,summaries,separator,activity.online,activity.typing,selected,openChat,toggle,markOneRead,openCall,listTop,bottomClearance,error,loading,languageSnapshot()]);
 
  return <View style={{flex:1,backgroundColor:colors.background}}>
 
@@ -76,7 +82,7 @@ export default function ChatList({navigation}:Screen<'Tabs'>){
 
   {chatList}
   {selectionMode&&<View style={[listStyles.selectionBar,{top:headerHeight,left:insets.left+Chrome.gutter,right:insets.right+Chrome.gutter,borderColor:colors.neonBorder,backgroundColor:colors.headerBg,shadowColor:colors.primary}]}><Pressable accessibilityLabel={t("Cancel selection")} onPress={()=>setSelected(new Set())}><Ionicons name="close" size={24} color={colors.primary}/></Pressable><Text style={[listStyles.selectionBarText,{color:colors.text}]}>{selected.size} {t("selected")}</Text><TouchableOpacity accessibilityLabel={t("Select all chats")} style={listStyles.selectionBarAction} onPress={()=>setSelected(new Set(selected.size===contacts.length?[]:contacts.map(c=>c.account)))}><Ionicons name="checkbox-outline" size={22} color={colors.primary}/></TouchableOpacity><TouchableOpacity style={listStyles.selectionBarAction} onPress={()=>void markRead([...selected]).catch(report)}><Ionicons name="checkmark-done" size={22} color={colors.primary}/><Text style={[listStyles.selectionBarText,{color:colors.primary}]}>{t("Mark read")}</Text></TouchableOpacity><TouchableOpacity accessibilityLabel={t("Delete selected chats")} style={listStyles.selectionBarAction} onPress={deleteSelected}><Ionicons name="trash-outline" size={22} color={colors.error}/><Text style={[listStyles.selectionBarText,{color:colors.error}]}>{t("Delete")}</Text></TouchableOpacity></View>}
-  {selected.size===0&&Object.values(summaries).some(s=>s.unread>0)&&<View pointerEvents="box-none" style={[listStyles.markAllFloating,{bottom:bottomClearance+12}]}><TouchableOpacity accessibilityRole="button" accessibilityLabel={t("Mark all as read")} activeOpacity={0.7} style={[listStyles.markAllBar,{backgroundColor:colors.tabBarBg,borderColor:colors.neonBorder,shadowColor:colors.primary}]} onPress={()=>void markRead(contacts.map(c=>c.account)).catch(report)}><Ionicons name="checkmark-done" size={20} color={colors.primary}/><Text numberOfLines={1} style={[listStyles.markAllText,{color:colors.primary}]}>{t("Mark all as read")}</Text></TouchableOpacity></View>}
+  {selected.size===0&&hasUnread&&<View pointerEvents="box-none" style={[listStyles.markAllFloating,{bottom:bottomClearance+12}]}><TouchableOpacity accessibilityRole="button" accessibilityLabel={t("Mark all as read")} activeOpacity={0.7} style={[listStyles.markAllBar,{backgroundColor:colors.tabBarBg,borderColor:colors.neonBorder,shadowColor:colors.primary}]} onPress={()=>void markRead(contacts.map(c=>c.account)).catch(report)}><Ionicons name="checkmark-done" size={20} color={colors.primary}/><Text numberOfLines={1} style={[listStyles.markAllText,{color:colors.primary}]}>{t("Mark all as read")}</Text></TouchableOpacity></View>}
 
   {avatarPeer&&<ChatAvatarActionModal visible avatarUri={avatarPeer.startsWith('group:')?groupPhotoUri(state,avatarPeer.slice(6),localAccount.status().account):state.avatarUris[avatarPeer]} name={contacts.find(c=>c.account===avatarPeer)?.alias||shortIdentity(avatarPeer)} subtitle={avatarPeer.startsWith('group:')?null:shortIdentity(avatarPeer)} isGroup={avatarPeer.startsWith('group:')} onClose={()=>setAvatarPeer(null)} onMessage={()=>{setAvatarPeer(null);avatarPeer.startsWith('group:')?navigation.navigate('GroupRoom',{id:avatarPeer.slice(6)}):navigation.navigate('ChatRoom',{peer:avatarPeer});}} onCall={avatarPeer.startsWith('group:')?undefined:()=>{setAvatarPeer(null);navigation.navigate('OutgoingCall',{peer:avatarPeer,kind:'voice'});}} onDetails={()=>{setAvatarPeer(null);avatarPeer.startsWith('group:')?navigation.navigate('GroupInfo',{id:avatarPeer.slice(6)}):navigation.navigate('Contact',{peer:avatarPeer});}}/>}
 

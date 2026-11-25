@@ -35,7 +35,7 @@ export function useConversationWindow(key:string){
  const [window,setWindow]=useState<{scope:typeof scope;owner:string|null;key:string;value:ConversationWindow|null;error:string;loading:boolean}>({scope,owner,key,value:null,error:'',loading:true});
  const request=useRef<{minimum:number;through?:MessagePosition}>({minimum:50});
  const controller=useRef<ReturnType<typeof createChatRefresh<ConversationWindow>>|undefined>(undefined);
- const requestScope=useRef(scope);if(requestScope.current!==scope){requestScope.current=scope;request.current={minimum:50};}
+ const paging=useRef(false),requestScope=useRef(scope);if(requestScope.current!==scope){requestScope.current=scope;request.current={minimum:50};paging.current=false;}
  const value=window.scope===scope?window.value:null;
  const valueRef=useRef(value);valueRef.current=value;
  useEffect(()=>{
@@ -46,14 +46,18 @@ export function useConversationWindow(key:string){
   const account=owner,room=key;let active=true;
   const current=()=>active&&localAccount.status().state==='unlocked'&&localAccount.status().account===account&&context.current===scope?account:null;
   const refresh=createChatRefresh({owner:current,read:()=>ownConversationPages(account).readWindow(room,request.current.minimum,request.current.through),
-   ready:(next,milliseconds)=>{if(!current())return;diagnosticJournal.record('chat_snapshot_ready',{milliseconds});if(next.oldest&&(!request.current.through||comparePositions(next.oldest,request.current.through)<0))request.current.through=next.oldest;setWindow(previous=>{const value=previous.scope===scope?retainEqual(previous.value,next):next;return previous.scope===scope&&previous.value===value&&!previous.error&&!previous.loading?previous:{scope,owner:account,key:room,value,error:'',loading:false};});},
-   failed:error=>{if(current())setWindow(s=>({scope,owner:account,key:room,value:s.scope===scope?s.value:null,error:storageErrorText(error),loading:false}));}});
-  controller.current=refresh;const off=subscribeOwnChatWrites((who,visible)=>{if(visible!==false)refresh.wake(who);});
-  return()=>{active=false;off();refresh.stop();if(controller.current===refresh)controller.current=undefined;};
+   ready:(next,milliseconds)=>{if(!current())return;paging.current=false;diagnosticJournal.record('chat_snapshot_ready',{milliseconds});if(next.oldest&&(!request.current.through||comparePositions(next.oldest,request.current.through)<0))request.current.through=next.oldest;setWindow(previous=>{const value=previous.scope===scope?retainEqual(previous.value,next):next;return previous.scope===scope&&previous.value===value&&!previous.error&&!previous.loading?previous:{scope,owner:account,key:room,value,error:'',loading:false};});},
+   failed:error=>{if(!current())return;paging.current=false;setWindow(s=>({scope,owner:account,key:room,value:s.scope===scope?s.value:null,error:storageErrorText(error),loading:false}));}});
+  controller.current=refresh;
+  const off=subscribeOwnChatWrites((who,visible,rooms)=>{
+   if(who===account&&visible!==false&&(!rooms||rooms.includes(room)))refresh.wake(who);
+  });
+  return()=>{active=false;off();refresh.stop();if(controller.current===refresh){controller.current=undefined;paging.current=false;}};
  },[owner,key,focused,foreground]);
  // Retire optimistic rows only after their durable replacement is rendered.
  useEffect(()=>{if(owner&&value)pendingMessages.reconcile(owner,{...empty,messages:value.messages});},[owner,value]);
- const loadMore=useCallback(()=>{const current=valueRef.current;if(!owner||!current?.hasMore||window.loading)return;
+ const loadMore=useCallback(()=>{const current=valueRef.current;if(!owner||!current?.hasMore||window.loading||paging.current||!controller.current)return;
+  paging.current=true;
   request.current.minimum=current.messages.length+50;request.current.through=current.oldest;setWindow(s=>({...s,loading:true}));controller.current?.wake(owner);
  },[owner,window.loading]);
  const revealMessage=useCallback((message:RootChatMessage)=>{

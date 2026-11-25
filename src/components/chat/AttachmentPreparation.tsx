@@ -2,6 +2,7 @@ import {useLanguage} from '../../localization/useLanguage';
 import {t} from '../../localization/language';
 import VoiceMessageBubble from '../VoiceMessageBubble';
 import {messageBubbleStyles as styles} from './message-bubble-styles';
+import {isGroupAvatarFile} from '../../services/group-avatar-file';
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import {Ionicons} from '@expo/vector-icons';
 import React,{useState} from 'react';
@@ -18,6 +19,16 @@ export default function AttachmentPreparation({selection:s,colors,report}:{selec
  const act=async(work:()=>Promise<unknown>)=>{if(busy)return;setBusy(true);try{await work();}catch(e){report(e);}finally{setBusy(false);}};
 
  const status=s.reason==='caption'?t("Caption is too long for this attachment. Shorten it and retry."):s.reason==='audience'?t("A group member is blocked or another recipient could not be prepared."):s.reason==='identity'&&!s.failed?t("Waiting for a recipient’s device identity…"):s.failed?t("Could not prepare attachment"):t("Preparing attachment…");
+
+ if(s.group&&isGroupAvatarFile(s)){
+  return <View style={{alignItems:'center',gap:8,marginHorizontal:24,marginVertical:8}}>
+   <Text style={{textAlign:'center',color:colors.textSecondary,fontSize:13}}>{s.failed?status:t("Preparing group photo…")}</Text>
+   {s.failed&&<View style={{flexDirection:'row',gap:20}}>
+    <Pressable disabled={busy} onPress={()=>void act(()=>retryRootAttachmentSelection(s.id))}><Text style={{color:colors.primary}}>{t("Retry")}</Text></Pressable>
+    <Pressable disabled={busy} onPress={()=>void act(()=>removeRootAttachmentSelection(s.id))}><Text style={{color:colors.primary}}>{t("Remove")}</Text></Pressable>
+   </View>}
+  </View>;
+ }
 
  const sticker=s.name===IMPORTED_STICKER_CONTENT&&s.mime.startsWith('image/');
  const kind=sticker?t("Sticker"):s.mime.startsWith('image/')?t("Photo"):s.mime.startsWith('video/')?t("Video"):s.mime.startsWith('audio/')?t("Voice message"):'File';

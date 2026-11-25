@@ -6,7 +6,7 @@ File: src/screens/LocalAccountApp.tsx
 File: src/navigation/RootAccountNavigator.tsx
 File: src/components/chat/ChatListRow.tsx
 File: src/components/chat/ChatConnectionBar.tsx
-File: src/modules/ui/chatReadModel.ts
+File: src/modules/ui/useConversationPages.ts
 File: src/modules/ui/useChatSnapshot.ts
 File: src/modules/ui/useChatActivity.ts
 File: src/modules/ui/avatarSnapshotCache.ts

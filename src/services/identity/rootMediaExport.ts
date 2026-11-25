@@ -75,7 +75,7 @@ export function startRootMediaExport(){
  }
  const scheduler=createWorkPump({run:pump,idleMilliseconds:15000,maximumIdleMilliseconds:300000,nextDelay:()=>AppState.currentState==='active'?worker?.nextDelay()??Infinity:Infinity}),wake=scheduler.wake;
  const offFiles=subscribeAttachmentContentChanges(wake);
- const offWrites=subscribeOwnChatWrites(owner=>{if(owner===localAccount.status().account)wake();});
+ const offWrites=subscribeOwnChatWrites((owner,visible)=>{if(visible!==false&&owner===localAccount.status().account)wake();});
  const offAccount=localAccount.subscribe(()=>{epoch++;worker=undefined;bound=null;wake();});
  preferenceListeners.add(wake);
  const subscription=AppState.addEventListener('change',state=>{if(state==='active')wake();});

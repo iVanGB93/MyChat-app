@@ -1,7 +1,7 @@
 import {diagnosticJournal} from '../services/diagnosticJournal';
 import {t} from '../localization/language';
 import {Chrome} from '../theme';
-import {useAccountState,useNetworkState} from '../modules/ui/liveState';
+import {useAccountState} from '../modules/ui/liveState';
 import RenderBoundary from '../components/ui/RenderBoundary';
 import {requestInitialNotificationPermission} from '../services/notificationPermission';
 import {KeyboardFormScrollView} from '../components/ui/KeyboardForm';
@@ -98,7 +98,6 @@ function LocalAccountContent() {
 
   const [restoring, setRestoring] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState('');
 
-  const connections=useNetworkState(s=>s.liveConnections.length);
 
   const generation = useRef(0), actionRunning = useRef(false);
 
@@ -184,7 +183,7 @@ function LocalAccountContent() {
     <Button title={t("CLOSE AXONIC")} onPress={()=>void closeForDeviceRemoval().catch(e=>setError(e instanceof Error?e.message:t("Unable to close Axonic")))}/>
   </View></SafeAreaView>;
 
-  if(ready&&!locked&&!setup)return <View style={styles.root}><RenderBoundary scope="screens"><RootAccountNavigator profile={<RootProfileScreen account={status.account!} loginName={loginName} connected={connections}>
+  if(ready&&!locked&&!setup)return <View style={styles.root}><RenderBoundary scope="screens"><RootAccountNavigator profile={<RootProfileScreen account={status.account!} loginName={loginName}>
 
     {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}{!!notice&&<Text style={styles.text}>{notice}</Text>}
 

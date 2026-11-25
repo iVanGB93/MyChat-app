@@ -311,7 +311,9 @@ class AxonicMediaStoreModule : Module() {
       val origin = File(file.parentFile, "origin.json")
       if (origin.isFile && origin.length() in 1..4096) {
         val original = try { mediaUri(JSONObject(origin.readText()).getString("uri")) } catch (_: Exception) { null }
-        if (original != null) {
+        // A picker URI may be readable now but lose its temporary grant later.
+        // Keep the original as the only copy when its read grant is persistent.
+        if (original != null && resolver.persistedUriPermissions.any { it.isReadPermission && it.uri == original }) {
           val matches = try { resolver.openInputStream(original)?.use { hash(it) } == digest } catch (_: Exception) { false }
           if (matches) return@AsyncFunction original.toString()
         }

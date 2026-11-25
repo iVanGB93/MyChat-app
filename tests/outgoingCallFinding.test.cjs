@@ -8,7 +8,7 @@ function fixture(startStatus='finding'){
  const navigation={goBack:()=>backs++,addListener:(_,fn)=>{beforeRemove=fn;return ()=>{};}};
  const exports={},react={createElement:(type,props)=>({type,props})};
  const code=ts.transpileModule('export '+source.slice(start,end),{compilerOptions:{module:1,target:9,jsx:2}}).outputText;
- new Function('exports','useOwnChat','useState','useRef','useEffect','useCallback','localAccountCalls','subscribeLocalAccountCalls','startCall','OutgoingCallAppearance','nickname','React','useLanguage','languageSnapshot','t',code)(exports,()=>({state:{contacts:[]}}),hooks.useState,hooks.useRef,hooks.useEffect,hooks.useCallback,()=>calls,fn=>{listener=fn;fn(current);return()=>{};},async()=>{starts++;emit(startStatus);return 'one';},'Appearance',()=> 'Test peer',react,()=>0,()=>0,require('./helpers/localization.cjs')('../localization/language').t);
+ new Function('exports','usePeerContact','useState','useRef','useEffect','useCallback','localAccountCalls','subscribeLocalAccountCalls','startCall','OutgoingCallAppearance','shortIdentity','React','useLanguage','languageSnapshot','t',code)(exports,()=>({}),hooks.useState,hooks.useRef,hooks.useEffect,hooks.useCallback,()=>calls,fn=>{listener=fn;fn(current);return()=>{};},async()=>{starts++;emit(startStatus);return 'one';},'Appearance',()=> 'Test peer',react,()=>0,()=>0,require('./helpers/localization.cjs')('../localization/language').t);
  const render=()=>{index=0;const tree=exports.OutgoingCall({route:{params:{peer:'peer',kind:'video'}},navigation});while(effects.length)effects.shift()();return tree;};
  return {render,emit,backs:()=>backs,starts:()=>starts,ended:()=>ended,back:()=>{let prevented=false;beforeRemove({preventDefault:()=>prevented=true});return prevented;}};
 }

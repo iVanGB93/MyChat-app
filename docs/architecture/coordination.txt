@@ -13,7 +13,7 @@ File: src/services/identity/sharedState.ts
 File: src/services/identity/eventDeadlineTask.ts
 File: src/services/workPump.ts
 File: src/modules/ui/liveState.ts
-File: src/modules/ui/chatState.ts
+File: src/modules/ui/conversationState.ts
 File: src/modules/ui/transferState.ts
 AoN: src/index.ts
 AoN: src/deadlineTask.ts

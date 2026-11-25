@@ -1,7 +1,7 @@
 import {t} from '../../localization/language';
 import {KeyboardFormScrollView} from '../../components/ui/KeyboardForm';
 import {KeyboardAwareTextInput as TextInput} from '../../components/ui/KeyboardForm';
-import {useChatListSnapshot as useOwnChat} from '../../modules/ui/useChatSnapshot';
+import {usePeerContact} from '../../modules/ui/useChatSnapshot';
 import {ThemedAlert as Alert} from '../../components/ui/ThemedAlert';
 import {userInfoStyles as infoStyles} from '../chat/user-info-styles';
 import QRCode from 'react-native-qrcode-svg';
@@ -19,7 +19,7 @@ import type {RootAccountScreen as Screen} from '../../navigation/rootAccountRout
 import {report} from '../rootScreenSupport';
 export default function Contact({route,navigation}:Screen<'Contact'>){
 
- const {colors}=useTheme(),{state,error}=useOwnChat(),peer=route.params.peer,contact=state.contacts.find(c=>c.account===peer);
+ const {colors}=useTheme(),peer=route.params.peer,{contact,error,avatarUri}=usePeerContact(peer,true);
 
  const identity=displayIdentity(peer),name=contact?.alias||shortIdentity(peer);
 
@@ -43,7 +43,7 @@ export default function Contact({route,navigation}:Screen<'Contact'>){
 
   <View style={[infoStyles.hero,section]}>
 
-   <View style={infoStyles.identityHeading}><Avatar name={name} uri={state.avatarUris[peer]} size={64}/><View style={infoStyles.identityHeadingText}><Text selectable style={[infoStyles.name,{color:colors.text}]}>{name}</Text>
+   <View style={infoStyles.identityHeading}><Avatar name={name} uri={avatarUri} size={64}/><View style={infoStyles.identityHeadingText}><Text selectable style={[infoStyles.name,{color:colors.text}]}>{name}</Text>
 
    {!!contact?.alias&&<Text selectable style={[infoStyles.username,{color:colors.textSecondary}]}>{shortIdentity(peer)}</Text>}</View></View>
 

@@ -3,7 +3,8 @@ import Native from '../../modules/axonic-nearby';
 import {localAccount,startLocalAccount} from '../services/identity/localAccount';
 import {selections,subscribeAttachmentSelections} from '../services/identity/rootAttachmentSelections';
 import {createMobileAttachmentJobs,subscribeAttachmentJobProgress} from '../services/identity/mobileAttachmentJobs';
-import {localRootChat,subscribeRootChatCommitted} from '../services/identity/localRootChat';
+import {localRootChat} from '../services/identity/localRootChat';
+import {subscribeOwnChatWrites} from '../modules/storage/chatStore';
 import {rootMessageStatus} from '../services/identity/rootMessageStatus';
 import {rootChatView} from '../services/identity/rootChatActions';
 import {rootGroupAllowed} from '../services/identity/rootGroups';
@@ -69,14 +70,14 @@ export function registerBackgroundMediaUploads(){
   else void schedule();
  });
  subscribeAttachmentJobProgress(job=>{if(['queued','confirming','complete','expired','cancelled'].includes(job.phase))void schedule();});
- subscribeRootChatCommitted(()=>void schedule());
+ subscribeOwnChatWrites((owner,visible)=>{if(visible!==false&&unlocked(owner))void schedule();});
  localAccount.subscribe(()=>void schedule());
  AppState.addEventListener('change',state=>{if(state==='active')void schedule();});
  AppRegistry.registerHeadlessTask('AxonicMediaUpload',()=>async(data:{owner:string;token:string})=>{
   if(!Native?.attachmentUploadCurrent?.(data.token))return;
   let wake:(()=>void)|undefined,dirty=true,lastRead=0,cached:Awaited<ReturnType<typeof readBackgroundUploadWork>>|undefined;
   const changed=()=>{dirty=true;wake?.();};
-  const off=[subscribeAttachmentJobProgress(changed),subscribeAttachmentSelections(changed),subscribeRootChatCommitted(changed),localAccount.subscribe(changed)];
+  const off=[subscribeAttachmentJobProgress(changed),subscribeAttachmentSelections(changed),subscribeOwnChatWrites((owner,visible)=>{if(visible!==false&&owner===data.owner)changed();}),localAccount.subscribe(changed)];
   let outcome='error';
   try{
    if(localAccount.status().account&&localAccount.status().account!==data.owner){outcome='locked';return;}

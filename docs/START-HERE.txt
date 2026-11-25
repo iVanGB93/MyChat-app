@@ -14,7 +14,7 @@ Runtime and ownership
   index.ts: foreground/headless registration and current neuron app entry.
   src/composition/neuronRuntime.ts: runtime wiring and shared lifecycle leases.
   src/modules/{identity,messaging,network,storage}: application boundaries.
-  src/modules/ui/{chatState,chatReadModel,liveState,transferState}.ts: shared
+  src/modules/ui/{conversationState,useConversationPages,liveState,transferState}.ts: shared
     Zustand presentation, selectors and caches; not a second database.
   src/services/identity: protocol and platform implementations. Eight support
     roots are intentionally retained for AoN shared-source consumers; see

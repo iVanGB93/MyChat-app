@@ -6,7 +6,7 @@ async function main(){
  const owners=[];
  try{
   for(const t of targets)owners.push(await run(t,`if(account.status().state!=='unlocked')throw Error('Unlock Dev');
-   const history=await ledger().snapshot();const chats=get('src/modules/ui/chatState.ts').chatState,transfers=get('src/modules/ui/transferState.ts').transferState;
+   const history=await ledger().snapshot();const chats=get('src/modules/ui/conversationState.ts').conversationState,transfers=get('src/modules/ui/transferState.ts').transferState;
    if(globalThis.__globalStateAudit)throw Error('Prior audit still active');
    const audit=globalThis.__globalStateAudit={keys:history.messages.map(m=>m.direction+':'+m.peer+':'+m.id),chatEvents:0,transferEvents:0,stops:[]};
    audit.stops.push(chats.subscribe(()=>audit.chatEvents++),transfers.subscribe(()=>audit.transferEvents++));
@@ -16,7 +16,7 @@ async function main(){
   const results=[];
   for(let i=0;i<2;i++){
    const id=await run(targets[i],`return messaging.sendText(${JSON.stringify(owners[1-i])},'[DEV STATE TEST] Shared state '+Date.now());`);
-   const delivered=await until(async()=>run(targets[1-i],`const s=get('src/modules/ui/chatState.ts').chatState.getState();const m=s.state.messages.find(m=>m.id===${JSON.stringify(id)}&&m.direction==='incoming');return m?.status==='delivered'&&s.rooms[${JSON.stringify(owners[i])}]?.some(m=>m.id===${JSON.stringify(id)});`),'Message in shared conversation index');
+   const delivered=await until(async()=>run(targets[1-i],`const key=${JSON.stringify(owners[i])};const state=get('src/modules/ui/conversationState.ts').conversationState.getState();if(!state.index?.summaries[key])return false;const page=await get('src/modules/storage/chatStore.ts').ownConversationPages(state.owner).readWindow(key,50);return page.messages.some(m=>m.id===${JSON.stringify(id)}&&m.direction==='incoming'&&m.status==='delivered');`),'Message in shared conversation index');
    results.push({direction:i===0?'A to B':'B to A',deliveredAndIndexed:true,observedMs:delivered.elapsedMs});
   }
   const media=await run(targets[0],`const fs=find(/expo-file-system[\\/]src[\\/]index\\.ts$/),file=new fs.File(fs.Paths.cache,'global-state-'+Date.now()+'.bin');file.write(new Uint8Array(5_000_000).fill(81));try{return await get('src/services/identity/rootAttachmentSelections.ts').queueRootAttachmentSource(${JSON.stringify(owners[1])},file.uri,'DEV-global-state-5MB.bin','application/octet-stream');}finally{file.delete();}`);
@@ -25,7 +25,7 @@ async function main(){
   if(received.bytes!==5000000||!received.checksumMatches)throw Error('Media checksum mismatch');
   const evidence=[];
   for(const t of targets)evidence.push(await run(t,`const a=globalThis.__globalStateAudit,s=await ledger().snapshot(),keys=new Set(s.messages.map(m=>m.direction+':'+m.peer+':'+m.id));
-   const live=get('src/modules/ui/liveState.ts'),view=get('src/modules/ui/chatState.ts').chatState.getState();
+   const live=get('src/modules/ui/liveState.ts'),view=get('src/modules/ui/conversationState.ts').conversationState.getState();
    return {historyPreserved:a.keys.every(k=>keys.has(k)),chatEvents:a.chatEvents,transferEvents:a.transferEvents,ownerMatches:view.owner===account.status().account,connections:live.networkState.getState().value.liveConnections.length};`));
   if(evidence.some(e=>!e.historyPreserved||!e.ownerMatches||!e.transferEvents))throw Error('State preservation or observation failed');
   const result={at:new Date().toISOString(),text:results,media:received,devices:evidence,normalAppsUntouched:true};

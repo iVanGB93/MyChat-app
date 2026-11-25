@@ -1,6 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function load(path,deps={}){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>{if(!(n in deps))throw Error(n);return deps[n];});return out;}
 function fixture(){const rows=[],messages=[],selected=[],actions=[],groups=[],contacts=[{account:'peer',accepted:true,blocked:false},{account:'peer2',accepted:true,blocked:false}];let reads=0;const deps={
+ '../modules/storage/chatStore':{},
  'react-native':{},'../../modules/axonic-nearby':{default:null},'../services/identity/localAccount':{},
  '../services/identity/rootAttachmentSelections':{selections:async()=>selected},
  '../services/identity/mobileAttachmentJobs':{createMobileAttachmentJobs:()=>({list:async()=>rows})},

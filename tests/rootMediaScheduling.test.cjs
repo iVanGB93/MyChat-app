@@ -24,12 +24,12 @@ function fixture(shared=false){
  const runtime=exports_.startRootMediaExport();
  async function advance(ms){const end=now+ms;for(;;){const next=[...timers].sort((a,b)=>a[1].at-b[1].at)[0];if(!next||next[1].at>end)break;now=next[1].at;timers.delete(next[0]);next[1].fn();for(let n=0;n<200;n++)await Promise.resolve();}now=end;}
  function add(id){state.messages.push({id,peer:'peer',direction:'incoming',status:'delivered',attachment:{name:'synthetic.jpg',mime:'image/jpeg',manifest:{id}}});}
- return {runtime,advance,counts,add,state,file:()=>fileListener(),write:()=>writeListener('owner'),otherWrite:()=>writeListener('other'),exports_,fail:v=>failSave=v,failAdopt:v=>failAdopt=v,
+ return {runtime,advance,counts,add,state,file:()=>fileListener(),write:visible=>writeListener('owner',visible),otherWrite:()=>writeListener('other'),exports_,fail:v=>failSave=v,failAdopt:v=>failAdopt=v,
   lock(v){locked=v;accountListener();},foreground(v){AppState.currentState=v?'active':'background';appListener(AppState.currentState);},block(p){blockRead=p;}};
 }
 test('quiet exporter performs one initial snapshot and then sleeps',async t=>{
  const f=fixture();t.after(()=>f.runtime.stop());await f.advance(1800000);assert.equal(f.counts.snapshots,1);
- f.otherWrite();await f.advance(0);assert.equal(f.counts.snapshots,1);
+ f.otherWrite();f.write(false);await f.advance(0);assert.equal(f.counts.snapshots,1);
  f.add('a');f.write();await f.advance(0);assert.equal(f.counts.saves,1);
 });
 test('new media and preference changes wake immediately; existing links avoid native rechecks',async t=>{

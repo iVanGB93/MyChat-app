@@ -4,18 +4,14 @@ export {retainEqual as retainEqualChatProps} from '../../services/identity/share
 import {useGroupSnapshot} from './useGroupSnapshot';
 import {useConversationSelection,useConversationSummaries,useConversationWindow} from './useConversationPages';
 import {readProfileAvatar,readSharedAvatar,subscribeSharedAvatars} from '../storage';
-import {useCallback,useEffect,useState,useMemo,useRef,useSyncExternalStore} from 'react';
+import {useCallback,useEffect,useState,useMemo,useRef} from 'react';
 import {AppState} from 'react-native';
 import {useIsFocused} from '@react-navigation/native';
-import {pendingMessages} from '../messaging';
 import {localAccount} from '../identity';
 import {createAvatarSnapshotCache} from './avatarSnapshotCache';
 import {diagnosticJournal} from '../../services/diagnosticJournal';
 import {useForeground} from './liveState';
-import {useStore} from 'zustand';
 import {useShallow} from 'zustand/react/shallow';
-import {chatState} from './chatState';
-import {createConversationSelector} from './chatReadModel';
 
 const avatarSnapshots=createAvatarSnapshotCache({current:owner=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner,
  read:(owner,peer)=>peer===owner?readProfileAvatar(owner):readSharedAvatar(owner,peer)});
@@ -31,25 +27,6 @@ export function useChatContacts(enabled=true){
 const emptyContacts:import('../messaging').RootChatState['contacts']=[];
 
 
-/** The visible foreground screen refreshes on durable writes and foreground entry.
- * Unchanged and hidden screens do no refresh work. */
-export function useChatSnapshot(conversation?:string){
- const focused=useIsFocused(),foreground=useForeground();
- const observed=useMemo(()=>({...chatState,subscribe:focused&&foreground?chatState.subscribe:()=>()=>{}}),[focused,foreground]);
- const select=useMemo(()=>{const room=conversation?createConversationSelector(conversation):null;
-  return (s:ReturnType<typeof chatState.getState>)=>room?room(s.state,s.rooms):s.state;
- },[conversation]);
- const state=useStore(observed,select),error=useStore(observed,s=>s.error);
- const avatarOwner=localAccount.status().state==='unlocked'?localAccount.status().account:null;
- const subscribePending=useCallback((listener:()=>void)=>focused&&foreground?pendingMessages.subscribe(listener):()=>{},[focused,foreground]);
- const pendingVersion=useSyncExternalStore(subscribePending,pendingMessages.version,pendingMessages.version);
- const visible=useMemo(()=>{const merged=pendingMessages.merge(avatarOwner,state);if(!conversation||merged===state)return merged;
-  return {...merged,messages:merged.messages.filter(m=>(m.group?'group:'+m.group.id:m.peer)===conversation)};
- },[state,avatarOwner,pendingVersion,conversation]);
- const withAvatars=useIndexedAvatars(visible);
- return {state:withAvatars,error};
-}
-
 /** First screen-container layout only: not message paint or transition completion.
  * Fixed event names and elapsed time; no chat IDs, content, or persistent timers. */
 export function useChatLayoutTiming(event:'private_chat_layout'|'group_chat_layout'){
@@ -63,7 +40,6 @@ export function useChatLayoutTiming(event:'private_chat_layout'|'group_chat_layo
 
 /** Summary/page readers share the same avatar cache as detail screens. */
 function useIndexedAvatars(state:import('../messaging').RootChatState,conversation?:string,visiblePeers?:readonly string[]){
- const focused=useIsFocused(),foreground=useForeground(),owner=localAccount.status().state==='unlocked'?localAccount.status().account:null;
  const peers=useMemo(()=>{
   if(visiblePeers)return [...new Set(visiblePeers)].sort().join(',');
   if(conversation&&!conversation.startsWith('group:'))return conversation;
@@ -71,13 +47,25 @@ function useIndexedAvatars(state:import('../messaging').RootChatState,conversati
     [...state.contacts.map(c=>c.account),...(state.groups??[]).flatMap(g=>g.members)];
   return [...new Set(members)].sort().join(',');
  },[conversation,state.contacts,state.groups,visiblePeers]);
+ const avatarUris=useAvatarUris(peers);
+ return useMemo(()=>({...state,avatarUris}),[state,avatarUris]);
+}
+const noAvatars:Record<string,string|null>={};
+function useAvatarUris(peers:string){
+ const focused=useIsFocused(),foreground=useForeground(),owner=localAccount.status().state==='unlocked'?localAccount.status().account:null;
  const accounts=useMemo(()=>peers?peers.split(','):[],[peers]);
  const [avatars,setAvatars]=useState<{owner:string|null;uris:Record<string,string|null>}>(()=>{const uris:Record<string,string|null>={};if(owner)for(const peer of accounts){const value=avatarSnapshots.peek(owner,peer);if(value!==undefined)uris[peer]=value;}return {owner,uris};});
- useEffect(()=>{if(!focused||!foreground||!owner)return;let active=true,revision=0;
+ useEffect(()=>{if(!focused||!foreground||!owner||!accounts.length)return;let active=true,revision=0;
   const refresh=async()=>{const version=++revision,pairs=await Promise.all(accounts.map(async peer=>[peer,await avatarSnapshots.read(owner,peer)] as const));if(active&&version===revision)setAvatars(previous=>previous.owner===owner&&Object.keys(previous.uris).length===pairs.length&&pairs.every(([peer,uri])=>previous.uris[peer]===uri)?previous:{owner,uris:Object.fromEntries(pairs)});};
   void refresh().catch(()=>{});const off=subscribeSharedAvatars(change=>{if(!change||change.owner===owner&&accounts.includes(change.peer))void refresh().catch(()=>{});});return()=>{active=false;off();};
  },[focused,foreground,owner,accounts]);
- return useMemo(()=>({...state,avatarUris:avatars.owner===owner?avatars.uris:{}}),[state,avatars,owner]);
+ return peers&&owner&&avatars.owner===owner?avatars.uris:noAvatars;
+}
+export function usePeerContact(peer:string,withAvatar=false){
+ const focused=useIsFocused();
+ const value=useConversationSelection(focused,useShallow(state=>({contact:state.index?.state.contacts.find(c=>c.account===peer),error:state.error})));
+ const avatarUris=useAvatarUris(withAvatar?peer:'');
+ return {...value,avatarUri:avatarUris[peer]};
 }
 export function useChatListSnapshot(onlyConversations=false){
  const value=useConversationSummaries();

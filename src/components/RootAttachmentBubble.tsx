@@ -2,12 +2,12 @@ import {t,languageSnapshot} from '../localization/language';
 import RootMessageStatus from './chat/RootMessageStatus';
 import {attachmentLabel} from '../utils/attachment-label';
 import RootVideoThumbnail from './chat/RootVideoThumbnail';
-import {Image as StickerImage} from 'expo-image';
+import {Image} from 'expo-image';
 import StickerPreview from './chat/sticker-preview';
 import {IMPORTED_STICKER_CONTENT,MAX_STICKER_BYTES} from '../services/sticker-file-format';
 import RootAudioPlayer from './chat/RootAudioPlayer';
 import React,{useEffect,useMemo,useState} from 'react';
-import {AppState,Image,Linking,Platform,Pressable,Text,View,type GestureResponderEvent} from 'react-native';
+import {AppState,Linking,Platform,Pressable,Text,View,type GestureResponderEvent} from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
 import {useTheme} from '../contexts/ThemeContext';
 import {localAccount} from '../modules/identity';
@@ -46,7 +46,7 @@ export default function RootAttachmentBubble({message,progress:initialProgress,s
  }catch{onError('No app could open this file.');}}
  const image=/^image\/(jpeg|png|gif|webp|heic)$/.test(descriptor.mime),audio=descriptor.mime.startsWith('audio/'),video=descriptor.mime.startsWith('video/');
  return <View style={{gap:8}}>
-  {ready&&sticker?<Pressable accessibilityLabel={t("Preview sticker")} onLongPress={onLongPress} onPress={()=>setPreview(true)}><StickerImage source={{uri:file!.uri}} style={styles.stickerImage} contentFit="contain"/></Pressable>:ready&&image?<Pressable accessibilityLabel={t("View photo")} onLongPress={onLongPress} onPress={()=>setImagePreview(true)}><Image source={{uri:file!.uri}} accessibilityLabel={attachmentLabel(descriptor)} style={styles.imageBubble} resizeMode="cover"/></Pressable>:ready&&video?<RootVideoThumbnail owner={owner!} digest={digest} onPress={()=>void open()} onLongPress={onLongPress}/>:!audio&&!sticker&&<Pressable accessibilityLabel={t("Open attachment")} onLongPress={onLongPress} onPress={()=>void open()} style={[styles.sharedFile,{backgroundColor:colors.surface,borderColor:colors.neonBorder}]}><View style={[styles.sharedFileIcon,{backgroundColor:colors.highlight}]}><Ionicons name={descriptor.mime.startsWith('video/')?'videocam-outline':'document-outline'} size={24} color={colors.primary}/></View><View style={styles.sharedFileInfo}><Text numberOfLines={2} style={[styles.sharedFileTitle,{color:colors.text}]}>{attachmentLabel(descriptor)}</Text><Text style={[styles.sharedFileHint,{color:colors.textSecondary}]}>{ready?t("Tap to open"):label}</Text></View></Pressable>}
+  {ready&&sticker?<Pressable accessibilityLabel={t("Preview sticker")} onLongPress={onLongPress} onPress={()=>setPreview(true)}><Image source={{uri:file!.uri}} style={styles.stickerImage} contentFit="contain"/></Pressable>:ready&&image?<Pressable accessibilityLabel={t("View photo")} onLongPress={onLongPress} onPress={()=>setImagePreview(true)}><Image source={{uri:file!.uri}} accessibilityLabel={attachmentLabel(descriptor)} style={styles.imageBubble} contentFit="cover" allowDownscaling cachePolicy="memory" recyclingKey={file!.uri}/></Pressable>:ready&&video?<RootVideoThumbnail owner={owner!} digest={digest} onPress={()=>void open()} onLongPress={onLongPress}/>:!audio&&!sticker&&<Pressable accessibilityLabel={t("Open attachment")} onLongPress={onLongPress} onPress={()=>void open()} style={[styles.sharedFile,{backgroundColor:colors.surface,borderColor:colors.neonBorder}]}><View style={[styles.sharedFileIcon,{backgroundColor:colors.highlight}]}><Ionicons name={descriptor.mime.startsWith('video/')?'videocam-outline':'document-outline'} size={24} color={colors.primary}/></View><View style={styles.sharedFileInfo}><Text numberOfLines={2} style={[styles.sharedFileTitle,{color:colors.text}]}>{attachmentLabel(descriptor)}</Text><Text style={[styles.sharedFileHint,{color:colors.textSecondary}]}>{ready?t("Tap to open"):label}</Text></View></Pressable>}
   {ready&&descriptor.mime.startsWith('audio/')&&<RootAudioPlayer uri={file!.uri} onError={onError} messageFooter={audioFooter}/>}
   {(showSize||!sticker&&!ready)&&<Text style={[styles.sharedFileHint,{color:colors.textSecondary}]}>{showSize&&(descriptor.manifest.bytes>=1048576?(descriptor.manifest.bytes/1048576).toFixed(1)+' MB':(descriptor.manifest.bytes/1024).toFixed(1)+' KB')}{!ready?(showSize?' · ':'')+label:''}</Text>}
   {showSize&&<RootMessageStatus message={message} onError={onError}/>}

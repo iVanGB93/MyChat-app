@@ -20,7 +20,7 @@ import {AppState,Dimensions,Modal,Platform,Text,View,Pressable,StyleSheet} from 
 import {Ionicons} from '@expo/vector-icons';
 import {StatusBar} from 'expo-status-bar';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
-import {CallLayout,EndButton} from './CallStage';
+import {CallElapsedTime,CallLayout,EndButton} from './CallStage';
 import DraggableCallPreview from './DraggableCallPreview';
 import IncomingCallAppearance from './IncomingCallAppearance';
 import {playLooping,stopLooping} from '../../services/soundService';
@@ -156,8 +156,7 @@ function RootMedia({call,name,avatarUri,end,closeFloatingWindow,minimized,closin
  const {audioRoutes,routeAudio,audioError,foreground}=useCallAudioSession(call.id,call.media==='video',hangup,avatarUri??null);
  const {colors}=useTheme(),styles=makeStyles(colors),[connected,setConnected]=useState(false),[error,setError]=useState('');
  const started=useRef(false),connectedAt=useRef<number|null>(null);
- const insets=useSafeAreaInsets(),[seconds,setSeconds]=useState(0),[controls,setControls]=useState(true),[options,setOptions]=useState(false);
- useEffect(()=>{if(!connected)return;const timer=setInterval(()=>setSeconds(Math.floor((Date.now()-connectedAt.current!)/1000)),1000);return()=>clearInterval(timer);},[connected]);
+ const insets=useSafeAreaInsets(),[controls,setControls]=useState(true),[options,setOptions]=useState(false);
  const onConnected=useCallback(()=>{connectedAt.current??=Date.now();setConnected(true);markRootCallConnected(call.id);},[call.id,languageSnapshot()]);
  const endRef=useRef(end);endRef.current=end;const onDisconnected=useCallback(()=>{if(currentCall.current.room)void localAccountCalls()?.endParticipant(anchor.id);else endRef.current();},[anchor.id,languageSnapshot()]);
  const rtc=useWebRTCCore({callId:anchor.id,callType:anchor.media,peerUserId:anchor.peerUser,isOutgoing:anchor.outgoing,mediaTransport:anchor.transport,onExpandCall:adopt,onExpansionAccepted:commitExpansion,onSpeaking:anchorSpeaking,onConnected,onDisconnected});
@@ -229,7 +228,7 @@ function RootMedia({call,name,avatarUri,end,closeFloatingWindow,minimized,closin
    status:own?rtc.isMuted?t("Muted"):t("You"):leg?.status==='ended'?leg.reason??'Left':original?t("Connected"):extraRemote[peer]?.status??leg?.status??'Waiting',
    speaking:own?!rtc.isMuted&&Object.values(speakers).some(s=>s.local):leg?.status==='ready'&&!!speakers[peer]?.remote};
  });
- const status=rtc.recovering?t("Reconnecting…"):connected?String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0'):t("Connecting…");
+ const status=rtc.recovering?t("Reconnecting…"):connectedAt.current!==null?<CallElapsedTime startedAt={connectedAt.current} foreground={foreground}/>:t("Connecting…");
  const minimizeMedia=()=>{setOptions(false);minimize();};
  const homeWindow=Platform.OS==='android'&&!foreground;
  const shareBar=<View testID="axonic-screen-share-controls" onLayout={event=>setBarFraction(event.nativeEvent.layout.height/Dimensions.get('screen').height)} pointerEvents={excludedFraction===barFraction&&barFraction>0?'auto':'none'} style={{opacity:excludedFraction===barFraction&&barFraction>0?1:0,backgroundColor:'#071426',paddingTop:12,paddingBottom:Math.max(insets.bottom,12),paddingLeft:insets.left+12,paddingRight:insets.right+12}}>

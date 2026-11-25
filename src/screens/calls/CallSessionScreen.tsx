@@ -10,7 +10,7 @@ import {CallLayout,EndButton} from './CallStage';
 import {ActionButton,makeStyles} from './CallAppearance';
 export interface CallParticipant {id:string;name:string;status:string;stream?:string;local?:boolean;connected?:boolean;speaking?:boolean;cameraOff?:boolean}
 export interface CallSessionScreenProps {
- name:string;status:string;video:boolean;incoming?:boolean;avatarUri?:string|null;avatar?:boolean;background?:React.ReactNode;participants?:CallParticipant[];
+ name:string;status:React.ReactNode;video:boolean;incoming?:boolean;avatarUri?:string|null;avatar?:boolean;background?:React.ReactNode;participants?:CallParticipant[];
  show?:boolean;minimized:boolean;closing?:boolean;homeWindow?:boolean;hideHome?:boolean;homeStream?:string;homeMirror?:boolean;
  restore():void;minimize():void;end():void;children:React.ReactNode;specialStage?:React.ReactNode;minimizedContent?:React.ReactNode;
 }
@@ -57,7 +57,7 @@ export function CallControls({video,muted,mute,cameraOff,camera,sharing=false,fl
  {options&&<ActionButton size={video?52:64} icon={video?'options-outline':audioBluetooth?'bluetooth':'volume-high-outline'} label={t("Options")} onPress={options} Colors={colors}/>}
  </View>;
 }
-export function MinimizedCall({name,status,video,stream,restore,end}:{name:string;status:string;video:boolean;stream?:string;restore():void;end():void}){
+export function MinimizedCall({name,status,video,stream,restore,end}:{name:string;status:React.ReactNode;video:boolean;stream?:string;restore():void;end():void}){
  const insets=useSafeAreaInsets(),{colors}=useTheme();
  return <View testID="axonic-minimized-call" style={{position:'absolute',top:insets.top+12,right:insets.right+12,width:156,borderRadius:16,backgroundColor:colors.surface,borderWidth:1,borderColor:colors.primary,overflow:'hidden',elevation:12,zIndex:100}}>
   <View style={{height:video?196:124}}>

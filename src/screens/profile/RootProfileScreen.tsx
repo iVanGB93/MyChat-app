@@ -27,10 +27,18 @@ import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {useHeaderHeight} from '@react-navigation/elements';
 import {defaultRootNotificationPreferences,readRootNotificationPreferences,saveRootNotificationPreferences,type RootNotificationPreferences} from '../../modules/messaging/notifications';
 import notifee from '@notifee/react-native';
-import {useNotificationPreferenceState} from '../../modules/ui/liveState';
+import {useNetworkState,useNotificationPreferenceState} from '../../modules/ui/liveState';
 
-export default function RootProfileScreen({account, loginName, connected, children}: {
-  account: string; loginName: string | null; connected: number;
+function ProfileConnectionBadge(){
+ const {colors}=useTheme(),connected=useNetworkState(state=>state.liveConnections.length>0);
+ return <View style={[styles.statusBadge,styles.identityStatus,{borderColor:connected?colors.online:colors.border}]}>
+  <View style={[styles.statusDot,{backgroundColor:connected?colors.online:colors.textSecondary}]}/>
+  <Text style={[styles.statusText,{color:connected?colors.online:colors.textSecondary}]}>{connected?t("CONNECTED"):t("FINDING NEURONS")}</Text>
+ </View>;
+}
+
+export default function RootProfileScreen({account, loginName, children}: {
+  account: string; loginName: string | null;
   children: React.ReactNode;
 }) {
   const {colors: Colors, preference, setPreference, languagePreference, setLanguagePreference} = useTheme();
@@ -92,10 +100,7 @@ export default function RootProfileScreen({account, loginName, connected, childr
       </View>
       <View style={styles.identityActionsRow}>
       <View style={styles.identityActionColumn}>
-      <View style={[styles.statusBadge, styles.identityStatus, {borderColor: connected ? Colors.online : Colors.border}]}>
-        <View style={[styles.statusDot, {backgroundColor: connected ? Colors.online : Colors.textSecondary}]}/>
-        <Text style={[styles.statusText, {color: connected ? Colors.online : Colors.textSecondary}]}>{connected ? t("CONNECTED") : t("FINDING NEURONS")}</Text>
-      </View>
+      <ProfileConnectionBadge/>
       </View>
       <View style={styles.identityActionColumn}>
         <TouchableOpacity accessibilityRole="button" accessibilityLabel={t("Copy ID")} disabled={busy} onPress={()=>void run(async()=>{await Clipboard.setStringAsync(code);Alert.alert(t("Identity copied"),t("Your full identity code is ready to paste."));})} style={[styles.copyIdButton,{borderColor:Colors.primary,backgroundColor:Colors.highlight}]}>

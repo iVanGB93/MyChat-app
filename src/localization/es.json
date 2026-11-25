@@ -892,7 +892,9 @@
   "Checking…": "Comprobando…",
   "Could not open permission settings.": "No se pudo abrir la configuración de permisos.",
   "Choose from gallery": "Elegir de la galería",
-  "Gallery photos are shared in this group chat.": "Las fotos de la galería se comparten en este chat grupal.",
+  "Group avatar": "Foto del grupo",
+  "You changed the group avatar": "Cambiaste la foto del grupo",
+  "{0} changed the group avatar": "{0} cambió la foto del grupo",
   "Preparing group photo…": "Preparando la foto del grupo…",
   "The selected media is unavailable": "El archivo multimedia seleccionado no está disponible"
 }
