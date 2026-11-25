@@ -4,7 +4,7 @@ import type {AttachmentTransferStorage,AttachmentTransferConnections} from './at
 export type {AttachmentJobStore} from './attachmentTransferPorts.ts';
 import {receiptDeliveryEvidence,validDeliveryEvidence,type DeliveryEvidence,type ReceivedRoute} from './deliveryEvidence.ts';
 import {createOrderedReadAhead} from './orderedReadAhead.ts';
-import {createAttachmentWorkSelection,createAttachmentReadinessProbe} from './attachmentSchedule.ts';
+import {ATTACHMENT_ACTIVE_JOB_LIMIT,createAttachmentWorkSelection,createAttachmentReadinessProbe} from './attachmentSchedule.ts';
 import {attachmentRouteSnapshot,attachmentRouteCandidates,attachmentRouteNeedsSelection,selectAttachmentCustodian,
  selectAttachmentReceiptPeer,attachmentStreamEligible,attachmentBlockRoute} from './attachmentRouteSelection.ts';
 import type {AttachmentEncoding} from './attachmentEncoding.ts';
@@ -51,6 +51,7 @@ export function createAttachmentTransfer(d:{
  hashLeaf?:AttachmentLeafHash;encoding?:AttachmentEncoding;decryptBlock?:AttachmentBlockDecrypt;
  measureProcessing?<T>(stage:'decodeBlock'|'verifyDecryptBlock',work:()=>T):T;
  downloadWindow?:number;uploadWindow?:number;
+ incomingLanes?:{limit:number;changed():void};
  record(account:string):Promise<IdentityRecord|null>;
  allowed(peer:string):boolean;allowedJob?(job:AttachmentJob):boolean;
  outgoingCustodian?(job:AttachmentJob):Promise<string|null|undefined>;
@@ -73,6 +74,10 @@ export function createAttachmentTransfer(d:{
  const custodyWait=new Map<string,number>();
  const published=new Set<string>();
  const storedPublished=new Set<string>();
+ const incoming=new Set<string>(),incomingIdleUntil=new Map<string,number>();
+ const payload=(job:AttachmentJob)=>job.direction==='incoming'&&!job.receipt&&job.cursor<total(job);
+ const canSchedule=(job:AttachmentJob)=>!incoming.has(job.digest)&&(!d.incomingLanes||!payload(job)||incoming.size<d.incomingLanes.limit);
+ const scheduleAt=(job:AttachmentJob)=>canSchedule(job)?Math.max(job.next,incomingIdleUntil.get(job.digest)??0):Infinity;
  const routes=()=>attachmentRouteSnapshot(d.connections,!!d.connections.directStream);
  // The worker owns retry clocks; selection receives only this job's observations.
  const routeCooldowns=(job:AttachmentJob,peers:readonly string[])=>new Map(peers.map(peer=>[peer,unavailable.get(job.digest+':'+peer)??0]));
@@ -217,7 +222,7 @@ export function createAttachmentTransfer(d:{
 
     await save({relay:selected,phase:job.direction==='outgoing'?'queued':job.receipt?'confirming':'downloading',cursor:job.direction==='outgoing'?0:job.cursor});
    }
-   const relay=job.relay!;
+   let relay=job.relay!;
    if(job.direction==='outgoing'){
     if(d.connections.sendingStream?.(job))return;
     if(job.phase==='queued'){
@@ -279,14 +284,28 @@ export function createAttachmentTransfer(d:{
     // A sender can connect after custody download has begun. Stream into an
     // isolated temporary file; failure must preserve the verified chunk prefix.
     // A failed stream must not loop ahead of the reliable encrypted fallback.
-    if(streamRetry.size>=128)streamRetry.clear();streamRetry.set(job.digest,d.now()+60000);
+    if(streamRetry.size>=128)streamRetry.clear();
     let received:boolean|'unavailable'=false;
     try{received=await d.connections.directStream(job,async()=>manifest.expires>d.now()&&await live(),
      {digest:job.digest,bytes:manifest.bytes,checksum:job.descriptor.checksum});}catch{}
     // No stream was started. Keep chunk fallback moving, but do not suppress
     // a newly ready media lane for the failure cooldown.
-    if(received==='unavailable')streamRetry.set(job.digest,d.now()+1000);
+    streamRetry.set(job.digest,d.now()+(received==='unavailable'?1000:60000));
     if(!await live())return;
+    if(received!==true){
+     const refreshed=routes();
+     if(received===false||!attachmentBlockRoute(refreshed,relay,'incoming')){
+      const fallback=attachmentRouteCandidates(job,refreshed,d.now(),routeCooldowns(job,refreshed.peers),streamRetry.get(job.digest)!)
+       .find(source=>source!==relay&&attachmentBlockRoute(refreshed,source,'incoming'));
+      if(fallback){
+       if(received===false){
+        if(unavailable.size>=128)unavailable.clear();
+        unavailable.set(job.digest+':'+relay,streamRetry.get(job.digest)!);
+       }
+       await save({relay:fallback});relay=fallback;
+      }
+     }
+    }
     if(received===true){
      const custodians=[...new Set([...job.custodians,relay])];
      if(custodians.length>10)throw Error('Too many attachment sources');
@@ -379,6 +398,7 @@ export function createAttachmentTransfer(d:{
   }
  }
  return {
+  canSchedule,scheduleAt,
   /** Own-file requests are scoped to the authenticated intended endpoint, never arbitrary peers. */
   async receive(raw:string,peer:IdentityPeer):Promise<string|null>{
    let input;try{if(raw.length>13000)return null;input=JSON.parse(raw);}catch{return null;}
@@ -467,8 +487,32 @@ export function createAttachmentTransfer(d:{
      const jobs=await d.storage.jobs.list(owner);if(!jobs.every(validAttachmentJob))throw Error('Invalid own attachment jobs');
      const confirming=new Set(jobs.filter(j=>j.phase==='confirming'&&!j.receipt).map(j=>j.digest));
      for(const digest of custodyWait.keys())if(!confirming.has(digest))custodyWait.delete(digest);
-     const pending=jobs.filter(j=>!terminal(j.phase)&&j.next<=d.now()&&!idle.has(j.digest));if(!pending.length)break;
-     const job=selectWork(pending)!;await run(job,epoch);if(!active())break;
+     const pending=jobs.filter(j=>!terminal(j.phase)&&scheduleAt(j)<=d.now()&&!idle.has(j.digest));if(!pending.length)break;
+     const job=selectWork(pending)!;
+     if(d.incomingLanes&&payload(job)&&job.descriptor.manifest.expires>d.now()){
+      // Keep a stream or block window from blocking another receive job or the receipt lane.
+      incoming.add(job.digest);incomingIdleUntil.delete(job.digest);
+      const changed=d.incomingLanes.changed;
+      void (async()=>{
+       let advanced=false;
+       try{
+        await run(job,epoch);
+        const saved=active()?await d.storage.jobs.get(owner,job.digest):null;
+        advanced=!!saved&&saved.revision!==job.revision;
+       }catch{/* A failed step remains retryable. */}
+       finally{
+        if(active()&&!advanced){
+         if(incomingIdleUntil.size>=ATTACHMENT_ACTIVE_JOB_LIMIT)incomingIdleUntil.clear();
+         incomingIdleUntil.set(job.digest,d.now()+500);
+        }
+        incoming.delete(job.digest);
+        if(!stopped)changed();
+       }
+      })();
+      if(Date.now()-started>=milliseconds)break;
+      continue;
+     }
+     await run(job,epoch);if(!active())break;
      const saved=await d.storage.jobs.get(owner,job.digest);
      if(!saved||saved.revision===job.revision)idle.add(job.digest);
      else if(saved.failures===0&&(saved.cursor>job.cursor||saved.phase!==job.phase))progressed=true;
@@ -489,7 +533,7 @@ export function createAttachmentTransfer(d:{
    unavailable.clear();directWaiting.clear();
    if(!await d.storage.jobs.save({...job,revision:job.revision+1,phase:job.receipt?'confirming':job.direction==='outgoing'?'queued':'downloading',cursor:job.direction==='outgoing'?0:job.cursor,relay:job.direction==='outgoing'&&d.outgoingCustodian?job.relay:null,next:0,failures:0},job.revision,()=>!stopped&&generation===epoch&&d.owner()===owner&&d.allowed(peer)))throw Error('Transfer changed. Try again');
   },
-  invalidate(){generation++;custodyWait.clear();unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},stop(){custodyWait.clear();readiness.clear();stopped=true;generation++;unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},
+  invalidate(){generation++;incomingIdleUntil.clear();custodyWait.clear();unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},stop(){incomingIdleUntil.clear();custodyWait.clear();readiness.clear();stopped=true;generation++;unavailable.clear();directWaiting.clear();published.clear();storedPublished.clear();},
  };
 }
 

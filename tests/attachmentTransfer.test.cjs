@@ -119,6 +119,45 @@ for(const failure of ['unavailable','disconnect'])test(`direct stream ${failure}
  await f.begin();for(let n=0;n<8;n++)await f.receiver.tick();
  assert.equal(attempts,1);assert.equal((await f.job(1)).phase,'complete');assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
+test('a long failed stream switches to a connected custodian and stays on encrypted blocks',async t=>{
+ const f=context(t,3_000_001),base=f.deps(1),sender=createAttachmentTransfer(f.deps(0)),relay=f.ids[2].record.account;
+ let attempts=0,relayReads=0;
+ await sender.enqueue(f.descriptor,'outgoing');
+ for(let n=0;n<5;n++)await sender.tick();
+ const receiver=createAttachmentTransfer({...base,peers:()=>[f.manifest.sender,relay],
+  directStream:async()=>{attempts++;f.advance(110000);return false;},
+  bulkRequest:async(peer,raw)=>{assert.equal(peer,relay);relayReads++;return base.request(peer,raw);}});
+ await receiver.enqueue(f.descriptor,'incoming');
+ for(let n=0;n<8;n++)await receiver.tick();
+ assert.equal(attempts,1);assert.equal(relayReads,2);
+ assert.equal((await f.job(1)).phase,'complete');assert((await f.job(1)).receipt);
+});
+test('a held receive does not block a second verified file or its receipt',async t=>{
+ const f=context(t,1000),base=f.deps(1),started=Promise.withResolvers(),release=Promise.withResolvers();
+ const fields={...f.manifest,id:crypto.randomBytes(32).toString('hex')};
+ const second={...f.descriptor,manifest:a.signAttachmentManifest(fields,f.ids[0].signingSeed,f.ids[0].record,now)};
+ const block=a.signAttachmentBlock(second.manifest,0,a.encryptAttachmentChunk(fields,0,f.plain,f.key),f.signer);
+ const batch=load('attachmentBatch').packAttachmentBatch(second.manifest,0,[block]);
+ const firstDigest=a.attachmentDigest(f.manifest),secondDigest=a.attachmentDigest(second.manifest);
+ const owner=f.manifest.recipient;
+ let wakes=0,attempts=0;
+ const receiver=createAttachmentTransfer({...base,peers:()=>[f.manifest.sender],
+  incomingLanes:{limit:2,changed:()=>wakes++},
+  directStream:async job=>{if(job.digest===secondDigest)return 'unavailable';attempts++;started.resolve();await release.promise;return true;},
+  bulkRequest:async(_peer,raw)=>{assert.equal(JSON.parse(raw).digest,secondDigest);return JSON.stringify({status:'ok',index:0,count:1,data:batch});},
+  commitFile:async(job,current)=>{assert(current());if(job.digest===secondDigest)assert.deepEqual(f.written[0],f.plain);},
+  request:async()=>JSON.stringify({status:'completed'})});
+ const until=async predicate=>{for(let n=0;n<100;n++){if(await predicate())return;await new Promise(resolve=>setImmediate(resolve));}assert.fail('Expected receive step to settle');};
+ await receiver.enqueue(f.descriptor,'incoming');
+ try{
+  await receiver.tick();await started.promise;
+  await receiver.enqueue(second,'incoming');await receiver.tick({maxSteps:4});
+  await until(async()=>!!(await f.store.get(owner,secondDigest)).receipt&&wakes===1);
+  await receiver.tick();
+  assert.equal((await f.store.get(owner,secondDigest)).phase,'complete');
+  assert.equal((await f.store.get(owner,firstDigest)).receipt,null);assert.equal(attempts,1);
+ }finally{release.resolve();await until(()=>wakes===2);receiver.stop();}
+});
 test('not-yet-ready stream retries promptly while encrypted fallback still makes progress',async t=>{
  let attempts=0;
  const f=directContext(t,(f)=>({directStream:async()=>{

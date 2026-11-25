@@ -7,7 +7,7 @@ import type {AttachmentLane as RtcAttachmentLane,AttachmentStreams} from './atta
 export type {AttachmentStreams} from './attachmentConnections';
 /** One incoming and one outgoing transfer at most. Runtime owns cancellation;
  * the worker remains the only publisher and signer of attachment receipts. */
-export function createRootAttachmentStreams(network:AttachmentStreams,request:(peer:string,raw:string)=>Promise<string|null>,changed:()=>void=()=>{}){
+export function createRootAttachmentStreams(network:AttachmentStreams,request:(peer:string,raw:string)=>Promise<string|null>,changed:()=>void=()=>{},receiveProgress?:(job:AttachmentJob)=>(bytes:number)=>void){
  type Attempt={job:AttachmentJob;temporary:string;live():Promise<boolean>;lane?:RtcAttachmentLane;run?:ReturnType<typeof createDirectAttachmentStream>;task?:Promise<void>;finish?:(result:boolean)=>void;cancel():void};
  let stopped=false,incoming:Attempt|undefined,outgoing:Attempt|undefined;
  let sweptAt=0;
@@ -15,6 +15,7 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
  async function run(a:Attempt,lane:RtcAttachmentLane,role:'send'|'receive'){
   a.lane=lane;let valid=true,created=false;let temporary:ReturnType<typeof createRootStreamTemporary>|undefined;const started=Date.now();
   let stage='channel';
+  const report=role==='receive'?receiveProgress?.(a.job):undefined;
   const live=()=>valid&&active(a)&&lane.live()&&a.job.descriptor.manifest.expires>Date.now();
   const validate=async()=>{const allowed=await a.live();valid=valid&&active(a)&&allowed;if(!valid)throw Error('Attachment stream revoked');};
   let wake:(()=>void)|undefined;
@@ -30,7 +31,7 @@ export function createRootAttachmentStreams(network:AttachmentStreams,request:(p
    live,now:Date.now,wait:async idle=>{if(idle)await waitForProgress();else await new Promise<void>(r=>setTimeout(r,0));await validate();},
    send:data=>{stage='send';lane.send(data);},close:()=>lane.close(),
    authorize:async()=>{await validate();await lane.credit(a.job.descriptor.manifest.bytes,true);await validate();},
-   consumed:async offset=>{await validate();await lane.credit(offset,false);},
+   consumed:async offset=>{await validate();report?.(offset);await lane.credit(offset,false);},
    reader:()=>{
     stage='source-open';if(!live())throw Error('Stream closed');
     // Gallery export can adopt the source while channel admission is awaiting.

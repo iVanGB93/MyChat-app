@@ -10,7 +10,7 @@ function fixture(mode,appState='active',route){
  const snapshot={contacts:[{account:peer,accepted:true}],messages:[{peer,status:'pending',direction:'incoming',attachment:incoming}]};
  if(mode==='admission-failure')snapshot.messages.unshift({...snapshot.messages[0],attachment:{...incoming,invalid:true}});
  if(mode==='group')snapshot.groups=[{id:selection.group.id,accepted:true,members:[owner,peer,rows[1].peer]}];
- const worker={enqueue:async(descriptor,direction)=>{if(descriptor.invalid){events.push('admission-failed');throw Error('Attachment identity mismatch');}if(mode==='save-failure'&&direction==='outgoing')throw Error('Storage unavailable');events.push(direction);},receive:async()=>workerDeps.allowed(peer)?'ready':'rejected',tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
+ const worker={canSchedule:()=>true,scheduleAt:job=>job.next,enqueue:async(descriptor,direction)=>{if(descriptor.invalid){events.push('admission-failed');throw Error('Attachment identity mismatch');}if(mode==='save-failure'&&direction==='outgoing')throw Error('Storage unavailable');events.push(direction);},receive:async()=>workerDeps.allowed(peer)?'ready':'rejected',tick:async()=>{events.push('tick');return false;},invalidate(){},stop(){},cancel(){},retry(){}};
  const deps={
  './rootChatLedger':{assertAttachmentFits(){if(mode==='caption')throw Error('Attachment description is too large; shorten the caption');}},
  '../../../modules/axonic-nearby':{default:route?{identityRandomBytes(){},attachmentFileSha256(){},attachmentStageStream(){}}:undefined},
@@ -30,7 +30,7 @@ function fixture(mode,appState='active',route){
  './identityRecordStore':{createMobileIdentityRecordStore:()=>({read:async p=>mode==='lookup'||mode==='lookup-two'&&p===peer?null:{}})},
  './rootGroups':{validGroupContext:()=>true,rootGroupAllowed:()=>true},
  './identityProtocol':{validAccountId:()=>true,verifyRecord:()=>true},
- './mobileAttachmentJobs':{createMobileAttachmentJobs:(_now,_measure,onReceipt)=>{receiptCommitted=onReceipt;return {};}},
+ './mobileAttachmentJobs':{publishAttachmentReceiveProgress(){},createMobileAttachmentJobs:(_now,_measure,onReceipt)=>{receiptCommitted=onReceipt;return {};}},
  './attachmentTransfer':{createAttachmentTransfer:d=>{workerDeps=d;return worker;}},
  './rootAttachmentFiles':{rootAttachmentFile:()=>({exists:false}),prepareRootAttachment:async()=>{prepares++;await gate;return incoming;},removeRootAttachmentSource:()=>events.push('remove')},
  '@react-native-async-storage/async-storage':{default:{getItem:async()=>JSON.stringify(rows),setItem:async(_k,s)=>rows=JSON.parse(s)}},

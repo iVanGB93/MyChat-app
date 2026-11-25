@@ -69,7 +69,16 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
   if(!allowedJob(job)||!accepted.has(job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient))return deny('policy');
   return await live()||deny('job-lease');
  };
- const streams=network.streams?createRootAttachmentStreams(network.streams,(...args)=>timing.measure('streamControl',()=>network.request(...args)),wake):undefined;
+ function reportReceiveProgress(job:AttachmentJob){
+  let reportedAt=0;
+  return (bytes:number)=>{
+   const now=Date.now();
+   if(now-reportedAt>=1000||bytes===job.descriptor.manifest.bytes){
+    reportedAt=now;publishAttachmentReceiveProgress(job.owner,job.descriptor.manifest.id,bytes,job.digest);
+   }
+  };
+ }
+ const streams=network.streams?createRootAttachmentStreams(network.streams,(...args)=>timing.measure('streamControl',()=>network.request(...args)),wake,reportReceiveProgress):undefined;
  const wss=network.wss&&Native?.identityRandomBytes&&Native?.attachmentFileSha256&&Native?.attachmentStageStream?createWssAttachmentStreams({...network.wss,timing,changed:wake,random:async n=>hexToBytes(await Native!.identityRandomBytes!(n)),
   crypto:Native.attachmentStreamSeal&&Native.attachmentStreamOpen?{
    seal:(key,nonce,aad,plain)=>Native!.attachmentStreamSeal!(key,nonce,aad,plain),
@@ -80,11 +89,10 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
   current:job=>owner()===job.owner&&allowedJob(job)&&accepted.has(job.direction==='incoming'?job.descriptor.manifest.sender:job.descriptor.manifest.recipient),
   files(job,id,role){let temporary:ReturnType<typeof createRootStreamTemporary>|undefined;
    return {reader:()=>{const h=rootAttachmentFile(job.owner,job.digest).open();return {read:(n:number)=>timing.measureSync('streamRead',()=>h.readBytes(n)),close:()=>h.close()};},
-    writer:()=>{temporary=createRootStreamTemporary(job.owner,id);const h=temporary.open();let bytes=0,reportedAt=0;
+    writer:()=>{temporary=createRootStreamTemporary(job.owner,id);const h=temporary.open();const report=reportReceiveProgress(job);let bytes=0;
      return {write:(b:Uint8Array)=>{
       timing.measureSync('streamWrite',()=>h.writeBytes(b));
-      bytes+=b.length;
-      const now=Date.now();if(now-reportedAt>=1000||bytes===job.descriptor.manifest.bytes){reportedAt=now;publishAttachmentReceiveProgress(job.owner,job.descriptor.manifest.id,bytes);}
+      bytes+=b.length;report(bytes);
      },close:()=>h.close()};},
     hash:()=>timing.measure('streamHash',()=>hashRootAttachmentFile(job.owner,role==='send'?job.digest:id,job.descriptor.manifest.bytes)),
     async commit(){if(!Native!.attachmentStageStream!(job.owner,id,job.digest,job.descriptor.manifest.bytes))throw Error('Stream staging failed');},
@@ -93,6 +101,7 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
  // Updated peers pipeline the bounded window; older peers serialize it safely.
  const sendingStream=(job:AttachmentJob)=>streams?.sending(job)===true||wss?.sending(job)===true;
  const worker=createAttachmentTransfer({
+ incomingLanes:{limit:2,changed:wake},
  outgoingCustodian:network.outgoingCustodian,
  canStoreOutgoing:network.canStoreOutgoing,
  measureProcessing:timing.measureSync,
@@ -150,15 +159,17 @@ commitFile:(...args)=>timing.measure('verifyFile',()=>commitRootAttachmentFile(.
  connections:{sharedPeers:network.sharedPeers,sendingStream,
 directStream:(job,live)=>timing.measure('directStream',async()=>{
  const lease=streamLease(job,live),m=job.descriptor.manifest;
- // Prefer an already open RTC lane. Otherwise use the authenticated WSS
- // session before attempting a second transport; each adapter rechecks its lease.
- const readyWss=!!wss&&network.wss?.peer(m.sender)?.device===m.senderDevice;
- if(readyWss&&!network.streams?.available(m.sender,m.senderDevice)){
-  const result=await wss!.pull(job,lease);if(result!=='unavailable')return result;
-  return await timing.measure('rtcStreamAttempt',async()=>await streams?.pull(job,lease)??'unavailable');
- }
- const result=await timing.measure('rtcStreamAttempt',async()=>await streams?.pull(job,lease)??'unavailable');
- return result==='unavailable'?(await wss?.pull(job,lease)??'unavailable'):result;
+ const rtc=()=>timing.measure('rtcStreamAttempt',async()=>await streams?.pull(job,lease)??'unavailable');
+ const websocket=async()=>await wss?.pull(job,lease)??'unavailable';
+ // Prefer an already open RTC lane, then an authenticated WSS route.
+ const preferWss=!!wss&&network.wss?.peer(m.sender)?.device===m.senderDevice&&!network.streams?.available(m.sender,m.senderDevice);
+ let received=false;
+ try{
+  const first=await (preferWss?websocket():rtc());
+  const result=first==='unavailable'?await (preferWss?rtc():websocket()):first;
+  received=result===true;
+  return result;
+ }finally{if(!received)publishAttachmentReceiveProgress(job.owner,m.id,0,job.digest);}
 }),
 serveStream:(job,live,id)=>id?(wss?.serve(job,streamLease(job,live),id)??Promise.resolve(false)):(streams?.serve(job,streamLease(job,live))??Promise.resolve(false)),
 blockStreamPeers:network.blockStreamPeers,
@@ -272,7 +283,7 @@ request:(...args)=>{
   // Idle stores sleep. Pending jobs retain bounded retries; disconnected jobs
   // wake on topology changes or their expiry, rather than querying empty routes.
   const routes=attachmentRouteSnapshot(network,!!streams||!!wss);
-  let next=attachmentWorkDelay(jobs,now,job=>allowedJob(job)&&(!sendingStream(job)||!!job.receipt)&&attachmentCanAdvance(job,routes,now));
+  let next=attachmentWorkDelay(jobs.filter(job=>worker.canSchedule(job)),now,job=>allowedJob(job)&&(!sendingStream(job)||!!job.receipt)&&attachmentCanAdvance(job,routes,now),worker.scheduleAt);
   if((await selections(account)).some(s=>!s.failed))next=Math.min(next,15000);
   return Math.min(next,Math.max(0,admissionRetryAt-now));
  }});

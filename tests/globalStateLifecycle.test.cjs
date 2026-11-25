@@ -12,7 +12,7 @@ function fixture(){
   'src/services/diagnosticJournal.ts':{diagnosticJournal:{record(){}}},
   'src/modules/ui/liveState.ts':{useForeground:()=>true},
   'src/services/identity/rootAttachmentSelections.ts':{rootAttachmentProgress:async()=>{progressReads++;const value=structuredClone(progress);if(progressGate)await progressGate;return value;},subscribeAttachmentSelections:fn=>{selections.add(fn);return()=>selections.delete(fn);}},
-  'src/services/identity/mobileAttachmentJobs.ts':{subscribeAttachmentJobProgress:fn=>{jobs.add(fn);return()=>jobs.delete(fn);}},
+  'src/services/identity/mobileAttachmentJobs.ts':{subscribeAttachmentJobProgress:fn=>{jobs.add(fn);return()=>jobs.delete(fn);},subscribeAttachmentReceiveProgress:()=>()=>{}},
  }).map(([k,v])=>[path.resolve(k),v]));
  const cache=new Map();function load(file){file=path.resolve(file);if(overrides.has(file))return overrides.get(file);if(cache.has(file))return cache.get(file);const exports={};cache.set(file,exports);
   new Function('exports','require',ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(exports,n=>{

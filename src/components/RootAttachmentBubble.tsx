@@ -17,7 +17,7 @@ import MediaViewer from './chat/MediaViewer';
 import {chatMediaKind} from './chat/useChatMediaViewer';
 import {messageBubbleStyles as styles} from './chat/message-bubble-styles';
 import {Ionicons} from '@expo/vector-icons';
-import {useTransferProgress} from '../modules/ui/transferState';
+import {useReceivingProgress} from '../modules/ui/transferState';
 import {outgoingMediaStatus} from '../utils/outgoing-media-status';
 import {useAttachmentFile} from './chat/useAttachmentFile';
 export default function RootAttachmentBubble({message,progress:initialProgress,showSize=false,onError,onLongPress,audioFooter,onMedia,voiceKey,nextVoice}:{message:RootChatMessage;progress?:{phase:string;cursor:number;bytes:number;failures:number;canPause:boolean};showSize?:boolean;audioFooter?:React.ReactNode;onLongPress?(event:GestureResponderEvent):void;onError(error:string):void;onMedia?(message:RootChatMessage):void;voiceKey?:string;nextVoice?:string}){
@@ -33,12 +33,14 @@ export default function RootAttachmentBubble({message,progress:initialProgress,s
   return()=>{clearTimeout(timer);subscription.remove();};
  },[descriptor.manifest.expires,confirmed]);
  const digest=useMemo(()=>attachmentDigest(descriptor.manifest),[descriptor.manifest,languageSnapshot()]);
- const progress=useTransferProgress(digest)??initialProgress;
+ const [savedProgress,streamBytes]=useReceivingProgress(digest);
+ const progress=savedProgress??initialProgress;
  const file=useAttachmentFile(owner,digest,message.status);
  const exists=!!file;
  const sticker=descriptor.name===IMPORTED_STICKER_CONTENT&&descriptor.manifest.bytes<=MAX_STICKER_BYTES&&/^image\/(png|webp|gif)$/.test(descriptor.mime);
  const ready=exists&&(message.direction==='outgoing'||confirmed);
- const percent=progress?Math.min(100,Math.floor(progress.cursor*attachmentBlockBytes(descriptor.manifest)/descriptor.manifest.bytes*100)):0;
+ const checkpointBytes=(progress?.cursor??0)*attachmentBlockBytes(descriptor.manifest);
+ const percent=Math.min(message.direction==='incoming'&&!confirmed?99:100,Math.floor(Math.max(checkpointBytes,streamBytes)/descriptor.manifest.bytes*100));
  const expired=descriptor.manifest.expires<=Date.now(),reset=message.networkCancelledAt!==undefined,paused=progress?.phase==='cancelled';
  const outgoing=outgoingMediaStatus(message,descriptor.manifest.expires,progress?.phase,percent);
  const label=confirmed&&!exists?t("Not available on this device"):confirmed?(message.direction==='incoming'?'Received':t("Delivered")):message.groupAttachmentDelivery?.delivered?t("Delivered to some recipients"):reset?t("Canceled by network reset"):outgoing?t(outgoing.label):expired?t("Attachment expired"):paused?t("Paused on this device"):`Receiving · ${percent}%`;

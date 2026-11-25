@@ -8,7 +8,7 @@ import {useIsFocused} from '@react-navigation/native';
 import {useForeground} from './liveState';
 import {localAccount} from '../identity';
 import {rootAttachmentProgress,subscribeAttachmentSelections} from '../../services/identity/rootAttachmentSelections';
-import {subscribeAttachmentJobProgress} from '../../services/identity/mobileAttachmentJobs';
+import {subscribeAttachmentJobProgress,subscribeAttachmentReceiveProgress} from '../../services/identity/mobileAttachmentJobs';
 import {retainEqual} from '../../services/identity/sharedState';
 import {createAttachmentProgressLookup} from '../../utils/attachment-progress';
 
@@ -17,7 +17,7 @@ const handoffs=new Map<string,Progress['selections'][number]>();
 const empty:Progress={jobs:[],selections:[]};
 type Lookup=(digest:string)=>Progress['jobs'][number]|undefined;
 const makeLookup=(jobs:Progress['jobs'])=>createAttachmentProgressLookup(jobs,(digest:string)=>digest);
-const store=createStore<{value:Progress;lookup:Lookup}>(()=>({value:empty,lookup:makeLookup(empty.jobs)}));
+const store=createStore<{value:Progress;lookup:Lookup;received:ReadonlyMap<string,number>}>(()=>({value:empty,lookup:makeLookup(empty.jobs),received:new Map()}));
 let readers=0,epoch=0,revision=0,jobRevision=0,stop:(()=>void)|undefined,timer:ReturnType<typeof setTimeout>|undefined;
 let flight=false,dirty=false;
 const owner=()=>localAccount.status().state==='unlocked'?localAccount.status().account:null;
@@ -31,21 +31,30 @@ async function hydrate(){
  catch{/* Preserve last known progress; retry while observed. */dirty=true;failed=true;}
  finally{flight=false;if(dirty&&readers&&AppState.currentState==='active'){clearTimeout(timer);timer=setTimeout(()=>void hydrate(),failed?1000:0);}}
 }
+function receiveBytes(digest:string,bytes:number){
+ const old=store.getState().received;
+ if((old.get(digest)??0)===bytes)return;
+ const received=new Map(old);
+ if(bytes>0)received.set(digest,bytes);else received.delete(digest);
+ store.setState({received});
+}
 export const transferState={getState:store.getState,getInitialState:store.getInitialState,subscribe(listener:Parameters<typeof store.subscribe>[0]){
  const off=store.subscribe(listener);
  if(readers++===0){
   const jobs=subscribeAttachmentJobProgress(row=>{if(row.owner!==owner())return;jobRevision++;
+   if(row.failures||['confirming','complete','expired','cancelled'].includes(row.phase))receiveBytes(row.digest,0);
    const {owner:_owner,...value}=row;const old=store.getState().value;
    const jobs=old.jobs.filter(j=>j.digest!==row.digest);if(!['complete','expired'].includes(row.phase))jobs.push(value);
    jobs.sort((a,b)=>a.digest.localeCompare(b.digest));publish({...old,jobs});});
+  const streaming=subscribeAttachmentReceiveProgress((account,_id,bytes,digest)=>{if(account===owner())receiveBytes(digest,bytes);});
   const selections=subscribeAttachmentSelections((account,_pending,published)=>{if(account===owner()){for(const selection of published??[]){handoffs.set(selection.id,selection);if(handoffs.size>64)handoffs.delete(handoffs.keys().next().value!);}revision++;void hydrate();}});
   const app=AppState.addEventListener('change',()=>{if(AppState.currentState==='active')void hydrate();});
-  stop=()=>{jobs();selections();app.remove();};void hydrate();
+  stop=()=>{jobs();streaming();selections();app.remove();store.setState({received:new Map()});};void hydrate();
  }
  return()=>{off();if(--readers===0){epoch++;stop?.();stop=undefined;clearTimeout(timer);}};
 }};
 let boundOwner=owner();
-localAccount.subscribe(()=>{const next=owner();if(next&&next===boundOwner)return;boundOwner=next;epoch++;revision++;handoffs.clear();publish(empty);if(readers)void hydrate();});
+localAccount.subscribe(()=>{const next=owner();if(next&&next===boundOwner)return;boundOwner=next;epoch++;revision++;handoffs.clear();store.setState({received:new Map()});publish(empty);if(readers)void hydrate();});
 function useSource(){const focused=useIsFocused(),foreground=useForeground();
  const source=useMemo(()=>({...transferState,subscribe:focused&&foreground?transferState.subscribe:()=>()=>{}}),[focused,foreground]);
  return source;
@@ -55,6 +64,7 @@ export function useChatTransferSelections(conversation:string,group=false){
  return useStore(useSource(),useShallow(s=>s.value.selections.filter(selection=>group?selection.group?.id===conversation:!selection.group&&selection.peer===conversation)));
 }
 export function useTransferProgress(digest:string){return useStore(useSource(),s=>s.lookup(digest));}
+export function useReceivingProgress(digest:string){return useStore(useSource(),useShallow(s=>[s.lookup(digest),s.received.get(digest)??0] as const));}
 
 /** Called after durable rows render: there must be no empty frame between stores. */
 export function acknowledgeAttachmentHandoffs(messages:RootChatMessage[]){
