@@ -82,6 +82,8 @@ export function createRootChatLedger(d:OwnHistoryStore&{owner:string;current():b
  stateCommitted?(raw:string):void;
  signGroup?(group:RootGroupMembership):RootGroupBackup;
  verifyAttachment?(descriptor:AttachmentDescriptor,direction:RootChatMessage['direction']):Promise<boolean>;
+ /** App-owned lookup metadata committed with the message and excluded from wire encoders. */
+ localMedia?(descriptor:AttachmentDescriptor):NonNullable<RootChatMessage['localMedia']>;
  verifyAttachmentReceipt?(descriptor:AttachmentDescriptor,receipt:AttachmentReceipt):Promise<boolean>;
 }){
  if(!validAccountId(d.owner))throw Error('Invalid account');
@@ -206,7 +208,7 @@ export function createRootChatLedger(d:OwnHistoryStore&{owner:string;current():b
    if(reply&&!(group?groupReplyAvailable(s,d.owner,group.id,reply):s.messages.some(m=>!m.group&&m.peer===peer&&m.id===reply!.id&&(m.direction==='outgoing'?d.owner:peer)===reply!.author)))throw Error('Original message is no longer available');
    const old=s.messages.find(m=>m.peer===peer&&m.id===id&&m.direction==='outgoing');if(old){if(JSON.stringify(old.group)!==JSON.stringify(group)||!sameReply(old.reply,reply)||!old.attachment||attachmentDescriptorFingerprint(old.attachment)!==attachmentDescriptorFingerprint(descriptor))throw Error('Attachment ID conflict');return;}
 if(!group)c.accepted=true;
-   const at=selectedAt??d.now();s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at,queuedAt:d.now(),...(s.timestampPeers?.includes(peer)?{createdAt:at}:{}),status:'pending',attachment:descriptor,descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});notices.push({peer,id});
+   const at=selectedAt??d.now();s.hiddenChats=s.hiddenChats?.filter(k=>k!==(typeof group!=='undefined'&&group?'group:'+group.id:peer));s.messages.push({id,peer,direction:'outgoing',text:descriptor.name,at,queuedAt:d.now(),...(s.timestampPeers?.includes(peer)?{createdAt:at}:{}),status:'pending',attachment:descriptor,...(d.localMedia?{localMedia:d.localMedia(descriptor)}:{}),descriptorDelivered:false,...(reply?{reply}: {}),...(group?{group:{...group}}:{})});notices.push({peer,id});
 
   }
   for(const item of items)await append(item);
@@ -437,7 +439,7 @@ c.accepted=true;
    if(s.groupActions?.some(v=>v.peer===from&&v.id===id&&v.direction==='incoming'))return false;
    if(s.groupSeen?.some(v=>v.peer===from&&v.id===id)||s.actions?.some(a=>a.peer===from&&a.direction==='incoming'&&a.id===id))return false;
    const old=s.messages.find(m=>m.id===id&&m.peer===from&&m.direction==='incoming');if(old)return old.createdAt===createdAt&&JSON.stringify(old.group)===JSON.stringify(group)&&old.text===text&&sameReply(old.reply,reply)&&(!old.attachment&&!attachment||!!old.attachment&&!!attachment&&attachmentDescriptorFingerprint(old.attachment)===attachmentDescriptorFingerprint(attachment));
-   if(createdAt!==undefined&&!(s.timestampPeers??=[]).includes(from)&&s.timestampPeers.length<500)s.timestampPeers.push(from);s.messages.push({id,peer:from,direction:'incoming',text,at:createdAt??d.now(),...(createdAt!==undefined?{createdAt}:{}),...(evidence&&validDeliveryEvidence(evidence)&&evidence.scope==='payload'?{messageDelivery:evidence}:{}),status:attachment?'pending':'delivered',...(attachment?{attachment,descriptorReceivedAt:d.now()}:{deliveredAt:d.now()}),...(reply?{reply}: {}),...(group?{group}: {})});s.hiddenChats=s.hiddenChats?.filter(k=>k!==(group?'group:'+group.id:from));await save(s);
+   if(createdAt!==undefined&&!(s.timestampPeers??=[]).includes(from)&&s.timestampPeers.length<500)s.timestampPeers.push(from);s.messages.push({id,peer:from,direction:'incoming',text,at:createdAt??d.now(),...(createdAt!==undefined?{createdAt}:{}),...(evidence&&validDeliveryEvidence(evidence)&&evidence.scope==='payload'?{messageDelivery:evidence}:{}),status:attachment?'pending':'delivered',...(attachment?{attachment,descriptorReceivedAt:d.now(),...(d.localMedia?{localMedia:d.localMedia(attachment)}:{})}:{deliveredAt:d.now()}),...(reply?{reply}: {}),...(group?{group}: {})});s.hiddenChats=s.hiddenChats?.filter(k=>k!==(group?'group:'+group.id:from));await save(s);
    try{onInserted?.(s);}catch{/* Presentation cannot invalidate a committed message. */}
    return true;
   },false,privateReceiveScope(from,id,raw)),

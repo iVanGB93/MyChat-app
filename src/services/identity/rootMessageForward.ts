@@ -5,7 +5,7 @@ import {localRootChat} from './localRootChat';
 import {queueRootAttachmentSource,rootGroupAttachmentAudience,queueRootGroupAttachmentSource} from './rootAttachmentSelections';
 import {rootAttachmentFile} from './rootAttachmentFiles';
 import {withRootSharedFile} from './rootMediaExport';
-import {attachmentDigest} from './attachmentProtocol';
+import {chatMediaPresentation} from './savedAttachmentPresentation';
 import {validAccountId} from './identityProtocol';
 import type {RootChatMessage} from './rootChatLedger';
 
@@ -19,18 +19,19 @@ export async function forwardRootMessage(source:Pick<RootChatMessage,'peer'|'id'
  if(state.contacts.find(c=>c.account===recipient)?.blocked)throw Error('This identity is blocked');
  const message=state.messages.find(m=>m.peer===source.peer&&m.id===source.id&&m.direction===source.direction);
  if(!message||message.deleted)throw Error('This message is no longer available');
- if(!message.attachment){
+ const media=chatMediaPresentation(message,owner);
+ if(!media){
+  if(message.retiredAttachment)throw Error('This attachment is not available on this device');
   const id=await Native!.identityRandomBytes!(32);check();
   if(group)await localRootChat().enqueueGroup(group,id,message.text);else await localRootChat().enqueue(recipient,id,message.text);return;
  }
- if(message.direction==='incoming'&&message.status!=='delivered')throw Error('Wait for the attachment to finish downloading');
- const file=rootAttachmentFile(owner!,attachmentDigest(message.attachment.manifest));
+ const file=rootAttachmentFile(owner!,media.fileKey);
  if(!file.exists)throw Error('This attachment is not available on this device');
  // Stage our own bytes offline; the attachment worker verifies the recipient
  // before preparing a fresh encrypted descriptor for this destination.
  check();
  await withRootSharedFile(owner!,file.uri,async uri=>{
-  if(group){await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(group),uri,message.attachment!.name,message.attachment!.mime,message.attachment!.caption);return;}
-  await queueRootAttachmentSource(recipient,uri,message.attachment!.name,message.attachment!.mime,owner!,undefined,message.attachment!.caption);
+  if(group){await queueRootGroupAttachmentSource(await rootGroupAttachmentAudience(group),uri,media.name,media.mime,media.caption);return;}
+  await queueRootAttachmentSource(recipient,uri,media.name,media.mime,owner!,undefined,media.caption);
  });
 }

@@ -13,18 +13,20 @@ import {useTheme} from '../../contexts/ThemeContext';
 import {useGroupDetails} from '../../modules/ui/useChatSnapshot';
 import {useMessageStateClock} from '../../modules/ui/useMessageStateClock';
 import {localAccount,shortIdentity} from '../../modules/identity';
+import {chatMediaPresentation} from '../../modules/storage';
 import {groupMessageInfo,deliveryStatusIcon,deliveryStatusLabel} from '../../modules/messaging';
 export default function RootGroupMessageInfo({route}:NativeStackScreenProps<RootAccountRoutes,'GroupMessageInfo'>){
  const {colors}=useTheme(),{state,error}=useGroupDetails(route.params.group,route.params.messageId),insets=useSafeAreaInsets(),owner=localAccount.status().account;
  const {group,messageId,author}=route.params;
  const tracked=useMemo(()=>state.messages.filter(m=>m.group?.id===group&&m.group.messageId===messageId&&(m.direction==='outgoing'?owner:m.peer)===author),[state.messages,group,messageId,author,owner,languageSnapshot()]);
  const now=useMessageStateClock(tracked),info=owner?groupMessageInfo(state,owner,group,{id:messageId,author},now):null;
+ const media=chatMediaPresentation(info?.message,owner);
  const name=(peer:string)=>peer===owner?t("You"):state.contacts.find(c=>c.account===peer)?.alias||shortIdentity(peer);
  return <ScrollView style={{flex:1,backgroundColor:colors.background}} contentContainerStyle={{padding:18,paddingBottom:insets.bottom+24,gap:18}}>
   {!!error&&<Text accessibilityRole="alert" style={{color:colors.error}}>{error}</Text>}
   {info?<><MessageReactionInfo message={info.message} name={name}/><View style={{padding:16,borderRadius:Chrome.cardRadius,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:colors.surface,gap:12}}>
    <Text style={{color:colors.primary,fontWeight:'700'}}>{state.groups?.find(g=>g.id===group)?.name||t("Group message")}</Text>
-   <Text selectable style={{color:colors.text,fontSize:17}}>{info.message.deleted?t("Message deleted"):info.message.attachment?.caption||info.message.attachment?.name||info.message.text}</Text>
+   <Text selectable style={{color:colors.text,fontSize:17}}>{info.message.deleted?t("Message deleted"):media?.caption||media?.name||info.message.text}</Text>
    <Text style={{color:colors.textSecondary}}>{t("From:")}{' '}{name(author)}</Text>
    <Text style={{color:colors.textSecondary}}>{t("Created:")}{' '}{new Date(info.at).toLocaleString()}</Text>
    {!!info.recipients.length&&<Text style={{color:colors.textSecondary}}>{info.pending} {t("pending ·")}{info.stored} {t("stored on Axonic network ·")}{info.delivered-info.read} {t("delivered (not read) ·")}{info.read} {t("read")}{' '}{info.cancelled?` · ${info.cancelled} canceled by reset`:''}</Text>}

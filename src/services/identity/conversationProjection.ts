@@ -40,7 +40,8 @@ export function buildConversationProjection(owner:string,raw:string|null,generat
   rows.sort((a,b)=>compareRootMessages(a,b,owner));all.push(...rows);
   const m=rows.at(-1);let last:ConversationPreview|undefined;
   if(m){const {id,direction,text,at,status,read,deleted,retiredAttachment,networkCancelledAt,descriptorDelivered,networkStoredUntil,attachmentStoredUntil}=m;
-   last={id,direction,text,at,status,read,deleted,retiredAttachment:retiredAttachment?true:undefined,networkCancelledAt,descriptorDelivered,networkStoredUntil,attachmentStoredUntil,...(!deleted&&m.attachment?{attachment:{name:m.attachment.name,mime:m.attachment.mime,caption:m.attachment.caption}}:{})};}
+   const media=m.localMedia??m.attachment;
+   last={id,direction,text,at,status,read,deleted,retiredAttachment:retiredAttachment?true:undefined,networkCancelledAt,descriptorDelivered,networkStoredUntil,attachmentStoredUntil,...(!deleted&&media?{attachment:{name:media.name,mime:media.mime,caption:media.caption}}:{})};}
   index.summaries[key]={key,count:rows.length,unread:rows.filter(m=>m.direction==='incoming'&&!m.read&&!m.deleted).length,last};
   const base=prefix+key+':',lookupKey=base+'lookup',lookup:Record<string,number>={};
   const pages:ConversationIndex['rooms'][string]['pages']=[];

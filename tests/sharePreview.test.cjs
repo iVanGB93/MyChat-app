@@ -102,18 +102,19 @@ test('chat mode opens the tapped item, keeps it selected across older pages, and
  assert(slide(f,nodes,f.props.items[2]).find(n=>n.type==='ZoomPhoto').props.active);
 });
 test('chat media files resolve only when a slide or thumbnail mounts',()=>{
- const local={owner:'owner',manifest:{id:'digest'},delivery:'pending',available:false};
+ const local={owner:'owner',fileKey:'digest',delivery:'pending'};
  const readCalls=[],f=fixture([{id:'remote',kind:'image',name:'Remote photo',local}],undefined,{review:false,readFile:(...args)=>{readCalls.push(args);return null;}});
  const nodes=all(f.render());assert.deepEqual(readCalls,[]);
  assert(slide(f,nodes,f.props.items[0]).some(n=>n.props.children.includes('Not available on this device')));
- assert.deepEqual(readCalls,[[null,undefined,'pending']]);
+ assert.deepEqual(readCalls,[['owner','digest','pending']]);
 });
 
-test('chat gallery preserves message order and separates group authors while excluding stickers and deleted media',()=>{
+test('chat gallery includes saved v4 media and keeps group order while excluding stickers and deleted media',()=>{
  const api={};
  const modules={
   react:{},'../../modules/messaging':{hasConfirmedDelivery:m=>m.status==='delivered'},
-  '../../modules/media':{retiredAttachment:a=>a.manifest.version===4},
+  '../../modules/storage':{chatMediaPresentation:m=>m.localMedia??(m.attachment&&{...m.attachment,bytes:100,fileKey:m.id})},
+  '../../modules/media':{attachmentTransferPresentation:m=>m.status==='pending'?{expires:12345}:undefined},
   '../../modules/ui/liveState':{},'../../services/group-avatar-file':{isGroupAvatarFile:a=>a.name==='avatar'},
   '../../services/sticker-file-format':{IMPORTED_STICKER_CONTENT:'sticker'},'./MediaViewer':{},
  };
@@ -124,10 +125,23 @@ test('chat gallery preserves message order and separates group authors while exc
  photo.group={id:'group',messageId:'same'};movie.group=photo.group;movie.peer='other';
  const sticker=make('sticker',4),avatar=make('avatar',5),removed=make('removed',6);
  avatar.group={id:'group',messageId:'avatar'};removed.deleted=true;
- const retired=make('retired',7);retired.attachment.manifest.version=4;
+ const retired=make('retired',7);delete retired.attachment;retired.localMedia={name:'saved.jpg',mime:'image/jpeg',bytes:4200,fileKey:'saved-file-key'};
  const items=api.conversationMediaItems([retired,removed,avatar,sticker,movie,photo,older],'owner');
- assert.deepEqual(items.map(item=>item.name),['first','photo','movie']);
+ assert.deepEqual(items.map(item=>item.name),['first','photo','movie','saved.jpg']);
+ assert.deepEqual(items[3].local,{owner:'owner',fileKey:'saved-file-key',previewKey:undefined,downloadUntil:undefined,delivery:'delivered'});
  assert.notEqual(items[1].id,items[2].id);
- assert.equal(items[2].kind,'video');assert.equal(items[2].local.available,false);
+ assert.equal(items[2].kind,'video');assert.equal(items[2].local.downloadUntil,12345);
  assert(items.every(item=>item.local.owner==='owner'&&!('uri' in item)));
+});
+
+test('saved v4 viewer loads the local file key and shows a missing file without a download spinner',()=>{
+ const item={id:'saved',name:'saved.jpg',kind:'image',local:{owner:'owner',fileKey:'saved-file-key',delivery:'pending',downloadUntil:Date.now()+60000}};
+ const reads=[],present=fixture([item],undefined,{review:false,readFile:(...args)=>{reads.push(args);return {uri:'content://media/1'};}});
+ assert(slide(present,all(present.render()),item).some(n=>n.type==='ZoomPhoto'&&n.props.uri==='content://media/1'));
+ assert.deepEqual(reads,[['owner','saved-file-key','pending']]);
+ const expired={...item,local:{...item.local,downloadUntil:undefined}};
+ const missing=fixture([expired],undefined,{review:false});
+ const nodes=slide(missing,all(missing.render()),expired);
+ assert(nodes.some(n=>n.props.children.includes('Not available on this device')));
+ assert(!nodes.some(n=>n.type==='Spinner'));
 });

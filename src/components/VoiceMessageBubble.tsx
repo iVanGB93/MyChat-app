@@ -297,6 +297,7 @@ const styles = StyleSheet.create({
   seekTouchArea: {
     height: 28,
     justifyContent: 'center',
+    marginEnd: Spacing.sm,
   },
   seekPressable: {
     height: '100%',

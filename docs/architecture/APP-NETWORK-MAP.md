@@ -47,6 +47,13 @@ custodian storage, recipient receipt and user read are distinct events.
 - Storage follows the data. Chat history, drafts and local media belong to the
   app. Relay ciphertext, pins and transport checkpoints belong to the network.
   The current mobile job adapters and transfer runtime connect the two.
+- The phone commits `LocalChatMedia` with each new attachment in its own chat
+  history. It holds an opaque local file key, display metadata and an optional
+  preview key. The storage adapter resolves historical keys for older rows.
+  Chat bubbles, replies, viewers, group avatars and device storage consume this
+  local view. A committed file can open while the phone is offline or the
+  delivery receipt is pending. Only transfer controls consume the separate
+  transfer view. Wire encoders exclude the local metadata.
 - Local unlock controls access to Axonic on this device. The phone app owns
   password, biometric and remembered unlock, and the UI for local setup and
   recovery. The network core owns identity proofs, signed records, peer

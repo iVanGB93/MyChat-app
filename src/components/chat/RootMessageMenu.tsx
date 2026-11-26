@@ -7,8 +7,8 @@ import {importSticker,isImportedStickerFavorite} from '../../services/imported-s
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import {ThemedAlert as Alert} from '../ui/ThemedAlert';
 import {localAccount} from '../../modules/identity';
-import {attachmentDigest} from '../../modules/media';
-import {rootAttachmentFile,saveRootDownloadedMedia,removeRootDownloadedMedia} from '../../modules/storage';
+import {chatMediaPresentation,saveRootDownloadedMedia,removeRootDownloadedMedia} from '../../modules/storage';
+import {useAttachmentFile} from './useAttachmentFile';
 import React from 'react';
 import {Modal,Linking,ScrollView,Pressable,Text,TouchableOpacity,View,useWindowDimensions} from 'react-native';
 import {useTheme} from '../../contexts/ThemeContext';
@@ -17,9 +17,9 @@ import type {RootChatMessage} from '../../modules/messaging';
 import {chatRoomStyles as styles} from './chat-room-styles';
 export default function RootMessageMenu({message,close,copy,reply,forward,edit,remove,react,info,pageY,createSticker}:{message:RootChatMessage;close():void;copy():void;reply():void;forward?():void;edit():void;remove():void;react(text:string):void;info?():void;pageY?:number;createSticker?(uri:string):void}){
  const {colors}=useTheme(),{height}=useWindowDimensions();
- const owner=localAccount.status().account,a=message.attachment,digest=a?attachmentDigest(a.manifest):null;
- const file=owner&&digest?rootAttachmentFile(owner,digest):null;
- const ready=!!file?.exists&&(message.direction==='outgoing'||message.status==='delivered');
+ const owner=localAccount.status().account,a=chatMediaPresentation(message,owner),digest=a?.fileKey;
+ const file=useAttachmentFile(owner,digest,message.status);
+ const ready=!!file;
  const alreadySaved=!!file&&'contentUri' in file;
  const sticker=parseSticker(message.text),isSticker=!!sticker||a?.name===IMPORTED_STICKER_CONTENT,url=getFirstMessageUrl(message.text),menuHeight=Math.min(520,height-100);
  const perform=(action:()=>Promise<unknown>)=>void action().catch(e=>Alert.alert('Media',e instanceof Error?e.message:t("Please try again.")));
@@ -32,15 +32,15 @@ export default function RootMessageMenu({message,close,copy,reply,forward,edit,r
   <View style={[styles.contextDivider,{backgroundColor:colors.divider}]}/>
   {owner&&(sticker||ready&&a?.name===IMPORTED_STICKER_CONTENT)&&option('Add to favorites',()=>perform(async()=>{
    if(sticker){const prefs=await loadStickerPreferences(owner);if(!prefs.favorites.includes(sticker.id))await updateStickerPreferences(owner,sticker.id,'favorite');}
-   else{const uri=rootAttachmentFile(owner,digest!).uri;if(!await isImportedStickerFavorite(owner,uri))await importSticker(owner,uri,'Received sticker',true);}
+   else if(file){const uri=file.uri;if(!await isImportedStickerFavorite(owner,uri))await importSticker(owner,uri,'Received sticker',true);}
   }))}
-  {!message.attachment&&url&&option('Open link',()=>perform(()=>Linking.openURL(url)))}
-  {!message.attachment&&url&&option('Copy link',()=>perform(()=>Clipboard.setStringAsync(url)))}
-  {!message.attachment&&!isSticker&&option('Copy message',copy)}{option('Reply',reply)}{forward&&option('Forward',forward)}
+  {!a&&url&&option('Open link',()=>perform(()=>Linking.openURL(url)))}
+  {!a&&url&&option('Copy link',()=>perform(()=>Clipboard.setStringAsync(url)))}
+  {!a&&!isSticker&&option('Copy message',copy)}{option('Reply',reply)}{forward&&(!a||ready)&&option('Forward',forward)}
   {ready&&!alreadySaved&&a&&option('Save attachment',()=>perform(async()=>{await saveRootDownloadedMedia(owner!,digest!,a.name,a.mime);Alert.alert(t("Media saved"),a.mime.startsWith('image/')||a.mime.startsWith('video/')?t("Saved in Gallery."):t("Saved in Downloads/Axonic."));}))}
-  {ready&&!isSticker&&a?.mime.startsWith('image/')&&createSticker&&option('Create sticker',()=>createSticker(rootAttachmentFile(owner!,digest!).uri))}
+  {file&&!isSticker&&a?.mime.startsWith('image/')&&createSticker&&option('Create sticker',()=>createSticker(file.uri))}
   {ready&&message.direction==='incoming'&&option('Delete downloaded media',()=>Alert.alert(t("Delete downloaded media?"),t("Remove this downloaded file and its Axonic Gallery copy? The message remains."),[{text:t("Cancel"),style:'cancel'},{text:t("Delete"),style:'destructive',onPress:()=>perform(()=>removeRootDownloadedMedia(owner!,digest!))}]),true)}
-  {message.direction==='outgoing'&&!message.attachment&&!isSticker&&option('Edit message',edit)}
+  {message.direction==='outgoing'&&!a&&!isSticker&&option('Edit message',edit)}
   {message.direction==='outgoing'&&option('Delete message',remove,true)}{!!message.reactions?.length&&option('Remove my reaction',()=>react(''))}
  </ScrollView></Pressable></Pressable></Modal>;
 }

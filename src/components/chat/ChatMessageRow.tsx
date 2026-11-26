@@ -1,9 +1,10 @@
-import React,{memo,useState} from 'react';
+import React,{memo,useMemo,useState} from 'react';
 import {Pressable,Text,View,type GestureResponderEvent} from 'react-native';
 import {t} from '../../localization/language';
 import {useLanguage} from '../../localization/useLanguage';
 import {useTheme} from '../../contexts/ThemeContext';
 import {pendingMessages,type RootChatMessage} from '../../modules/messaging';
+import {chatMediaPresentation} from '../../modules/storage';
 import {parseSticker,type Sticker} from '../../services/stickers';
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import {retainEqualChatProps} from '../../modules/ui/useChatSnapshot';
@@ -31,24 +32,25 @@ type Props={
 /** Row props are message-scoped. List layout and unrelated receipt changes can leave this row intact. */
 export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled,highlighted,time,quoted,quoteAuthorName,senderName,onSender,onJump,onReply,onMenu,onReact,onSticker,onMedia,nextVoice,onError}:Props){
  useLanguage();
- const {colors}=useTheme(),mine=m.direction==='outgoing',attachment=m.attachment,group=!!m.group;
+ const {colors}=useTheme(),mine=m.direction==='outgoing',group=!!m.group;
+ const attachment=useMemo(()=>chatMediaPresentation(m,owner),[m,owner]);
  const sticker=!attachment?parseSticker(m.text):undefined;
  const audio=!!attachment?.mime.startsWith('audio/');
  const imported=attachment?.name===IMPORTED_STICKER_CONTENT;
  const photo=attachment&&!imported&&/^(image|video)\//.test(attachment.mime);
  const [measuredPhoto,setMeasuredPhoto]=useState<{id:string;size:ChatPhotoSize}>();
  const photoSize=measuredPhoto?.id===m.id?measuredPhoto.size:undefined;
- const imageWidth=photo&&attachment.mime.startsWith('image/')?photoMessageWidth(attachment.manifest.preview??photoSize):undefined;
+ const imageWidth=photo&&attachment.mime.startsWith('image/')?photoMessageWidth(attachment.preview??photoSize):undefined;
  const fileFooter=!!attachment&&!audio&&!photo&&!imported;
  const sizeOnRight=fileFooter&&!mine;
  const menu=(event:GestureResponderEvent)=>onMenu(m,event);
  const edited=m.edited?t("Edited"):'';
  const meta=(inline=false)=><View style={[styles.metaRow,inline&&{marginTop:0},audio&&{flexShrink:0}]}>
-  {attachment&&!sizeOnRight&&<RootMediaSize message={m} fileFooter={fileFooter}/>}
+  {attachment&&!sizeOnRight&&<RootMediaSize message={m} media={attachment} fileFooter={fileFooter}/>}
   {!!edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{edited}</Text>}
   <Text style={[styles.timeText,{color:colors.textTertiary}]}>{time}</Text>
   <RootMessageStatus message={m} onError={onError}/>
-  {sizeOnRight&&<RootMediaSize message={m} fileFooter/>}
+  {attachment&&sizeOnRight&&<RootMediaSize message={m} media={attachment} fileFooter/>}
  </View>;
  return <View>
   <ChatDateSeparator at={at} olderAt={olderAt}/>
@@ -71,7 +73,7 @@ export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled
        <RootReplyContent message={quoted}/>
       </Pressable>}
       {m.deleted?<DeletedMessage color={colors.textSecondary}/>:attachment?
-       <RootAttachmentBubble message={m} photoSize={photoSize} onPhotoSize={size=>setMeasuredPhoto({id:m.id,size})} onMedia={onMedia} voiceKey={audio?voiceMessageKey(m):undefined} nextVoice={nextVoice} onLongPress={menu} audioFooter={audio?meta(true):undefined} onError={onError}/>:sticker?
+       <RootAttachmentBubble message={m} media={attachment} photoSize={photoSize} onPhotoSize={size=>setMeasuredPhoto({id:m.id,size})} onMedia={onMedia} voiceKey={audio?voiceMessageKey(m):undefined} nextVoice={nextVoice} onLongPress={menu} audioFooter={audio?meta(true):undefined} onError={onError}/>:sticker?
        <Pressable accessibilityLabel={sticker.label+' sticker'} onLongPress={menu} onPress={()=>onSticker(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:
        <MessageTextWithFooter text={m.text} style={[styles.messageText,{color:colors.text}]} linkColor={colors.primary} footer={meta(true)} footerKey={JSON.stringify([time,edited,mine])}/>}
       {(m.deleted||!!sticker||!!attachment&&!audio)&&meta()}

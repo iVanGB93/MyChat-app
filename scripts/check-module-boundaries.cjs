@@ -10,6 +10,25 @@ for(const file of screens)for(const request of imports(file)){
  if(/\/modules\//.test(request)&&! /\/modules\/(identity|maintenance|network|messaging|calls|media|storage|diagnostics|messaging\/notifications|ui\/keyboard|ui\/attachmentPreview|ui\/openAttachmentPreview|ui\/mediaPicker|ui\/documentPicker|ui\/sharedContent|ui\/useChatSnapshot|ui\/useChatActivity|ui\/useMessageStateClock|ui\/liveState|ui\/transferState)$/.test(request))failures.push(file+' imports a module implementation instead of its public API: '+request);
  if(/modules\/network$/.test(request)&&!['src/screens/LocalAccountApp.tsx','src/screens/profile/RootNetworkPanel.tsx','src/screens/profile/PhoneNetworkCard.tsx','src/components/AxonLimitSetting.tsx','src/components/RelayInventoryPanel.tsx','src/components/chat/ChatConnectionBar.tsx','src/components/RecoverySettings.tsx','src/components/BootstrapSettings.tsx'].includes(file))failures.push(file+' routes communication outside messaging');
 }
+const wireMediaFields=new Set(['attachmentDigest','attachmentContentDigest','attachmentBlockBytes','retiredAttachment']);
+for(const file of screens){
+ const source=ts.createSourceFile(file,fs.readFileSync(path.join(root,file),'utf8'),ts.ScriptTarget.Latest,true);
+ function rejectAttachmentManifest(node){
+  if(ts.isPropertyAccessExpression(node)&&node.name.text==='manifest'&&ts.isPropertyAccessExpression(node.expression)&&node.expression.name.text==='attachment'){
+   failures.push(file+' reads the transfer manifest directly');
+  }
+  ts.forEachChild(node,rejectAttachmentManifest);
+ }
+ rejectAttachmentManifest(source);
+ for(const node of source.statements){
+  if(!ts.isImportDeclaration(node))continue;
+  const named=node.importClause?.namedBindings;
+  if(named&&ts.isNamedImports(named))for(const specifier of named.elements){
+   const name=(specifier.propertyName??specifier.name).text;
+   if(wireMediaFields.has(name))failures.push(file+' uses wire media metadata for presentation: '+name);
+  }
+ }
+}
 for(const file of ['src/modules/messaging/commands.ts','src/modules/messaging/delivery.ts','src/modules/calls/commands.ts'])for(const request of imports(file)){
  if(/^(react|expo-|@react-native)|axonic-nearby|composition\/|modules\/ui|localAccountNetwork|localRootChat/.test(request))failures.push(file+' imports a platform or composition dependency: '+request);
 }

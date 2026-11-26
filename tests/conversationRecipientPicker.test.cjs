@@ -8,7 +8,7 @@ function fixture(file,extra={}){
  const imports={'../../modules/ui/useChatSnapshot':{useConversationIndex:()=>({index:null})},'../../theme':require('./helpers/theme.cjs'),react:{default:react,...react},'react-native':{View:'View',Text:'Text',Pressable:'Pressable',FlatList:'FlatList',Modal:'Modal',ActivityIndicator:'Spinner',StyleSheet:{create:x=>x},Keyboard:{addListener:(event,fn)=>{keyboard[event]=fn;return {remove(){}};}}},
   '@expo/vector-icons':{Ionicons:'Icon'},'expo-status-bar':{StatusBar:'StatusBar'},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:24,bottom:20,left:0,right:0})},
   '../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../modules/identity':{localAccount:{status:()=>({account:'owner',state:'unlocked'})},shortIdentity:x=>x},
-  '../../modules/storage':{readSharedAvatar:async()=>null,subscribeSharedAvatars:()=>()=>{}},'../ui/Avatar':{default:'Avatar'},'../ui/KeyboardForm':{KeyboardAvoidingScreen:'KeyboardScreen',KeyboardAwareTextInput:'Input'},'./ConversationRecipientPicker':{default:'Picker'},...extra};
+  '../../modules/storage':{readSharedAvatar:async()=>null,subscribeSharedAvatars:()=>()=>{},chatMediaPresentation:message=>message.localMedia},'../ui/Avatar':{default:'Avatar'},'../ui/KeyboardForm':{KeyboardAvoidingScreen:'KeyboardScreen',KeyboardAwareTextInput:'Input'},'./ConversationRecipientPicker':{default:'Picker'},...extra};
  const exports={};new Function('exports','require',ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(exports,name=>(require('./helpers/localization.cjs')(name)??(imports[name]??{})));
  return {render:props=>{index=0;effects.length=0;return exports.default(props);},effects,keyboard};
 }

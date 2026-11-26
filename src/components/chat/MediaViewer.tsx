@@ -1,4 +1,4 @@
-import React,{useEffect,useMemo,useRef,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {ActivityIndicator,FlatList,Modal,Pressable,Text,View,useWindowDimensions} from 'react-native';
 import {Image} from 'expo-image';
 import {File} from 'expo-file-system';
@@ -8,7 +8,6 @@ import {Chrome} from '../../theme';
 import {useTheme} from '../../contexts/ThemeContext';
 import {t} from '../../localization/language';
 import {localAccount} from '../../modules/identity';
-import {attachmentDigest,attachmentContentDigest} from '../../modules/media';
 import {selectedVideoThumbnail} from '../../modules/storage';
 import {openAttachmentPreview} from '../../modules/ui/openAttachmentPreview';
 import ScreenHeader from '../ui/ScreenHeader';
@@ -22,7 +21,8 @@ export interface PreviewItem {
  id:string;uri:string;name:string;kind:'image'|'video'|'file';caption?:string;
  width?:number;height?:number;mimeType?:string;size?:number;
 }
-export type MediaViewerItem=PreviewItem|(Omit<PreviewItem,'uri'>&{local:{owner:string;manifest:Parameters<typeof attachmentDigest>[0];delivery:string;available:boolean}});
+type LocalViewerFile={owner:string;fileKey:string;previewKey?:string;delivery:string;downloadUntil?:number};
+export type MediaViewerItem=PreviewItem|(Omit<PreviewItem,'uri'>&{local:LocalViewerFile});
 type Review={
  onRemove(id:string):void;onSend():void;onUpdate(id:string,changes:Partial<PreviewItem>):void;destination?:string;
 };
@@ -31,16 +31,13 @@ const fileSize=(n:number)=>n>=1048576?`${(n/1048576).toFixed(1)} MB`:n>=1024?`${
 
 function useViewerUri(item:MediaViewerItem){
  const local='local' in item?item.local:null;
- const manifest=local?.available?local.manifest:undefined;
- const digest=useMemo(()=>manifest?attachmentDigest(manifest):undefined,[manifest]);
- const file=useAttachmentFile(local?.available?local.owner:null,digest,local?.delivery);
+ const file=useAttachmentFile(local?.owner??null,local?.fileKey,local?.delivery);
  return 'uri' in item?item.uri:file?.uri;
 }
 
 function useViewerPreview(item:MediaViewerItem){
- const local='local' in item?item.local:null,manifest=local?.manifest;
- const id=useMemo(()=>manifest?.preview?attachmentContentDigest(manifest):undefined,[manifest]);
- return useAttachmentPreview(local?.owner??null,id);
+ const local='local' in item?item.local:null;
+ return useAttachmentPreview(local?.owner??null,local?.previewKey);
 }
 
 function useVideoFrame(uri:string|undefined,read:(uri:string)=>Promise<string|null>){
@@ -66,7 +63,7 @@ function MediaSlide({item,active,busy,frameFor,onZoomChange}:{
   <ZoomablePhotoPreview uri={uri} active={active} onZoomChange={onZoomChange} onError={()=>setFailed(uri)}/>
   {unavailable&&<Text accessibilityRole="alert" style={{position:'absolute',alignSelf:'center',color:colors.text,backgroundColor:colors.surface,padding:12,borderRadius:16}}>{error}</Text>}
  </>;
- if(!uri&&'local' in item&&!item.local.available&&item.local.manifest.expires>Date.now()){
+ if(!uri&&'local' in item&&(item.local.downloadUntil??0)>Date.now()){
   return <View style={{flex:1,justifyContent:'center',alignItems:'center',gap:12}}>
    {!!preview&&<Image source={{uri:preview}} contentFit="contain" style={{position:'absolute',width:'100%',height:'100%'}}/>}
    <View style={{backgroundColor:colors.surface,padding:12,borderRadius:16,flexDirection:'row',alignItems:'center',gap:8}}>

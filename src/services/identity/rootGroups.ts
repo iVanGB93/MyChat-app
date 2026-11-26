@@ -155,7 +155,7 @@ export function rootGroupMessageIndex(s:RootChatState){
  * Late/new members show a placeholder until the creator shares the photo to them.
  * Local attachment cleanup or deletion returns null rather than retaining a duplicate file.
  */
-export function rootGroupPhoto(s:RootChatState,id:string,owner:string){
+export function rootGroupPhoto(s:RootChatState,id:string,owner:string,isPhoto=(m:RootChatMessage)=>m.attachment?.mime.startsWith('image/')){
  const g=s.groups?.find(g=>g.id===id);if(!g?.photo||g.blocked||!g.accepted)return null;
- return s.messages.find(m=>m.group?.id===id&&m.group.messageId===g.photo&&(m.direction==='outgoing'?owner:m.peer)===g.admin&&m.attachment?.mime.startsWith('image/')&&!m.deleted)??null;
+ return s.messages.find(m=>!m.deleted&&m.group?.id===id&&m.group.messageId===g.photo&&(m.direction==='outgoing'?owner:m.peer)===g.admin&&isPhoto(m))??null;
 }

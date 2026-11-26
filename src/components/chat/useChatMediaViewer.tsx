@@ -1,7 +1,8 @@
 import React,{useCallback,useEffect,useMemo,useState} from 'react';
-import {hasConfirmedDelivery,type RootChatMessage} from '../../modules/messaging';
+import type {RootChatMessage} from '../../modules/messaging';
 import {useAccountState} from '../../modules/ui/liveState';
-import {retiredAttachment} from '../../modules/media';
+import {chatMediaPresentation} from '../../modules/storage';
+import {attachmentTransferPresentation} from '../../modules/media';
 import {isGroupAvatarFile} from '../../services/group-avatar-file';
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import MediaViewer,{type MediaViewerItem} from './MediaViewer';
@@ -18,14 +19,16 @@ export function chatMediaKind(mime:string){
 export function conversationMediaItems(newestFirst:readonly RootChatMessage[],owner:string){
  const items:MediaViewerItem[]=[],seen=new Set<string>();
  for(let i=newestFirst.length-1;i>=0;i--){
-  const message=newestFirst[i],attachment=message.attachment;
-  if(message.deleted||message.localPending||!attachment||retiredAttachment(attachment)||attachment.name===IMPORTED_STICKER_CONTENT||
+  const message=newestFirst[i];
+  if(message.deleted||message.localPending)continue;
+  const attachment=chatMediaPresentation(message,owner);
+  if(!attachment||attachment.name===IMPORTED_STICKER_CONTENT||
     message.group&&isGroupAvatarFile(attachment))continue;
   const kind=chatMediaKind(attachment.mime),id=mediaId(message);
   if(!kind||seen.has(id))continue;
   seen.add(id);
-  items.push({id,kind,name:attachment.name,mimeType:attachment.mime,size:attachment.manifest.bytes,caption:attachment.caption,
-   local:{owner,manifest:attachment.manifest,available:message.direction==='outgoing'||hasConfirmedDelivery(message),delivery:message.status}});
+  items.push({id,kind,name:attachment.name,mimeType:attachment.mime,size:attachment.bytes,caption:attachment.caption,
+   local:{owner,fileKey:attachment.fileKey,previewKey:attachment.preview?.fileKey,downloadUntil:attachmentTransferPresentation(message)?.expires,delivery:message.status}});
  }
  return items;
 }

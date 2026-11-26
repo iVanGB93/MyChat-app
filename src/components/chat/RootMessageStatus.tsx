@@ -4,7 +4,7 @@ import {Alert,AppState,Pressable} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {useTheme} from '../../contexts/ThemeContext';
 import {type RootChatMessage,rootMessageStatus,messagePresentationStatus,hasConfirmedDelivery,deliveryStatusIcon,deliveryStatusLabel} from '../../modules/messaging';
-import {attachmentDigest,controlRootAttachment,resendExpiredRootAttachment,retiredAttachment} from '../../modules/media';
+import {attachmentTransferPresentation,controlRootAttachment,resendExpiredRootAttachment} from '../../modules/media';
 import {localAccount} from '../../modules/identity';
 import {useTransferProgress} from '../../modules/ui/transferState';
 import {useAttachmentFile} from './useAttachmentFile';
@@ -12,16 +12,17 @@ import {useAttachmentFile} from './useAttachmentFile';
 /** One status position for delivery evidence and available transfer recovery. */
 export default function RootMessageStatus({message:m,onError}:{message:RootChatMessage;onError(message:string):void}){
  const {colors}=useTheme();
- if(m.attachment&&!retiredAttachment(m.attachment)&&!hasConfirmedDelivery(m))return <AttachmentStatus message={m} onError={onError}/>;
+ const transfer=attachmentTransferPresentation(m);
+ if(transfer)return <AttachmentStatus message={m} transfer={transfer} onError={onError}/>;
  if(m.direction!=='outgoing')return null;
- const status=rootMessageStatus(m);
+ const status=m.retiredAttachment&&hasConfirmedDelivery(m)?(m.read?'read':'delivered'):rootMessageStatus(m);
  return <Ionicons accessibilityLabel={t(deliveryStatusLabel(status))} name={deliveryStatusIcon(status)} size={13} color={status==='read'?colors.checkBlue:colors.textTertiary}/>;
 }
-function AttachmentStatus({message:m,onError}:{message:RootChatMessage;onError(message:string):void}){
- const {colors}=useTheme(),digest=m.attachment?attachmentDigest(m.attachment.manifest):'';
+function AttachmentStatus({message:m,transfer,onError}:{message:RootChatMessage;transfer:NonNullable<ReturnType<typeof attachmentTransferPresentation>>;onError(message:string):void}){
+ const {colors}=useTheme(),digest=transfer.id;
  const progress=useTransferProgress(digest),[busy,setBusy]=useState(false),[resent,setResent]=useState(false),lock=useRef(false);
  const [now,setNow]=useState(Date.now);
- const expires=m.attachment?.manifest.expires;
+ const expires=transfer.expires;
  useEffect(()=>{let timer:ReturnType<typeof setTimeout>|undefined;const refresh=()=>{clearTimeout(timer);setNow(Date.now());if(expires&&expires>Date.now())timer=setTimeout(refresh,Math.min(expires-Date.now()+1,2147483647));};refresh();const sub=AppState.addEventListener('change',s=>{if(s==='active')refresh();});return()=>{clearTimeout(timer);sub.remove();};},[expires]);
  const owner=localAccount.status().account,expired=!!expires&&expires<=now;
  const eligible=!m.deleted&&m.networkCancelledAt===undefined;

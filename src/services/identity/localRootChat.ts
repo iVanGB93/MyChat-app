@@ -7,6 +7,7 @@ import { localAccount } from './localAccount';
 import { createRootChatLedger } from './rootChatLedger';
 import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {verifyAttachmentManifest,verifyAttachmentReceipt} from './attachmentProtocol';
+import {localMediaFromDescriptor} from './savedAttachmentPresentation';
 const ledgers=new Map<string,ReturnType<typeof createRootChatLedger>>();
 let diagnosticOwner=localAccount.status().account;
 localAccount.subscribe(()=>{const status=localAccount.status();if(status.account!==diagnosticOwner||status.removalPending||status.state!=='unlocked')for(const ledger of ledgers.values())ledger.invalidateReadCache();if(status.account!==diagnosticOwner||status.removalPending||status.state!=='unlocked')clearDeliveryCapture();if(status.account!==diagnosticOwner||status.removalPending||status.state!=='unlocked')diagnosticJournal.clear();diagnosticOwner=status.account;});
@@ -22,6 +23,7 @@ export function localRootChat(){
  if(!owner||localAccount.status().state!=='unlocked')throw Error('Unlock your account first');
  let ledger=ledgers.get(owner);if(!ledger){const store=ownChatStore(owner);
   ledger=createRootChatLedger({owner,...store,now:Date.now,revision:()=>ownChatRevision(owner),
+   localMedia:localMediaFromDescriptor,
    stateCommitted:raw=>{if(!committedListeners.size)return;const state=JSON.parse(raw),revision=ownChatRevision(owner);for(const listener of committedListeners)try{listener(owner,revision,state);}catch{/* An observer cannot fail a durable commit. */}},
    profileChanged:()=>{for(const listener of profileListeners)listener();},
    receiveProfileOffer:(peer,manifest)=>storeSharedAvatarOffer(owner,peer,manifest,()=>localAccount.status().state==='unlocked'&&localAccount.status().account===owner),
