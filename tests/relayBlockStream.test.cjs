@@ -42,7 +42,7 @@ test('final credit waits for consumer completion; no complete block on interrupt
 test('rejects oversized, unsolicited, duplicate, out-of-order and invalid records',async t=>{
  const r=createRelayBlockStream({current:()=>true,send:()=>{},deliver:async()=>{},admit:(_,id)=>id!==9});t.after(()=>r.stop());
  const start={version:1,kind:'relay-block-stream',op:'start',direction:'bulk-response',id:1,size:32000,header:{status:'ok',index:0,count:1}};
- assert.equal(await r.receive({...start,size:5000000}),false);
+ assert.equal(await r.receive({...start,size:17000000}),false);
  assert.equal(await r.receive({...start,id:9}),false);
  assert.equal(await r.receive(start),true);assert.equal(await r.receive(start),false);
  const data={version:1,kind:'relay-block-stream',op:'data',direction:'bulk-response',id:1,offset:0,data:'A'.repeat(8000)};
@@ -58,17 +58,61 @@ test('receiver credit bounds sender outstanding records and stop rejects pending
  await new Promise(r=>setImmediate(r));assert.equal(sent.filter(v=>v.op==='data').length,32);
  const rejected=assert.rejects(task,/closed/);r.stop();await rejected;
 });
+test('a full 12 MB block completes at 2 Mbps despite crossing the old 45-second limit',async t=>{
+ const v=fixture(12_000_000),digest=protocol.attachmentDigest(v.manifest);
+ const data=batch.packAttachmentBatch(v.manifest,0,v.chunks);
+ const original=JSON.stringify({version:1,operation:'put-batch',digest,index:0,count:1,data});
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:0});
+ const window=[],credits=[];let delivered,done=false,failure;
+ const sender=createRelayBlockStream({current:()=>true,send:frame=>window.push(frame),deliver:async()=>assert.fail()});
+ const receiver=createRelayBlockStream({current:()=>true,send:frame=>credits.push(frame),deliver:async frame=>{delivered=frame.body;}});
+ t.after(()=>{sender.stop();receiver.stop();});
+ const task=sender.transmit({kind:'bulk-request',id:1,body:original}).then(ok=>{done=ok;},error=>{failure=error;});
+ while(window.length){
+  const frame=window.shift();
+  if(frame.op==='data')t.mock.timers.tick(frame.data.length/250);
+  assert.equal(await receiver.receive(frame),true);
+  while(credits.length)assert.equal(await sender.receive(credits.shift()),true);
+ }
+ await task;
+ assert.ifError(failure);
+ assert.equal(done,true);
+ assert.equal(delivered,original);
+ assert(Date.now()>60_000);
+});
 test('timeout drops partial buffers and tolerates bounded late traffic without a false completion',async t=>{
- t.mock.timers.enable({apis:['setTimeout']});
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:0});
  const r=createRelayBlockStream({current:()=>true,send:()=>{},deliver:async()=>assert.fail('partial delivered')});t.after(()=>r.stop());
  const sending=r.transmit({kind:'bulk-response',id:1,body:JSON.stringify({status:'ok',index:0,count:1,data:'A'.repeat(32000)})});
  const rejected=assert.rejects(sending,/timed out/);
  const start={version:1,kind:'relay-block-stream',op:'start',direction:'bulk-request',id:2,size:32000,header:{version:1,operation:'put-batch',digest:'a'.repeat(64),index:0,count:1}};
  assert.equal(await r.receive(start),true);
- t.mock.timers.tick(15001);await rejected;
+ t.mock.timers.tick(45001);await rejected;
  assert.equal(await r.receive({version:1,kind:'relay-block-stream',op:'credit',direction:'bulk-response',id:1,offset:32000}),true);
- assert.equal(await r.receive({version:1,kind:'relay-block-stream',op:'data',direction:'bulk-request',id:2,offset:0,data:'A'.repeat(8000)}),true);
+ const late={version:1,kind:'relay-block-stream',op:'data',direction:'bulk-request',id:2,offset:0,data:'A'.repeat(8000)};
+ for(let i=0;i<33;i++)assert.equal(await r.receive(late),true);
+ assert.equal(await r.receive(late),false);
  assert.equal(await r.receive({...start,id:3}),true);
+});
+test('a progressing block can take over three minutes and idle blocks still release their slots',async t=>{
+ t.mock.timers.enable({apis:['setTimeout','Date'],now:0});
+ const completed=[];
+ const r=createRelayBlockStream({current:()=>true,send:()=>{},deliver:async frame=>completed.push(frame.id)});
+ t.after(()=>r.stop());
+ const start={version:1,kind:'relay-block-stream',op:'start',direction:'bulk-response',id:1,size:64000,header:{status:'ok',index:0,count:1}};
+ assert(await r.receive(start));
+ assert(await r.receive({...start,id:2}));
+ for(let i=0;i<8;i++){
+  t.mock.timers.tick(30000);
+  const data={version:1,kind:'relay-block-stream',op:'data',direction:'bulk-response',id:1,offset:i*8000,data:'A'.repeat(8000)};
+  assert(await r.receive(data));
+  if(i<7)assert(await r.receive({...data,id:2}));
+ }
+ assert.deepEqual(completed,[1]);
+ assert(await r.receive({...start,id:3}));
+ assert.equal(await r.receive({...start,id:4}),false);
+ t.mock.timers.tick(15001);
+ assert(await r.receive({...start,id:4}));
 });
 
 test('unaligned or ahead-of-send credits cannot expand the byte window',async t=>{

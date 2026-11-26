@@ -34,14 +34,15 @@ test('retired local custody records stay intact and do not block current offers'
  assert.equal(response.status,'held');assert.equal(rows[0],old);assert.equal(rows.length,2);
 });
 function storeFixture(t,owner){const database=new DatabaseSync(':memory:');t.after(()=>database.close());
- const tx={runAsync:async(s,...p)=>database.prepare(s).run(...p),getAllAsync:async(s,...p)=>database.prepare(s).all(...p),getFirstAsync:async(s,...p)=>database.prepare(s).get(...p)??null};
+ const queries=[];
+ const tx={runAsync:async(s,...p)=>database.prepare(s).run(...p),getAllAsync:async(s,...p)=>{queries.push(s);return database.prepare(s).all(...p);},getFirstAsync:async(s,...p)=>{queries.push(s);return database.prepare(s).get(...p)??null;}};
  const db={...tx,execAsync:async s=>database.exec(s),withExclusiveTransactionAsync:async fn=>{database.exec('BEGIN');try{await fn(tx);database.exec('COMMIT');}catch(e){database.exec('ROLLBACK');throw e;}}};
  const out={};new Function('require','exports',ts.transpileModule(fs.readFileSync('src/services/identity/mobileAttachmentStore.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(n=>n==='expo-sqlite'?{openDatabaseAsync:async()=>db}:load(n.slice(2)),out);
- return {store:out.createMobileAttachmentStore(owner),other:out.createMobileAttachmentStore('axonic:1:'+'a'.repeat(64)),db:database};
+ return {store:out.createMobileAttachmentStore(owner),other:out.createMobileAttachmentStore('axonic:1:'+'a'.repeat(64)),db:database,queries};
 }
 
 test('upload batches validate all proofs, commit atomically, and retry idempotently across restart',async t=>{
- const f=fixture(3_000_019),s=storeFixture(t,f.ids[2].record.account),digest=a.attachmentDigest(f.manifest),b=load('attachmentBatch');
+ const f=fixture(12_000_019),s=storeFixture(t,f.ids[2].record.account),digest=a.attachmentDigest(f.manifest),b=load('attachmentBatch');
  const deps={owner:f.ids[2].record.account,store:s.store,records:{read:async id=>f.ids.find(i=>i.record.account===id)?.record},now:()=>now,current:()=>true};let relay=createAttachmentCustody(deps);
  const peer=i=>({account:f.ids[i].record.account,device:f.ids[i].device.id,expiresAt:now+60000});
  const send=(body,i=0)=>relay.receive(JSON.stringify({version:1,digest,...body}),peer(i)).then(JSON.parse);
@@ -51,7 +52,13 @@ test('upload batches validate all proofs, commit atomically, and retry idempoten
  for(const body of [{...batch,data:corrupt.toString('base64')},{...batch,index:2},{...batch,count:129},{...batch,extra:'forbidden'},{...batch,data:batch.data+'='}])assert.equal((await send(body)).status,'rejected');
  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM asset_chunks').get().n,0);
  assert.equal((await send(batch,1)).status,'rejected');
- assert.equal((await send(batch)).received,1);assert.equal(relay.contribution().counts.blocksStored,1);assert.equal(relay.contribution().counts.ciphertextBytesStored,Buffer.from(f.chunks[0].ciphertext,'base64').length);await send(batch);assert.equal(relay.contribution().counts.blocksStored,1);relay=createAttachmentCustody(deps);assert.equal((await send(batch)).received,1);assert.equal(relay.contribution().counts.blocksStored,0);
+ assert.equal((await send(batch)).received,1);assert.equal(relay.contribution().counts.blocksStored,1);assert.equal(relay.contribution().counts.ciphertextBytesStored,Buffer.from(f.chunks[0].ciphertext,'hex').length);
+ s.queries.length=0;
+ await send(batch);
+ assert.equal((await send({operation:'status'})).received,1);
+ assert.equal(s.queries.filter(sql=>sql.startsWith('SELECT raw FROM assets')).length,2);
+ assert.equal(s.queries.some(sql=>sql.startsWith('SELECT raw FROM asset_chunks')),false);
+ assert.equal(relay.contribution().counts.blocksStored,1);relay=createAttachmentCustody(deps);assert.equal((await send(batch)).received,1);assert.equal(relay.contribution().counts.blocksStored,0);
  assert.equal(s.db.prepare('SELECT COUNT(*) n FROM asset_chunks').get().n,1);
  const tail={operation:'put-batch',index:1,count:1,data:b.packAttachmentBatch(f.manifest,1,[f.chunks[1]])};
  const response=await send(tail);assert.deepEqual(response,{status:'held',index:1,count:1,received:2});
@@ -99,4 +106,39 @@ test('media scorecard observes committed unique offers and holds counters on rol
  await relay.receive(raw,peer);await relay.receive(raw,peer);assert.equal(relay.contribution().counts.attachmentGrantsHeld,1);
  const bad=createAttachmentCustody({...deps,store:{transaction:async fn=>{await fn({rows:async()=>[],save:async()=>{}});throw Error('commit failed');}}});
  await bad.receive(raw,peer);assert.equal(bad.contribution().counts.attachmentGrantsHeld,0);
+});
+
+test('cutover removes retired relay rows and old ciphertext while preserving current blocks',async t=>{
+ const f=fixture(),owner=f.ids[2].record.account,s=storeFixture(t,owner),old='a'.repeat(64),orphan='b'.repeat(64);
+ const active=a.attachmentDigest(f.manifest);
+ await s.store.transaction(async tx=>{
+  await tx.save({digest:old,manifest:{version:4},received:1,receipt:null});
+  await tx.save({digest:active,manifest:f.manifest,received:1,receipt:null});
+  await tx.saveChunk(old,f.chunks[0]);await tx.saveChunk(orphan,f.chunks[0]);await tx.saveChunk(active,f.chunks[0]);
+ });
+ const relay=createAttachmentCustody({owner,store:s.store,records:{read:async()=>null},now:()=>now,current:()=>true});
+ await relay.sweep();
+ const remaining=await s.store.inspect();
+ assert.deepEqual(remaining.rows.map(r=>r.digest),[active]);
+ assert.deepEqual(remaining.chunks.map(r=>r.digest),[active]);
+});
+
+test('a shared preview is stored once and served only to the authenticated recipient of each grant',async t=>{
+ const f=fixture(500),owner=f.ids[2].record.account,s=storeFixture(t,owner),other=fixture().ids[1];
+ const ids=[...f.ids,other],shared={id:'5'.repeat(64),count:2,slot:0};
+ const fields={...f.manifest,shared},plain=new Uint8Array([2,4,6]);
+ const encrypted=a.sealAttachmentPreview(fields,f.key,plain),wire=Buffer.from(encrypted).toString('base64');
+ const preview={width:10,height:10,ciphertextHash:a.attachmentPreviewHash(encrypted)};
+ const first=a.signAttachmentManifest({...fields,preview},f.ids[0].signingSeed,f.ids[0].record,now);
+ const second=a.signAttachmentManifest({...fields,preview,id:'4'.repeat(64),recipient:other.record.account,recipientDevice:other.device.id,shared:{...shared,slot:1}},f.ids[0].signingSeed,f.ids[0].record,now);
+ const relay=createAttachmentCustody({owner,store:s.store,records:{read:async id=>ids.find(i=>i.record.account===id)?.record},now:()=>now,current:()=>true});
+ const send=(body,i=0)=>relay.receive(JSON.stringify({version:1,...body}),{account:ids[i].record.account,device:ids[i].device.id,expiresAt:now+60000}).then(JSON.parse);
+ const firstDigest=a.attachmentDigest(first),secondDigest=a.attachmentDigest(second);
+ assert.equal((await send({operation:'offer',manifest:first})).previewNeeded,true);
+ assert.equal((await send({operation:'put-preview',digest:firstDigest,data:wire})).status,'held');
+ assert.equal((await send({operation:'offer',manifest:second})).previewNeeded,false);
+ assert.equal((await s.store.inspect()).rows.filter(row=>row.preview).length,1);
+ assert.equal((await send({operation:'get-preview',digest:secondDigest},1)).status,'rejected');
+ const response=await send({operation:'get-preview',digest:secondDigest},3);
+ assert.deepEqual(a.openAttachmentPreview(second,f.key,Buffer.from(response.data,'base64')),plain);
 });

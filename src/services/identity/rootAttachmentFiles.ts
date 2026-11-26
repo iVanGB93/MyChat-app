@@ -1,3 +1,4 @@
+import {fromByteArray,toByteArray} from 'base64-js';
 import {attachmentContentChanged} from './attachmentChanges';
 import {Directory,File,Paths} from 'expo-file-system';
 import {sha256} from '@noble/hashes/sha2.js';
@@ -5,9 +6,10 @@ import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import Native from '../../../modules/axonic-nearby';
 import {localAccount} from './localAccount';
 import {validAccountId,verifyRecord,type IdentityRecord} from './identityProtocol';
-import {attachmentChunkAAD,attachmentDigest,attachmentChecksumCommitment,attachmentBlockBytes,ATTACHMENT_MAX_BYTES,ATTACHMENT_TTL,encryptAttachmentChunkBytes,attachmentBlockPublicKey,signAttachmentBlock,verifyAttachmentChunk,verifyAttachmentManifest,type AttachmentManifest} from './attachmentProtocol';
+import {attachmentContentDigest,attachmentPreviewHash,sealAttachmentPreview,openAttachmentPreview,ATTACHMENT_PREVIEW_MAX_BYTES,attachmentChunkAAD,attachmentDigest,attachmentChecksumCommitment,attachmentBlockBytes,ATTACHMENT_STREAM_BLOCK_BYTES,ATTACHMENT_MAX_BYTES,ATTACHMENT_TTL,encryptAttachmentChunkBytes,attachmentBlockPublicKey,signAttachmentBlock,verifyAttachmentChunk,verifyAttachmentManifest,type AttachmentManifest} from './attachmentProtocol';
 import {AttachmentFileReset,validAttachmentDescriptor,type AttachmentDescriptor,type AttachmentJob} from './attachmentTransfer';
 import {validAttachmentRange} from './attachmentBatch';
+import {retiredAttachment} from './retiredAttachment';
 import {SharedMediaFile,sharedMediaNative,isSharedMediaUri} from './sharedMediaFile';
 const pause=()=>new Promise<void>(resolve=>setTimeout(resolve,0));
 // Same canonical leaf JSON and SHA-256 as the protocol implementation. Avoid
@@ -132,6 +134,13 @@ export function removeRootAttachmentContent(owner:string,digest:string){
  else {const content=new File(directory,'content');if(content.exists)content.delete();}
  attachmentContentChanged();
 }
+/** Retired packages only. The verified original and the Gallery link survive. */
+export function discardRootRetiredPackage(owner:string,digest:string){
+ const local=folder(owner,digest),payload=payloadFolder(owner,digest);
+ const partial=new File(local,'partial');if(partial.exists)partial.delete();
+ if(payload.exists)for(const entry of payload.list())if(entry instanceof File&&
+  (/^\d+\.(block|proof)$/.test(entry.name)||['relay-signing-key','relay-source.json','preview-wire'].includes(entry.name)))entry.delete();
+}
 export const rootAttachmentPartial=(owner:string,digest:string)=>new File(folder(owner,digest),'partial');
 /** Expiring, attempt-owned directories make a crashed stream reclaimable without
  * ever deleting a chat's committed file or another live attempt's partial file. */
@@ -175,15 +184,108 @@ export function restageRootAttachmentSource(owner:string,id:string,previousId:st
  const origin=new File(previousShared?folder(owner,previousShared,true):previous,'origin.json');
  if(origin.exists)origin.copy(new File(folder(owner,sharedId??id,true),'origin.json'));
 }
+const previewRetention=10*86400000;
+let previewSweptAt=0;
+function thumbnailFile(owner:string,digest:string){checkPath(owner,digest);return new File(Paths.document,'axonic-own-attachments-v1',owner.slice(9),'previews',digest+'.jpg');}
+export function rootAttachmentPreviewUri(owner:string,digest:string){
+ try{const preview=thumbnailFile(owner,digest);if(!preview.exists)return null;
+  const now=Date.now(),seen=new File(preview.parentDirectory,digest+'.seen');
+  if(!seen.exists||now-(seen.modificationTime??0)>=86400000)seen.write('');
+  return preview.uri;
+ }catch{return null;}
+}
+function storeThumbnail(owner:string,digest:string,data:Uint8Array){
+ const target=thumbnailFile(owner,digest),folder=target.parentDirectory;
+ folder.create({intermediates:true,idempotent:true});target.write(data);
+ const now=Date.now();
+ if(now-previewSweptAt>=86400000){previewSweptAt=now;
+  try{for(const entry of folder.list())if(entry instanceof File&&/^[0-9a-f]{64}\.jpg$/.test(entry.name)){
+   const seen=new File(folder,entry.name.replace(/\.jpg$/,'.seen'));
+   if(now-Math.max(seen.modificationTime??0,entry.modificationTime??now)>previewRetention){entry.delete();if(seen.exists)seen.delete();}
+  }}catch{/* Cleanup is opportunistic. */}
+ }
+ attachmentContentChanged();
+}
+export function hasRootAttachmentPreview(job:AttachmentJob){return thumbnailFile(job.owner,attachmentContentDigest(job.descriptor.manifest)).exists;}
+export async function readRootAttachmentPreview(job:AttachmentJob){
+ const file=new File(payloadFolder(job.owner,job.digest),'preview-wire');return file.exists?file.textSync():null;
+}
+/** Read JPEG dimensions before any image decoder sees untrusted preview bytes. */
+function jpegPreviewSize(data:Uint8Array){
+ if(data[0]!==0xff||data[1]!==0xd8||data[data.length-2]!==0xff||data[data.length-1]!==0xd9)return null;
+ for(let i=2;i+8<data.length;){
+  if(data[i++]!==0xff)return null;
+  while(data[i]===0xff)i++;
+  const marker=data[i++],length=data[i]*256+data[i+1];
+  if(length<2||i+length>data.length||marker===0xda)return null;
+  if(marker===0xc0||marker===0xc1||marker===0xc2){
+   if(length<8)return null;
+   return {height:data[i+3]*256+data[i+4],width:data[i+5]*256+data[i+6]};
+  }
+  i+=length;
+ }
+ return null;
+}
+export async function saveRootAttachmentPreview(job:AttachmentJob,wire:string,current:()=>boolean){
+ if(wire.length>8024||wire.length%4||!/^[A-Za-z0-9+/]+={0,2}$/.test(wire))return;
+ const key=hexToBytes(job.descriptor.key);let bytes:Uint8Array|undefined;
+ try{bytes=openAttachmentPreview(job.descriptor.manifest,key,toByteArray(wire));check(current);
+  const size=jpegPreviewSize(bytes),expected=job.descriptor.manifest.preview;
+  if(size&&expected&&size.width===expected.width&&size.height===expected.height)storeThumbnail(job.owner,attachmentContentDigest(job.descriptor.manifest),bytes);
+ }finally{key.fill(0);bytes?.fill(0);}
+}
+let thumbnailFlight=false;
+function previewOutcome(outcome:'ready'|'timeout'|'unsupported'|'failed'|'too-large'|'descriptor-full'){
+ if(typeof __DEV__!=='undefined'&&__DEV__)console.info('[Axonic attachment preview]',outcome);
+}
+async function prepareRootThumbnail(content:File,mime:string){
+ if(thumbnailFlight||!/^image\/(jpeg|png|webp|heic|heif|avif)$|^video\//.test(mime))return null;
+ thumbnailFlight=true;
+ let expired=false,timer:ReturnType<typeof setTimeout>|undefined;
+ const render=buildRootThumbnail(content,mime).then(result=>{
+  if(expired){result?.bytes.fill(0);return null;}
+  return result;
+ }).finally(()=>{thumbnailFlight=false;});
+ try{
+  return await Promise.race([render,new Promise<null>(resolve=>{
+   timer=setTimeout(()=>{expired=true;previewOutcome('timeout');resolve(null);},1200);
+  })]);
+ }finally{clearTimeout(timer);}
+}
+async function buildRootThumbnail(content:File,mime:string){
+ const temps:File[]=[];
+ try{
+  let uri=content.uri;
+  if(mime.startsWith('video/')){
+   const frame=await sharedMediaNative?.videoThumbnail?.(uri);
+   if(!frame?.startsWith('data:image/jpeg;base64,')){previewOutcome('unsupported');return null;}
+   const temporary=new File(content.parentDirectory,'video-preview-input.jpg');temporary.write(toByteArray(frame.slice(23)));
+   temps.push(temporary);uri=temporary.uri;
+  }
+  const {manipulateAsync,SaveFormat}=await import('expo-image-manipulator');
+  for(const width of [240,160]){
+   const result=await manipulateAsync(uri,[{resize:{width}}],{compress:.55,format:SaveFormat.JPEG,base64:true});
+   temps.push(new File(result.uri));
+   if(result.base64&&result.base64.length<=8000&&result.height<=512){
+    const bytes=toByteArray(result.base64);
+    if(bytes.length<=ATTACHMENT_PREVIEW_MAX_BYTES){previewOutcome('ready');return {width:result.width,height:result.height,bytes};}
+   }
+  }
+  previewOutcome('too-large');return null;
+ }catch{previewOutcome('failed');return null;}
+ finally{for(const temp of temps){try{if(temp.exists)temp.delete();}catch{/* Temporary preview only. */}}}
+}
 function check(current:()=>boolean){if(!current())throw Error('Unlock your account to continue');}
 /** Streams bounded chunks; original file names never become filesystem paths. */
-export async function prepareRootAttachment(input:{id:string;name:string;mime:string;caption?:string;recipient:IdentityRecord;shared?:AttachmentManifest['shared'];current():boolean}):Promise<AttachmentDescriptor>{
+export async function prepareRootAttachment(input:{id:string;name:string;mime:string;caption?:string;recipient:IdentityRecord;shared?:AttachmentManifest['shared'];current():boolean;previewFits?(descriptor:AttachmentDescriptor):boolean}):Promise<AttachmentDescriptor>{
  const owner=localAccount.status().account,record=localAccount.publicRecord(),device=localAccount.callDevice();
  if(!owner||!record||!device||!verifyRecord(input.recipient,Date.now()))throw Error('Attachment identity unavailable');
  check(input.current);const directory=folder(owner,input.id,true),metadata=new File(directory,'descriptor.json');
+ if(metadata.exists&&retiredAttachment(JSON.parse(metadata.textSync())))metadata.delete();
  if(metadata.exists){const saved=JSON.parse(metadata.textSync());if(!validAttachmentDescriptor(saved)||saved.manifest.sender!==owner||saved.manifest.recipient!==input.recipient.account
   ||saved.manifest.senderDevice!==device||!verifyAttachmentManifest(saved.manifest,record,Date.now())||!rootAttachmentFile(owner,attachmentDigest(saved.manifest)).exists)throw Error('Prepared attachment expired or changed');return saved;}
  const sharedMetadata=input.shared?new File(folder(owner,input.shared.id,true),'shared-descriptor.json'):null;
+ if(sharedMetadata?.exists&&retiredAttachment(JSON.parse(sharedMetadata.textSync())))sharedMetadata.delete();
  if(sharedMetadata?.exists){
   const saved:AttachmentDescriptor=JSON.parse(sharedMetadata.textSync());
   if(!validAttachmentDescriptor(saved)||!saved.manifest.shared||saved.manifest.sender!==owner||saved.manifest.senderDevice!==device||saved.manifest.shared?.id!==input.shared!.id||saved.manifest.shared.count!==input.shared!.count||!verifyAttachmentManifest(saved.manifest,record,Date.now()))throw Error('Shared attachment expired or changed');
@@ -209,20 +311,33 @@ export async function prepareRootAttachment(input:{id:string;name:string;mime:st
  const key=hexToBytes(await Native!.identityRandomBytes!(32)),signer=hexToBytes(await Native!.identityRandomBytes!(32));
  let committed=false,createdFinal:Directory|undefined;
  try{
-  check(input.current);const now=Date.now(),fields={version:4 as const,id:input.id,sender:owner,senderDevice:device,recipient:input.recipient.account,recipientDevice:input.recipient.devices[0].id,created:now,expires:now+ATTACHMENT_TTL-30000,bytes:source.size,...(input.shared?{shared:{...input.shared}}:{})};
+  check(input.current);const now=Date.now(),fields={version:5 as const,id:input.id,sender:owner,senderDevice:device,recipient:input.recipient.account,recipientDevice:input.recipient.devices[0].id,created:now,expires:now+ATTACHMENT_TTL-30000,bytes:source.size,...(input.shared?{shared:{...input.shared}}:{})};
   if(content.exists)content.delete();
   source.copy(content);check(input.current);if(content.size!==fields.bytes)throw Error('Attachment source changed');
   const checksum=Native?.attachmentStagedFileSha256?await Native.attachmentStagedFileSha256(owner,input.id,fields.bytes):await hashContent(content,fields.bytes,input.current);
   check(input.current);if(!/^[a-f0-9]{64}$/.test(checksum))throw Error('Invalid attachment checksum');
   // No ciphertext or encrypted-block commitments are produced on this path.
-  const manifest=localAccount.signAttachment({...fields,checksum:attachmentChecksumCommitment(checksum,bytesToHex(key)),root:attachmentBlockPublicKey(signer)});
-  const descriptor:AttachmentDescriptor={manifest,key:bytesToHex(key),checksum,name:input.name,mime:input.mime,...(input.caption?{caption:input.caption}:{})};
+  let thumbnail=await prepareRootThumbnail(content,input.mime);check(input.current);
+  let wire:string|undefined,preview:AttachmentManifest['preview'];
+  if(thumbnail){const ciphertext=sealAttachmentPreview(fields,key,thumbnail.bytes);
+   wire=fromByteArray(ciphertext);
+   preview={width:thumbnail.width,height:thumbnail.height,ciphertextHash:attachmentPreviewHash(ciphertext)};
+  }
+  const fileKey=bytesToHex(key),manifestFields={...fields,checksum:attachmentChecksumCommitment(checksum,fileKey),root:attachmentBlockPublicKey(signer)};
+  const descriptor:AttachmentDescriptor={manifest:localAccount.signAttachment({...manifestFields,...(preview?{preview}:{})}),key:fileKey,checksum,name:input.name,mime:input.mime,...(input.caption?{caption:input.caption}:{})};
+  if(thumbnail&&input.previewFits?.(descriptor)===false){
+   previewOutcome('descriptor-full');
+   thumbnail.bytes.fill(0);thumbnail=null;wire=undefined;
+   descriptor.manifest=localAccount.signAttachment(manifestFields);
+  }
+  const {manifest}=descriptor;
   if(!validAttachmentDescriptor(descriptor))throw Error('Invalid file name or type');
   signerFile.write(bytesToHex(signer));
   const target=folder(owner,attachmentDigest(manifest));if(target.exists)throw Error('Attachment destination already exists');target.create({intermediates:true});createdFinal=target;
   const payload=input.shared?sharedFolder(owner,input.shared.id):target;
   if(input.shared){if(payload.exists)throw Error('Shared attachment destination already exists');payload.create({intermediates:true});new File(target,'shared.json').write(JSON.stringify({id:input.shared.id}));}
   for(const [file,name] of [[content,'content'],[signerFile,'relay-signing-key']] as const)file.move(new File(payload,name));
+  if(wire&&thumbnail){try{new File(payload,'preview-wire').write(wire);storeThumbnail(owner,attachmentContentDigest(manifest),thumbnail.bytes);}catch{/* Keep the original share. */}finally{thumbnail.bytes.fill(0);}}
   const origin=new File(input.shared?folder(owner,input.shared.id,true):directory,'origin.json');if(origin.exists)origin.copy(new File(payload,'origin.json'));
   if(sharedMetadata){folder(owner,input.shared!.id,true).create({intermediates:true,idempotent:true});sharedMetadata.write(JSON.stringify(descriptor));}
   metadata.write(JSON.stringify(descriptor));committed=true;return descriptor;
@@ -233,13 +348,13 @@ async function hashContent(file:File|SharedMediaFile,bytes:number,current:()=>bo
  if(blocks&&sharedMediaNative?.hashBlocks){
   check(current);const result=await sharedMediaNative.hashBlocks(file.uri,bytes);check(current);
   if(result.bytes!==bytes||!/^[a-f0-9]{64}$/.test(result.checksum)||!Array.isArray(result.blocks)
-    ||result.blocks.length!==Math.ceil(bytes/3_000_000)||result.blocks.some(h=>typeof h!=='string'||!/^[a-f0-9]{64}$/.test(h)))throw Error('Invalid native source hashes');
+    ||result.blocks.length!==Math.ceil(bytes/ATTACHMENT_STREAM_BLOCK_BYTES)||result.blocks.some(h=>typeof h!=='string'||!/^[a-f0-9]{64}$/.test(h)))throw Error('Invalid native source hashes');
   blocks.push(...result.blocks);return result.checksum;
  }
  const handle=file.open(),hash=sha256.create();let blockHash=sha256.create();
  try{for(let offset=0;offset<bytes;){
-  check(current);const length=Math.min(65536,bytes-offset,3_000_000-offset%3_000_000),plain=handle.readBytes(length);
-  try{if(plain.length!==length)throw Error('Attachment source changed');hash.update(plain);if(blocks){blockHash.update(plain);if((offset+length)%3_000_000===0||offset+length===bytes){blocks.push(bytesToHex(blockHash.digest()));blockHash=sha256.create();}}}finally{plain.fill(0);}
+  check(current);const length=Math.min(65536,bytes-offset,ATTACHMENT_STREAM_BLOCK_BYTES-offset%ATTACHMENT_STREAM_BLOCK_BYTES),plain=handle.readBytes(length);
+  try{if(plain.length!==length)throw Error('Attachment source changed');hash.update(plain);if(blocks){blockHash.update(plain);if((offset+length)%ATTACHMENT_STREAM_BLOCK_BYTES===0||offset+length===bytes){blocks.push(bytesToHex(blockHash.digest()));blockHash=sha256.create();}}}finally{plain.fill(0);}
   offset+=length;
   await pause();
  }}finally{handle.close();}
@@ -308,7 +423,7 @@ export async function readRootAttachmentChunks(job:AttachmentJob,index:number,co
 export async function writeRootAttachmentChunk(job:AttachmentJob,index:number,plain:Uint8Array,current:()=>boolean){
  return writeRootAttachmentChunks(job,index,[plain],current);
 }
-/** One bounded file open/stat/write/close per verified 3 MB block (or final tail).
+/** One bounded file open/stat/write/close per verified 12 MB block (or final tail).
  * No persistent handle/cache: replay, lock and restart use the same file checks. */
 export async function writeRootAttachmentChunks(job:AttachmentJob,index:number,plain:Uint8Array[],current:()=>boolean){
  check(current);const manifest=job.descriptor.manifest,block=attachmentBlockBytes(manifest);
@@ -316,7 +431,7 @@ export async function writeRootAttachmentChunks(job:AttachmentJob,index:number,p
   ||plain.some((bytes,n)=>!(bytes instanceof Uint8Array)||bytes.length!==Math.min(block,manifest.bytes-(index+n)*block)))throw Error('Invalid attachment write range');
  // The protocol admits exactly one block. File.writeBytes is synchronous:
  // borrow the verified caller buffer until it returns instead of allocating,
- // copying and clearing another 3 MB on the JS thread. The caller owns erasure.
+ // copying and clearing another 12 MB on the JS thread. The caller owns erasure.
  const buffer=plain[0];
  {  const directory=folder(job.owner,job.digest);directory.create({intermediates:true,idempotent:true});const file=new File(directory,'partial');
   check(current);if(index===0){if(file.exists)file.delete();file.create();}

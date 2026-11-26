@@ -40,7 +40,7 @@ test('saved sticker library is reused without a chat-history candidate; deletion
 });
 
 test('verified blocks use one file operation per block and remain replayable',async()=>{
- const f=setup(6_000_001),parts=Array.from({length:3},(_,i)=>f.plain.slice(i*3_000_000,(i+1)*3_000_000));
+ const f=setup(24_000_001),parts=Array.from({length:3},(_,i)=>f.plain.slice(i*12_000_000,(i+1)*12_000_000));
  for(let i=0;i<parts.length;i++)await f.out.writeRootAttachmentChunks(f.job,i,[parts[i]],()=>true);assert.deepEqual(f.io,{opens:3,writes:3,closes:3});
  assert.deepEqual(Buffer.from(f.data.get(f.partial.uri)),Buffer.from(f.plain));
  parts.forEach((part,i)=>assert.strictEqual(f.writtenBuffers[i],part,'write must borrow the verified block without copying'));
@@ -57,10 +57,10 @@ test('batch writer rejects malformed ranges and lock before changing existing by
  assert.deepEqual(Buffer.from(f.data.get(f.partial.uri)),saved);assert.equal(f.io.writes,0);
 });
 test('batch writer detects missing prefixes instead of creating holes',async()=>{
- const f=setup(6_000_001);await assert.rejects(f.out.writeRootAttachmentChunks(f.job,1,[f.plain.slice(3_000_000,6_000_000)],()=>true),/restart/);assert(!f.partial.exists);
- await f.out.writeRootAttachmentChunk(f.job,0,f.plain.slice(0,3_000_000),()=>true);
- await f.out.writeRootAttachmentChunks(f.job,1,[f.plain.slice(3_000_000,6_000_000)],()=>true);
- await f.out.writeRootAttachmentChunks(f.job,2,[f.plain.slice(6_000_000)],()=>true);
+ const f=setup(24_000_001);await assert.rejects(f.out.writeRootAttachmentChunks(f.job,1,[f.plain.slice(12_000_000,24_000_000)],()=>true),/restart/);assert(!f.partial.exists);
+ await f.out.writeRootAttachmentChunk(f.job,0,f.plain.slice(0,12_000_000),()=>true);
+ await f.out.writeRootAttachmentChunks(f.job,1,[f.plain.slice(12_000_000,24_000_000)],()=>true);
+ await f.out.writeRootAttachmentChunks(f.job,2,[f.plain.slice(24_000_000)],()=>true);
  await f.out.commitRootAttachmentFile(f.job,()=>true);assert.equal(f.final.size,f.plain.length);
 });
 test('wrong-size published file is removed so restart can recover instead of looping forever',async()=>{

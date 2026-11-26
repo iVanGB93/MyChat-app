@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal object AxonFrames {
   const val MAX_BYTES = 20_000
   const val BULK_BYTES = 850_000
-  const val STREAM_BYTES = 4_010_000
+  const val STREAM_BYTES = 16_010_000
   fun read(first: Int, input: DataInputStream, maximum: () -> Int = { MAX_BYTES }): String {
     require(first >= 0) { "Axon closed" }
     val length = (first shl 24) or (input.readUnsignedByte() shl 16) or
@@ -126,9 +126,16 @@ internal class AxonSockets {
       try {
         val now = System.nanoTime()
         if (now - entry.windowAt >= TimeUnit.MINUTES.toNanos(1)) { entry.windowAt = now; entry.frames = 0 }
-        check(++entry.frames <= if(entry.mediaLane) 28256 else if(entry.attachments) 3856 else 64) { "Axon frame rate exceeded" }
-        return if (entry.websocket) AxonWebSocket.readPacket(first, input, { if(entry.blockStreams) AxonFrames.STREAM_BYTES else if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES }, { binary && entry.attachments && entry.mediaLane && entry.bulk }) { opcode, bytes -> AxonWebSocket.write(entry.output, bytes, opcode) }
+        val packet = if (entry.websocket) AxonWebSocket.readPacket(first, input, { if(entry.blockStreams) AxonFrames.STREAM_BYTES else if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES }, { binary && entry.attachments && entry.mediaLane && entry.bulk }) { opcode, bytes -> AxonWebSocket.write(entry.output, bytes, opcode) }
           else AxonFrames.read(first, input) { if(entry.blockStreams) AxonFrames.STREAM_BYTES else if(entry.bulk) AxonFrames.BULK_BYTES else AxonFrames.MAX_BYTES }
+        // The authenticated relay stream already admits only bounded blocks and validates every offset.
+        val relayFrame = entry.blockStreams && entry.websocket && packet is String && packet.length <= 12000 &&
+          packet.startsWith("{\"version\":1,\"kind\":\"relay-block-stream\",")
+        if (!relayFrame) {
+          val frameLimit = if(entry.mediaLane) 28256 else if(entry.attachments) 3856 else 64
+          check(++entry.frames <= frameLimit) { "Axon frame rate exceeded" }
+        }
+        return packet
       } finally { deadline.cancel(false) }
     } catch (error: Exception) { close(id); throw error }
     finally { entry.reading.set(false) }

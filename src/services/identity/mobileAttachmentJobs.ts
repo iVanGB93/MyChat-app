@@ -11,7 +11,7 @@ let opening:Promise<SQLite.SQLiteDatabase>|undefined,writing:Promise<SQLite.SQLi
 const revisions=new Map<string,number>();
 const revision=(owner:string)=>revisions.get(owner)??0;
 const changed=(owner:string)=>revisions.set(owner,revision(owner)+1);
-const activeFormat="COALESCE(json_extract(raw,'$.descriptor.manifest.version'),0) NOT IN (1,2,3)";
+const activeFormat="COALESCE(json_extract(raw,'$.descriptor.manifest.version'),0) NOT IN (1,2,3,4)";
 const clone=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
 type JobProgress={owner:string;id:string;phase:AttachmentJob['phase'];cursor:number;bytes:number;failures:number;digest:string;canPause:boolean};
 const progressListeners=new Set<(progress:JobProgress)=>void>();
@@ -53,14 +53,25 @@ function parse(row:{raw:string;revision:number}|null){
 }
 /** Private own-transfer journal. Public custodians never see file keys or this database. */
 export function createMobileAttachmentJobs(now:()=>number=Date.now,
- measure:JournalMeasure=unmeasured,onOutgoingReceipt?:()=>void):AttachmentJobStore {
- let retiredOwner:string|null=null,retiredRevision=-1,retireAfter=0;
+ measure:JournalMeasure=unmeasured,onOutgoingReceipt?:()=>void,discardRetired?:(owner:string,digest:string)=>void):AttachmentJobStore {
+ let retiredOwner:string|null=null,retiredRevision=-1,retireAfter=0;const cleared=new Set<string>();
  function observed(owner:string,jobs:AttachmentJob[]){retiredOwner=owner;retiredRevision=revision(owner);retireAfter=jobs.reduce((at,j)=>Math.min(at,j.descriptor.manifest.expires),Infinity);}
  return {
   async retire(owner,current){
    if(!validAccountId(owner))throw Error('Invalid attachment owner');if(retiredOwner===owner&&retiredRevision===revision(owner)&&now()<retireAfter)return;
    const work=tail.then(async()=>{if(!current())return;
     if(retiredOwner===owner&&retiredRevision===revision(owner)&&now()<retireAfter)return;
+    if(discardRetired&&!cleared.has(owner)){
+     await transaction(async tx=>{
+      const old="COALESCE(json_extract(raw,'$.descriptor.manifest.version'),0) IN (1,2,3,4)";
+      for(const table of ['jobs','finished_jobs']){
+       const rows=await tx.getAllAsync<{digest:string}>(`SELECT digest FROM ${table} WHERE owner=? AND ${old}`,owner);
+       for(const row of rows){if(!current())throw Error('Attachment account locked');discardRetired(owner,row.digest);}
+       if(rows.length)await tx.runAsync(`DELETE FROM ${table} WHERE owner=? AND ${old}`,owner);
+      }
+      if(!current())throw Error('Attachment account locked');
+     });cleared.add(owner);
+    }
     // Most startups have no retirement work. Check the bounded active queue on
     // the WAL reader before opening a writer/transaction or counting history.
     // Keep this inside the write queue; actual retirement rechecks in its transaction.

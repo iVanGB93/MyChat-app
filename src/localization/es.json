@@ -193,6 +193,7 @@
   "Discard edits": "Descartar cambios",
   "Dismiss message notification": "Descartar notificación de mensaje",
   "Display over other apps permission is required for sharing controls.": "Se necesita permiso para mostrar sobre otras apps para los controles de pantalla compartida.",
+  "Downloading": "Descargando",
   "Downloading from Google Play…": "Descargando desde Google Play…",
   "Downloading update · {0}%": "Descargando actualización · {0}%",
   "Downloading update…": "Descargando actualización…",
@@ -905,5 +906,9 @@
   "You changed the group avatar": "Cambiaste la foto del grupo",
   "{0} changed the group avatar": "{0} cambió la foto del grupo",
   "Preparing group photo…": "Preparando la foto del grupo…",
-  "The selected media is unavailable": "El archivo multimedia seleccionado no está disponible"
+  "The selected media is unavailable": "El archivo multimedia seleccionado no está disponible",
+  "Choose a photo": "Elegir una foto",
+  "Hold to record a short video": "Mantén presionado para grabar un video corto",
+  "Allow microphone access to record a video": "Permite el acceso al micrófono para grabar un video",
+  "Could not record the video. Please try again.": "No se pudo grabar el video. Inténtalo de nuevo."
 }

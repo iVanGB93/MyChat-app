@@ -11,6 +11,7 @@ export const sharedMediaNative=Platform.OS==='android'?requireOptionalNativeModu
  read(handle:number,offset:number,length:number):Uint8Array;
  closeRead(handle:number):void;
  sha256(uri:string):Promise<string>;
+ videoThumbnail?(uri:string):Promise<string|null>;
  hashBlocks?(uri:string,bytes:number):Promise<{bytes:number;checksum:string;blocks:string[]}>;
  adopt(source:string,uri:string):Promise<void>;
 }>('AxonicMediaStore'):null;

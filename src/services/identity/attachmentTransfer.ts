@@ -23,7 +23,7 @@ const terminal=(phase:AttachmentPhase)=>['complete','expired','cancelled'].inclu
 const total=(job:AttachmentJob)=>Math.ceil(job.descriptor.manifest.bytes/attachmentBlockBytes(job.descriptor.manifest));
 export function validAttachmentDescriptor(value:unknown):value is AttachmentDescriptor {
  const d=value as AttachmentDescriptor;
- return !!d&&(Object.keys(d).sort().join(',')==='checksum,key,manifest,mime,name'||Object.keys(d).sort().join(',')==='caption,checksum,key,manifest,mime,name'&&typeof d.caption==='string'&&new TextEncoder().encode(d.caption).length<=1600)&&validAttachmentManifest(d.manifest,d.manifest?.expires-1)&&Object.keys(d.manifest).length===(!!d.manifest.shared?13:12)&&typeof d.key==='string'&&/^[a-f0-9]{64}$/.test(d.key)
+ return !!d&&(Object.keys(d).sort().join(',')==='checksum,key,manifest,mime,name'||Object.keys(d).sort().join(',')==='caption,checksum,key,manifest,mime,name'&&typeof d.caption==='string'&&new TextEncoder().encode(d.caption).length<=1600)&&validAttachmentManifest(d.manifest,d.manifest?.expires-1)&&Object.keys(d.manifest).length===12+Number(!!d.manifest.shared)+Number(!!d.manifest.preview)&&typeof d.key==='string'&&/^[a-f0-9]{64}$/.test(d.key)
   &&typeof d.checksum==='string'&&/^[a-f0-9]{64}$/.test(d.checksum)&&attachmentChecksumCommitment(d.checksum,d.key)===d.manifest.checksum&&typeof d.name==='string'&&d.name.length>0&&d.name.length<=120
   &&!/[\x00-\x1f\x7f/\\]/.test(d.name)&&typeof d.mime==='string'&&d.mime.length<=100&&/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(d.mime);
 }
@@ -75,6 +75,7 @@ export function createAttachmentTransfer(d:{
  const published=new Set<string>();
  const storedPublished=new Set<string>();
  const incoming=new Set<string>(),incomingIdleUntil=new Map<string,number>();
+ const previewRetryAt=new Map<string,number>();
  const payload=(job:AttachmentJob)=>job.direction==='incoming'&&!job.receipt&&job.cursor<total(job);
  const canSchedule=(job:AttachmentJob)=>!incoming.has(job.digest)&&(!d.incomingLanes||!payload(job)||incoming.size<d.incomingLanes.limit);
  const scheduleAt=(job:AttachmentJob)=>canSchedule(job)?Math.max(job.next,incomingIdleUntil.get(job.digest)??0):Infinity;
@@ -227,6 +228,12 @@ export function createAttachmentTransfer(d:{
     if(d.connections.sendingStream?.(job))return;
     if(job.phase==='queued'){
      const r=await request(relay,'offer',job,{manifest});if(!await live())return;
+     if(r.previewNeeded===true&&manifest.preview&&d.storage.files.readPreview){
+      try{const data=await d.storage.files.readPreview(job);
+       if(data&&await live())await readiness.read('preview-put:'+job.digest,()=>request(relay,'put-preview',job,{data}));
+      }catch{/* Original bytes do not depend on a preview. */}
+      if(!await live())return;
+     }
      if(!['held','completed'].includes(r.status))throw Error('Attachment custodian refused');
      const custodians=job.custodians.includes(relay)?job.custodians:[...job.custodians,relay];
      if(custodians.length>9)throw Error('Too many attachment custodians');
@@ -280,6 +287,15 @@ export function createAttachmentTransfer(d:{
     await publish(job,current);if(!await live())return;
     await save({phase:'complete'});return;
    }
+   if(manifest.preview&&d.storage.files.savePreview&&d.storage.files.hasPreview
+    &&!d.storage.files.hasPreview(job)&&(previewRetryAt.get(job.digest)??0)<=d.now()){
+    if(previewRetryAt.size>=ATTACHMENT_ACTIVE_JOB_LIMIT)previewRetryAt.clear();
+    previewRetryAt.set(job.digest,d.now()+2000);
+    try{const result=await readiness.read('preview-get:'+job.digest,()=>request(relay,relay===manifest.sender?'direct-preview':'get-preview',job));
+     if(result?.status==='ok'&&typeof result.data==='string'&&await live())await d.storage.files.savePreview(job,result.data,current);
+    }catch{/* A missing preview must not interrupt the download. */}
+    if(!await live())return;
+   }
    if(d.connections.directStream&&attachmentStreamEligible(job,relay,true,d.now(),streamRetry.get(job.digest)??0)){
     // A sender can connect after custody download has begun. Stream into an
     // isolated temporary file; failure must preserve the verified chunk prefix.
@@ -319,7 +335,7 @@ export function createAttachmentTransfer(d:{
     if(!d.connections.bulkRequest||!attachmentBlockRoute(routes(),relay,'incoming'))return;
     const start=job.cursor,negotiated=1,window=Math.min(2,d.connections.batchWindow?.(relay)??2);
     if(!Number.isSafeInteger(window)||window<1)throw Error('Invalid block window');
-    // At most two 3 MB ciphertext envelopes buffered; commit only verified blocks.
+    // At most two 12 MB ciphertext envelopes buffered; commit only verified blocks.
     const count=Math.min(window,total(job)-start);
     const reads=createOrderedReadAhead(Math.ceil(count/negotiated),window,async batch=>{
       if(!current()||manifest.expires<=d.now())throw Error('Attachment unavailable');
@@ -335,7 +351,7 @@ export function createAttachmentTransfer(d:{
     let verifiedCursor=start,custodians=job.custodians;
     const pendingPlain:Uint8Array[]=[];
     // A local write batch is independent of the wire protocol. Bound retained
-    // plaintext to one 3 MB block and never checkpoint partially written batches.
+    // plaintext to one 12 MB block and never checkpoint partially written batches.
     const writeCount=d.storage.files.writeChunks?Math.min(32,negotiated):1;
     const clearPlain=()=>{for(const plain of pendingPlain)plain.fill(0);pendingPlain.length=0;};
     try{for(let offset=0;offset<count;offset++){
@@ -402,7 +418,7 @@ export function createAttachmentTransfer(d:{
   /** Own-file requests are scoped to the authenticated intended endpoint, never arbitrary peers. */
   async receive(raw:string,peer:IdentityPeer):Promise<string|null>{
    let input;try{if(raw.length>13000)return null;input=JSON.parse(raw);}catch{return null;}
-   if(!['direct-status','direct-get-batch','direct-receipt','direct-stream'].includes(input?.operation))return null;
+   if(!['direct-status','direct-get-batch','direct-receipt','direct-stream','direct-preview'].includes(input?.operation))return null;
    const bulk=input.operation==='direct-get-batch';if(bulk&&bulkRequests>=4)return JSON.stringify({status:'unavailable'});
    const reply=(status:string,extra:object={})=>JSON.stringify({status,...extra});
    let admittedJob:AttachmentJob|null=null;
@@ -419,6 +435,11 @@ export function createAttachmentTransfer(d:{
      return job.failures===0?reply('ready'):reply('unavailable');
     }
     if(job.direction!=='outgoing'||peer.account!==m.recipient||peer.device!==m.recipientDevice||d.device()!==m.senderDevice)return reply('rejected');
+    if(input.operation==='direct-preview'){
+     if(!m.preview||Object.keys(input).sort().join(',')!=='digest,operation,version')return reply('unavailable');
+     const data=await d.storage.files.readPreview?.(job);
+     return data&&current()?reply('ok',{data}):reply('unavailable');
+    }
     if(input.operation==='direct-stream'){
      const wss=input.transport==='wss-v1'&&typeof input.id==='string'&&/^[a-f0-9]{64}$/.test(input.id);
      if(Object.keys(input).sort().join(',')!==(wss?'digest,id,operation,transport,version':'digest,operation,version')||!d.connections.serveStream)return reply('unavailable');

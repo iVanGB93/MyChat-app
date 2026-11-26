@@ -25,7 +25,7 @@ import {createMobileIdentityRecordStore} from './identityRecordStore';
 import {verifyRecord} from './identityProtocol';
 import {createAttachmentTransfer,type AttachmentJob} from './attachmentTransfer';
 import {createMobileAttachmentJobs,publishAttachmentReceiveProgress} from './mobileAttachmentJobs';
-import {prepareRootAttachment,readRootAttachmentChunk,readRootAttachmentChunks,writeRootAttachmentChunk,writeRootAttachmentChunks,commitRootAttachmentFile,rootAttachmentFile,removeRootAttachmentSource} from './rootAttachmentFiles';
+import {prepareRootAttachment,readRootAttachmentChunk,readRootAttachmentChunks,writeRootAttachmentChunk,writeRootAttachmentChunks,commitRootAttachmentFile,rootAttachmentFile,removeRootAttachmentSource,readRootAttachmentPreview,saveRootAttachmentPreview,hasRootAttachmentPreview,discardRootRetiredPackage} from './rootAttachmentFiles';
 import {AppState} from 'react-native';
 let activeTimings:(()=>{startedAt:number;observedAt:number;stages:ReturnType<ReturnType<typeof createAttachmentTiming>['snapshot']>})|null=null;
 let streamOutcomes:WssStreamOutcome[]=[];
@@ -49,7 +49,7 @@ export function startRootAttachmentRuntime(network:AttachmentRequests&{wss?:WssS
  const timingStarted=Date.now(),snapshotTimings=()=>({startedAt:timingStarted,observedAt:Date.now(),stages:timing.snapshot()});
  if(timingEnabled)activeTimings=snapshotTimings;
  let reuseCandidates:{owner:string;revision:number;checksum:string;bytes:number;digests:Promise<string[]>}|undefined;
- const records=createMobileIdentityRecordStore(Date.now),journal=createMobileAttachmentJobs(Date.now,timing.measure,wake);
+ const records=createMobileIdentityRecordStore(Date.now),journal=createMobileAttachmentJobs(Date.now,timing.measure,wake,discardRootRetiredPackage);
  const store={...journal,save:(...args:Parameters<typeof journal.save>)=>timing.measure('checkpoint',()=>journal.save(...args)),
   ...(timingEnabled&&journal.isCurrent?{isCurrent:(...args:Parameters<NonNullable<typeof journal.isCurrent>>)=>timing.measure('leaseCheck',()=>journal.isCurrent!(...args))}:{})};let stopped=false,busy=false,epoch=0,selectionCursor=0;
  const accepted=new Set<string>();const owner=()=>!stopped&&localAccount.status().state==='unlocked'&&!localAccount.status().busy?localAccount.status().account:null;
@@ -155,6 +155,7 @@ completed:async(job:AttachmentJob,current)=>{if(!current())throw Error('Account 
 readChunks:(...args)=>timing.measure('readFile',()=>readRootAttachmentChunks(...args)),
 writeChunk:(...args)=>timing.measure('writeFile',()=>writeRootAttachmentChunk(...args)),
 writeChunks:(...args)=>timing.measure('writeFile',()=>writeRootAttachmentChunks(...args)),
+readPreview:readRootAttachmentPreview,savePreview:saveRootAttachmentPreview,hasPreview:hasRootAttachmentPreview,
 commitFile:(...args)=>timing.measure('verifyFile',()=>commitRootAttachmentFile(...args))}},
  connections:{sharedPeers:network.sharedPeers,sendingStream,
 directStream:(job,live)=>timing.measure('directStream',async()=>{
@@ -224,7 +225,9 @@ request:(...args)=>{
        }return;
       }
       if(row.group&&(!rootGroupAllowed(snapshot,account,row.peer,row.group)||!snapshot.groups?.find(g=>g.id===row.group!.id)?.accepted))throw Error('Group membership changed');
-      const input=await timing.measure('prepare',()=>prepareRootAttachment({...row,recipient:record,current}));preparationDiagnostics.prepared++;if(!current()){preparationDiagnostics.invalidated++;return;}
+      const input=await timing.measure('prepare',()=>prepareRootAttachment({...row,recipient:record,current,previewFits:descriptor=>{
+       try{assertAttachmentFits(descriptor,row.reply,row.group);return true;}catch{return false;}
+      }}));preparationDiagnostics.prepared++;if(!current()){preparationDiagnostics.invalidated++;return;}
       prepared.push({input,reply:row.reply,group:row.group,selectedAt:row.createdAt});
      }
      // A connected recipient can request bytes as soon as the descriptor is

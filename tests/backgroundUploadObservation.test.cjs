@@ -9,9 +9,36 @@ function fixture(){const rows=[],messages=[],selected=[],actions=[],groups=[],co
  '../services/identity/rootGroups':{rootGroupAllowed:(s,owner,peer,c)=>{const g=s.groups.find(g=>g.id===c.id);return !!g&&!g.blocked&&!g.recoveryPending&&g.members.includes(owner)&&g.members.includes(peer)&&g.revision>=c.revision;}},
  '../services/identity/rootChatActions':load('src/services/identity/rootChatActions.ts',{'./rootChatTypes.ts':{compareRootMessages:()=>0}}),
  '../services/identity/rootMessageStatus':load('src/services/identity/rootMessageStatus.ts'),
- '../services/identity/attachmentProtocol':{attachmentBlockBytes:()=>3000000},
- '../services/identity/backgroundUploadTask':{},'./neuronRuntime':{},
- };const {readBackgroundUploadWork:read,backgroundUploadNeedsRefresh:refresh}=load('src/composition/backgroundMediaUploads.ts',deps);const job={direction:'outgoing',phase:'confirming',cursor:1,descriptor:{manifest:{id:'one',recipient:'peer',bytes:1000000,expires:Date.now()+60000}}};const message={direction:'outgoing',status:'pending',peer:'peer',id:'one',attachment:{}};return {refresh,rows,messages,selected,actions,contacts,groups,job,message,read:()=>read('owner'),reads:()=>reads};}
+ '../services/identity/attachmentProtocol':{attachmentBlockBytes:()=>12000000},
+ '../services/identity/backgroundUploadTask':{},'../services/identity/messageWakeLease':{},'./neuronRuntime':{},
+ };const {readBackgroundUploadWork:read,backgroundUploadNeedsRefresh:refresh}=load('src/composition/backgroundMediaUploads.ts',deps);const job={direction:'outgoing',phase:'confirming',cursor:1,descriptor:{manifest:{id:'one',recipient:'peer',bytes:1000000,expires:Date.now()+60000}}};const message={direction:'outgoing',status:'pending',peer:'peer',id:'one',attachment:{}};return {deps,refresh,rows,messages,selected,actions,contacts,groups,job,message,read:()=>read('owner'),reads:()=>reads};}
+test('handoff holds transport until the native job takes over or the bridge expires',async()=>{
+ for(const startJob of [true,false]){
+  const {deps,selected}=fixture(),calls=[];
+  let appChanged,selectionChanged,job,expire;
+  const unsubscribe=()=>()=>{};
+  const app={currentState:'active',addEventListener:(_name,callback)=>{appChanged=callback;return {remove(){}};}};
+  deps['react-native']={AppState:app,AppRegistry:{registerHeadlessTask:(_name,callback)=>{job=callback();}}};
+  deps['../../modules/axonic-nearby'].default={attachmentUploadSchedule:()=>true,attachmentUploadCurrent:()=>true,axonMessageWait:()=>new Promise(resolve=>{expire=resolve;})};
+  deps['../modules/storage/chatStore'].subscribeOwnChatWrites=unsubscribe;
+  deps['../services/identity/localAccount']={startLocalAccount:async()=>{},localAccount:{status:()=>({account:'owner',state:'unlocked'}),subscribe:unsubscribe}};
+  deps['../services/identity/mobileAttachmentJobs'].subscribeAttachmentJobProgress=unsubscribe;
+  deps['../services/identity/rootAttachmentSelections'].subscribeAttachmentSelections=callback=>{selectionChanged=callback;return ()=>{};};
+  deps['../services/identity/messageWakeLease'].acquireMessageWakeLease=()=>{calls.push('native acquired');return ()=>calls.push('native released');};
+  deps['./neuronRuntime'].startLocalAccountNetwork=()=>{const n=calls.length;calls.push('start '+n);return {stop:()=>calls.push('stop '+n)};};
+  deps['../services/identity/backgroundUploadTask'].runBackgroundUpload=async options=>{options.start().stop();return 'stored';};
+  load('src/composition/backgroundMediaUploads.ts',deps).registerBackgroundMediaUploads();
+  await new Promise(setImmediate);
+  selected.push({failed:false});selectionChanged('owner',true);
+  app.currentState='background';appChanged('background');
+  assert.deepEqual(calls,['start 0','native acquired']);
+  if(startJob)await job({owner:'owner',token:'current'});
+  expire();await Promise.resolve();
+  assert.deepEqual(calls,startJob
+   ?['start 0','native acquired','start 2','stop 0','native released','stop 2']
+   :['start 0','native acquired','stop 0','native released']);
+ }
+});
 test('all bytes uploaded still waits for explicit chat custody evidence',async()=>{const t=fixture();t.rows.push(t.job);t.messages.push(t.message);assert.equal((await t.read()).state,"waiting");assert.equal((await t.read()).percent,99);t.message.attachmentStoredUntil=Date.now()+60000;assert.equal((await t.read()).pending,1);t.message.networkStoredUntil=Date.now()+60000;assert.equal((await t.read()).pending,0);});
 test('preparation is kept alive; failed selections and paused jobs remain held',async()=>{const t=fixture();t.selected.push({failed:false},{failed:true});t.rows.push({...t.job,phase:'cancelled'});assert.deepEqual(await t.read(),{state:"preparing",expiresAt:Infinity,pending:1,held:2,percent:-1});});
 test('incoming transfers do not launch an upload task and delivered/deleted records do not keep it alive',async()=>{const t=fixture();t.rows.push({...t.job,direction:'incoming'});assert.equal((await t.read()).pending,0);assert.equal(t.reads(),0);t.rows.splice(0,1,t.job);t.messages.push({...t.message,status:'delivered'});assert.equal((await t.read()).pending,0);t.messages[0]={...t.message};t.actions.push({peer:'peer',kind:'delete',target:{id:'one',author:'owner'}});assert.equal((await t.read()).pending,0);});

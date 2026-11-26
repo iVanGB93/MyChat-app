@@ -1,7 +1,7 @@
 import {useMemo,useSyncExternalStore} from 'react';
 import {AppState} from 'react-native';
 import {subscribeAttachmentContentChanges} from '../../modules/media';
-import {rootAttachmentFile} from '../../modules/storage';
+import {rootAttachmentPreviewUri,rootAttachmentFile} from '../../modules/storage';
 
 function localFile(owner:string|null,digest:string|undefined){
  if(!owner||!digest)return null;
@@ -32,5 +32,19 @@ export function useAttachmentFile(owner:string|null,digest:string|undefined,deli
    },
   };
  },[owner,digest,delivery]);
+ return useSyncExternalStore(source.subscribe,source.read,source.read);
+}
+
+/** Read the private preview on file-change events instead of generating it during scroll. */
+export function useAttachmentPreview(owner:string|null,digest:string|undefined){
+ const source=useMemo(()=>{
+  const find=()=>owner&&digest?rootAttachmentPreviewUri(owner,digest):null;
+  let current=find();
+  return {read:()=>current,subscribe(changed:()=>void){
+   if(!owner||!digest)return ()=>{};
+   const refresh=()=>{const next=find();if(next!==current){current=next;changed();}};
+   const off=subscribeAttachmentContentChanges(refresh);refresh();return off;
+  }};
+ },[owner,digest]);
  return useSyncExternalStore(source.subscribe,source.read,source.read);
 }

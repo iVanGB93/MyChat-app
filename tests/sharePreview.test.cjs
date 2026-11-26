@@ -13,11 +13,11 @@ function fixture(items,thumbnail=async()=>null,options={}){
  const imports={
   '../../modules/storage':{selectedVideoThumbnail:thumbnail},'./ZoomablePhotoPreview':{default:'ZoomPhoto'},react:{default:react,...react},
   'react-native':{ActivityIndicator:'Spinner',FlatList:'List',Modal:'Modal',Pressable:'Button',Text:'Text',View:'View',useWindowDimensions:()=>({width:400,height:800})},
-  'expo-image':{Image:'Image'},'expo-file-system':{File:class{}},'@expo/vector-icons':{Ionicons:'Icon'},'react-native-safe-area-context':{useSafeAreaInsets:()=>({bottom:0})},
+  'expo-image':{Image:'Image'},'expo-file-system':{File:class{}},'@expo/vector-icons':{Ionicons:'Icon'},'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:24,bottom:16,left:0,right:0})},
   '../../theme':require('./helpers/theme.cjs'),'../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../modules/ui/openAttachmentPreview':{},
-  '../../modules/identity':{localAccount:{status:()=>({account:'owner',state:'unlocked'})}},'../../modules/media':{attachmentDigest:m=>m.id},
-  './useAttachmentFile':{useAttachmentFile:options.readFile??(()=>null)},'../ui/ScreenHeader':{default:'Header'},
-  '../ui/KeyboardForm':{KeyboardAvoidingScreen:'Screen',KeyboardAwareTextInput:'Caption'},'./photo-editor':{default:'Editor'},
+  '../../modules/identity':{localAccount:{status:()=>({account:'owner',state:'unlocked'})}},'../../modules/media':{attachmentDigest:m=>m.id,attachmentContentDigest:m=>m.id},
+  './useAttachmentFile':{useAttachmentFile:options.readFile??(()=>null),useAttachmentPreview:options.readPreview??(()=>null)},'../ui/ScreenHeader':{default:'Header'},
+  '../ui/KeyboardForm':{KeyboardAvoidingScreen:'Screen',KeyboardAwareTextInput:'Caption'},'../ui/StatusBarFade':{default:'StatusFade'},'./photo-editor':{default:'Editor'},
  };
  const api={};new Function('exports','require',code)(api,n=>{const localized=require('./helpers/localization.cjs')(n);if(localized)return localized;assert(n in imports,n);return imports[n];});
  const props={items,visible:true,busy:false,onClose(){},...options.props};
@@ -43,6 +43,7 @@ function slide(f,nodes,item){
 }
 test('single image is a preview, with no editor, thumbnail strip or filename',()=>{
  const f=fixture(photos().slice(0,1)),nodes=all(f.render());
+ assert(nodes.some(n=>n.type==='Header'&&n.props.title==='Review photo'));
  assert(!nodes.some(n=>n.type==='Editor'||n.props.testID==='axonic-media-thumbnails'));
  assert(!nodes.some(n=>n.type==='Text'&&n.props.children.includes('secret-name.jpg')));
  assert(nodes.some(n=>n.type==='Text'&&n.props.children.includes('2.0 KB')));
@@ -88,6 +89,11 @@ test('video frame is reused by the active slide and thumbnail',async()=>{
 test('chat mode opens the tapped item, keeps it selected across older pages, and offers no editing or sending',()=>{
  let loads=0;const f=fixture(photos(),undefined,{review:false,props:{initialId:'b',older:{loading:false,load:()=>loads++}}});
  let nodes=all(f.render());assert.equal(pager(nodes).props.initialScrollIndex,1);
+ assert(!nodes.some(n=>n.type==='Header'));
+ assert(nodes.some(n=>n.type==='StatusFade'));
+ const back=button(nodes,'Close media viewer');
+ assert(nodes.some(n=>n.props.style?.position==='absolute'&&n.props.style.top===32&&all(n).includes(back)));
+ assert(nodes.some(n=>Array.isArray(n.props.style)&&n.props.style.some(s=>s?.position==='absolute'&&s.bottom===22)&&all(n).includes(thumbs(nodes))));
  assert.equal(thumbnailButton(f,nodes,1).props.accessibilityState.selected,true);
  assert(!button(nodes,'Edit photo'));assert(!button(nodes,'Send attachments'));
  nodes.find(n=>n.type==='Button'&&all(n).some(child=>child.props.children.includes('Load older media'))).props.onPress();
@@ -107,6 +113,7 @@ test('chat gallery preserves message order and separates group authors while exc
  const api={};
  const modules={
   react:{},'../../modules/messaging':{hasConfirmedDelivery:m=>m.status==='delivered'},
+  '../../modules/media':{retiredAttachment:a=>a.manifest.version===4},
   '../../modules/ui/liveState':{},'../../services/group-avatar-file':{isGroupAvatarFile:a=>a.name==='avatar'},
   '../../services/sticker-file-format':{IMPORTED_STICKER_CONTENT:'sticker'},'./MediaViewer':{},
  };
@@ -117,7 +124,8 @@ test('chat gallery preserves message order and separates group authors while exc
  photo.group={id:'group',messageId:'same'};movie.group=photo.group;movie.peer='other';
  const sticker=make('sticker',4),avatar=make('avatar',5),removed=make('removed',6);
  avatar.group={id:'group',messageId:'avatar'};removed.deleted=true;
- const items=api.conversationMediaItems([removed,avatar,sticker,movie,photo,older],'owner');
+ const retired=make('retired',7);retired.attachment.manifest.version=4;
+ const items=api.conversationMediaItems([retired,removed,avatar,sticker,movie,photo,older],'owner');
  assert.deepEqual(items.map(item=>item.name),['first','photo','movie']);
  assert.notEqual(items[1].id,items[2].id);
  assert.equal(items[2].kind,'video');assert.equal(items[2].local.available,false);

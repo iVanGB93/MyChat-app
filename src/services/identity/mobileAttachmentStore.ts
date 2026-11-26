@@ -18,7 +18,9 @@ export function createMobileAttachmentStore(owner:string):AttachmentStore & {ins
      rows:async()=>{const rows=await tx.getAllAsync<{raw:string}>('SELECT raw FROM assets WHERE owner=?',owner);return rows.map(r=>JSON.parse(r.raw) as AttachmentCustodyRow);},
      save:async row=>{await tx.runAsync('INSERT INTO assets(owner,digest,raw) VALUES(?,?,?) ON CONFLICT(owner,digest) DO UPDATE SET raw=excluded.raw',owner,row.digest,JSON.stringify(row));},
      chunk:async(digest,index)=>{const row=await tx.getFirstAsync<{raw:string}>('SELECT raw FROM asset_chunks WHERE owner=? AND digest=? AND part=?',owner,digest,index);return row?JSON.parse(row.raw) as AttachmentChunk:null;},
+     hasChunk:async(digest,index)=>!!await tx.getFirstAsync('SELECT 1 FROM asset_chunks WHERE owner=? AND digest=? AND part=?',owner,digest,index),
      saveChunk:async(digest,chunk)=>{await tx.runAsync('INSERT INTO asset_chunks(owner,digest,part,raw) VALUES(?,?,?,?)',owner,digest,chunk.index,JSON.stringify(chunk));},
+     discardUnreferencedChunks:async retained=>{await tx.runAsync("DELETE FROM asset_chunks WHERE owner=? AND digest NOT IN (SELECT value FROM json_each(?))",owner,JSON.stringify(retained));},
      eraseChunks,erase:async digest=>{await eraseChunks(digest);await tx.runAsync('DELETE FROM assets WHERE owner=? AND digest=?',owner,digest);},
     }) as T;
    });return output!;

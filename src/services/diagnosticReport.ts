@@ -1,5 +1,6 @@
+import {attachmentDigest,attachmentTraceId} from './identity/attachmentProtocol';
 import {rootMessageStatus} from './identity/rootMessageStatus';
-import type {RootChatState} from './identity/rootChatTypes';
+import type {RootChatMessage,RootChatState} from './identity/rootChatTypes';
 import type {AttachmentJob} from './identity/attachmentTypes';
 export const REPORT_MAX_BYTES=65536;
 export function diagnosticReportSendError(error:unknown){
@@ -30,6 +31,45 @@ export function summarizePendingMedia(state:RootChatState,jobs:AttachmentJob[]|n
   result.phases[j.phase]++;if(j.failures>0)result.retrying++;if(j.next>now)result.retryScheduled++;if(j.receipt)result.receiptRecorded++;
  }
  return {...result,scope:'Per-recipient pending media rows at capture. Connectivity is not delivery or permission. Missing active jobs can include archived completed jobs; absence does not prove loss. Categories overlap; no IDs, paths or content.'};
+}
+const MEDIA_TRACE_ROWS_PER_DIRECTION=8;
+const mediaJobPhases=['queued','uploading','downloading','confirming','complete','expired','cancelled'] as const;
+export function summarizeMediaTransfers(state:RootChatState,jobs:AttachmentJob[]|null,connected:readonly string[],now:number){
+ const recent:{message:RootChatMessage;at:number}[][]=[[],[]];
+ const jobByDigest=new Map(jobs?.map(job=>[job.digest,job]));
+ const peers=new Set(connected);
+ for(const message of state.messages){
+  const manifest=message.attachment?.manifest;
+  if(message.deleted||manifest?.version!==5)continue;
+  const at=Math.max(message.at,message.deliveredAt??0,message.storedAt??0,message.descriptorReceivedAt??0);
+  const rows=recent[message.direction==='incoming'?0:1];
+  if(rows.length===MEDIA_TRACE_ROWS_PER_DIRECTION&&at<=rows[rows.length-1].at)continue;
+  rows.push({message,at});
+  rows.sort((a,b)=>b.at-a.at);
+  if(rows.length>MEDIA_TRACE_ROWS_PER_DIRECTION)rows.pop();
+ }
+ const snapshot=({message}:{message:RootChatMessage})=>{
+  const manifest=message.attachment!.manifest,digest=attachmentDigest(manifest);
+  const match=jobByDigest.get(digest),job=match?.direction===message.direction?match:undefined;
+  const evidence=message.attachmentDelivery;
+  return {
+   trace:attachmentTraceId(digest),
+   chat:message.group?'group':'private',
+   bytes:manifest.bytes,
+   status:rootMessageStatus(message,now),
+   authorizationExpiresAt:manifest.expires,
+   peerConnected:peers.has(message.peer),
+   localObservations:numericProjection({queuedAt:message.queuedAt,descriptorObservedAt:message.descriptorReceivedAt,
+    storageConfirmedAt:message.storedAt,attachmentConfirmedAt:message.deliveredAt,readObservedAt:message.readAt},
+    ['queuedAt','descriptorObservedAt','storageConfirmedAt','attachmentConfirmedAt','readObservedAt']),
+   route:evidence?{scope:evidence.scope,method:evidence.method,partial:evidence.partial}:null,
+   job:job&&mediaJobPhases.includes(job.phase)?{phase:job.phase,checkpointBlocks:job.cursor,failures:job.failures,
+    retryEligibleAt:job.next>now?job.next:null,signedReceiptOnDevice:!!job.receipt,
+    connectedRoute:job.relay===null?null:peers.has(job.relay)}:null,
+  };
+ };
+ return {jobSnapshotAvailable:jobs!==null,incoming:recent[0].map(snapshot),outgoing:recent[1].map(snapshot),
+  scope:'Up to eight recent rows per direction; group deliveries are per recipient. Opaque trace tags match the same grant across compatible reports and relay inventories. Times are local observations. For incoming media, attachmentConfirmedAt records local completion. For outgoing media, it records confirmation reaching the sender. Read and descriptor observations can precede full attachment confirmation. Missing jobs can be archived. Retry eligibility is not a promised start time.'};
 }
 export function numericProjection(value:unknown,keys:readonly string[]){const input=value as Record<string,unknown>|null,result:Record<string,number>={};for(const key of keys){const n=input?.[key];if(typeof n==='number'&&Number.isFinite(n)&&n>=0)result[key]=n;}return result;}
 export function summarizeReportMessages(state:RootChatState,now:number){

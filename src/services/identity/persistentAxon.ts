@@ -12,9 +12,18 @@ import { verifyCallControl } from './callControlProtocol.ts';
 import { verifyCallControlReceipt } from './callControlDelivery.ts';
 import { verifyCallMediaSignal, CALL_MEDIA_MAX_BYTES } from './callMediaProtocol.ts';
 import {ATTACHMENT_BULK_FRAME_BYTES,ATTACHMENT_STREAM_FRAME_BYTES,isAttachmentUploadBatchRequest} from './attachmentBatch.ts';
-import {createRelayBlockStream,RelayBlockStreamTimeout} from './relayBlockStream.ts';
+import {createRelayBlockStream,RelayBlockStreamTimeout,RELAY_BLOCK_IDLE_MS} from './relayBlockStream.ts';
 
 export const AXON_FRAME_BYTES = 20_000;
+export const AXON_BLOCK_PROTOCOL = 5;
+export type AxonRelease = {kind:'phone'|'aon';version:string;build?:string};
+function announcedRelease(value:unknown):AxonRelease|null{
+  if(!value||typeof value!=='object')return null;
+  const {kind,version,build}=value as Partial<AxonRelease>;
+  if((kind!=='phone'&&kind!=='aon')||typeof version!=='string'||!/^[0-9][0-9A-Za-z.+-]{0,31}$/.test(version))return null;
+  const validBuild=typeof build==='string'&&(kind==='phone'?/^\d{1,10}$/:/^[0-9a-f]{12}$/).test(build);
+  return {kind,version,...(validBuild?{build}:{})};
+}
 // Bidirectional call polling (40/min), custody polling (24/min), renewal
 // (12/min), and introductions (8/min) already exceed the handshake budget.
 export const AXON_CONTROL_FRAMES_PER_MINUTE = 256;
@@ -45,6 +54,7 @@ export interface AxonWire {
  */
 export function createPersistentAxon(d: {
   record: IdentityRecord; history?: IdentityRecord[]; signingSeed: Uint8Array; instance: Uint8Array; store: IdentityRecordStore;
+  release?: AxonRelease;
   onAttachment?:((raw:string,peer:IdentityPeer)=>Promise<string>) & {uploadBatch?:boolean;streams?:boolean;wssBinary?:(raw:Uint8Array,peer:IdentityPeer)=>boolean;wssStream?:(raw:string,peer:IdentityPeer)=>boolean};
   onPush?: ((raw: string, peer: IdentityPeer) => Promise<string>) & {gateway?:boolean};
   onCallMediaRelay?(raw: string, peer: IdentityPeer): Promise<boolean>;
@@ -67,7 +77,10 @@ export function createPersistentAxon(d: {
   let peerMessageTimestamps=false,peerProfileUpdates=false,peerProfileOffers=false;
   let peerSharedAttachments=false,peerAttachments=false,peerAttachmentStreams=false,attachmentFrames=0,attachmentNext=0,peerMediaLane=false;
   let peerWssStreams=false,wssFrames=0,wssWindow=0;
-  let peerRelayStreams=false,relayStreamFrames=0,relayStreamWindow=0;
+  let peerRelayStreams=false;
+  let peerRelease:AxonRelease|null=null,peerBlockProtocol:number|null=null;
+  const localBlockProtocol=d.wire.blockStreams&&d.onAttachment?AXON_BLOCK_PROTOCOL:null;
+  const release=announcedRelease(d.release);
   let mediaInbound=0,mediaWaiting=0,mediaWindow=1,mediaSuccesses=0;
   let lastMediaAt=-Infinity;
   let peerBulk=false,peerBlockStreams=false,peerUploadBatch=false,bulkInbound=0,bulkFrames=0,bulkBytes=0;
@@ -108,6 +121,12 @@ export function createPersistentAxon(d: {
     quality.failures++;quality.updatedAt=d.now();
     task.reject(Error('Attachment request timed out'));
     if(++consecutiveMediaTimeouts>=3)stop('repeated-media-timeout');
+  }
+  function checkMediaDeadline(id:number){
+    const task=mediaPending.get(id);if(!task)return;
+    const remaining=task.until-d.now();
+    if(remaining>0){task.timer=setTimeout(()=>checkMediaDeadline(id),remaining);return;}
+    expireMedia(id);
   }
   let peerPushGateway = false, peerPush = false, peerRelay = false, peerMediaRelay = false, peerMediaForward = false;
   let peerCalls = false;
@@ -180,6 +199,10 @@ export function createPersistentAxon(d: {
   const relayStreams=createRelayBlockStream({
     current:()=>!stopped&&d.current()&&peerRelayStreams&&!!peer&&peer.expiresAt>d.now(),
     admit:(direction,id)=>direction==='bulk-response'?mediaPending.get(id)?.bulk===true||!!timedOutMedia.get(id)?.bulk&&timedOutMedia.get(id)!.until>d.now():!!d.onAttachment?.uploadBatch&&mediaInbound<4&&bulkInbound<2,
+    requestProgress:id=>{
+      const task=mediaPending.get(id),now=d.now();
+      if(task?.bulk&&now<task.until)task.until=now+RELAY_BLOCK_IDLE_MS;
+    },
     send,deliver:frame=>receive(JSON.stringify(frame)),
   });
   async function sendBulk(frame:{version:number;kind:string;id:number;body:string}){
@@ -292,8 +315,7 @@ export function createPersistentAxon(d: {
       if (d.now() - windowAt >= 60_000) { windowAt = d.now(); frames = 0; custodyFrames=0; attachmentFrames=0;bulkFrames=0;bulkBytes=0; }
       const f = JSON.parse(raw);
       if(f.kind==='relay-block-stream'){
-        if(d.now()-relayStreamWindow>=60000){relayStreamWindow=d.now();relayStreamFrames=0;}
-        if(!peerRelayStreams||!peer||peer.expiresAt<=d.now()||rawBytes>12000||++relayStreamFrames>100000||!await relayStreams.receive(f))stop('invalid-relay-block-stream');
+        if(!peerRelayStreams||!peer||peer.expiresAt<=d.now()||rawBytes>12000||!await relayStreams.receive(f))stop('invalid-relay-block-stream');
         else {traffic['relay-block-stream']=(traffic['relay-block-stream']??0)+1;lastMediaAt=d.now();}
         return;
       }
@@ -349,7 +371,9 @@ export function createPersistentAxon(d: {
         peerSharedAttachments=peerAttachments&&f.sharedAttachments===2;
         peerMediaLane=peerAttachments&&f.mediaLane===1&&d.wire.mediaLane===true;
         peerBulk=peerMediaLane&&f.bulkAttachments===1&&d.wire.bulkAttachments===true;
-        peerBlockStreams=peerBulk&&f.blockStreams===4&&d.wire.blockStreams===true;
+        peerRelease=announcedRelease(f.release);
+        peerBlockProtocol=Number.isSafeInteger(f.blockStreams)&&f.blockStreams>=1&&f.blockStreams<=255?f.blockStreams:null;
+        peerBlockStreams=peerBulk&&localBlockProtocol!==null&&peerBlockProtocol===localBlockProtocol;
         peerRelayStreams=peerBlockStreams&&d.wire.wss===true&&f.relayBlockStream===1;
         smallBatches=!peerBulk&&peerMediaLane&&f.smallAttachmentBatches===1&&d.wire.smallAttachmentBatches===true;
         peerBulk ||= smallBatches;
@@ -490,8 +514,13 @@ export function createPersistentAxon(d: {
   const setupTimeout=Math.max(10000,Math.min(25000,Number.isFinite(d.wire.setupTimeoutMs)?d.wire.setupTimeoutMs!:10000));
   const deadline = setTimeout(() => { if (!peer) stop('handshake-timeout'); }, setupTimeout);
   void ready.then(() => clearTimeout(deadline), () => clearTimeout(deadline));
-  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(d.wire.blockStreams&&d.onAttachment?{blockStreams:4}:{}), ...(d.onSignal?{rtcEndpoint:d.rtcEndpoint===false?0:1}:{}), ...(d.onAttachment?.streams===true&&d.onSignal&&d.wire.attachments!==false?{attachmentStreams:1}:{}), ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}),...(d.onCustody?.custodyEvents?{custodyEvents:1}:{}),...(d.onCustody?.callInboxEvents?{callInboxEvents:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1,...(d.onAttachment.uploadBatch?{attachmentUploadBatch:1}:{})}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
+  try { send({ version: 1, kind: 'hello', account: d.record.account, ...(release?{release}:{}), ...(localBlockProtocol!==null?{blockStreams:localBlockProtocol}:{}), ...(d.onSignal?{rtcEndpoint:d.rtcEndpoint===false?0:1}:{}), ...(d.onAttachment?.streams===true&&d.onSignal&&d.wire.attachments!==false?{attachmentStreams:1}:{}), ...(d.onPush?{pushGateway:d.onPush.gateway===false?0:1}:{}), ...(d.onCustody?.groupCustody?{groupCustody:1}:{}),...(d.onCustody?.custodyEvents?{custodyEvents:1}:{}),...(d.onCustody?.callInboxEvents?{callInboxEvents:1}:{}), ...(chat?{messageTimestamps:1,profileUpdates:1,profileOffers:1}:{}), ...(d.onAttachment&&d.wire.attachments!==false?{attachments:1,sharedAttachments:2,...(d.wire.mediaLane===true?{mediaLane:1,...(d.wire.bulkAttachments?{bulkAttachments:1,...(d.onAttachment.uploadBatch?{attachmentUploadBatch:1}:{})}:{}),...(d.wire.smallAttachmentBatches?{smallAttachmentBatches:1,...(d.wire.smallAttachmentWindow===4?{smallAttachmentWindow:4}:{})}:{})}:{})}:{}), ...(d.onCallRelay ? { callRelay: 1 } : {}), ...(d.onCallMediaRelay ? {callMediaRelay:1}:{}), ...(d.onRelayedCallMedia ? {callMediaForward:1}:{}), features: [...(d.onCallControl ? [d.onCallMedia ? 'call-control-v2' : 'call-control-v1'] : []), ...(d.onPush ? ['push-registration-v1'] : []), ...(d.onDirectory ? ['identity-directory-v1'] : []), ...(d.onCustody ? ['custody-v1'] : []), ...(d.introductions ? ['introductions-v1'] : []), ...(d.onSignal ? ['rtc-signals-v1'] : []), ...(tests ? ['test-messages-v2'] : []), ...(chat ? ['chat-text-v1'] : [])] }); } catch { stop(); }
   return {
+    connectionInfo:()=>peer&&!stopped&&d.current()&&peer.expiresAt>d.now()?{
+      // Release is peer-reported diagnostics. Only negotiated capabilities enable media.
+      release:peerRelease?{...peerRelease}:null, localBlockProtocol, peerBlockProtocol,
+      transport:d.wire.wss?'wss' as const:'other' as const, relayBlockStream:peerRelayStreams,
+    }:null,
     supportsRtcEndpoint:()=>peer&&peer.expiresAt>d.now()&&!stopped?peerRtcEndpoint:undefined,
     ready, stop,
     subscribeSchedule(listener:()=>void){scheduleListeners.add(listener);return()=>{scheduleListeners.delete(listener);};},
@@ -622,14 +651,16 @@ export function createPersistentAxon(d: {
       try{
         for(let n=0;permitted()&&(authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())&&n<400;n++)await wait(5,()=>!authenticating&&!custodyWaiting&&!pushWaiting&&!callWaiting&&mediaPending.size<4&&bulkRateReady());
         if(!permitted()||authenticating||custodyWaiting||pushWaiting||callWaiting||mediaPending.size>=4||!bulkRateReady())return null;
-        if(smallBatches)smallBatchCredits--;else {
+        if(smallBatches)smallBatchCredits--;else if(!peerBlockStreams){
           // Pace by requested bytes, retaining the existing 2 MiB/s ceiling.
           // Unknown requests keep the conservative full-batch interval.
           let count=128;try{const r=JSON.parse(raw);if((r.operation==='direct-get-batch'||upload)&&Number.isSafeInteger(r.count)&&r.count>=1&&r.count<=128)count=r.count;}catch{}
           bulkNext=d.now()+Math.max(5,250*count/128);
         }
         return await new Promise<string>((resolve,reject)=>{
-          const id=++sequence;mediaPending.set(id,{bulk:true,until:d.now()+15000,started:d.now(),resolve,reject,timer:setTimeout(()=>expireMedia(id),15000)});scheduleChanged();
+          const id=++sequence,started=d.now();
+          const timeout=peerRelayStreams?RELAY_BLOCK_IDLE_MS:15_000;
+          mediaPending.set(id,{bulk:true,until:started+timeout,started,resolve,reject,timer:setTimeout(()=>checkMediaDeadline(id),timeout)});scheduleChanged();
           void sendBulk({version:1,kind:'bulk-request',id,body:raw}).catch(()=>expireMedia(id));
         }).then(value=>permitted()?value:null);
       }catch{return null;}finally{bulkWaiting--;}

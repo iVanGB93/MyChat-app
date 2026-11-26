@@ -261,16 +261,6 @@ class AxonicNearbyModule : Module() {
         finally { plain.fill(0) }
       } } catch(error:Exception) { plain.fill(0);promise.reject("ATTACHMENT_PREPARE","Attachment worker unavailable",error) }
     }
-    AsyncFunction("attachmentPrepareStreamBlock") { owner:String,id:String,key:String,bytes:Double,start:Int,aads:List<String>,promise:Promise ->
-      try {
-        require(bytes.isFinite() && bytes==bytes.toLong().toDouble())
-        val root=requireNotNull(appContext.reactContext).filesDir
-        attachmentWorkers.execute {
-          try { promise.resolve(AttachmentPreparation.encrypt(root,owner,id,key,bytes.toLong(),start,aads,3_000_000)) }
-          catch(error:Exception) { promise.reject("ATTACHMENT_PREPARE","Attachment preparation failed",error) }
-        }
-      } catch(error:Exception) { promise.reject("ATTACHMENT_PREPARE","Attachment preparation unavailable",error) }
-    }
     AsyncFunction("attachmentStagedFileSha256") { owner: String, id: String, bytes: Double, promise: Promise ->
       try {
         require(bytes.isFinite() && bytes == bytes.toLong().toDouble() && bytes >= 1 && bytes <= 250L * 1024 * 1024)

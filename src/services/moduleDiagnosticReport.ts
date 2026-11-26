@@ -15,7 +15,7 @@ export function moduleDiagnosticReport(input:Record<string,any>,calls:ReturnType
   identity:section({accountContext:'unlocked_at_capture'},'Identity admission/approval failures are not independently sampled here; do not infer health from an unlocked account.'),
   network:section(input.network,'Connection/routing snapshot; connected does not mean delivered. Runtime epochs bound counter comparisons.'),
   storage:section({capacity:input.context?.storage??null,historyTimings:input.historyTimings},'Capacity is a snapshot, not a storage integrity audit. Queue/IO elapsed time is not CPU time.'),
-  transfers:section({pendingMedia:input.pendingMedia,timings:input.mediaTimings},'Per-recipient jobs and overlapping measured stages; no wire-throughput or loss claim without matched bytes and elapsed intervals.'),
+  transfers:section({pendingMedia:input.pendingMedia,timings:input.mediaTimings,recentTransfers:input.mediaTrace},'Per-recipient jobs and overlapping measured stages; no wire-throughput or loss claim without matched bytes and elapsed intervals.'),
   messaging:section({messages:input.messages,notificationAuthorization:input.context?.notificationAuthorization,notificationPreferences:input.context?.notificationPreferences,deliveryCapture:input.deliveryCapture},'Descriptor arrival, complete content, receipt, notification display and read are different milestones.'),
   media:section({incomplete:input.messages?.incompleteMediaEvidence??null},'Local gallery/file existence and codec decoding are not inspected. Transfer measurements are in transfers.'),
   calls:section(calls,'Signaling state is not media quality. Group screen sharing and four-device live validation remain separate acceptance checks.'),

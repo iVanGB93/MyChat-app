@@ -10,6 +10,7 @@ import {rootChatView} from '../services/identity/rootChatActions';
 import {rootGroupAllowed} from '../services/identity/rootGroups';
 import {attachmentBlockBytes} from '../services/identity/attachmentProtocol';
 import {runBackgroundUpload} from '../services/identity/backgroundUploadTask';
+import {acquireMessageWakeLease} from '../services/identity/messageWakeLease';
 import {startLocalAccountNetwork} from './neuronRuntime';
 
 const unlocked=(owner:string)=>localAccount.status().account===owner&&localAccount.status().state==='unlocked'&&!localAccount.status().busy;
@@ -53,7 +54,17 @@ export const backgroundUploadNeedsRefresh=(cached:{expiresAt:number}|undefined,d
 
 /** Installed at the app/headless entry; UI subscriptions do not own this lifetime. */
 export function registerBackgroundMediaUploads(){
- let scanning=false,again=false;
+ let scanning=false,again=false,handoffWindow=0;
+ let handoff:{owner:string;network:ReturnType<typeof startLocalAccountNetwork>;releaseTransport?:()=>void}|undefined;
+ function releaseHandoff(){
+  const current=handoff;handoff=undefined;
+  try{current?.network.stop();}finally{current?.releaseTransport?.();}
+ }
+ function arm(owner:string){
+  if(!Native?.attachmentUploadSchedule?.(owner)||handoff?.owner===owner)return;
+  releaseHandoff();
+  handoff={owner,network:startLocalAccountNetwork()};
+ }
  async function schedule(){
   if(AppState.currentState!=='active'||!Native?.attachmentUploadSchedule)return;
   if(scanning){again=true;return;}scanning=true;
@@ -61,18 +72,36 @@ export function registerBackgroundMediaUploads(){
    again=false;const owner=localAccount.status().account;
    if(!owner||!unlocked(owner)||AppState.currentState!=='active')break;
    const work=await readBackgroundUploadWork(owner);
-   if(unlocked(owner)&&AppState.currentState==='active'){if(work.pending)Native.attachmentUploadSchedule(owner);else Native.attachmentUploadDisarm?.(owner);}
+   if(unlocked(owner)&&AppState.currentState==='active'){
+    if(work.pending)arm(owner);
+    else{Native.attachmentUploadDisarm?.(owner);if(handoff?.owner===owner)releaseHandoff();}
+   }
   }while(again);}catch{/* Durable queue and foreground sending remain available. */}finally{scanning=false;}
  }
  // Subscribe to admissions, not every byte checkpoint. Native scheduling is single-instance.
  subscribeAttachmentSelections((owner,hasPending)=>{
-  if(hasPending&&AppState.currentState==='active'&&unlocked(owner))try{Native?.attachmentUploadSchedule?.(owner);}catch{/* Reopening can retry admission. */}
+  if(hasPending&&AppState.currentState==='active'&&unlocked(owner))try{arm(owner);}catch{/* Reopening can retry admission. */}
   else void schedule();
  });
  subscribeAttachmentJobProgress(job=>{if(['queued','confirming','complete','expired','cancelled'].includes(job.phase))void schedule();});
  subscribeOwnChatWrites((owner,visible)=>{if(visible!==false&&unlocked(owner))void schedule();});
- localAccount.subscribe(()=>void schedule());
- AppState.addEventListener('change',state=>{if(state==='active')void schedule();});
+ localAccount.subscribe(()=>{if(handoff&&!unlocked(handoff.owner))releaseHandoff();void schedule();});
+ AppState.addEventListener('change',state=>{
+  const window=++handoffWindow;
+  if(state==='active'){
+   handoff?.releaseTransport?.();
+   if(handoff)handoff.releaseTransport=undefined;
+   void schedule();
+  }
+  if(state==='background'&&handoff){
+   // Android may start its job just after the UI releases the shared socket.
+   // Bound the overlap even if Android never starts the job.
+   try{handoff.releaseTransport??=acquireMessageWakeLease();}catch{/* The native job can still serve the durable queue. */}
+   const wait=Native?.axonMessageWait?.(5000)??new Promise<void>(resolve=>setTimeout(resolve,5000));
+   const finish=()=>{if(window===handoffWindow)releaseHandoff();};
+   void wait.then(finish,finish);
+  }
+ });
  AppRegistry.registerHeadlessTask('AxonicMediaUpload',()=>async(data:{owner:string;token:string})=>{
   if(!Native?.attachmentUploadCurrent?.(data.token))return;
   let wake:(()=>void)|undefined,dirty=true,lastRead=0,cached:Awaited<ReturnType<typeof readBackgroundUploadWork>>|undefined;
@@ -82,7 +111,11 @@ export function registerBackgroundMediaUploads(){
   try{
    if(localAccount.status().account&&localAccount.status().account!==data.owner){outcome='locked';return;}
    await startLocalAccount();
-   outcome=await runBackgroundUpload({current:()=>!!Native?.attachmentUploadCurrent?.(data.token),unlocked:()=>unlocked(data.owner),now:Date.now,start:startLocalAccountNetwork,
+   outcome=await runBackgroundUpload({current:()=>!!Native?.attachmentUploadCurrent?.(data.token),unlocked:()=>unlocked(data.owner),now:Date.now,start:()=>{
+    const network=startLocalAccountNetwork();
+    if(handoff?.owner===data.owner)releaseHandoff();
+    return network;
+   },
     read:async()=>{if(backgroundUploadNeedsRefresh(cached,dirty,Date.now())){const delay=500-(Date.now()-lastRead);if(delay>0)await Native!.axonMessageWait!(delay);dirty=false;cached=await readBackgroundUploadWork(data.owner);lastRead=Date.now();}return !cached!.pending&&dirty?{...cached!,pending:1,percent:-1}:cached!;},
     progress:(count,percent,state)=>{
      if(Native?.attachmentUploadState)Native.attachmentUploadState(data.token,count,percent,state??'waiting');

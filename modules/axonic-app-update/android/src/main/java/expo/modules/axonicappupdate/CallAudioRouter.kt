@@ -25,7 +25,6 @@ internal class CallAudioRouter(private val context: Context, private val changed
   private var video = false
   private var chosenId: String? = null
   private var initialMedia: AudioDeviceInfo? = null
-  private var preserveMediaSpeaker = false
   private var listener: AudioManager.OnCommunicationDeviceChangedListener? = null
   private val callback = object : AudioDeviceCallback() {
     override fun onAudioDevicesAdded(devices: Array<out AudioDeviceInfo>) = devicesChanged()
@@ -66,9 +65,9 @@ internal class CallAudioRouter(private val context: Context, private val changed
     val media = initialMedia
     val matched = media?.let { source -> choices.firstOrNull { it.id == source.id ||
       (external(it) && (it.address.isNotEmpty() && it.address == source.address || it.productName.toString() == source.productName.toString())) } }
-    return matched?.takeIf { external(it) || preserveMediaSpeaker && kind(it) == "speaker" }
+    return matched?.takeIf(::external)
       ?: current()?.takeIf { external(it) && choices.any { candidate -> candidate.id == it.id } } ?: choices.firstOrNull(::external)
-      ?: choices.firstOrNull { kind(it) == if (video || previousSpeaker) "speaker" else "phone" }
+      ?: choices.firstOrNull { kind(it) == if (video) "speaker" else "phone" }
       ?: choices.firstOrNull { kind(it) == "speaker" }
   }
   private fun apply(device: AudioDeviceInfo) {
@@ -100,11 +99,10 @@ internal class CallAudioRouter(private val context: Context, private val changed
     if (previousMode != null) return snapshot()
     video = isVideo; automatic = true; chosenId = null
     previousSpeaker = manager.isSpeakerphoneOn; previousSco = manager.isBluetoothScoOn
-    preserveMediaSpeaker = manager.isMusicActive
     // Preserve the user's media headset before changing to communication mode.
     initialMedia = if (Build.VERSION.SDK_INT >= 33) manager.getAudioDevicesForAttributes(
       AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()
-    ).firstOrNull { preserveMediaSpeaker || it.type !in listOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) } else current()?.takeIf(::external)
+    ).firstOrNull { it.type !in listOf(AudioDeviceInfo.TYPE_BUILTIN_SPEAKER, AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) } else current()?.takeIf(::external)
     previousMode = manager.mode
     manager.mode = AudioManager.MODE_IN_COMMUNICATION
     manager.registerAudioDeviceCallback(callback, handler)
@@ -118,7 +116,7 @@ internal class CallAudioRouter(private val context: Context, private val changed
   fun select(route: String): Map<String, Any?> {
     check(previousMode != null) { "No active call" }
     if (route == "automatic") {
-      automatic = true; chosenId = null; initialMedia = null; preserveMediaSpeaker = false
+      automatic = true; chosenId = null; initialMedia = null
       chooseAutomatic()?.let(::apply)
     } else {
       val target = devices().firstOrNull { id(it) == route } ?: error("This audio device disconnected. Choose another output.")

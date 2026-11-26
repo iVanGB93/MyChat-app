@@ -54,6 +54,7 @@ export function ActionButton({
 /* -------------------- styles -------------------- */
 
 export function makeStyles(Colors: any) {
+  const previewInset = Math.ceil(Radius.lg * (1 - Math.SQRT1_2));
   return StyleSheet.create({
     container: {
       flex: 1,
@@ -69,22 +70,17 @@ export function makeStyles(Colors: any) {
       height: 150,
       borderRadius: Radius.lg,
       borderWidth: 1,
-      borderColor: 'rgba(255,255,255,0.9)',
-      backgroundColor: '#020413',
+      borderColor: '#000',
+      backgroundColor: '#000',
       // Keep Android's rectangular native surface inside every rounded frame corner.
-      padding: Math.ceil(Radius.lg * (1 - Math.SQRT1_2)),
-      shadowColor: Colors.primary,
-      shadowOpacity: Chrome.shadowOpacity,
-      shadowRadius: 10,
-      shadowOffset: { width: 0, height: 0 },
-      elevation: 6,
+      padding: previewInset - 1,
       overflow: 'hidden',
       zIndex: 5,
     },
     pip: {
       flex: 1,
       backgroundColor: '#000',
-      borderRadius: Radius.lg - Math.ceil(Radius.lg * (1 - Math.SQRT1_2)) - 1,
+      borderRadius: Radius.lg - previewInset,
       overflow: 'hidden',
     },
     overlay: {

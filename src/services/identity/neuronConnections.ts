@@ -19,6 +19,7 @@ export function createNeuronConnections(d: {
   /** Local policy based on an authenticated session, never discovery priority. */
   preferRtc?(account:string):boolean;
   allowRoute?(candidate:NeuronCandidate):boolean;
+  onConnected?(account:string):void;
 }) {
   const allowed=(candidate:NeuronCandidate)=>d.allowRoute?.(candidate)!==false;
   const preferredRtc=(c:NeuronCandidate)=>c.route==='internet'&&c.endpoint.startsWith('rtc:')&&d.preferRtc?.(c.account)===true;
@@ -120,6 +121,7 @@ export function createNeuronConnections(d: {
         slot.link = link; slot.state = 'connected';
         inboundPromotionRetry.delete(candidate.account);
         const c = candidates.get(candidate.account); if (c) { c.failures = 0; c.retryAt = 0; }
+        try{d.onConnected?.(candidate.account);}catch{/* Observers cannot retire an admitted link. */}
       } catch { fail(slot); close(link ?? undefined); }
       finally { if (slot.state !== 'connected' && owner.get(candidate.account) === slot) owner.delete(candidate.account); }
     })();
@@ -169,7 +171,12 @@ export function createNeuronConnections(d: {
       return Math.min(Infinity,...deadlines);
     },
     // Local lifecycle wake only: discovery refreshes must still preserve backoff.
-    resume() { if (stopped) return; for (const c of candidates.values()) { c.failures = 0; c.retryAt = 0; } tick(); },
+    resume(account?:string) {
+      if(stopped)return;
+      const eligible=account===undefined?candidates.values():[candidates.get(account)];
+      for(const candidate of eligible)if(candidate){candidate.failures=0;candidate.retryAt=0;}
+      tick();
+    },
     setLimit(next: number) {
       if (!Number.isInteger(next) || next < 1 || next > 20) throw Error('Invalid axon limit');
       if(allSlots().filter(protectedSlot).length>next)throw Error('Finish the call before reducing the connection limit');

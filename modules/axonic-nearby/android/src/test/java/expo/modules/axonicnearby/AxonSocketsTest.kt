@@ -77,6 +77,37 @@ class AxonSocketsTest {
       } finally { transport.destroy() }
     }
   }
+  @Test(timeout = 10000) fun admittedWssRelayFramesDoNotConsumeControlBudget() {
+    val transport = AxonSockets()
+    val relay = """{"version":1,"kind":"relay-block-stream","op":"credit","direction":"bulk-request","id":1,"offset":32000}"""
+    fun frame(raw: String): ByteArray {
+      val payload = raw.toByteArray(Charsets.UTF_8)
+      return byteArrayOf(0x81.toByte(), payload.size.toByte()) + payload
+    }
+    fun reserve(bytes: ByteArray) = transport.reserve(object : Socket() {
+      private val input = ByteArrayInputStream(bytes)
+      override fun getInputStream() = input
+    }, websocket = true)
+    try {
+      val relayFrame = frame(relay)
+      val unadmitted = reserve(relayFrame.repeatBytes(65))
+      repeat(64) { assertEquals(relay, transport.read(unadmitted)) }
+      assertThrows(IllegalStateException::class.java) { transport.read(unadmitted) }
+
+      val control = frame("control")
+      val admitted = reserve(relayFrame.repeatBytes(28257) + control.repeatBytes(28257))
+      transport.enableAttachments(admitted)
+      transport.enableMediaLane(admitted)
+      transport.enableWssBulkAttachments(admitted)
+      transport.enableBlockStreams(admitted)
+      repeat(28257) { assertEquals(relay, transport.read(admitted)) }
+      repeat(28256) { assertEquals("control", transport.read(admitted)) }
+      assertThrows(IllegalStateException::class.java) { transport.read(admitted) }
+    } finally { transport.destroy() }
+  }
+  private fun ByteArray.repeatBytes(count: Int) = ByteArray(size * count).also { bytes ->
+    repeat(count) { copyInto(bytes, it * size) }
+  }
   @Test fun rejectsLengthsBeforeReadingPayloadAndRejectsInvalidUtf8() {
     for (size in listOf(0, -1, 20001, Int.MAX_VALUE)) {
       val bytes = java.nio.ByteBuffer.allocate(4).putInt(size).array()

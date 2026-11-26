@@ -15,7 +15,7 @@ test('attachment receipt signs observed sources independently from its compatibl
 
 test('legacy manifests and encryption contexts fail closed instead of selecting a decoder',()=>{
  const f=fixture();
- for(const version of [undefined,0,1,2,3,5]){
+ for(const version of [undefined,0,1,2,3,4]){
   const old={...f.manifest,version};
   assert.equal(a.validAttachmentManifest(old,now),false);
   assert.equal(a.verifyAttachmentManifest(old,f.ids[0].record,now),false);
@@ -27,34 +27,34 @@ test('legacy manifests and encryption contexts fail closed instead of selecting 
 });
 test('binary leaf preparation preserves canonical hashes and rejects invalid local bounds',()=>{
  const native=value=>crypto.createHash('sha256').update(value).digest('hex');
- for(const length of [17,18,1024,4112])for(const index of [0,1,87]){
+ for(const length of [17,18,1024,4112])for(const index of [0,1,21]){
   const bytes=random(length),wire=Buffer.from(bytes).toString('hex');
   assert.equal(a.attachmentLeafBytes(index,bytes),a.attachmentLeaf(index,wire));
   assert.equal(a.attachmentLeafBytes(index,bytes,native),a.attachmentLeaf(index,wire));
  }
- for(const index of [-1,0.5,88])assert.throws(()=>a.attachmentLeafBytes(index,random(17)));
- for(const length of [0,16,3_000_017])assert.throws(()=>a.attachmentLeafBytes(0,random(length)));
+ for(const index of [-1,0.5,22])assert.throws(()=>a.attachmentLeafBytes(index,random(17)));
+ for(const length of [0,16,12_000_017])assert.throws(()=>a.attachmentLeafBytes(0,random(length)));
  assert.throws(()=>a.attachmentLeafBytes(0,random(17),()=> 'bad'));
 });
-test('binary preparation matches the v4 private/shared nonce, AAD and ciphertext serialization',()=>{
+test('binary preparation matches the v5 private/shared nonce, AAD and ciphertext serialization',()=>{
  const {xchacha20poly1305}=require('@noble/ciphers/chacha.js');
- const f=fixture(3_000_001);
+ const f=fixture(12_000_001);
  for(const shared of [false,true]){
-  const m={...f.manifest,version:4,...(shared?{shared:{id:'ab'.repeat(32),count:2,slot:0}}:{})};
+  const m={...f.manifest,version:5,...(shared?{shared:{id:'ab'.repeat(32),count:2,slot:0}}:{})};
   for(const index of [0,1]){
-   const fields=shared?['axonic-attachment-shared-block-v4',m.shared.id,m.sender,m.senderDevice,m.shared.count,m.bytes,index]:['axonic-attachment-block-v4',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index];
-   const aad=Buffer.from(JSON.stringify(fields)),nonce=crypto.createHash('sha256').update(aad).digest().subarray(0,24),plain=f.plain.slice(index*3_000_000,(index+1)*3_000_000);
+   const fields=shared?['axonic-attachment-shared-block-v5',m.shared.id,m.sender,m.senderDevice,m.shared.count,m.bytes,index]:['axonic-attachment-block-v5',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index];
+   const aad=Buffer.from(JSON.stringify(fields)),nonce=crypto.createHash('sha256').update(aad).digest().subarray(0,24),plain=f.plain.slice(index*12_000_000,(index+1)*12_000_000);
    const expected=xchacha20poly1305(f.key,nonce,aad).encrypt(plain);
    assert.deepEqual(a.encryptAttachmentChunkBytes(m,index,plain,f.key),expected);
    assert.equal(a.encryptAttachmentChunk(m,index,plain,f.key),Buffer.from(expected).toString('hex'));
   }
  }
  assert.throws(()=>a.encryptAttachmentChunkBytes(f.manifest,0,new Uint8Array(1),f.key));
- assert.throws(()=>a.encryptAttachmentChunkBytes(f.manifest,0,f.plain.slice(0,3_000_000),new Uint8Array(31)));
+ assert.throws(()=>a.encryptAttachmentChunkBytes(f.manifest,0,f.plain.slice(0,12_000_000),new Uint8Array(31)));
 });
 test('signed attachment streams decrypt in arbitrary order with bounded ciphertext proofs',()=>{
- for(const size of [1,4096,9001,3_000_000,3_000_001]){const f=fixture(size);assert(a.verifyAttachmentManifest(f.manifest,f.ids[0].record,now));
- const output=new Uint8Array(size);for(const chunk of [...f.chunks].reverse()){assert(a.verifyAttachmentChunk(f.manifest,chunk));output.set(a.decryptAttachmentChunk(f.manifest,chunk,f.key),chunk.index*a.ATTACHMENT_STREAM_BLOCK_BYTES);assert(JSON.stringify(chunk).length<6_002_000);}assert.deepEqual(output,f.plain);}
+ for(const size of [1,4096,9001,12_000_000,12_000_001]){const f=fixture(size);assert(a.verifyAttachmentManifest(f.manifest,f.ids[0].record,now));
+ const output=new Uint8Array(size);for(const chunk of [...f.chunks].reverse()){assert(a.verifyAttachmentChunk(f.manifest,chunk));output.set(a.decryptAttachmentChunk(f.manifest,chunk,f.key),chunk.index*a.ATTACHMENT_STREAM_BLOCK_BYTES);assert(JSON.stringify(chunk).length<24_002_000);}assert.deepEqual(output,f.plain);}
 });
 
 test('accelerated leaf hashes preserve canonical bytes, proofs, AEAD and rejection behavior',()=>{
@@ -64,7 +64,7 @@ test('accelerated leaf hashes preserve canonical bytes, proofs, AEAD and rejecti
   for(const c of f.chunks){
    assert.equal(a.attachmentLeaf(c.index,c.ciphertext,hashLeaf),a.attachmentLeaf(c.index,c.ciphertext));
    assert(a.verifyAttachmentChunk(f.manifest,c,hashLeaf));
-   assert.deepEqual(a.decryptAttachmentChunk(f.manifest,c,f.key,hashLeaf),f.plain.slice(c.index*3_000_000,(c.index+1)*3_000_000));
+   assert.deepEqual(a.decryptAttachmentChunk(f.manifest,c,f.key,hashLeaf),f.plain.slice(c.index*12_000_000,(c.index+1)*12_000_000));
   }
   const c=f.chunks[0],bad={...c,ciphertext:(c.ciphertext.startsWith('00')?'01':'00')+c.ciphertext.slice(2)};
   assert(!a.verifyAttachmentChunk(f.manifest,bad,hashLeaf));
@@ -84,11 +84,11 @@ test('chunk tampering, swapped positions, wrong keys and unauthorized manifest m
  assert(!a.verifyAttachmentManifest(f.manifest,f.ids[0].record,f.manifest.expires));assert.throws(()=>a.encryptAttachmentChunk(f.manifest,-1,new Uint8Array(4096),f.key));
 });
 test('independent block signer authenticates lazy blocks without disclosing signing authority',()=>{
- const f=fixture(3_000_001);
+ const f=fixture(12_000_001);
  const publicKey=crypto.createPublicKey({key:Buffer.concat([Buffer.from('302a300506032b6570032100','hex'),Buffer.from(f.manifest.root,'hex')]),format:'der',type:'spki'});
  for(const c of f.chunks){
   const leaf=crypto.createHash('sha256').update(JSON.stringify(['axonic-attachment-leaf-v1',c.index,c.ciphertext])).digest('hex');
-  const body=Buffer.from(JSON.stringify(['axonic-attachment-block-signature-v4',a.attachmentChunkAAD(f.manifest,c.index),f.manifest.created,f.manifest.expires,f.manifest.checksum,leaf]));
+  const body=Buffer.from(JSON.stringify(['axonic-attachment-block-signature-v5',a.attachmentChunkAAD(f.manifest,c.index),f.manifest.created,f.manifest.expires,f.manifest.checksum,leaf]));
   assert(crypto.verify(null,body,publicKey,Buffer.from(c.proof[0],'hex')),'independent OpenSSL Ed25519 verification');
   assert(a.verifyAttachmentChunk(f.manifest,c));
   assert.throws(()=>a.signAttachmentBlock(f.manifest,c.index,c.ciphertext,f.key),/signer/);

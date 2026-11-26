@@ -5,11 +5,13 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.util.Base64
 import android.content.ContentUris
+import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Intent
 import android.provider.OpenableColumns
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.MediaStore
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -42,6 +44,30 @@ class AxonicMediaStoreModule : Module() {
     Name("AxonicMediaStore")
     Constant("supported") { Build.VERSION.SDK_INT >= 29 }
     Constant("singleCopy") { Build.VERSION.SDK_INT >= 29 }
+    AsyncFunction("recentPhotos") {
+      if (Build.VERSION.SDK_INT < 29) return@AsyncFunction emptyList<Map<String, Any>>()
+      val collection = MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+      val fields = arrayOf("_id", "mime_type", "_display_name", "_size", "width", "height")
+      val query = Bundle().apply {
+        putStringArray(ContentResolver.QUERY_ARG_SORT_COLUMNS, arrayOf("date_added", "_id"))
+        putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_DESCENDING)
+        putInt(ContentResolver.QUERY_ARG_LIMIT, 12)
+      }
+      // MediaStore applies the app's current access. Opening the camera never asks for broad access.
+      try {
+        resolver.query(collection, fields, query, null)?.use { cursor ->
+          buildList<Map<String, Any>> {
+            while (size < 12 && cursor.moveToNext()) {
+              val mime = cursor.getString(1)?.takeIf { it.startsWith("image/") } ?: continue
+              add(mapOf("uri" to ContentUris.withAppendedId(collection, cursor.getLong(0)).toString(),
+                "mimeType" to mime, "fileName" to (cursor.getString(2) ?: "Photo"),
+                "fileSize" to cursor.getLong(3).toDouble(), "width" to cursor.getInt(4),
+                "height" to cursor.getInt(5), "type" to "image"))
+            }
+          }
+        } ?: emptyList<Map<String, Any>>()
+      } catch (_: SecurityException) { emptyList<Map<String, Any>>() }
+    }
     AsyncFunction("pickMedia") { promise: Promise ->
       val activity = requireNotNull(appContext.currentActivity)
       activity.runOnUiThread {
@@ -92,7 +118,7 @@ class AxonicMediaStoreModule : Module() {
     }
     Function("read") { id: Int, offset: Double, length: Int ->
       require(offset.isFinite() && offset >= 0 && offset <= 250L * 1024 * 1024 && offset == offset.toLong().toDouble())
-      require(length in 1..3_000_000)
+      require(length in 1..12_000_000)
       val reader = requireNotNull(readers[id]) { "Media reader closed" }
       synchronized(reader) {
         val buffer = ByteBuffer.allocate(length)
@@ -131,10 +157,10 @@ class AxonicMediaStoreModule : Module() {
           val buffer = ByteArray(256 * 1024)
           var total = 0
           while (total < expectedBytes) {
-            val count = stream.read(buffer, 0, minOf(buffer.size, expectedBytes - total, 3_000_000 - total % 3_000_000))
+            val count = stream.read(buffer, 0, minOf(buffer.size, expectedBytes - total, 12_000_000 - total % 12_000_000))
             check(count > 0) { "Attachment source truncated" }
             full.update(buffer, 0, count); block.update(buffer, 0, count); total += count
-            if (total % 3_000_000 == 0 || total == expectedBytes) {
+            if (total % 12_000_000 == 0 || total == expectedBytes) {
               hashes.add(block.digest().joinToString("") { "%02x".format(it) })
               block = MessageDigest.getInstance("SHA-256")
             }

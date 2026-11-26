@@ -1,8 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {load,fixture,now}=require('./helpers/attachment.cjs');
 const b=load('attachmentBatch'),a=load('attachmentProtocol'),{createAttachmentCustody}=load('attachmentCustody');
-function shared(version=4){
- const f=fixture(version===4?5_000_000:9001),other=fixture().ids[1];f.ids.push(other);
+function shared(version=5){
+ const f=fixture(version===5?13_000_000:9001),other=fixture().ids[1];f.ids.push(other);
  const base={...f.manifest,version,shared:{id:'ab'.repeat(32),count:2,slot:0}},block=a.attachmentBlockBytes(base);
  const encrypted=Array.from({length:Math.ceil(f.plain.length/block)},(_,i)=>a.encryptAttachmentChunk(base,i,f.plain.slice(i*block,(i+1)*block),f.key));
  const first=a.signAttachmentManifest({...base,root:a.attachmentBlockPublicKey(f.signer)},f.ids[0].signingSeed,f.ids[0].record,now);
@@ -11,7 +11,7 @@ function shared(version=4){
 }
 test('shared ciphertext decrypts for separate signed grants, with recipient-bound receipts',()=>{
  const f=shared();assert.notEqual(a.attachmentDigest(f.first),a.attachmentDigest(f.second));assert.equal(a.attachmentContentDigest(f.first),a.attachmentContentDigest(f.second));
- for(const m of [f.first,f.second]){assert(a.verifyAttachmentManifest(m,f.ids[0].record,now));for(const c of f.chunks)assert.deepEqual(a.decryptAttachmentChunk(m,c,f.key),f.plain.slice(c.index*3_000_000,(c.index+1)*3_000_000));}
+ for(const m of [f.first,f.second]){assert(a.verifyAttachmentManifest(m,f.ids[0].record,now));for(const c of f.chunks)assert.deepEqual(a.decryptAttachmentChunk(m,c,f.key),f.plain.slice(c.index*12_000_000,(c.index+1)*12_000_000));}
  for(const patch of [{recipient:f.second.recipient},{shared:{...f.first.shared,slot:1}},{shared:{...f.first.shared,count:3}},{version:1}])assert.equal(a.verifyAttachmentManifest({...f.first,...patch},f.ids[0].record,now),false);
  assert.throws(()=>a.decryptAttachmentChunk(f.first,f.chunks[0],new Uint8Array(32)));
  const receipt=a.signAttachmentReceipt(f.first,f.ids[1].signingSeed,f.ids[1].record,now);
@@ -38,7 +38,7 @@ test('one uploaded blob survives an early receipt and serves a later grant, then
  clock=f.first.expires;await relay.sweep();assert.equal(rows.size,0);
 });
 
-for(const [batched,version] of [[true,4]])test('group transfer workers upload each ciphertext block once and independently confirm both recipients, batch='+batched+', version='+version,async()=>{
+for(const [batched,version] of [[true,5]])test('group transfer workers upload each ciphertext block once and independently confirm both recipients, batch='+batched+', version='+version,async()=>{
  const f=shared(version),rows=new Map(),chunks=new Map(),jobs=new Map(),received=new Map();let puts=0,clock=now,tail=Promise.resolve();
  const tx={rows:async()=>[...rows.values()],save:async r=>rows.set(r.digest,r),chunk:async(d,i)=>chunks.get(d+':'+i)??null,saveChunk:async(d,c)=>{puts++;chunks.set(d+':'+c.index,c);},eraseChunks:async d=>{for(const k of chunks.keys())if(k.startsWith(d+':'))chunks.delete(k);},erase:async d=>rows.delete(d)};
  const store={transaction:work=>{const next=tail.then(()=>work(tx));tail=next.catch(()=>{});return next;}};
@@ -61,8 +61,8 @@ sharedPeers:()=>[f.ids[2].record.account],
 request:async(_,raw)=>{assert(!raw.includes(Buffer.from(f.key).toString('hex')));return relay.receive(raw,{account:f.ids[i].record.account,device:f.ids[i].device.id,expiresAt:clock+60000});},
 uploadBatchPeers:()=>batched?[f.ids[2].record.account]:[],
 bulkRequest:async(_,raw)=>{assert(!raw.includes(Buffer.from(f.key).toString('hex')));return relay.receive(raw,{account:f.ids[i].record.account,device:f.ids[i].device.id,expiresAt:clock+60000});},
-blockStreamPeers:()=>version===4?[f.ids[2].record.account]:[],
-bulkPeers:()=>version===4?[f.ids[2].record.account]:[]}
+blockStreamPeers:()=>version===5?[f.ids[2].record.account]:[],
+bulkPeers:()=>version===5?[f.ids[2].record.account]:[]}
 }));
  const descriptor=m=>({manifest:m,key:Buffer.from(f.key).toString('hex'),checksum:require('crypto').createHash('sha256').update(f.plain).digest('hex'),name:'group.bin',mime:'application/octet-stream'});
  await workers[0].enqueue(descriptor(f.first),'outgoing');await workers[0].enqueue(descriptor(f.second),'outgoing');

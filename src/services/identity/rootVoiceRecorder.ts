@@ -1,4 +1,5 @@
 let activeRecorders=0;
+const MIN_RECORDING_MS=400;
 export const rootVoiceRecordingActive=()=>activeRecorders>0;
 const activityListeners=new Set<()=>void>();
 export function subscribeRootVoiceRecording(listener:()=>void){activityListeners.add(listener);return()=>{activityListeners.delete(listener);};}
@@ -15,6 +16,7 @@ export function createRootVoiceRecorder(d:{
  const set=(s:typeof state)=>{const wasActive=activeRecorders>0;activeRecorders+=(s==='idle'?0:1)-(state==='idle'?0:1);state=s;if(wasActive!==(activeRecorders>0))for(const listener of activityListeners)try{listener();}catch{/* Observers cannot interrupt microphone cleanup. */}if(!disposed)d.changed(s);};
  async function cleanup(){if(!ownsAudio)return;ownsAudio=false;try{await d.stop();}catch{/* May not have prepared yet. */}try{await d.mode(false);}finally{const uri=d.uri();if(uri)d.remove(uri);}}
  return {
+  canSend:()=>state==='recording'&&d.now()-started>=MIN_RECORDING_MS,
   start(){if(disposed||state!=='idle')return Promise.resolve();const generation=++epoch;set('starting');return run(async()=>{
    const valid=()=>!disposed&&generation===epoch&&d.current();
    try{
@@ -28,7 +30,7 @@ export function createRootVoiceRecorder(d:{
    try{
     try{await d.stop();}finally{ownsAudio=false;await d.mode(false);}
     if(disposed||generation!==epoch||!d.current())return;
-    const uri=d.uri();if(!uri||d.now()-started<400)throw Error('Record a voice message longer than half a second');
+    const uri=d.uri();if(!uri||d.now()-started<MIN_RECORDING_MS)throw Error('Record a voice message longer than half a second');
     await d.enqueue(uri);
    }finally{const uri=d.uri();if(uri)d.remove(uri);set('idle');}
   });},

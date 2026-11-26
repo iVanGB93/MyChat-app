@@ -10,7 +10,7 @@ test('old local jobs remain stored without starving or replacing current work',a
  for(let i=0;i<130;i++)insert.run(owner,i.toString(16).padStart(64,'0'),0,JSON.stringify({descriptor:{manifest:{version:3}}}));
  assert.deepEqual(await store.list(owner),[]);await store.retire(owner,()=>true);
  assert.equal(await store.get(owner,'0'.repeat(64)),null);assert.equal(db.prepare('SELECT COUNT(*) n FROM jobs').get().n,130);
- insert.run(owner,'f'.repeat(64),0,JSON.stringify({descriptor:{manifest:{version:4}}}));
+ insert.run(owner,'f'.repeat(64),0,JSON.stringify({descriptor:{manifest:{version:5}}}));
  await assert.rejects(store.list(owner),/Invalid attachment job/);
 });
 

@@ -196,7 +196,7 @@ export function createLanIdentityRuntime(d: Dependencies) {
     setLimit: network.setLimit,
     // A real local foreground transition permits a fresh LAN attempt. Periodic
     // discovery refreshes still preserve the stale-peer backoff.
-    resume() { retryAt = 0; failedLan.clear(); network.resume(); },
+    resume(peer?:string) { if(!peer){retryAt=0;failedLan.clear();}network.resume(peer); },
     sendTestMessage: network.sendTestMessage,
     sendChatMessage: network.sendChatMessage,
     acquireCallPeer(account:string,device:string,id:string,current:()=>boolean):Promise<import('./sharedRtcCall').SharedRtcCallLease>{

@@ -1,8 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('fs'),ts=require('typescript'),crypto=require('crypto'),{DatabaseSync}=require('node:sqlite');
 const {load,fixture,now}=require('./helpers/attachment.cjs'),a=load('attachmentProtocol'),{createAttachmentTransfer:makeTransfer}=load('attachmentTransfer');
 function createAttachmentTransfer(d){
- const {store,readChunk,readChunks,writeChunk,writeChunks,commitFile,reuseFile,peers,request,sharedPeers,bulkPeers,blockStreamPeers,uploadBatchPeers,batchChunks,batchWindow,bulkRequest,directStream,serveStream,sendingStream,...policy}=d;
- return makeTransfer({...policy,storage:{jobs:store,files:{readChunk,readChunks,writeChunk,writeChunks,commitFile,reuseFile}},connections:{peers,request,sharedPeers,bulkPeers:bulkPeers??peers,blockStreamPeers:blockStreamPeers??peers,uploadBatchPeers:uploadBatchPeers??peers,batchChunks,batchWindow:batchWindow??(()=>d.downloadWindow?Math.min(2,d.downloadWindow):1),bulkRequest:bulkRequest??request,directStream,serveStream,sendingStream}});
+ const {store,readChunk,readChunks,writeChunk,writeChunks,commitFile,reuseFile,readPreview,savePreview,hasPreview,peers,request,sharedPeers,bulkPeers,blockStreamPeers,uploadBatchPeers,batchChunks,batchWindow,bulkRequest,directStream,serveStream,sendingStream,...policy}=d;
+ return makeTransfer({...policy,storage:{jobs:store,files:{readChunk,readChunks,writeChunk,writeChunks,commitFile,reuseFile,readPreview,savePreview,hasPreview}},connections:{peers,request,sharedPeers,bulkPeers:bulkPeers??peers,blockStreamPeers:blockStreamPeers??peers,uploadBatchPeers:uploadBatchPeers??peers,batchChunks,batchWindow:batchWindow??(()=>d.downloadWindow?Math.min(2,d.downloadWindow):1),bulkRequest:bulkRequest??request,directStream,serveStream,sendingStream}});
 }
 function directContext(t,overrides={}){
  const f=context(t),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
@@ -54,7 +54,7 @@ test('outgoing media waits for the descriptor route and only offers bytes to its
 });
 
 test('stale direct peer is not probed again before each relay block or receipt lookup',async t=>{
- const f=context(t,3_000_001),base=f.deps(0);let probes=0;
+ const f=context(t,12_000_001),base=f.deps(0);let probes=0;
  const sender=createAttachmentTransfer({...base,peers:()=>[f.manifest.recipient,...base.peers()],request:async(peer,raw)=>{
   if(JSON.parse(raw).operation==='direct-status'){probes++;return null;}
   return base.request(peer,raw);
@@ -120,7 +120,7 @@ for(const failure of ['unavailable','disconnect'])test(`direct stream ${failure}
  assert.equal(attempts,1);assert.equal((await f.job(1)).phase,'complete');assert.deepEqual(Buffer.concat(f.written.map(Buffer.from)),Buffer.from(f.plain));
 });
 test('a long failed stream switches to a connected custodian and stays on encrypted blocks',async t=>{
- const f=context(t,3_000_001),base=f.deps(1),sender=createAttachmentTransfer(f.deps(0)),relay=f.ids[2].record.account;
+ const f=context(t,12_000_001),base=f.deps(1),sender=createAttachmentTransfer(f.deps(0)),relay=f.ids[2].record.account;
  let attempts=0,relayReads=0;
  await sender.enqueue(f.descriptor,'outgoing');
  for(let n=0;n<5;n++)await sender.tick();
@@ -243,7 +243,7 @@ test('older attachment adapters reject stream requests without changing the job'
 });
 test('a newly connected sender can stream a partially downloaded attachment',async t=>{
  let receivedCursor=-1;const f=directContext(t,(f)=>({directStream:async(job)=>{receivedCursor=job.cursor;f.written.splice(0,f.written.length,f.plain.slice());return true;}}));
- await f.begin();const j=await f.job(1);f.written.push(f.plain.slice(0,3_000_000));
+ await f.begin();const j=await f.job(1);f.written.push(f.plain.slice(0,12_000_000));
  await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
  await f.receiver.tick();await f.receiver.tick();assert.equal(receivedCursor,1);assert.equal((await f.job(1)).phase,'complete');assert((await f.job(0)).receipt);
  assert.equal((await f.job(1)).delivery.partial,false);assert.equal((await f.job(1)).delivery.method,'peer');
@@ -263,7 +263,7 @@ test('relay download upgrades when the sender connects later and keeps real sour
 });
 test('legacy partial media does not invent the source of previously downloaded bytes',async t=>{
  const f=directContext(t,()=>({}));await f.begin();const j=await f.job(1);
- f.written.push(f.plain.slice(0,3_000_000));await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
+ f.written.push(f.plain.slice(0,12_000_000));await f.store.save({...j,revision:j.revision+1,cursor:1,phase:'downloading'},j.revision,()=>true);
  for(let i=0;i<8;i++)await f.receiver.tick();
  assert.equal((await f.job(1)).phase,'complete');assert.equal((await f.job(1)).delivery.partial,true);
 });
@@ -440,7 +440,7 @@ test('an incapable peer never causes scalar upload fallback',async t=>{
 });
 
 test('lost batch response replays safely and never advances an unacknowledged cursor',async t=>{
- const f=context(t,3_000_001),base=f.deps(0);let lost=true,calls=0;
+ const f=context(t,12_000_001),base=f.deps(0);let lost=true,calls=0;
  const sender=createAttachmentTransfer({...base,uploadBatchPeers:()=>[f.ids[2].record.account],batchChunks:()=>32,bulkRequest:async(p,raw)=>{calls++;const result=await base.request(p,raw);if(lost){lost=false;return null;}return result;}});
  await sender.enqueue(f.descriptor,'outgoing');await sender.tick();await sender.tick();assert.equal(f.chunks.size,1);assert.equal((await f.job(0)).cursor,0);
  f.advance(10001);for(let n=0;n<5;n++)await sender.tick();assert.equal(f.chunks.size,2);assert.equal((await f.job(0)).phase,'confirming');assert.equal(calls,2);assert.equal(f.complete.length,0);sender.stop();
@@ -465,7 +465,7 @@ test('checkpoint capacity checks avoid async query turns and preserve terminal r
  assert.equal(await store.save({...job,phase:'queued',revision:2},1,()=>true),false);
  assert.equal((await store.get(job.owner,job.digest)).revision,1);
 });
-function context(t,size=6_000_001){const f=fixture(size),store=jobs(t),rows=[],chunks=new Map(),complete=[],written=[],descriptor={manifest:f.manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'photo.png',mime:'image/png'};let clock=now,active=true;
+function context(t,size=24_000_001){const f=fixture(size),store=jobs(t),rows=[],chunks=new Map(),complete=[],written=[],descriptor={manifest:f.manifest,key:Buffer.from(f.key).toString('hex'),checksum:crypto.createHash('sha256').update(f.plain).digest('hex'),name:'photo.png',mime:'image/png'};let clock=now,active=true;
  // The real AttachmentStore contract serializes transactions. Model that here
  // too, including concurrent legacy puts, instead of racing cloned snapshots.
  let transactionTail=Promise.resolve();
@@ -485,7 +485,7 @@ test('durable attachment jobs survive worker recreation and only complete after 
  assert.equal((await f.job(1)).phase,'complete');assert.equal(f.chunks.size,0);f.advance(3000);await sender.tick();assert.equal((await f.job(0)).phase,'complete');assert(f.complete.includes('incoming'));assert(f.complete.includes('outgoing'));
 });
 test('last download window publishes only after file verification and durable receipt in the same turn',async t=>{
- const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
+ const f=context(t,12_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');
  for(let i=0;i<5;i++)await sender.tick();
  const base=f.deps(1),events=[];
  const receiver=createAttachmentTransfer({...base,downloadWindow:4,
@@ -498,7 +498,7 @@ test('last download window publishes only after file verification and durable re
 });
 
 test('locking during final verification prevents receipt signing and immediate publication',async t=>{
- const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
+ const f=context(t,12_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
  const base=f.deps(1);let signed=0;
  const receiver=createAttachmentTransfer({...base,downloadWindow:4,
   commitFile:async(...args)=>{await base.commitFile(...args);f.lock();},
@@ -508,7 +508,7 @@ test('locking during final verification prevents receipt signing and immediate p
 });
 
 test('failed immediate publication resumes from its durable receipt after worker recreation',async t=>{
- const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
+ const f=context(t,12_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let i=0;i<5;i++)await sender.tick();
  const base=f.deps(1);let signed=0;
  const deps={...base,downloadWindow:4,signReceipt:async m=>{signed++;return base.signReceipt(m);}};
  let receiver=createAttachmentTransfer({...deps,completed:async()=>{throw Error('chat storage temporarily unavailable');}});
@@ -750,7 +750,7 @@ test('attachment timings aggregate fixed stages and preserve failures without re
 });
 
 test('offline custody cleanup does not republish a delivered attachment every tick',async t=>{
- const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
+ const f=context(t,12_000_001),sender=createAttachmentTransfer(f.deps(0));await sender.enqueue(f.descriptor,'outgoing');for(let n=0;n<4;n++)await sender.tick();
  const base=f.deps(1);let online=true,publications=0;
  const receiver=createAttachmentTransfer({...base,downloadWindow:4,peers:()=>online?base.peers():[],completed:async(...args)=>{publications++;return base.completed(...args);}});
  await receiver.enqueue(f.descriptor,'incoming');await receiver.tick();online=false;
@@ -799,8 +799,8 @@ test('upload window failure waits for all work and resumes without inventing a r
  fail=false;f.advance(11000);for(let i=0;i<4;i++)await sender.tick();assert.equal(f.rows[0].received,3);assert.equal((await f.job(0)).cursor,3);
 });
 
-test('negotiated block sessions resume after a 3 MB checkpoint and verify the final receipt',async t=>{
- const f=context(t,3_000_001),{createPersistentAxon}=load('persistentAxon');let sessions=[],workers=[],dead=false;const epoch=Date.now();
+test('negotiated block sessions resume after a 12 MB checkpoint and verify the final receipt',async t=>{
+ const f=context(t,12_000_001),{createPersistentAxon}=load('persistentAxon');let sessions=[],workers=[],dead=false;const epoch=Date.now();
  const records=new Map(f.ids.map(v=>[v.record.account,v.record])),recordStore={read:async id=>records.get(id)??null,compareAndSet:async(id,_expected,next)=>{records.set(id,next);return true;}};
  const deps=i=>({...f.deps(i),peers:()=>[f.ids[1-i].record.account],bulkPeers:()=>sessions[i]?.supportsAttachmentBulk()?[f.ids[1-i].record.account]:[],
   request:(_,raw)=>sessions[i].attachmentRequest(raw),bulkRequest:(_,raw)=>sessions[i].attachmentBulkRequest(raw)});
@@ -889,7 +889,7 @@ test('held custody sleeps between recovery polls but a signed direct receipt byp
 test('an admitted local stream defers redundant custody without checkpointing or blocking fallback',async t=>{const f=context(t,300001),base=f.deps(0);let streaming=true,requests=0;const worker=createAttachmentTransfer({...base,sendingStream:()=>streaming,request:async(...args)=>{requests++;return base.request(...args);}});await worker.enqueue(f.descriptor,'outgoing');const before=await f.job(0);await worker.tick();assert.equal(requests,0);assert.deepEqual(await f.job(0),before);streaming=false;await worker.tick();assert(requests>0);assert.equal((await f.job(0)).phase,'uploading');});
 test('a stream admitted during block preparation prevents the redundant bulk send',async t=>{const f=context(t,300001),base=f.deps(0);let streaming=false,bulk=0;const worker=createAttachmentTransfer({...base,sendingStream:()=>streaming,readChunks:undefined,readChunk:async(...args)=>{const chunk=await base.readChunk(...args);streaming=true;return chunk;},bulkRequest:async(...args)=>{bulk++;return base.request(...args);}});await worker.enqueue(f.descriptor,'outgoing');await worker.tick();assert.equal((await f.job(0)).phase,'uploading');await worker.tick();assert.equal(streaming,true);assert.equal(bulk,0);assert.equal((await f.job(0)).cursor,0);assert.equal((await f.job(0)).receipt,null);});
 test('direct receipt tells receiver about partial custodians and cleanup survives restart',async t=>{
- const f=context(t,3_000_001),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
+ const f=context(t,12_000_001),sender=createAttachmentTransfer(f.deps(0)),base=f.deps(1);
  await sender.enqueue(f.descriptor,'outgoing');await sender.tick();
  // Deposit one block through the real relay, then a direct stream wins.
  const out=await f.job(0);await base.request(f.ids[2].record.account,JSON.stringify({version:1,operation:'status',digest:out.digest}));
@@ -904,3 +904,34 @@ test('direct receipt tells receiver about partial custodians and cleanup survive
  assert.equal((await f.job(1)).phase,'complete');assert.equal(f.chunks.size,0);assert(f.rows[0].receipt);
 });
 
+
+test('relay accepts and serves one encrypted preview before block zero; its receipt still waits for the file',async t=>{
+ const f=context(t,1000),data=Buffer.from('small preview'),wire=a.sealAttachmentPreview(f.manifest,f.key,data);
+ const manifest=a.signAttachmentManifest({...f.manifest,preview:{width:7,height:3,ciphertextHash:a.attachmentPreviewHash(wire)}},f.ids[0].signingSeed,f.ids[0].record,now);
+ const descriptor={...f.descriptor,manifest},digest=a.attachmentDigest(manifest);
+ const base=f.deps(1),events=[];
+ const sender=createAttachmentTransfer({...f.deps(0),readPreview:async()=>Buffer.from(wire).toString('base64')});
+ await sender.enqueue(descriptor,'outgoing');await sender.tick();
+ assert.equal(f.rows[0].preview,Buffer.from(wire).toString('base64'));assert.equal(f.chunks.size,0);
+ const reader=createAttachmentTransfer({...base,
+  hasPreview:()=>events.includes('preview'),
+  savePreview:async(_job,b64)=>{assert.deepEqual(Buffer.from(a.openAttachmentPreview(manifest,f.key,Buffer.from(b64,'base64'))),data);events.push('preview');},
+  bulkRequest:async(peer,request)=>{events.push('block');return base.request(peer,request);}});
+ await reader.enqueue(descriptor,'incoming');await reader.tick();
+ assert.deepEqual(events,['preview','block']);assert.equal((await f.store.get(manifest.recipient,digest)).receipt,null);
+ await sender.tick();f.advance(5000);await reader.tick();
+ assert((await f.store.get(manifest.recipient,digest)).receipt);
+ assert.equal(events.filter(x=>x==='preview').length,1);
+});
+
+test('a rejected preview leaves the original relay upload and checksum verification usable',async t=>{
+ const f=context(t,1000),wire=a.sealAttachmentPreview(f.manifest,f.key,new Uint8Array([1,2,3]));
+ const manifest=a.signAttachmentManifest({...f.manifest,preview:{width:7,height:3,ciphertextHash:a.attachmentPreviewHash(wire)}},f.ids[0].signingSeed,f.ids[0].record,now);
+ const descriptor={...f.descriptor,manifest},digest=a.attachmentDigest(manifest);
+ const sender=createAttachmentTransfer({...f.deps(0),readPreview:async()=>Buffer.alloc(wire.length,11).toString('base64')});
+ await sender.enqueue(descriptor,'outgoing');await sender.tick();await sender.tick();
+ assert.equal(f.rows[0].preview,undefined);assert.equal(f.chunks.size,1);
+ const reader=createAttachmentTransfer({...f.deps(1),hasPreview:()=>false,savePreview:async()=>assert.fail('unverified preview')});
+ await reader.enqueue(descriptor,'incoming');await reader.tick();
+ assert((await f.store.get(manifest.recipient,digest)).receipt);
+});

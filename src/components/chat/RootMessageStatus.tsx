@@ -4,7 +4,7 @@ import {Alert,AppState,Pressable} from 'react-native';
 import {Ionicons} from '@expo/vector-icons';
 import {useTheme} from '../../contexts/ThemeContext';
 import {type RootChatMessage,rootMessageStatus,messagePresentationStatus,hasConfirmedDelivery,deliveryStatusIcon,deliveryStatusLabel} from '../../modules/messaging';
-import {attachmentDigest,controlRootAttachment,resendExpiredRootAttachment} from '../../modules/media';
+import {attachmentDigest,controlRootAttachment,resendExpiredRootAttachment,retiredAttachment} from '../../modules/media';
 import {localAccount} from '../../modules/identity';
 import {useTransferProgress} from '../../modules/ui/transferState';
 import {useAttachmentFile} from './useAttachmentFile';
@@ -12,7 +12,7 @@ import {useAttachmentFile} from './useAttachmentFile';
 /** One status position for delivery evidence and available transfer recovery. */
 export default function RootMessageStatus({message:m,onError}:{message:RootChatMessage;onError(message:string):void}){
  const {colors}=useTheme();
- if(m.attachment&&!hasConfirmedDelivery(m))return <AttachmentStatus message={m} onError={onError}/>;
+ if(m.attachment&&!retiredAttachment(m.attachment)&&!hasConfirmedDelivery(m))return <AttachmentStatus message={m} onError={onError}/>;
  if(m.direction!=='outgoing')return null;
  const status=rootMessageStatus(m);
  return <Ionicons accessibilityLabel={t(deliveryStatusLabel(status))} name={deliveryStatusIcon(status)} size={13} color={status==='read'?colors.checkBlue:colors.textTertiary}/>;

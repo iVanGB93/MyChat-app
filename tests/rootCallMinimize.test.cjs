@@ -180,6 +180,8 @@ test('native video rectangle stays within the rounded self-view frame even witho
  new Function('exports','require',ts.transpileModule(fs.readFileSync('src/screens/calls/CallAppearance.tsx','utf8'),{compilerOptions:{module:1,target:9,jsx:2}}).outputText)(out,n=>(require('./helpers/localization.cjs')(n)??(n==='react-native'?{Platform:{OS:'android'},StyleSheet:{create:x=>x,absoluteFillObject:{}}}:n==='../../theme'?theme:{})));
  const styles=out.makeStyles({}),frame=styles.pipWrap,inset=frame.padding+frame.borderWidth,radius=frame.borderRadius;
  assert(2*(radius-inset)**2<=radius**2,'each rectangular video corner is inside the rounded border');
+ assert.equal(frame.borderColor,'#000');assert.equal(frame.backgroundColor,frame.borderColor);
+ assert.equal(inset,Math.ceil(radius*(1-Math.SQRT1_2)),'use only the inset required by the native video corners');
  assert.equal(styles.pip.overflow,'hidden');assert.equal(frame.overflow,'hidden');assert.equal(frame.position,undefined,'only the whole self-view group is positioned');
 });
 

@@ -1,4 +1,7 @@
 import {createMobileIncomingMessages} from '../modules/messaging/mobileIncomingMessages';
+import Constants from 'expo-constants';
+import {getDiagnosticBuildInfo} from '../../modules/axonic-app-update/src';
+import type {AxonRelease} from '../services/identity/persistentAxon';
 import {mobileTrialCredits} from '../services/identity/mobileTrialCredits';
 import {trialReference} from '../services/identity/trialCredits';
 import {networkScorecard} from '../services/identity/networkScorecard';
@@ -10,6 +13,12 @@ import {createCustodyMaintenance} from '../services/identity/custodyMaintenance'
 import {createMobileCallSession} from './mobileCallSession';
 import {createChangeSignal} from '../services/identity/changeSignal';
 const networkChanges=createChangeSignal(500);
+const appVersion=Constants.expoConfig?.version;
+let appRelease:AxonRelease|undefined=appVersion?{kind:'phone',version:appVersion}:undefined;
+void getDiagnosticBuildInfo().then(installed=>{
+ const version=installed?.versionName??appVersion;
+ if(version)appRelease={kind:'phone',version,build:installed?.versionCode};
+});
 const relayChanges=createChangeSignal(2000);
 export const subscribeRelayChanges=relayChanges.subscribe;
 export const subscribeLocalNetworkChanges=networkChanges.subscribe;
@@ -206,7 +215,7 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
     const result=await peerResolver.resolve(account);return result.status==='found'?result.record??null:null;
   }};
   let bootstrapLoaded=false;
-  const runtime = createLanIdentityRuntime({recoveryPeers,onStartupPhase:phase=>diagnosticJournal.record(phase==='bootstrap'?'network_bootstrap_started':'network_discovery_expanded'),onQualityChanged:networkChanges.changed,onWorkChanged:()=>{transportWork.changed();networkChanges.changed();}, remembered:()=>rememberedPeers,
+  const runtime = createLanIdentityRuntime({release:()=>appRelease,recoveryPeers,onStartupPhase:phase=>diagnosticJournal.record(phase==='bootstrap'?'network_bootstrap_started':'network_discovery_expanded'),onQualityChanged:networkChanges.changed,onWorkChanged:()=>{transportWork.changed();networkChanges.changed();}, remembered:()=>rememberedPeers,
     onConnected:peer=>{const account=owner();if(account)void remembered.remember(account,peer).catch(()=>{});},
     identity: localAccount, native, store: records, now: Date.now, limit: allowedAxons(),
     // Advertise the registration protocol as a client; ordinary phones do not mint FCM leases.
@@ -288,7 +297,7 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
   stateWork.changed();
   const receiptConfirmation=createReceiptConfirmation({owner,now:Date.now,request:runtime.custodyRequest,accepted:receiptAccepted,
     available:peer=>runtime.snapshot().sessions.some(s=>s.account===peer&&s.state==='connected')});
-  const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>{receiptConfirmation.connected(peer);profileRecovery.connected(peer);groupRecovery.connected(peer);groupWork.changed();courier.resume(peer);groupCourier.resume(peer);custody?.wake.connected(peer);custody?.groupWake.connected(peer);ownAttachments?.wake();wakeWorkers();});
+  const unprofile=subscribeRootProfileChanges(()=>profileRecovery.changed()),unconnected=runtime.subscribeConnected(peer=>{receiptConfirmation.connected(peer);profileRecovery.connected(peer);groupRecovery.connected(peer);courier.resume(peer);groupCourier.resume(peer);custody?.wake.connected(peer);custody?.groupWake.connected(peer);});
   profileRecovery.changed();void migrateSharedProfileAvatar().catch(()=>{});
   const transportWork=createEventDeadlineTask({now:Date.now,run:async()=>{runtime.tick();networkChanges.changed();return owner()?runtime.nextDeadline():Infinity;}});
   void loadBootstrapEndpoint().catch(()=>{}).finally(()=>{bootstrapLoaded=true;transportWork.changed();});
@@ -368,6 +377,7 @@ function createLocalAccountNetwork(recoveryPeers:()=>ReadonlySet<string>|undefin
       }finally{off();clearTimeout(timer);}
     },
     resumeRecovery(peer:string) {
+      runtime.resume(peer);
       courier.resume(peer);groupCourier.resume(peer);
       privateInboxWork.changed();groupInboxWork.changed();
       ownAttachments?.wake();pump();

@@ -4,7 +4,7 @@ const code = ts.transpileModule(fs.readFileSync('src/services/identity/nativeAxo
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const api = {};
-new Function('require', 'exports', code)(() => ({ AXON_FRAME_BYTES: 20000,ATTACHMENT_BULK_FRAME_BYTES:850000,ATTACHMENT_STREAM_FRAME_BYTES:4010000 }), api);
+new Function('require', 'exports', code)(() => ({ AXON_FRAME_BYTES: 20000,ATTACHMENT_BULK_FRAME_BYTES:850000,ATTACHMENT_STREAM_FRAME_BYTES:16010000 }), api);
 const candidate = { account: 'axonic:1:' + 'ab'.repeat(32), endpoint: 'axon-lan://192.168.1.9:9000', route: 'lan', expiresAt: Date.now() + 60000 };
 function fixture(overrides = {}) {
   const calls = { reads: 0, closed: [], writes: [] }, controller = new AbortController();
@@ -21,11 +21,11 @@ test('binary WSS bridge preserves bytes and controls on one ordered native queue
  const bytes=new Uint8Array(32838).fill(255);wire.sendBinary(bytes);wire.send('control');await flush();assert.deepEqual(writes,[bytes,'control']);resolveRead(bytes);await flush();resolveRead('control');await flush();assert.deepEqual(incoming,[bytes,'control']);wire.close();
 });
 test('binary transport is never advertised on LAN or without the native reader and writer',async()=>{const f=fixture({axonReadPacket:async()=>new Uint8Array(71),axonWriteBinary:async()=>true});assert.equal((await f.connect()).sendBinary,undefined);f.controller.abort();const n={axonRead:()=>new Promise(()=>{}),axonWrite:async()=>true,axonClose(){},axonReadPacket:async()=>new Uint8Array(71)};const w=await api.openNativeWire(n,{signal:new AbortController().signal,onClosed(){}},async()=>'id');assert.equal(w.sendBinary,undefined);w.close();});
-test('3 MB stream envelopes require native support and authenticated enable; queued bytes stay bounded',async()=>{
+test('12 MB stream envelopes require native support and authenticated enable; queued bytes stay bounded',async()=>{
  let enabled=0,finish;
  const f=fixture({axonEnableMediaLane(){},axonEnableBulkAttachments(){},axonEnableBlockStreams(){enabled++;},axonWrite:()=>new Promise(r=>finish=r)});
  const wire=await f.connect();assert.equal(wire.blockStreams,true);wire.enableMediaLane();wire.enableBulkAttachments(true);assert.equal(enabled,1);
- wire.send('x'.repeat(4_010_000));wire.send('x'.repeat(4_010_000));
+ wire.send('x'.repeat(16_010_000));wire.send('x'.repeat(16_010_000));
  assert.throws(()=>wire.send('x'.repeat(120001)),/capacity/);finish(true);await flush();
  const old=await fixture().connect();assert.equal(old.blockStreams,false);old.close();
 });

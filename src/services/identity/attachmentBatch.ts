@@ -3,21 +3,23 @@ import type {AttachmentEncoding} from './attachmentEncoding.ts';
 import {bytesToHex,hexToBytes} from '@noble/hashes/utils.js';
 import {attachmentBlockBytes,ATTACHMENT_MAX_BYTES,verifyAttachmentChunk,type AttachmentManifest,type AttachmentChunk,type AttachmentLeafHash} from './attachmentProtocol.ts';
 
-export const ATTACHMENT_BATCH_CHUNKS=1; // Exactly one authenticated 3 MB block per envelope.
+export const ATTACHMENT_BATCH_CHUNKS=1; // Exactly one authenticated 12 MB block per envelope.
 export const ATTACHMENT_BULK_FRAME_BYTES=850_000;
-export const ATTACHMENT_STREAM_FRAME_BYTES=4_010_000; // One 3 MB ciphertext block + proof, base64 and bounded envelopes.
+export const ATTACHMENT_STREAM_FRAME_BYTES=16_010_000; // One 12 MB ciphertext block + proof, base64 and bounded envelopes.
 /** Transport admission only; the custody endpoint checks manifest bounds,
  * canonical encoding and every proof before its atomic commit. */
-export function isAttachmentUploadBatchRequest(raw:string){
- try{const r=JSON.parse(raw);return r?.version===1&&r.operation==='put-batch'
+export function isAttachmentUploadBatch(r:Record<string,unknown>|null){
+ return r?.version===1&&r.operation==='put-batch'
   &&Object.keys(r).sort().join(',')==='count,data,digest,index,operation,version'
   &&typeof r.digest==='string'&&/^[a-f0-9]{64}$/.test(r.digest)
-  &&Number.isSafeInteger(r.index)&&r.index>=0&&Number.isSafeInteger(r.count)&&r.count===1
+  &&typeof r.index==='number'&&Number.isSafeInteger(r.index)&&r.index>=0&&r.count===1
   &&typeof r.data==='string'&&r.data.length<=ATTACHMENT_STREAM_FRAME_BYTES-1024;
- }catch{return false;}
+}
+export function isAttachmentUploadBatchRequest(raw:string){
+ try{return isAttachmentUploadBatch(JSON.parse(raw));}catch{return false;}
 }
 export function validAttachmentRange(m:AttachmentManifest,start:number,count:number){
- return m.version===4&&Number.isSafeInteger(m.bytes)&&m.bytes>0&&m.bytes<=ATTACHMENT_MAX_BYTES&&Number.isSafeInteger(start)&&start>=0
+ return m.version===5&&Number.isSafeInteger(m.bytes)&&m.bytes>0&&m.bytes<=ATTACHMENT_MAX_BYTES&&Number.isSafeInteger(start)&&start>=0
   &&Number.isSafeInteger(count)&&count===1&&start+count<=Math.ceil(m.bytes/attachmentBlockBytes(m));
 }
 function layout(m:AttachmentManifest,start:number,count:number){

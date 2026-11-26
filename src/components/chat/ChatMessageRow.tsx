@@ -1,4 +1,4 @@
-import React,{memo} from 'react';
+import React,{memo,useState} from 'react';
 import {Pressable,Text,View,type GestureResponderEvent} from 'react-native';
 import {t} from '../../localization/language';
 import {useLanguage} from '../../localization/useLanguage';
@@ -18,7 +18,7 @@ import RootMessageReactions from './RootMessageReactions';
 import RootMessageStatus from './RootMessageStatus';
 import RootReplyContent from './RootReplyContent';
 import StickerArt from './sticker-art';
-import {CHAT_STICKER_SIZE,messageBubbleStyles as styles} from './message-bubble-styles';
+import {CHAT_STICKER_SIZE,messageBubbleStyles as styles,photoMessageWidth,type ChatPhotoSize} from './message-bubble-styles';
 
 type Props={
  message:RootChatMessage;olderAt?:number;at:number;owner:string|null;disabled:boolean;highlighted:boolean;
@@ -36,13 +36,19 @@ export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled
  const audio=!!attachment?.mime.startsWith('audio/');
  const imported=attachment?.name===IMPORTED_STICKER_CONTENT;
  const photo=attachment&&!imported&&/^(image|video)\//.test(attachment.mime);
+ const [measuredPhoto,setMeasuredPhoto]=useState<{id:string;size:ChatPhotoSize}>();
+ const photoSize=measuredPhoto?.id===m.id?measuredPhoto.size:undefined;
+ const imageWidth=photo&&attachment.mime.startsWith('image/')?photoMessageWidth(attachment.manifest.preview??photoSize):undefined;
+ const fileFooter=!!attachment&&!audio&&!photo&&!imported;
+ const sizeOnRight=fileFooter&&!mine;
  const menu=(event:GestureResponderEvent)=>onMenu(m,event);
  const edited=m.edited?t("Edited"):'';
  const meta=(inline=false)=><View style={[styles.metaRow,inline&&{marginTop:0},audio&&{flexShrink:0}]}>
-  {attachment&&<RootMediaSize message={m}/>}
+  {attachment&&!sizeOnRight&&<RootMediaSize message={m} fileFooter={fileFooter}/>}
   {!!edited&&<Text style={{color:colors.textTertiary,fontSize:11}}>{edited}</Text>}
   <Text style={[styles.timeText,{color:colors.textTertiary}]}>{time}</Text>
   <RootMessageStatus message={m} onError={onError}/>
+  {sizeOnRight&&<RootMediaSize message={m} fileFooter/>}
  </View>;
  return <View>
   <ChatDateSeparator at={at} olderAt={olderAt}/>
@@ -54,7 +60,8 @@ export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled
     <RootMessageReactions message={m} owner={owner} disabled={disabled||!group&&m.localPending} onReact={value=>onReact(m,value)}>
      <Pressable accessibilityLabel={!group&&!attachment?m.text:undefined} onLongPress={menu} style={[
       styles.bubble,mine?styles.bubbleSent:styles.bubbleReceived,{minWidth:attachment?260:96,borderColor:highlighted?colors.primary:colors.neonBorder,backgroundColor:highlighted?colors.highlight:mine?colors.bubbleSent:colors.bubbleReceived},
-      !m.deleted&&attachment&&styles.mediaBubble,!m.deleted&&audio&&styles.voiceBubble,!m.deleted&&photo&&styles.photoBubble,!m.deleted&&(sticker||imported)&&styles.stickerBubble,
+      !m.deleted&&attachment&&styles.mediaBubble,!m.deleted&&fileFooter&&styles.fileBubble,!m.deleted&&audio&&styles.voiceBubble,!m.deleted&&photo&&styles.photoBubble,!m.deleted&&(sticker||imported)&&styles.stickerBubble,
+      !m.deleted&&imageWidth!==undefined&&{width:imageWidth},
      ]}>
       {!m.deleted&&m.reply&&<Pressable accessibilityRole="button" accessibilityLabel={t("Go to original message")} onPress={()=>onJump(quoted)} style={[
        group?styles.quoteBlock:{borderLeftWidth:3,borderRadius:8,padding:8,marginBottom:6},
@@ -64,7 +71,7 @@ export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled
        <RootReplyContent message={quoted}/>
       </Pressable>}
       {m.deleted?<DeletedMessage color={colors.textSecondary}/>:attachment?
-       <RootAttachmentBubble message={m} onMedia={onMedia} voiceKey={audio?voiceMessageKey(m):undefined} nextVoice={nextVoice} onLongPress={menu} audioFooter={audio?meta(true):undefined} onError={onError}/>:sticker?
+       <RootAttachmentBubble message={m} photoSize={photoSize} onPhotoSize={size=>setMeasuredPhoto({id:m.id,size})} onMedia={onMedia} voiceKey={audio?voiceMessageKey(m):undefined} nextVoice={nextVoice} onLongPress={menu} audioFooter={audio?meta(true):undefined} onError={onError}/>:sticker?
        <Pressable accessibilityLabel={sticker.label+' sticker'} onLongPress={menu} onPress={()=>onSticker(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:
        <MessageTextWithFooter text={m.text} style={[styles.messageText,{color:colors.text}]} linkColor={colors.primary} footer={meta(true)} footerKey={JSON.stringify([time,edited,mine])}/>}
       {(m.deleted||!!sticker||!!attachment&&!audio)&&meta()}

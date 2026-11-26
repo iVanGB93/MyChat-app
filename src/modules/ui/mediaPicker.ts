@@ -1,6 +1,8 @@
 import type {ConfirmAttachment} from './attachmentPreview';
 import type {RootChatReply} from '../messaging';
 import * as ImagePicker from 'expo-image-picker';
+import {AudioModule} from 'expo-audio';
+import {t} from '../../localization/language';
 import {localAccount} from '../identity';
 import {validAccountId} from '../identity';
 import {queueRootAttachmentBatch,rootGroupAttachmentAudience} from '../media';
@@ -8,18 +10,25 @@ import {ATTACHMENT_MAX_BYTES} from '../../services/identity/attachmentProtocol';
 import {withRootPickedMedia,pickRootSharedMedia} from '../storage';
 
 /** Native selection can background and lock the app; only stage bytes until normal unlock. */
-export async function pickRootMedia(peer:string,source:'camera'|'library',reply?:RootChatReply,groupId?:string,confirm?:ConfirmAttachment,capture?:()=>Promise<ImagePicker.ImagePickerResult>){
+type MediaSource='camera'|'camera-video'|'library';
+type Capture=(mode?:'picture'|'video')=>Promise<ImagePicker.ImagePickerResult>;
+export async function pickRootMedia(peer:string,source:MediaSource,reply?:RootChatReply,groupId?:string,confirm?:ConfirmAttachment,capture?:Capture){
  const owner=localAccount.status().account;
  if(!owner||localAccount.status().state!=='unlocked'||!groupId&&(!validAccountId(peer)||peer===owner))throw Error('Unlock your account and choose a peer');
  const audience=groupId?await rootGroupAttachmentAudience(groupId,reply):null;
- if(source==='camera'){
+ const video=source==='camera-video';
+ if(source!=='library'){
   const existing=await ImagePicker.getCameraPermissionsAsync?.();
   const permission=existing?.granted?existing:await ImagePicker.requestCameraPermissionsAsync();
   if(!permission.granted)throw Error('Allow camera access in Settings to take a photo');
+  if(video){
+   const microphone=await AudioModule.getRecordingPermissionsAsync();
+   if(!microphone.granted&&!(await AudioModule.requestRecordingPermissionsAsync()).granted)throw Error(t('Allow microphone access to record a video'));
+  }
  }
  if(localAccount.status().account!==owner)throw Error('Account changed');
- const result=source==='camera'
-  ?await (capture?capture():ImagePicker.launchCameraAsync({mediaTypes:['images'],quality:0.7}))
+ const result=source!=='library'
+  ?await (capture?capture(video?'video':'picture'):ImagePicker.launchCameraAsync(video?{mediaTypes:['videos'],videoMaxDuration:5}:{mediaTypes:['images'],quality:0.7}))
   :await (pickRootSharedMedia()??ImagePicker.launchImageLibraryAsync({mediaTypes:['images','videos'],allowsMultipleSelection:true,selectionLimit:4,quality:1}));
  if(result.canceled)return;
  if(localAccount.status().account!==owner)throw Error('Account changed');
@@ -34,4 +43,4 @@ export async function pickRootMedia(peer:string,source:'camera'|'library',reply?
  if(localAccount.status().account!==owner)throw Error('Account changed');
  return withRootPickedMedia(selected.map(item=>({...item,assetId:result.assets.find(a=>a.uri===item.uri)?.assetId})),items=>queueRootAttachmentBatch({peer,owner,reply,audience:audience??undefined,items}));
 }
-export const pickRootGroupMedia=(id:string,source:'camera'|'library',confirm?:ConfirmAttachment,reply?:RootChatReply,capture?:()=>Promise<ImagePicker.ImagePickerResult>)=>pickRootMedia(id,source,reply,id,confirm,capture);
+export const pickRootGroupMedia=(id:string,source:MediaSource,confirm?:ConfirmAttachment,reply?:RootChatReply,capture?:Capture)=>pickRootMedia(id,source,reply,id,confirm,capture);

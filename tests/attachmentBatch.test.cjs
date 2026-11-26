@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {fixture,load}=require('./helpers/attachment.cjs'),b=load('attachmentBatch'),a=load('attachmentProtocol');
-test('3 MB block and final tail preserve exact encrypted chunks and proofs',()=>{
- const f=fixture(3_000_019);
+test('12 MB block and final tail preserve exact encrypted chunks and proofs',()=>{
+ const f=fixture(12_000_019);
  for(const [start,count] of [[0,1],[1,1]]){
   const chunks=f.chunks.slice(start,start+count),packed=b.packAttachmentBatch(f.manifest,start,chunks);
   assert(packed.length<b.ATTACHMENT_STREAM_FRAME_BYTES-1024);

@@ -31,15 +31,21 @@ export default function AttachmentPreparation({selection:s,colors,report}:{selec
  }
 
  const sticker=s.name===IMPORTED_STICKER_CONTENT&&s.mime.startsWith('image/');
- const kind=sticker?t("Sticker"):s.mime.startsWith('image/')?t("Photo"):s.mime.startsWith('video/')?t("Video"):s.mime.startsWith('audio/')?t("Voice message"):'File';
+ const kind=sticker?'Sticker':s.mime.startsWith('image/')?'Photo':s.mime.startsWith('video/')?'Video':s.mime.startsWith('audio/')?'Voice message':'File';
  const audio=kind==='Voice message';
  const footer=<View style={[styles.metaRow,audio&&{marginTop:0,flexShrink:0}]}><Text style={[styles.timeText,{color:colors.textSecondary}]}>{s.createdAt?new Date(s.createdAt).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'}):''}</Text><Ionicons accessibilityLabel={t("Not sent yet")} name="time-outline" size={13} color={colors.textSecondary}/></View>;
  const visual=kind==='Photo'||kind==='Video'||sticker;
  const icon=kind==='Photo'||sticker?'image-outline':kind==='Video'?'videocam-outline':kind==='Voice message'?'mic-outline':'document-outline';
  const statusLine=<View style={{flexDirection:'row',alignItems:'center',gap:8,padding:6}}>{!s.failed&&<ActivityIndicator size="small" color={colors.primary}/>}<Text style={{color:colors.textSecondary,fontSize:12,flexShrink:1}}>{status}</Text></View>;
  return <View style={[styles.bubbleRow,styles.bubbleRowRight]}><View style={[styles.bubbleTouchTarget,styles.bubbleWrap]}><View style={[styles.bubble,styles.bubbleSent,styles.mediaBubble,{minWidth:260,borderColor:colors.neonBorder,backgroundColor:colors.bubbleSent},visual&&!sticker&&styles.photoBubble,kind==='Voice message'&&styles.voiceBubble,sticker&&styles.stickerBubble]}>
- {audio?<VoiceMessageBubble fileUri={null} durationMs={null} loading={!s.failed} loadingLabel={s.failed?t("Failed"):'Preparing...'} tint={colors.primary} subtleColor={colors.textSecondary} trackBg={colors.neonBorder} messageFooter={footer}/>:<View accessibilityLabel={kind+' preparing'} style={[kind==='Video'?styles.videoBubble:sticker?styles.stickerImage:kind==='Photo'?styles.imageBubble:{height:64}, {alignItems:'center',justifyContent:'center',gap:10}]}><Ionicons name={icon} size={40} color={colors.primary}/>{visual?<View style={{position:'absolute',bottom:0,left:0,right:0}}>{statusLine}</View>:null}</View>}
- {!visual&&!audio&&statusLine}
+ {audio?<VoiceMessageBubble fileUri={null} durationMs={null} loading={!s.failed} loadingLabel={s.failed?t("Failed"):'Preparing...'} tint={colors.primary} subtleColor={colors.textSecondary} trackBg={colors.neonBorder} messageFooter={footer}/>:visual?
+  <View accessibilityLabel={t(kind)+' preparing'} style={[kind==='Video'?styles.videoBubble:sticker?styles.stickerImage:styles.imageBubble,{alignItems:'center',justifyContent:'center'}]}>
+   <Ionicons name={icon} size={40} color={colors.primary}/>
+   <View style={{position:'absolute',bottom:0,left:0,right:0}}>{statusLine}</View>
+  </View>:<View style={styles.sharedFile}>
+   <View style={styles.sharedFileIcon}><Ionicons name={icon} size={24} color={colors.primary}/></View>
+   <View style={styles.sharedFileInfo}>{statusLine}</View>
+  </View>}
  {!!s.caption&&!(s.failed&&s.reason==='caption')&&<Text style={[styles.messageText,{color:colors.text,marginTop:8}]}>{s.caption}</Text>}
  {!audio&&footer}
  {s.failed&&s.reason==='caption'&&<TextInput accessibilityLabel={t("Attachment caption")} multiline value={caption} onChangeText={setCaption} style={{color:colors.textSecondary,padding:8}}/>}

@@ -1,6 +1,7 @@
 import React,{useCallback,useEffect,useMemo,useState} from 'react';
 import {hasConfirmedDelivery,type RootChatMessage} from '../../modules/messaging';
 import {useAccountState} from '../../modules/ui/liveState';
+import {retiredAttachment} from '../../modules/media';
 import {isGroupAvatarFile} from '../../services/group-avatar-file';
 import {IMPORTED_STICKER_CONTENT} from '../../services/sticker-file-format';
 import MediaViewer,{type MediaViewerItem} from './MediaViewer';
@@ -18,7 +19,7 @@ export function conversationMediaItems(newestFirst:readonly RootChatMessage[],ow
  const items:MediaViewerItem[]=[],seen=new Set<string>();
  for(let i=newestFirst.length-1;i>=0;i--){
   const message=newestFirst[i],attachment=message.attachment;
-  if(message.deleted||message.localPending||!attachment||attachment.name===IMPORTED_STICKER_CONTENT||
+  if(message.deleted||message.localPending||!attachment||retiredAttachment(attachment)||attachment.name===IMPORTED_STICKER_CONTENT||
     message.group&&isGroupAvatarFile(attachment))continue;
   const kind=chatMediaKind(attachment.mime),id=mediaId(message);
   if(!kind||seen.has(id))continue;

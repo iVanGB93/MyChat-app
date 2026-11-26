@@ -3,25 +3,46 @@
  * custody handlers still verify signatures, quota and durable writes before
  * returning their storage response. No descriptor keys or plaintext enter here.
  */
+import {ATTACHMENT_STREAM_FRAME_BYTES} from './attachmentBatch.ts';
+export const RELAY_BLOCK_IDLE_MS=45_000;
+function streamDeadline(expire:()=>void){
+ let until=Date.now()+RELAY_BLOCK_IDLE_MS;
+ let timer=setTimeout(check,RELAY_BLOCK_IDLE_MS);
+ function check(){
+  const remaining=until-Date.now();
+  if(remaining>0){timer=setTimeout(check,remaining);return;}
+  expire();
+ }
+ return {progress(){until=Date.now()+RELAY_BLOCK_IDLE_MS;},stop(){clearTimeout(timer);}};
+}
 export class RelayBlockStreamTimeout extends Error {}
 export function createRelayBlockStream(d:{
  current():boolean;send(frame:unknown):void;deliver(frame:unknown):Promise<void>;
  admit?(direction:string,id:number):boolean;
+ requestProgress?(id:number):void;
 }){
  // Keep small records for control-frame compatibility, but enough outstanding
  // ciphertext to cover Internet RTT. Two streams retain <=512 KB uncredited.
- const record=8000,window=32,max=4008000;
- type Out={id:number;direction:string;data:string;sent:number;acked:number;pumping:boolean;resolve():void;reject(e:Error):void;timer:ReturnType<typeof setTimeout>};
- type In={id:number;direction:string;size:number;header:Record<string,unknown>;parts:string[];received:number;finishing:boolean;timer:ReturnType<typeof setTimeout>};
+ const record=8000,window=32,max=ATTACHMENT_STREAM_FRAME_BYTES-2048;
+ type Out={id:number;direction:string;data:string;sent:number;acked:number;pumping:boolean;resolve():void;reject(e:Error):void;deadline:ReturnType<typeof streamDeadline>};
+ type In={id:number;direction:string;size:number;header:Record<string,unknown>;parts:string[];received:number;finishing:boolean;deadline:ReturnType<typeof streamDeadline>};
  const outgoing=new Map<string,Out>(),incoming=new Map<string,In>();let stopped=false;
- const expiredOut=new Map<string,number>(),expiredIn=new Map<string,number>();
- function retire(map:Map<string,number>,k:string){
-  for(const [id,until] of map)if(until<=Date.now())map.delete(id);
-  if(map.size>=16)map.delete(map.keys().next().value!);map.set(k,Date.now()+30000);
+ type Retired={until:number;remaining:number};
+ const expiredOut=new Map<string,Retired>(),expiredIn=new Map<string,Retired>();
+ function retire(map:Map<string,Retired>,k:string){
+  for(const [id,entry] of map)if(entry.until<=Date.now())map.delete(id);
+  if(map.size>=16)map.delete(map.keys().next().value!);
+  map.set(k,{until:Date.now()+30000,remaining:window+1});
+ }
+ function allowLate(map:Map<string,Retired>,k:string){
+  const entry=map.get(k);
+  if(!entry||entry.until<=Date.now()||entry.remaining===0)return false;
+  entry.remaining--;
+  return true;
  }
  const key=(direction:string,id:number)=>direction+':'+id;
  const validDirection=(s:unknown)=>s==='bulk-request'||s==='bulk-response';
- function stop(){stopped=true;for(const x of outgoing.values()){clearTimeout(x.timer);x.reject(Error('Relay stream closed'));}outgoing.clear();for(const x of incoming.values())clearTimeout(x.timer);incoming.clear();expiredOut.clear();expiredIn.clear();}
+ function stop(){stopped=true;for(const x of outgoing.values()){x.deadline.stop();x.reject(Error('Relay stream closed'));}outgoing.clear();for(const x of incoming.values())x.deadline.stop();incoming.clear();expiredOut.clear();expiredIn.clear();}
  const live=()=>!stopped&&d.current();
  const send=(v:object)=>{if(!live())throw Error('Relay stream unavailable');d.send({version:1,kind:'relay-block-stream',...v});};
  function pump(x:Out){
@@ -50,9 +71,10 @@ export function createRelayBlockStream(d:{
    if(!live()||data.length>max||!data.length||data.length%4||!/^[A-Za-z0-9+/]*={0,2}$/.test(data)||outgoing.size>=2)throw Error('Invalid relay stream');
    const k=key(frame.kind,frame.id);if(outgoing.has(k))throw Error('Duplicate relay stream');
    await new Promise<void>((resolve,reject)=>{
-    const x:Out={id:frame.id,direction:frame.kind,data,sent:0,acked:-1,pumping:false,resolve,reject,timer:setTimeout(()=>{outgoing.delete(k);retire(expiredOut,k);reject(new RelayBlockStreamTimeout('Relay stream timed out'));},15000)};
+    const deadline=streamDeadline(()=>{outgoing.delete(k);retire(expiredOut,k);reject(new RelayBlockStreamTimeout('Relay stream timed out'));});
+    const x:Out={id:frame.id,direction:frame.kind,data,sent:0,acked:-1,pumping:false,resolve,reject,deadline};
     outgoing.set(k,x);
-    try{send({op:'start',direction:frame.kind,id:frame.id,size:data.length,header});}catch(e){clearTimeout(x.timer);outgoing.delete(k);reject(e as Error);}
+    try{send({op:'start',direction:frame.kind,id:frame.id,size:data.length,header});}catch(e){deadline.stop();outgoing.delete(k);reject(e as Error);}
    });return true;
   },
   async receive(f:any):Promise<boolean>{
@@ -60,25 +82,29 @@ export function createRelayBlockStream(d:{
    const k=key(f.direction,f.id),fields=Object.keys(f).sort().join(',');
    if(f.op==='credit'){
     const x=outgoing.get(k);
-    if(!x&&(expiredOut.get(k)??0)>Date.now()&&fields==='direction,id,kind,offset,op,version'&&Number.isSafeInteger(f.offset)&&f.offset>=0&&f.offset<=max)return true;
+    if(!x&&fields==='direction,id,kind,offset,op,version'&&Number.isSafeInteger(f.offset)&&f.offset>=0&&f.offset<=max)return allowLate(expiredOut,k);
     if(fields!=='direction,id,kind,offset,op,version'||!x||!Number.isSafeInteger(f.offset)||f.offset<=x.acked||f.offset>x.sent||(f.offset!==x.data.length&&f.offset%record!==0))return false;
-    x.acked=f.offset;if(x.acked===x.data.length){outgoing.delete(k);clearTimeout(x.timer);x.resolve();}else pump(x);return true;
+    x.acked=f.offset;
+    if(x.acked>0){x.deadline.progress();if(x.direction==='bulk-request')d.requestProgress?.(x.id);}
+    if(x.acked===x.data.length){outgoing.delete(k);x.deadline.stop();x.resolve();}else pump(x);return true;
    }
    if(f.op==='start'){
     if(fields!=='direction,header,id,kind,op,size,version'||incoming.has(k)||incoming.size>=2||d.admit?.(f.direction,f.id)===false||!Number.isSafeInteger(f.size)||f.size<16000||f.size>max||f.size%4||!f.header||typeof f.header!=='object'||!headerValid(f.direction,f.header))return false;
-    const x:In={id:f.id,direction:f.direction,size:f.size,header:f.header,parts:[],received:0,finishing:false,timer:setTimeout(()=>{incoming.delete(k);retire(expiredIn,k);},15000)};
+    const deadline=streamDeadline(()=>{incoming.delete(k);retire(expiredIn,k);});
+    const x:In={id:f.id,direction:f.direction,size:f.size,header:f.header,parts:[],received:0,finishing:false,deadline};
     incoming.set(k,x);send({op:'credit',direction:f.direction,id:f.id,offset:0});return true;
    }
    const x=incoming.get(k);
-   if(!x&&(expiredIn.get(k)??0)>Date.now()&&fields==='data,direction,id,kind,offset,op,version'&&f.op==='data'&&Number.isSafeInteger(f.offset)&&f.offset>=0&&f.offset<max&&typeof f.data==='string'&&f.data.length<=record)return true;
+   if(!x&&fields==='data,direction,id,kind,offset,op,version'&&f.op==='data'&&Number.isSafeInteger(f.offset)&&f.offset>=0&&f.offset<max&&typeof f.data==='string'&&f.data.length<=record)return allowLate(expiredIn,k);
    if(fields!=='data,direction,id,kind,offset,op,version'||f.op!=='data'||!x||x.finishing||f.offset!==x.received||typeof f.data!=='string'||f.data.length!==Math.min(record,x.size-x.received)||!/^[A-Za-z0-9+/]*={0,2}$/.test(f.data)||x.received+f.data.length<x.size&&f.data.includes('='))return false;
-   x.parts.push(f.data);x.received+=f.data.length;
+   x.parts.push(f.data);x.received+=f.data.length;x.deadline.progress();
+   if(x.direction==='bulk-response')d.requestProgress?.(x.id);
    if(x.received===x.size){
     x.finishing=true;
     try{await d.deliver({version:1,kind:x.direction,id:x.id,body:JSON.stringify({...x.header,data:x.parts.join('')})});
      if(!live())return false;if(incoming.get(k)!==x)return true;
      send({op:'credit',direction:x.direction,id:x.id,offset:x.received});
-    }finally{clearTimeout(x.timer);incoming.delete(k);}
+    }finally{x.deadline.stop();if(incoming.get(k)===x)incoming.delete(k);}
    }else if(x.parts.length%4===0)send({op:'credit',direction:x.direction,id:x.id,offset:x.received});
    return true;
   },

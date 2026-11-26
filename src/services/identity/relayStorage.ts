@@ -5,13 +5,15 @@ import type {GroupCustodyPayload} from './groupCustodyProtocol.ts';
 /** Relay-only persistence ports. No private file key, own-chat ledger or network.
  * Services validate admission/expiry/receipts; adapters atomically persist rows.
  * Transactions serialize across all instances sharing the same database. */
-export interface AttachmentCustodyRow {digest:string;manifest:AttachmentManifest;received:number;receipt:AttachmentReceipt|null}
+export interface AttachmentCustodyRow {digest:string;manifest:AttachmentManifest;received:number;receipt:AttachmentReceipt|null;preview?:string}
 export interface AttachmentTransaction {
  rows():Promise<AttachmentCustodyRow[]>;
  save(row:AttachmentCustodyRow):Promise<void>;
  chunk(digest:string,index:number):Promise<AttachmentChunk|null>;
+ hasChunk?(digest:string,index:number):Promise<boolean>;
  saveChunk(digest:string,chunk:AttachmentChunk):Promise<void>;
  eraseChunks(digest:string):Promise<void>;
+ discardUnreferencedChunks?(retained:readonly string[]):Promise<void>;
  erase(digest:string):Promise<void>;
 }
 /** Metadata and ciphertext writes/deletes must commit atomically or throw, serialized per database. */

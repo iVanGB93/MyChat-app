@@ -109,7 +109,7 @@ test('retired local attachments become inert resend notices without rewriting st
  }
 });
 test('malformed current attachment still fails validation rather than being hidden',async()=>{
- const raw=JSON.stringify({version:1,contacts:[],messages:[{id,peer:b,direction:'outgoing',text:'new.jpg',at:100,status:'pending',attachment:{manifest:{version:4},name:'new.jpg'}}]});
+ const raw=JSON.stringify({version:1,contacts:[],messages:[{id,peer:b,direction:'outgoing',text:'new.jpg',at:100,status:'pending',attachment:{manifest:{version:5},name:'new.jpg'}}]});
  const ledger=out.createRootChatLedger({owner:a,now:()=>100000,current:()=>true,read:async()=>raw,write:async()=>{throw Error('unexpected write');}});
  await assert.rejects(ledger.snapshot(),/needs recovery/);
 });

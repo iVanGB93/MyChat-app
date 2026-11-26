@@ -27,8 +27,8 @@ test('repeated hints coalesce and stopped coordinators cannot start reads',async
 });
 test('targeted wake resumes only the requested relay without restarting transport discovery',()=>{
  const calls=[];
- const resume=new Function('peer','courier','groupCourier','privateInboxWork','groupInboxWork','ownAttachments','pump',recoveryBody);
- resume('custodian',{resume:p=>calls.push(['private',p])},{resume:p=>calls.push(['group',p])},
+ const resume=new Function('peer','runtime','courier','groupCourier','privateInboxWork','groupInboxWork','ownAttachments','pump',recoveryBody);
+ resume('custodian',{resume:p=>calls.push(['connect',p])},{resume:p=>calls.push(['private',p])},{resume:p=>calls.push(['group',p])},
   {changed:()=>calls.push('private-inbox')},{changed:()=>calls.push('group-inbox')},{wake:()=>calls.push('media')},()=>calls.push('pump'));
- assert.deepEqual(calls,[['private','custodian'],['group','custodian'],'private-inbox','group-inbox','media','pump']);
+ assert.deepEqual(calls,[['connect','custodian'],['private','custodian'],['group','custodian'],'private-inbox','group-inbox','media','pump']);
 });

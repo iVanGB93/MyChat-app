@@ -1,7 +1,8 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 function load(path,deps={}){const out={};new Function('exports','require',ts.transpileModule(fs.readFileSync(path,'utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>{if(deps[n])return deps[n];throw Error(n);});return out;}
 const status=load('src/services/identity/rootMessageStatus.ts');
-const report=load('src/services/diagnosticReport.ts',{'./identity/rootMessageStatus':status});
+const helpers=require('./helpers/attachment.cjs'),protocol=helpers.load('attachmentProtocol');
+const report=load('src/services/diagnosticReport.ts',{'./identity/rootMessageStatus':status,'./identity/attachmentProtocol':protocol});
 const journal=load('src/services/diagnosticJournal.ts');
 test('report queue errors explain known failures without exposing arbitrary native errors',()=>{
  assert.match(report.diagnosticReportSendError(Error('Invalid diagnostic attachment')),/file format/);
@@ -155,4 +156,29 @@ test('only verified wake events retain opaque wake tags',()=>{
  const d=journal.createDiagnosticJournal(()=>1),tag='ab'.repeat(12);
  d.record('wake_verified',{wakeTrace:tag});d.record('wake_verified',{wakeTrace:'ab'.repeat(32)});d.record('wake_failed',{wakeTrace:tag});
  assert.deepEqual(d.snapshot().events.map(e=>e.wakeTrace),[tag,undefined,undefined]);
+});
+
+test('media report correlates one recipient grant between two phones and relay without identifiers',()=>{
+ const {manifest}=helpers.fixture(4000),digest=protocol.attachmentDigest(manifest),now=helpers.now+10000;
+ const media={id:manifest.id,text:'PRIVATE CAPTION',status:'pending',attachment:{manifest,name:'PRIVATE_NAME.jpg',key:'PRIVATE_KEY'},at:now-4000,group:{id:'PRIVATE_GROUP'}};
+ const sent={...media,peer:manifest.recipient,direction:'outgoing',queuedAt:now-3900,descriptorReceivedAt:now-3700,storedAt:now-3500,readAt:now-2400};
+ const received={...media,peer:manifest.sender,direction:'incoming',descriptorReceivedAt:now-3700,deliveredAt:now-2200,status:'delivered'};
+ const job={digest,phase:'confirming',cursor:1,failures:0,next:now+750,receipt:{signature:'PRIVATE_SIGNATURE'},relay:'PRIVATE_RELAY',direction:'incoming'};
+ const sender=report.summarizeMediaTransfers({messages:[sent]},null,[],now);
+ const receiver=report.summarizeMediaTransfers({messages:[received]},[job],['PRIVATE_RELAY'],now);
+ const relay=helpers.load('relayInventory').relayInventory('relay',now,[],[],[{manifest,digest,received:1,receipt:{signature:'PRIVATE_SIGNATURE'}}],[]).rows[0];
+ const a=sender.outgoing[0],b=receiver.incoming[0];
+ assert.equal(a.trace,b.trace);assert.equal(b.trace,relay.attachmentTrace);
+ assert.match(b.trace,/^[a-f0-9]{24}$/);assert.notEqual(b.trace,digest.slice(0,24));
+ assert.equal(sender.jobSnapshotAvailable,false);assert.equal(a.job,null);
+ assert.equal(a.localObservations.storageConfirmedAt,now-3500);
+ assert.equal(a.localObservations.readObservedAt,now-2400);assert.equal(a.localObservations.attachmentConfirmedAt,undefined);
+ assert.equal(b.localObservations.attachmentConfirmedAt,now-2200);
+ assert.deepEqual(b.job,{phase:'confirming',checkpointBlocks:1,failures:0,retryEligibleAt:now+750,signedReceiptOnDevice:true,connectedRoute:true});
+ const sibling={...manifest,recipient:manifest.sender};
+ assert.notEqual(protocol.attachmentTraceId(protocol.attachmentDigest(sibling)),b.trace);
+ const json=JSON.stringify([sender,receiver]);assert(!/PRIVATE_|axonic:1:/.test(json));assert(!json.includes(manifest.id));assert(!json.includes(digest));
+ const duplicates=Array.from({length:15},(_,i)=>({...sent,at:now+i,storedAt:now+i}));
+ const bounded=report.summarizeMediaTransfers({messages:[...duplicates,{...received,deleted:true}]},[],[],now+20);
+ assert.equal(bounded.outgoing.length,8);assert.equal(bounded.outgoing[0].localObservations.storageConfirmedAt,now+14);assert.equal(bounded.incoming.length,0);
 });

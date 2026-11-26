@@ -55,6 +55,27 @@ async function settle(predicate) {
   assert.fail('condition did not settle');
 }
 
+test('release labels are visible only after authentication and do not activate a mismatched block protocol',async t=>{
+ const phone={kind:'phone',version:'1.1.58',build:'129'};
+ const hub={kind:'aon',version:'0.2.0',build:'abcdef123456'};
+ const onAttachment=async()=>null;
+ const f=pair(t,{0:{release:phone,onAttachment},1:{release:hub,onAttachment}},['relay','relay'],0,d=>createPersistentAxon({
+  ...d,wire:{...d.wire,send(raw){
+   const frame=JSON.parse(raw);
+   d.wire.send(d.release.kind==='phone'&&frame.kind==='hello'?JSON.stringify({...frame,blockStreams:4}):raw);
+  }},
+ }));
+ assert.equal(f.sessions[1].connectionInfo(),null);
+ await Promise.all(f.sessions.map(session=>session.ready));
+ const details=f.sessions[1].connectionInfo();
+ assert.deepEqual(details,{release:phone,localBlockProtocol:5,peerBlockProtocol:4,transport:'wss',relayBlockStream:false});
+ assert.equal(f.sessions[1].supportsAttachmentBlockStreams(),false);
+ assert.equal(f.sessions[1].snapshot().state,'connected');
+ details.release.version='changed';
+ assert.deepEqual(f.sessions[1].connectionInfo().release,phone);
+ f.sessions[1].stop();assert.equal(f.sessions[1].connectionInfo(),null);
+});
+
 test('durable replacement fences an established device without waiting for renewal; ordinary renewal stays connected',async t=>{
  const registry=store(),f=pair(t,{0:{store:registry}});await Promise.all(f.sessions.map(s=>s.ready));
  const old=f.identities[1],renewed=p.issueRecord(old.rootSeed,old.record.devices,now+1,old.record);
@@ -66,7 +87,7 @@ test('durable replacement fences an established device without waiting for renew
 });
 
 test('negotiated relay streams upload/download without giant wire frames or early custody acknowledgement',async t=>{
- const data=Buffer.alloc(3_000_080,17).toString('base64'),digest='a'.repeat(64);let stored=false,release;
+ const data=Buffer.alloc(12_000_080,17).toString('base64'),digest='a'.repeat(64);let stored=false,release;
  const gate=new Promise(r=>release=r);
  const handler=Object.assign(async raw=>{const q=JSON.parse(raw);if(q.operation==='put-batch'){
   assert.equal(q.data,data);await gate;stored=true;return JSON.stringify({status:'held',index:0,count:1,received:1});
@@ -80,6 +101,33 @@ test('negotiated relay streams upload/download without giant wire frames or earl
  assert.equal(got.data,data);assert.deepEqual(f.closed,[0,0]);
  assert.ok(f.transport.history.flat().every(raw=>raw.length<AXON_FRAME_BYTES));
  assert.ok(f.sessions[0].snapshot().traffic['relay-block-stream']>100);
+});
+
+test('valid stream progress keeps the bulk RPC alive past three minutes in both directions',async t=>{
+ const data=Buffer.alloc(12_000_080,17).toString('base64'),digest='a'.repeat(64);
+ const handler=Object.assign(async raw=>JSON.parse(raw).operation==='put-batch'
+  ?'{"status":"held","index":0,"count":1,"received":1}':JSON.stringify({status:'ok',index:0,count:1,data}),{uploadBatch:true});
+ const f=pair(t,{0:{onAttachment:handler},1:{onAttachment:handler}},['relay','relay'],0,d=>{
+  const pending=[];
+  function deliver(){
+   const raw=pending[0],frame=JSON.parse(raw);
+   if(frame.kind==='relay-block-stream'&&frame.op==='data'){
+    f.advance(Math.ceil(frame.data.length/62.5));
+    for(const session of f.sessions)session.tick();
+   }
+   if(d.current()&&f.closed.every(count=>count===0))d.wire.send(raw);
+   pending.shift();
+   if(pending.length)setImmediate(deliver);
+  }
+  return createPersistentAxon({...d,wire:{...d.wire,send(raw){pending.push(raw);if(pending.length===1)setImmediate(deliver);}}});
+ });
+ await Promise.all(f.sessions.map(s=>s.ready));
+ const put=await f.sessions[0].attachmentBulkRequest(JSON.stringify({version:1,operation:'put-batch',digest,index:0,count:1,data}));
+ assert.ok(put,JSON.stringify(f.sessions.map(session=>session.snapshot())));
+ assert.equal(JSON.parse(put).status,'held');
+ const get=await f.sessions[0].attachmentBulkRequest(JSON.stringify({version:1,operation:'get-batch',digest,index:0,count:1}));
+ assert.equal(JSON.parse(get).data,data);
+ assert.deepEqual(f.closed,[0,0]);
 });
 
 test('RTC endpoint capability distinguishes relay-only hosts from mobile endpoints after authentication',async t=>{
@@ -1479,7 +1527,7 @@ test('relay upload capability admits bounded large requests only at an opted-in 
 for(const mode of ['not-opted-in','wrong-operation','unknown-field','over-limit'])test('bulk upload cannot enlarge unrelated/invalid request admission: '+mode,async t=>{
  let handled=0;const hooks={onAttachment:Object.assign(async()=>{handled++;return '{}';},{uploadBatch:mode!=='not-opted-in'})};
  const f=pair(t,{0:hooks,1:hooks},['bulk','bulk']);await Promise.all(f.sessions.map(s=>s.ready));
- const body={version:1,operation:mode==='wrong-operation'?'offer':'put-batch',digest:'ab'.repeat(32),index:0,count:1,data:'A'.repeat(mode==='over-limit'?4_010_000:180000),...(mode==='unknown-field'?{ignored:'no'}:{})};
+ const body={version:1,operation:mode==='wrong-operation'?'offer':'put-batch',digest:'ab'.repeat(32),index:0,count:1,data:'A'.repeat(mode==='over-limit'?16_010_000:180000),...(mode==='unknown-field'?{ignored:'no'}:{})};
  f.transport.inject(0,{version:1,kind:'bulk-request',id:987,body:JSON.stringify(body)});await settle(()=>f.sessions[0].snapshot().state==='closed');assert.equal(handled,0);
 });
 

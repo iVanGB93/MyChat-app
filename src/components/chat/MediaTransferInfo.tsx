@@ -3,7 +3,7 @@ import React from 'react';
 import {Text,View} from 'react-native';
 import {useTheme} from '../../contexts/ThemeContext';
 import {localAccount} from '../../modules/identity';
-import {attachmentDigest,attachmentBlockBytes,backgroundUploadScheduled} from '../../modules/media';
+import {attachmentDigest,attachmentBlockBytes,backgroundUploadScheduled,retiredAttachment} from '../../modules/media';
 import {hasConfirmedDelivery,type RootChatMessage} from '../../modules/messaging';
 import {useTransferProgress} from '../../modules/ui/transferState';
 import {outgoingMediaStatus} from '../../utils/outgoing-media-status';
@@ -12,7 +12,7 @@ import {outgoingMediaStatus} from '../../utils/outgoing-media-status';
 export default function MediaTransferInfo({message,now}:{message:RootChatMessage;now:number}){
  const {colors}=useTheme(),d=message.attachment;
  const progress=useTransferProgress(d?attachmentDigest(d.manifest):'');
- if(!d||message.deleted||hasConfirmedDelivery(message))return null;
+ if(!d||retiredAttachment(d)||message.deleted||hasConfirmedDelivery(message))return null;
  const percent=progress?Math.min(100,Math.floor(progress.cursor*attachmentBlockBytes(d.manifest)/d.manifest.bytes*100)):0;
  const status=outgoingMediaStatus(message,d.manifest.expires,progress?.phase,percent,now,backgroundUploadScheduled(localAccount.status().account));
  const expired=d.manifest.expires<=now;

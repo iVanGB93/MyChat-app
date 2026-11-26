@@ -14,6 +14,22 @@ test('local wake bypasses failed-dial backoff once without duplicating active sl
 });
 const account = n => 'axonic:1:' + n.toString(16).padStart(64, '0');
 const drain = () => new Promise(r => setImmediate(r));
+test('a recovery wake clears dial backoff for its custodian only',async()=>{
+ const f=fixture(2);
+ f.pool.offer(f.candidate(1));f.pool.offer(f.candidate(2));f.pool.tick();
+ f.opens[0].resolve(null);f.opens[1].resolve(null);await drain();
+ f.pool.resume(account(2));
+ assert.deepEqual(f.opens.slice(2).map(open=>open.c.account),[account(2)]);
+ f.pool.stop();f.opens[2].resolve(null);await drain();
+});
+test('connection observers run after admission and only for an accepted link',async()=>{
+ const seen=[],f=fixture(2,{onConnected:peer=>seen.push(f.pool.snapshot().connections.find(row=>row.account===peer)?.state)});
+ f.pool.offer(f.candidate(1));f.pool.offer(f.candidate(2));f.pool.tick();
+ assert.deepEqual(seen,[]);
+ f.finish(0);f.finish(1,99);await drain();
+ assert.deepEqual(seen,['connected']);
+ f.pool.stop();
+});
 test('the configured bootstrap dials before other Internet seeds, with fallback after failure', async () => {
  const f=fixture(1);
  f.pool.offer({...f.candidate(1),route:'internet'});

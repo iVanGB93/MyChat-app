@@ -24,7 +24,6 @@ interface NearbyModule {
   attachmentFileSha256?(owner:string,digest:string,completed:boolean,bytes:number):Promise<string>;
   attachmentStageStream?(owner:string,temporary:string,digest:string,bytes:number):boolean;
   attachmentStagedFileSha256?(owner:string,id:string,bytes:number):Promise<string>;
-  attachmentPrepareStreamBlock?(owner:string,id:string,key:string,bytes:number,start:number,aads:string[]):Promise<string[]>;
   axonEnableBlockStreams?(id:string):void;
   axonMessageWake?(milliseconds:number):void;
   axonClockSnapshot?():{elapsedMs:number;uptimeMs:number;processCpuMs:number};

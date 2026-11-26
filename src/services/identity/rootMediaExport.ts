@@ -11,10 +11,13 @@ import {createReceivedMediaExporter,type MediaExportRecord} from './receivedMedi
 import {subscribeOwnChatWrites} from '../../modules/storage/chatStore';
 import {createWorkPump} from '../workPump';
 import {subscribeAttachmentContentChanges} from './attachmentChanges';
+import type {ImagePickerAsset,ImagePickerResult} from 'expo-image-picker';
 
 const native=Platform.OS==='android'?requireOptionalNativeModule<{supported:boolean;original?(uri:string,id:string,mime:string):Promise<string|null>;copyShared?(uri:string):Promise<string>;save(uri:string,name:string,mime:string,kind:string):Promise<string>;available(uri:string):Promise<boolean>;deleteOwned(uri:string,id:string):Promise<'deleted'|'missing'|'needs-confirmation'>;requestDelete(uri:string,id:string):Promise<boolean>}>('AxonicMediaStore'):null;
 const preference='@axonic/auto-save-received-media';
-export const pickRootSharedMedia=()=> (native as (typeof native)&{pickMedia?():Promise<import('expo-image-picker').ImagePickerResult>})?.pickMedia?.();
+const picker=native as (typeof native)&{pickMedia?():Promise<ImagePickerResult>;recentPhotos?():Promise<ImagePickerAsset[]>};
+export const pickRootSharedMedia=()=>picker?.pickMedia?.();
+export const recentRootPhotos=()=>picker?.recentPhotos?.();
 export const getAutoSaveReceivedMedia=async()=>(await AsyncStorage.getItem(preference))!=='false';
 const preferenceListeners=new Set<()=>void>();
 export const setAutoSaveReceivedMedia=async(enabled:boolean)=>{await AsyncStorage.setItem(preference,String(enabled));for(const listener of preferenceListeners)listener();};

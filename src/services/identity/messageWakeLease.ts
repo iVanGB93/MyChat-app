@@ -1,5 +1,5 @@
 import Native from '../../../modules/axonic-nearby';
-// Public-record lookup and verified inbox recovery must not revoke each other's window.
+// Identity lookup, inbox recovery and upload handoff share the native transport window.
 let leases=0;
 export function acquireMessageWakeLease(){
  Native?.axonMessageWake?.(30000);leases++;let released=false;

@@ -148,7 +148,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
 
  async function sendImportedSticker(sticker:ImportedSticker){if(!owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error(t("Unlock your account"));const uri=importedStickerUri(owner,sticker),mime=await stickerFileMime(uri);if(localAccount.status().account!==owner||localAccount.status().state!=='unlocked')throw Error(t("Unlock your account"));await queueRootAttachmentSource(peer,uri,IMPORTED_STICKER_CONTENT,mime,owner,replyReference);setReplyTo(undefined);scrollToBottom();}
 
- async function attach(source:'camera'|'library'|'files'){setAttachOpen(false);if(busy||contact?.blocked)return;setBusy(true);try{const selection=source==='files'?await pickRootAttachment(peer,replyReference,attachmentPreview.confirm):await pickRootMedia(peer,source,replyReference,undefined,attachmentPreview.confirm,attachmentPreview.capture);if(selection){setReplyTo(undefined);scrollToBottom();}}catch(e){report(e);}finally{setBusy(false);}}
+ async function attach(source:'camera'|'camera-video'|'library'|'files'){setAttachOpen(false);if(busy||contact?.blocked)return;setBusy(true);try{const selection=source==='files'?await pickRootAttachment(peer,replyReference,attachmentPreview.confirm):await pickRootMedia(peer,source,replyReference,undefined,attachmentPreview.confirm,attachmentPreview.capture);if(selection){setReplyTo(undefined);scrollToBottom();}}catch(e){report(e);}finally{setBusy(false);}}
 
 
  const findReply=useMemo(()=>createChatReplyLookup(state.messages,references,owner,peer),[state.messages,references,owner,peer]);
@@ -203,7 +203,7 @@ export default function ChatRoom({route,navigation}:Screen<'ChatRoom'>){
   <AttachmentMenu visible={attachOpen} onClose={()=>setAttachOpen(false)} onCamera={()=>void attach('camera')} onMultimedia={()=>void attach('library')} onFiles={()=>void attach('files')}/>
 
 
-  <ChatComposer replyPreview={replyTo&&<ComposerReplyPreview cancelLabel={t("Cancel reply")} onCancel={()=>setReplyTo(undefined)}><RootReplyContent hideMediaLabel message={replyTo}/></ComposerReplyPreview>} ref={composer} owner={owner} peer={peer} disabled={busy||!!contact?.blocked} cannotCompose={!!contact?.blocked} editing={!!editing} reply={replyReference} onSend={send} onAttach={()=>setAttachOpen(true)} onCamera={()=>void attach('camera')} onStickers={()=>setStickersOpen(true)} onSent={mediaSent} onTyping={value=>activity.notify(peer,value)} onRecording={value=>activity.notifyRecording(peer,value)} onError={report}/>
+  <ChatComposer replyPreview={replyTo&&<ComposerReplyPreview cancelLabel={t("Cancel reply")} onCancel={()=>setReplyTo(undefined)}><RootReplyContent hideMediaLabel message={replyTo}/></ComposerReplyPreview>} ref={composer} owner={owner} peer={peer} disabled={busy||!!contact?.blocked} cannotCompose={!!contact?.blocked} editing={!!editing} reply={replyReference} onSend={send} onAttach={()=>setAttachOpen(true)} onCamera={video=>void attach(video?'camera-video':'camera')} onStickers={()=>setStickersOpen(true)} onSent={mediaSent} onTyping={value=>activity.notify(peer,value)} onRecording={value=>activity.notifyRecording(peer,value)} onError={report}/>
 
   </View>
 

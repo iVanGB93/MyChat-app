@@ -7,17 +7,20 @@ import {validAccountId,verifyRecord,verifyPublicSignature,type IdentityRecord} f
 import type {AttachmentEncoding} from './attachmentEncoding.ts';
 import {validReceivedRoute,type ReceivedRoute} from './deliveryEvidence.ts';
 
-/** A whole file through 3 MB, then independently authenticated 3 MB blocks. */
-export const ATTACHMENT_STREAM_BLOCK_BYTES=3_000_000;
-export const attachmentBlockBytes=(m:{version?:number})=>{if(m.version!==4)throw Error('Unsupported attachment format');return ATTACHMENT_STREAM_BLOCK_BYTES;};
+/** A whole file through 12 MB, then independently authenticated 12 MB blocks. */
+export const ATTACHMENT_STREAM_BLOCK_BYTES=12_000_000;
+export const attachmentBlockBytes=(m:{version?:number})=>{if(m.version!==5)throw Error('Unsupported attachment format');return ATTACHMENT_STREAM_BLOCK_BYTES;};
 export const ATTACHMENT_MAX_BYTES=250*1024*1024;
 export const ATTACHMENT_TTL=24*60*60*1000;
+export const ATTACHMENT_PREVIEW_MAX_BYTES=6000;
+export type AttachmentPreview={width:number;height:number;ciphertextHash:string};
 export interface AttachmentManifest {
- version:4;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;
+ version:5;id:string;sender:string;senderDevice:string;recipient:string;recipientDevice:string;
  /** root is the sender-only block signing key's PUBLIC key; checksum is a
   * randomized commitment, not the plaintext file checksum. Both are signed. */
  created:number;expires:number;bytes:number;root:string;checksum:string;signature:string;
  shared?:{id:string;count:number;slot:number};
+ preview?:AttachmentPreview;
 }
 export interface AttachmentChunk {index:number;ciphertext:string;proof:string[]}
 /** Trusted local SHA-256 implementation over the exact ASCII leaf serialization. */
@@ -27,20 +30,22 @@ const hex=(v:unknown,n:number):v is string=>typeof v==='string'&&v.length===n*2&
 const encode=(v:unknown[])=>utf8ToBytes(JSON.stringify(v));
 const hash=(v:unknown[])=>bytesToHex(sha256(encode(v)));
 const count=(bytes:number)=>Math.ceil(bytes/ATTACHMENT_STREAM_BLOCK_BYTES);
-const body=(m:AttachmentManifest)=>encode(['axonic-attachment-v4',m.version,m.id,m.sender,m.senderDevice,m.recipient,m.recipientDevice,m.created,m.expires,m.bytes,m.root,m.checksum,...(m.shared?[m.shared.id,m.shared.count,m.shared.slot]:[])]);
+const body=(m:AttachmentManifest)=>encode(['axonic-attachment-v5',m.version,m.id,m.sender,m.senderDevice,m.recipient,m.recipientDevice,m.created,m.expires,m.bytes,m.root,m.checksum,...(m.shared?[m.shared.id,m.shared.count,m.shared.slot]:[]),...(m.preview?[m.preview.width,m.preview.height,m.preview.ciphertextHash]:[])]);
 /** Hide the plaintext checksum from custodians; key and checksum stay in the
  * encrypted chat descriptor. Random per-file keys prevent public content correlation. */
 export function attachmentChecksumCommitment(checksum:string,key:string){
  if(!hex(checksum,32)||!hex(key,32))throw Error('Invalid attachment checksum commitment');
- return hash(['axonic-attachment-checksum-v4',key,checksum]);
+ return hash(['axonic-attachment-checksum-v5',key,checksum]);
 }
 export const attachmentDigest=(m:AttachmentManifest)=>hash([bytesToHex(body(m)),m.signature]);
+/** Opaque correlation tag for one recipient grant across reports and relay inventories. */
+export const attachmentTraceId=(digest:string)=>hash(['axonic-attachment-trace-v1',digest]).slice(0,24);
 /** Ciphertext address only; access always requires a separately verified recipient grant. */
-export const attachmentContentDigest=(m:AttachmentManifest)=>m.shared?hash(['axonic-attachment-content-v4',m.sender,m.senderDevice,m.shared.id,m.shared.count,m.created,m.expires,m.bytes,m.root,m.checksum]):attachmentDigest(m);
+export const attachmentContentDigest=(m:AttachmentManifest)=>m.shared?hash(['axonic-attachment-content-v5',m.sender,m.senderDevice,m.shared.id,m.shared.count,m.created,m.expires,m.bytes,m.root,m.checksum,m.preview?.ciphertextHash??null]):attachmentDigest(m);
 const validShared=(m:Pick<AttachmentManifest,'shared'>)=>m.shared===undefined||!!m.shared&&Object.keys(m.shared).sort().join(',')==='count,id,slot'&&hex(m.shared.id,32)&&Number.isSafeInteger(m.shared.count)&&m.shared.count>=1&&m.shared.count<=9&&Number.isSafeInteger(m.shared.slot)&&m.shared.slot>=0&&m.shared.slot<m.shared.count;
 export function validAttachmentManifest(m:unknown,now:number):m is AttachmentManifest {
  const a=m as AttachmentManifest;
- return !!a&&a.version===4&&Number.isSafeInteger(now)&&now>=0&&validShared(a)&&hex(a.id,32)&&validAccountId(a.sender)&&validAccountId(a.recipient)&&a.sender!==a.recipient
+ return !!a&&a.version===5&&Number.isSafeInteger(now)&&now>=0&&validShared(a)&&(a.preview===undefined||validAttachmentPreview(a.preview))&&hex(a.id,32)&&validAccountId(a.sender)&&validAccountId(a.recipient)&&a.sender!==a.recipient
   &&hex(a.senderDevice,32)&&hex(a.recipientDevice,32)&&hex(a.root,32)&&hex(a.checksum,32)&&hex(a.signature,64)
   &&Number.isSafeInteger(a.bytes)&&a.bytes>0&&a.bytes<=ATTACHMENT_MAX_BYTES
   &&Number.isSafeInteger(a.created)&&a.created>=0&&a.created<=now+30000&&Number.isSafeInteger(a.expires)
@@ -59,9 +64,32 @@ export function verifyAttachmentManifest(m:unknown,record:IdentityRecord,now:num
   const d=record.devices.find(d=>d.id===m.senderDevice);return !!d&&verifyPublicSignature(hexToBytes(m.signature),body(m),hexToBytes(d.signing),{zip215:false});
  }catch{return false;}
 }
+function validAttachmentPreview(value:AttachmentPreview){
+ return !!value&&Object.keys(value).sort().join(',')==='ciphertextHash,height,width'
+  &&[value.width,value.height].every(n=>Number.isSafeInteger(n)&&n>=1&&n<=512)&&hex(value.ciphertextHash,32);
+}
+type PreviewContext=Pick<AttachmentManifest,'sender'|'id'|'shared'>;
+function previewCipher(m:PreviewContext,key:Uint8Array){
+ if(key.length!==32)throw Error('Invalid attachment preview key');
+ const aad=encode(['axonic-attachment-preview-v1',m.sender,m.shared?.id??m.id]);
+ return xchacha20poly1305(key,sha256(aad).slice(0,24),aad);
+}
+export function sealAttachmentPreview(m:PreviewContext,key:Uint8Array,data:Uint8Array){
+ if(data.length<1||data.length>ATTACHMENT_PREVIEW_MAX_BYTES)throw Error('Invalid attachment preview size');
+ return previewCipher(m,key).encrypt(data);
+}
+export const attachmentPreviewHash=(ciphertext:Uint8Array)=>bytesToHex(sha256(ciphertext));
+export function validAttachmentPreviewCiphertext(m:AttachmentManifest,ciphertext:Uint8Array){
+ return !!m.preview&&ciphertext.length>16&&ciphertext.length<=ATTACHMENT_PREVIEW_MAX_BYTES+16
+  &&attachmentPreviewHash(ciphertext)===m.preview.ciphertextHash;
+}
+export function openAttachmentPreview(m:AttachmentManifest,key:Uint8Array,ciphertext:Uint8Array){
+ if(!validAttachmentPreviewCiphertext(m,ciphertext))throw Error('Invalid attachment preview');
+ return previewCipher(m,key).decrypt(ciphertext);
+}
 type ChunkContext=Pick<AttachmentManifest,'version'|'id'|'sender'|'recipient'|'recipientDevice'|'bytes'>&Partial<Pick<AttachmentManifest,'shared'|'senderDevice'>>;
 function chunkLength(m:ChunkContext,index:number){
- if(m.version!==4||!hex(m.id,32)||!validAccountId(m.sender)||!validAccountId(m.recipient)||m.sender===m.recipient||!hex(m.recipientDevice,32)
+ if(m.version!==5||!hex(m.id,32)||!validAccountId(m.sender)||!validAccountId(m.recipient)||m.sender===m.recipient||!hex(m.recipientDevice,32)
   ||!Number.isSafeInteger(m.bytes)||m.bytes<1||m.bytes>ATTACHMENT_MAX_BYTES||!Number.isSafeInteger(index)||index<0||index>=count(m.bytes))throw Error('Invalid attachment chunk');
  return Math.min(attachmentBlockBytes(m),m.bytes-index*attachmentBlockBytes(m));
 }
@@ -69,7 +97,7 @@ function chunkLength(m:ChunkContext,index:number){
 export function attachmentChunkAAD(m:ChunkContext,index:number){
  chunkLength(m,index);
  if(m.shared!==undefined&&(!validShared(m)||!hex(m.senderDevice,32)))throw Error('Invalid shared attachment');
- return JSON.stringify(m.shared?['axonic-attachment-shared-block-v4',m.shared.id,m.sender,m.senderDevice,m.shared.count,m.bytes,index]:['axonic-attachment-block-v4',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
+ return JSON.stringify(m.shared?['axonic-attachment-shared-block-v5',m.shared.id,m.sender,m.senderDevice,m.shared.count,m.bytes,index]:['axonic-attachment-block-v5',m.id,m.sender,m.recipient,m.recipientDevice,m.bytes,index]);
 }
 function chunkContext(m:ChunkContext,index:number){
  const length=chunkLength(m,index),aad=utf8ToBytes(attachmentChunkAAD(m,index));
@@ -115,13 +143,13 @@ function hashAttachmentLeaf(index:number,ciphertext:string,hashLeaf?:AttachmentL
  if(!hashLeaf)return hash(fields);
  const digest=hashLeaf(JSON.stringify(fields));if(!hex(digest,32))throw Error('Invalid attachment hash result');return digest;
 }
-/** v4 root is the per-file Ed25519 verification key, not a ciphertext Merkle
+/** v5 root is the per-file Ed25519 verification key, not a ciphertext Merkle
  * root. The independent random signing seed stays on the sender. A signed
  * checksum fixes the content before any relay ciphertext is generated.
  * Shared grants bind the same content context, never their recipient slot. */
 export const attachmentBlockPublicKey=(seed:Uint8Array)=>bytesToHex(ed25519.getPublicKey(seed));
 const blockSignatureBody=(m:AttachmentManifest,index:number,leaf:string)=>encode([
- 'axonic-attachment-block-signature-v4',attachmentChunkAAD(m,index),
+ 'axonic-attachment-block-signature-v5',attachmentChunkAAD(m,index),
  m.created,m.expires,m.checksum,leaf
 ]);
 export function signAttachmentBlock(m:AttachmentManifest,index:number,ciphertext:string,seed:Uint8Array,hashLeaf?:AttachmentLeafHash):AttachmentChunk {

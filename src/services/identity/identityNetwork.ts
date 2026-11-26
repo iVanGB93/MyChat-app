@@ -6,7 +6,7 @@ import { createIntroductionDirectory } from './identityIntroductions';
 import type { TestMessageHandler } from './axonTestMessages';
 import type {LocalIdentityStatus} from './localIdentityController';
 import { createNeuronConnections, type NeuronCandidate, type ConnectionContext } from './neuronConnections';
-import type { AxonWire, createPersistentAxon } from './persistentAxon';
+import type { AxonRelease, AxonWire, createPersistentAxon } from './persistentAxon';
 import type { IdentityRecordStore } from './identityAdmission';
 
 type Identity=ConnectionCredentialsSource & {status():Pick<LocalIdentityStatus,'state'|'account'|'busy'>;subscribe(listener:()=>void):()=>void};
@@ -22,6 +22,7 @@ export function createIdentityNetwork(d: {
   onQualityChanged?():void;
   allowRoute?(candidate:NeuronCandidate):boolean;
   identity: Identity; store: IdentityRecordStore; now(): number; limit?: number;
+  release?():AxonRelease|undefined;
   onSignal?(signal: AxonSignal, via: string): void;
   onTestMessage?: TestMessageHandler;
   onChatMessage?: TestMessageHandler;
@@ -43,7 +44,13 @@ export function createIdentityNetwork(d: {
   let account: string | null = null, enabled = true, disposed = false, generation = 0;
   let clockSkewAt:number|null=null;
   const sessions = new Set<Session>();
-  const streamPeer=(peer:string)=>[...sessions].map(s=>s.attachmentStreamPeer?.()).find(p=>p?.account===peer)??null;
+  const streamPeer=(peer:string)=>{
+    for(const session of sessions){
+      const stream=session.attachmentStreamPeer?.();
+      if(stream?.account===peer)return stream;
+    }
+    return null;
+  };
   const routing=createSessionRouting({now:d.now,sessions:()=>sessions,connections:()=>pool?.snapshot().connections??[]});
   const {rankedConnections,rankedSessions}=routing;
   const connectedListeners=new Set<(peer:string)=>void>();
@@ -86,11 +93,11 @@ export function createIdentityNetwork(d: {
         try {
           wire = incoming ?? await d.connect(candidate, context);
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
-          session = await openIdentityAxon(d.identity, {wire, store:d.store, expectedAccount:candidate.account, onClosed:() => {
+          session = await openIdentityAxon(d.identity, {wire, release:d.release?.(), store:d.store, expectedAccount:candidate.account, onClosed:() => {
             if(valid()&&d.clockReference?.(candidate)&&session?.snapshot().closeReason==='authentication-clock-skew')clockSkewAt=d.now();
             if(session)routing.closed(session.snapshot());
             console.info('[Axonic connection]', candidate.route, session?.snapshot().closeReason ?? 'handshake-closed', JSON.stringify(session?.snapshot().traffic ?? {}));
-            close(); context.onClosed();
+            context.onClosed(); close();
           }, introductions:{
             list: () => (pool?.snapshot().connections ?? []).filter(c => c.state === 'connected' && c.expiresAt !== null)
               .filter(c=>![...sessions].some(s=>s.snapshot().account===c.account&&s.supportsRtcEndpoint?.()===false))
@@ -107,13 +114,16 @@ export function createIdentityNetwork(d: {
           if (!valid()) { try { wire.close(); } catch { /* Late transport cleanup. */ } close(); return null; }
           clockSkewAt=null;
           if(!incoming){try{d.onConnected?.({...candidate});}catch{/* Locator persistence cannot hold an authenticated socket open. */}}
-          for(const listener of connectedListeners){try{listener(candidate.account);}catch{/* Observers do not own the connection. */}}
-          topologyChanged();
           return { peer: link.peer, close };
         } catch { close(); return null; }
         finally { if (!session || session.snapshot().state === 'closed') context.signal.removeEventListener('abort', close);d.onWorkChanged?.(); }
       };
-    const ownedPool = createNeuronConnections({ localAccount: desired, limit, now: d.now, open,allowRoute:d.allowRoute,preferRtc:peer=>!!streamPeer(peer) });
+    const ownedPool = createNeuronConnections({ localAccount: desired, limit, now: d.now, open,allowRoute:d.allowRoute,preferRtc:peer=>!!streamPeer(peer),
+      onConnected:peer=>{
+        for(const listener of connectedListeners)try{listener(peer);}catch{/* Observers do not own the connection. */}
+        topologyChanged();
+      },
+    });
     pool = ownedPool;
     admit = (candidate, wire) => ownedPool.accept(candidate, (c, context) => open(c, context, wire));
   }
@@ -214,7 +224,7 @@ export function createIdentityNetwork(d: {
       try { wire.close(); } catch { /* Rejected inbound sockets must not remain owned. */ }
       return false;
     },
-    resume() { reconcile(); if (account) pool?.resume(); },
+    resume(peer?:string) { reconcile(); if (account) pool?.resume(peer); },
     nextDeadline:()=>Math.min(pool?.nextDeadline()??Infinity,...[...sessions].map(s=>s.nextDeadline())),
     tick() { reconcile(); for (const session of sessions) session.tick(); if (account) pool?.tick(); },
     setParticipation(value: boolean) { enabled = value; reconcile(); },

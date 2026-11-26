@@ -1,8 +1,8 @@
-export const VOICE_HOLD_DELAY_MS=100;
+export const VOICE_HOLD_DELAY_MS=250;
 export const VOICE_CANCEL_DISTANCE=72;
 /** Keeps release/cancel tied to the original touch while microphone startup is asynchronous. */
 export function createVoiceRecordingGesture(d:{
- start():Promise<void>;send():Promise<void>;cancel():Promise<void>;error(error:unknown):void;
+ start():Promise<void>;canSend():boolean;send():Promise<void>;cancel():Promise<void>;error(error:unknown):void;
  changed(holding:boolean,cancelling:boolean):void;
  held?():void;
  schedule(work:()=>void,delay:number):ReturnType<typeof setTimeout>;
@@ -21,7 +21,8 @@ export function createVoiceRecordingGesture(d:{
   release(x:number){if(!pressed)return;clear();pressed=false;const own=generation,held=holding,discard=origin-x>=VOICE_CANCEL_DISTANCE;holding=false;d.changed(false,false);
    if(discard){if(held)cancel();return;}
    if(!held){starting=start();return;}
-   void starting.then(ok=>{if(ok&&generation===own)return d.send();}).catch(d.error);
+   // A release during recorder startup leaves the manual controls visible.
+   if(d.canSend())void starting.then(ok=>{if(ok&&generation===own)return d.send();}).catch(d.error);
   },
   terminate(){generation++;clear();pressed=false;holding=false;d.changed(false,false);cancel();},
   dispose(){generation++;clear();pressed=false;holding=false;},
