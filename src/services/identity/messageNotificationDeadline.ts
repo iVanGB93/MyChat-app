@@ -1,4 +1,5 @@
-export type MessageWakeRecoveryOutcome='stalled'|'route-unavailable';
+export type MessageWakeRecoveryOutcome='stalled'|'route-unavailable'|'confirmed-stalled';
+export type MessageWakeEvidence={digest:string;wakeTrace:string};
 
 /** Progress means a new authenticated connection or admission milestone, not a retry. */
 export function createMessageNotificationDeadline(now=Date.now){

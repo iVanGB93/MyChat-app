@@ -12,6 +12,25 @@ test('message rows skip equivalent projections but repaint changed receipts, hig
  assert.equal(compare(previous,{...previous,message:structuredClone(previous.message),quoted:{...previous.quoted}}),true);
  for(const next of [{...previous,message:{...previous.message,status:'delivered'}},{...previous,highlighted:true},{...previous,quoted:{...previous.quoted,text:'edited'}},{...previous,onJump:()=>{}}])assert.equal(compare(previous,next),false);
 });
+test('wide video previews fit the bubble border in both directions',()=>{
+ const native={StyleSheet:{create:styles=>styles},View:'View',Text:'Text',Pressable:'Pressable'};
+ const layout=evaluate('src/components/chat/message-bubble-styles.ts',name=>name==='react-native'?native:require('./helpers/theme.cjs'));
+ const react={createElement:(type,props,...children)=>({type,props,children}),memo:component=>component,useMemo:fn=>fn(),useState:()=>[undefined,()=>{}]};
+ const {default:render}=evaluate('src/components/chat/ChatMessageRow.tsx',name=>({
+  react,'react-native':native,'./message-bubble-styles':layout,'../../localization/useLanguage':{useLanguage(){}},
+  '../../contexts/ThemeContext':{useTheme:()=>({colors:{}})},'../../modules/storage':{chatMediaPresentation:m=>m.localMedia},
+  '../../modules/messaging':{pendingMessages:{layoutCallback:()=>undefined}},
+ }[name]??{}));
+ function bubble(tree){if(tree?.type==='Pressable')return tree;for(const child of tree?.children??[]){const match=bubble(child);if(match)return match;}}
+ const preview={width:1920,height:1080};
+ for(const direction of ['incoming','outgoing']){
+  const row=render({message:{id:'video',direction,localMedia:{mime:'video/mp4',name:'video.mp4',preview}},time:'6:03'});
+  const style=Object.assign({},...bubble(row).props.style.filter(Boolean));
+  assert.equal(style.width-2*(style.paddingHorizontal+style.borderWidth),layout.mediaPreviewWidth(preview));
+  assert.equal(layout.messageBubbleStyles.videoBubble.maxWidth,'100%');
+  assert.equal(layout.messageBubbleStyles.videoBubble.borderTopRightRadius,style.borderRadius-style.paddingHorizontal-style.borderWidth);
+ }
+});
 test('an identical measured time/status footer is available on the next row’s first render',()=>{
  let scale=1,updates=0;
  const react={createElement:(type,props,...children)=>({type,props,children}),useState:()=>[undefined,()=>updates++]};

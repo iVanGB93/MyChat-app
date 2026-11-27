@@ -16,11 +16,12 @@ import type {LocalChatMedia} from '../modules/storage';
 import {hasConfirmedDelivery,type RootChatMessage} from '../modules/messaging';
 import MediaViewer from './chat/MediaViewer';
 import {chatMediaKind} from './chat/useChatMediaViewer';
-import {messageBubbleStyles as styles,photoPreviewWidth,type ChatPhotoSize} from './chat/message-bubble-styles';
+import {messageBubbleStyles as styles,mediaPreviewWidth,type ChatPhotoSize} from './chat/message-bubble-styles';
 import {Ionicons} from '@expo/vector-icons';
 import {useReceivingProgress} from '../modules/ui/transferState';
 import {outgoingMediaStatus} from '../utils/outgoing-media-status';
 import {useAttachmentFile,useAttachmentPreview} from './chat/useAttachmentFile';
+import {useMotionPhoto} from './chat/useMotionPhoto';
 export default function RootAttachmentBubble({message,media,progress:initialProgress,showSize=false,onError,onLongPress,audioFooter,onMedia,voiceKey,nextVoice,photoSize,onPhotoSize}:{message:RootChatMessage;media:LocalChatMedia;progress?:{phase:string;cursor:number;bytes:number;failures:number;canPause:boolean};showSize?:boolean;audioFooter?:React.ReactNode;onLongPress?(event:GestureResponderEvent):void;onError(error:string):void;onMedia?(message:RootChatMessage):void;voiceKey?:string;nextVoice?:string;photoSize?:ChatPhotoSize;onPhotoSize?(size:ChatPhotoSize):void}){
  const [preview,setPreview]=useState(false),[mediaPreview,setMediaPreview]=useState(false);
  const {colors,isDark}=useTheme(),owner=localAccount.status().account;
@@ -51,23 +52,24 @@ export default function RootAttachmentBubble({message,media,progress:initialProg
   if(Platform.OS==='android')await IntentLauncher.startActivityAsync('android.intent.action.VIEW',{data:file.contentUri,type:media.mime,flags:1});else await Linking.openURL(file.uri);
  }catch{onError('No app could open this file.');}}
  const kind=chatMediaKind(media.mime),image=kind==='image',video=kind==='video',audio=media.mime.startsWith('audio/');
+ const motion=useMotionPhoto(image&&!sticker?file?.uri:undefined,media.mime);
  const shape=media.preview??(image?photoSize:undefined),previewImage=thumbnail??(ready&&image?file?.uri:null);
  const framedPreview=!sticker&&(image&&(shape||ready)||video&&shape);
  const fileRow=!audio&&!sticker&&!framedPreview&&!(ready&&video);
  const showTransferHint=(!sticker||!transfer)&&!ready&&!fileRow;
- const previewStyle=shape?{
-  width:photoPreviewWidth(shape),
-  ...(video?{height:Math.min(268,248*shape.height/shape.width)}:{aspectRatio:shape.width/shape.height}),
- }:undefined;
+ const previewStyle=shape?{width:mediaPreviewWidth(shape),aspectRatio:shape.width/shape.height}:undefined;
  const showMedia=()=>{if(onMedia)onMedia(message);else setMediaPreview(true);};
  return <View style={{gap:8}}>
-  {framedPreview?<Pressable accessibilityRole="button" accessibilityLabel={t(video?"Play video":"View photo")} onPress={showMedia} onLongPress={onLongPress} style={[video?styles.videoBubble:styles.imageBubble,previewStyle,{overflow:'hidden',backgroundColor:colors.surface,alignItems:'center',justifyContent:'center'}]}>
+  {framedPreview?<Pressable accessibilityRole="button" accessibilityLabel={t(video?"Play video":motion?"View motion photo":"View photo")} onPress={showMedia} onLongPress={onLongPress} style={[video?styles.videoBubble:styles.imageBubble,previewStyle,{overflow:'hidden',backgroundColor:colors.surface,alignItems:'center',justifyContent:'center'}]}>
    {previewImage?<Image source={{uri:previewImage}} recyclingKey={previewImage} allowDownscaling contentFit="contain" cachePolicy="memory"
     onLoad={image&&!shape&&onPhotoSize?({source:{width,height}})=>{
      if(Number.isFinite(width)&&Number.isFinite(height)&&width>0&&height>0)onPhotoSize({width,height});
     }:undefined}
     style={{position:'absolute',width:'100%',height:'100%'}}/>:null}
    {(video||!previewImage)&&<Ionicons name={video?'play-circle-outline':'image-outline'} size={36} color={colors.primary}/>}
+   {!!motion&&<View pointerEvents="none" style={{position:'absolute',top:8,left:8,padding:5,borderRadius:14,backgroundColor:colors.headerBg+'DD'}}>
+    <Ionicons name="play-circle-outline" size={18} color={colors.primary}/>
+   </View>}
   </Pressable>:ready&&sticker?<Pressable accessibilityLabel={t("Preview sticker")} onLongPress={onLongPress} onPress={()=>setPreview(true)}><Image source={{uri:file!.uri}} style={styles.stickerImage} contentFit="contain"/></Pressable>:ready&&video?<RootVideoThumbnail owner={owner!} digest={digest} onPress={showMedia} onLongPress={onLongPress}/>:fileRow&&
    <Pressable accessibilityLabel={ready?t("Open attachment"):undefined} accessibilityRole={ready?'button':undefined} onLongPress={onLongPress} onPress={ready?()=>void open():undefined}
     style={({pressed})=>[styles.sharedFile,ready&&{backgroundColor:isDark

@@ -4,10 +4,10 @@ export const CHAT_STICKER_SIZE = 150;
 const defaultPhotoWidth = 220;
 const mediaPanelInset = 3; // 1-point outer border and 2-point media padding.
 export type ChatPhotoSize = {width:number;height:number};
-export const photoPreviewWidth = (shape?:ChatPhotoSize) =>
+export const mediaPreviewWidth = (shape?:ChatPhotoSize) =>
   shape ? Math.min(248, 268 * shape.width / shape.height) : defaultPhotoWidth;
-export const photoMessageWidth = (shape?:ChatPhotoSize) =>
-  photoPreviewWidth(shape) + 2 * mediaPanelInset;
+export const mediaMessageWidth = (shape?:ChatPhotoSize) =>
+  mediaPreviewWidth(shape) + 2 * mediaPanelInset;
 export const messageBubbleStyles = StyleSheet.create({
   stickerImage: { width: CHAT_STICKER_SIZE, height: CHAT_STICKER_SIZE },
   stickerBubble: {
@@ -35,7 +35,7 @@ export const messageBubbleStyles = StyleSheet.create({
   mediaBubble: { paddingHorizontal: 2, paddingTop: 2, paddingBottom: 2 },
   fileBubble: { width: 260, maxWidth: '100%', minWidth: 0 },
   voiceBubble: { paddingHorizontal: 8, paddingTop: 6, paddingBottom: 6 },
-  photoBubble: { minWidth: 0, width: photoMessageWidth(), maxWidth: '100%', borderRadius: Radius.sm + mediaPanelInset },
+  photoBubble: { minWidth: 0, width: mediaMessageWidth(), maxWidth: '100%', borderRadius: Radius.sm + mediaPanelInset },
   bubbleReceived: { borderBottomLeftRadius: Radius.xs ?? 4 },
   groupSenderLink: { paddingHorizontal: 10, paddingTop: 6, paddingBottom: 4, maxWidth: '90%' },
   senderName: {
@@ -65,9 +65,11 @@ export const messageBubbleStyles = StyleSheet.create({
     backgroundColor: '#0002',
   },
   videoBubble: {
-    width: 220,
+    width: defaultPhotoWidth,
+    maxWidth: '100%',
     aspectRatio: 16 / 9,
-    borderRadius: Radius.sm,
+    borderTopLeftRadius: Radius.sm,
+    borderTopRightRadius: Radius.sm,
     backgroundColor: '#0002',
   },
   sharedFile: {
@@ -123,13 +125,16 @@ export const messageBubbleStyles = StyleSheet.create({
     paddingLeft: Spacing.sm,
   },
   quoteBlock: {
-    borderLeftWidth: 3,
-    paddingLeft: Spacing.sm,
-    paddingVertical: 4,
-    paddingRight: Spacing.sm,
-    marginBottom: 6,
-    borderRadius: 4,
+    maxWidth: '94%',
+    borderWidth: 1,
+    borderRadius: Radius.lg,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.xs,
+    paddingBottom: Spacing.md,
+    marginBottom: -8,
   },
+  replyAlignRight: { alignSelf: 'flex-end' },
+  replyAlignLeft: { alignSelf: 'flex-start' },
   quoteName: { fontSize: Font.size.xs, fontWeight: '700', letterSpacing: 0.3 },
   quoteText: { fontSize: Font.size.xs, marginTop: 1 },
 });

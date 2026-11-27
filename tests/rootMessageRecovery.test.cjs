@@ -1,14 +1,26 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),ts=require('typescript');
 test('background recovery drives delivery without relying on display-frame JS timers',async()=>{const f=fixture({nativeClock:true});await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().jsTimers,0);assert.ok(f.counts().ticks>1);assert.ok(f.counts().ticks<=20,'receipt observation must not pump the whole network every 300ms');assert.ok(f.counts().elapsed>=20000);assert.deepEqual(f.leases,[30000,0]);});
 test('a durable inbox entry does not close the wake transport before the receipt exchange',async()=>{const f=fixture();await f.out.recoverRootMessage('own','peer','id',160000);assert.equal(f.counts().resumed,1);assert.ok(f.counts().elapsed>=20000);assert.ok(f.counts().elapsed<30000);assert.equal(f.counts().stopped,1);});
-function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClock=false,foreground=false,completeAfter=null,attachmentAfter=null,descriptorAfter=null,inlineFailure=false,inlineDelay=0,diagnosticFailure=false,stopFailure=false,waitDelay=0,sleepDelay=0,clockSamples=false,events=false,manualClock=false,jobStopAfter=Infinity,transferProgress=false}={}){
+function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClock=false,foreground=false,completeAfter=null,attachmentAfter=null,descriptorAfter=null,inlineFailure=false,inlineDelay=0,diagnosticFailure=false,stopFailure=false,waitDelay=0,sleepDelay=0,clockSamples=false,events=false,manualClock=false,jobStopAfter=Infinity,transferProgress=false,custodyObservations=[]}={}){
  let now=100000,started=0,resumed=0,stopped=0,owner='own',inspects=0,initializes=0,ticks=0,jsTimers=0;const leases=[],inline=[];
  const app={currentState:foreground?'active':'background'};const diagnostics=[];let appliedDelay=0;
  const imports={'react-native':{AppState:app},'../../../modules/axonic-nearby':{default:native?{messageRecoveryCurrent:()=>now-100000<jobStopAfter,axonMessageWake:ms=>leases.push(ms),...(nativeClock?{axonMessageWait:async ms=>{app.currentState='background';now+=ms;}}:{})}:{}},'./localAccount':{startLocalAccount:async()=>{if(!owner)inspects++;if(state==='locked'){initializes++;if(resume)state='unlocked';}},localAccount:{status:()=>({state,account:owner}),inspect:async()=>{inspects++;}},localAccountSession:{initialize:async()=>{initializes++;if(resume)state='unlocked';}}},'../../composition/neuronRuntime':{startLocalAccountNetwork:()=>{started++;const resumedBefore=resumed;return {receiveWakeEnvelope:async e=>{inline.push(e);if(inlineFailure)throw Error("inline unavailable");return {};},resume:()=>resumed++,tick:()=>{ticks++;if(fail)throw Error('pump');},stop:()=>stopped++};}},'./localRootChat':{localRootChat:()=>({snapshot:async()=>{if(fail)throw Error('storage');return {messages:[{peer:'peer',id:'id',direction:'incoming'}]};}})}};
  imports['../mobileDeliveryDiagnostics']={deliveryDiagnosticEvent:(_a,_p,_i,event,details)=>{if(diagnosticFailure&&event==='recovery_finished')throw Error('diagnostic unavailable');diagnostics.push({event,details});}};
  if(nativeClock){imports['../../../modules/axonic-nearby'].default.axonMessageWait=async ms=>{app.currentState='background';now+=ms;if(!appliedDelay&&waitDelay){now+=waitDelay;appliedDelay=waitDelay;}};}
  if(clockSamples)imports['../../../modules/axonic-nearby'].default.axonClockSnapshot=()=>({elapsedMs:now,uptimeMs:now-(appliedDelay?sleepDelay:0),processCpuMs:100+(appliedDelay?7:0)});
- const subscribers={chat:new Set(),job:new Set(),account:new Set(),receipt:new Set(),stream:new Set()},waits=[];
+ const subscribers={chat:new Set(),job:new Set(),account:new Set(),receipt:new Set(),stream:new Set(),custody:new Set()},waits=[];
+ imports['./custodyProtocol']={custodyDigest:packet=>packet.digest};
+ if(custodyObservations.length){
+  const wait=imports['../../../modules/axonic-nearby'].default.axonMessageWait;
+  const pending=[...custodyObservations];
+  imports['../../../modules/axonic-nearby'].default.axonMessageWait=async ms=>{
+   await wait(ms);
+   while(pending.length&&pending[0][0]<=now-100000){
+    const [,relay,packet]=pending.shift();
+    for(const emit of subscribers.custody)emit(packet,relay);
+   }
+  };
+ }
  if(events){
   imports['./localRootChat'].subscribeRootChatCommitted=f=>{subscribers.chat.add(f);return()=>subscribers.chat.delete(f);};
   imports['./mobileAttachmentJobs']={subscribeAttachmentJobProgress:f=>{subscribers.job.add(f);return()=>subscribers.job.delete(f);},subscribeAttachmentReceiveProgress:f=>{subscribers.stream.add(f);return()=>subscribers.stream.delete(f);}};
@@ -23,7 +35,7 @@ function fixture({state='unlocked',resume=false,native=true,fail=false,nativeClo
  imports['./internetAxonTransport']={configuredWakeCustodian:account=>account==='relay'?{account}:undefined};
  const originalStart=imports['../../composition/neuronRuntime'].startLocalAccountNetwork;
  const routes=[];let inlinePending=false,resumedWhileInline=false;
- imports['../../composition/neuronRuntime'].startLocalAccountNetwork=scope=>{routes.push(scope);const network=originalStart();return {...network,snapshot:()=>({sessions:[]}),subscribeConnected:()=>()=>{},resumeRecovery:()=>{resumedWhileInline||=inlinePending;network.resume();},hasRecoveredContent:async()=>completeAfter!==null&&now-100000>=completeAfter&&(attachmentAfter===null||now-100000>=attachmentAfter),subscribeRecovery:f=>{subscribers.receipt.add(f);return()=>subscribers.receipt.delete(f);},...(attachmentAfter===null?{}:{attachmentRecoveryState:async()=>descriptorAfter!==null&&now-100000<descriptorAfter?'descriptor-missing':now-100000>=attachmentAfter?'complete':'ready'}),receiveWakeEnvelope:async e=>{now+=inlineDelay;inlinePending=true;try{return await network.receiveWakeEnvelope(e);}finally{inlinePending=false;}},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
+ imports['../../composition/neuronRuntime'].startLocalAccountNetwork=scope=>{routes.push(scope);const network=originalStart();return {...network,snapshot:()=>({sessions:custodyObservations.length?[{account:'relay',state:'connected'}]:[]}),subscribeConnected:()=>()=>{},subscribeRecoveryCustody:f=>{subscribers.custody.add(f);return()=>subscribers.custody.delete(f);},resumeRecovery:()=>{resumedWhileInline||=inlinePending;network.resume();},hasRecoveredContent:async()=>completeAfter!==null&&now-100000>=completeAfter&&(attachmentAfter===null||now-100000>=attachmentAfter),subscribeRecovery:f=>{subscribers.receipt.add(f);return()=>subscribers.receipt.delete(f);},...(attachmentAfter===null?{}:{attachmentRecoveryState:async()=>descriptorAfter!==null&&now-100000<descriptorAfter?'descriptor-missing':now-100000>=attachmentAfter?'complete':'ready'}),receiveWakeEnvelope:async e=>{now+=inlineDelay;inlinePending=true;try{return await network.receiveWakeEnvelope(e);}finally{inlinePending=false;}},stop:()=>{network.stop();if(stopFailure)throw Error('stop failed');},recoveryComplete:(sender,id)=>sender==='peer'&&id==='id'&&completeAfter!==null&&now-100000>=completeAfter};};
  const out={};new Function('exports','require','Date','setTimeout',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageRecovery.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(out,n=>imports[n],{now:()=>now},(cb,ms)=>{jsTimers++;now+=ms;queueMicrotask(cb);});
  const recover=out.recoverRootMessage;out.recoverRootMessage=(...args)=>{if(args.length<7)args[6]='relay';return recover(...args);};
  return {out,leases,inline,diagnostics,waits,subscribers,routes,advance:ms=>now+=ms,emitReceipt:(sender='peer',id='id')=>{for(const f of subscribers.receipt)f(sender,id);},emit:()=>{for(const f of subscribers.job)f({owner:'own',id:'id',phase:'complete'});},counts:()=>({started,resumed,resumedWhileInline,stopped,initializes,inspects,ticks,jsTimers,elapsed:now-100000}),change:()=>owner='other'};
@@ -41,6 +53,24 @@ test('background recovery uses only its custodian and returns a stall without br
  const foreground=fixture({nativeClock:true,foreground:true,completeAfter:900});
  await foreground.out.recoverRootMessage('own','peer','id',160000,undefined,undefined,'relay');
  assert.deepEqual(foreground.routes,[undefined]);
+});
+
+test('only independently polled, matching custody evidence promotes a stalled wake',async()=>{
+ const trace='ab'.repeat(12),digest='verified-digest';
+ const packet={sender:'peer',recipient:'own',id:'id',digest};
+ for(const [observations,expected,count] of [
+  [[[100,'relay',packet],[16000,'other',packet]],'stalled',1],
+  [[[100,'relay',packet],[300,'relay',packet],[16000,'relay',{...packet,digest:'different'}]],'stalled',1],
+  [[[100,'relay',packet],[16000,'relay',packet]],'confirmed-stalled',2],
+ ]){
+  const f=fixture({nativeClock:true,custodyObservations:observations});
+  const result=await f.out.recoverRootMessage('own','peer','id',160000,undefined,undefined,'relay',undefined,'job',{digest,wakeTrace:trace});
+  assert.equal(result,expected);
+  assert.equal(f.diagnostics.at(-1).details.custodyPolls,count);
+  assert.equal(f.diagnostics.at(-1).details.custodianConnected,true);
+  assert.equal(f.diagnostics.at(-1).details.wakeTrace,trace);
+  assert.equal(f.subscribers.custody.size,0);
+ }
 });
 
 test('slow inline persistence consumes the recovery budget without aborting the transaction or starting extra polling',async()=>{

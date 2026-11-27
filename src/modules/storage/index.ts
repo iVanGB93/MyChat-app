@@ -3,6 +3,7 @@ export {rootAttachmentFile,rootAttachmentPreviewUri} from '../../services/identi
 export {chatMediaPresentation} from '../../services/identity/savedAttachmentPresentation';
 export type {LocalChatMedia} from '../../services/identity/rootChatTypes';
 export {rootVideoThumbnail,selectedVideoThumbnail} from './videoThumbnail';
+export {readMotionPhoto,withMotionPhotoVideo} from './motionPhoto';
 export {listOwnCallHistory,subscribeCallJournalWrites,type OwnCallSummary} from '../../services/identity/mobileCallJournalStore';
 export {subscribeOwnChatWrites} from './chatStore';
 export {ownConversationPages} from './chatStore';

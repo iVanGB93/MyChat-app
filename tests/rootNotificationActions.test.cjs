@@ -16,6 +16,8 @@ function fixture(){
   './localRootChat':{localRootChat:()=>ledger},
   '../../composition/neuronRuntime':{startLocalAccountNetwork:()=>({async declineIncomingNotification(...args){calls.push(['decline',...args]);},stop(){}})},
   './rootChatActions':{rootChatView:(_,s)=>s},
+  '../diagnosticJournal':{diagnosticJournal:{record:(...args)=>calls.push(['diagnostic',...args])}},
+  './rootMessageWake':{reconcileRootRecoveryNotice:async(_prioritize,trace)=>calls.push(['retry-notice',trace])},
   './rootNotificationRoute':{rootNotificationTarget:d=>d?.type==='root_neuron_message'&&d.account===account&&d.sender===sender?{account,sender,...(d.group?{group:d.group}:{})}:null,queueRootNotificationOpen:async()=>{queued++;}},
  };
  const notifications={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootMessageNotification.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(notifications,n=>imports[n]);imports['./rootMessageNotification']=notifications;
@@ -23,6 +25,12 @@ function fixture(){
  const mod={};new Function('exports','require',ts.transpileModule(fs.readFileSync('src/services/identity/rootNotificationActions.ts','utf8'),{compilerOptions:{module:1,target:9}}).outputText)(mod,n=>{if(!imports[n])throw Error(n);return imports[n];});
  return {mod,state,ledger,storage,displayed,calls,cancelled,data:{type:'root_neuron_message',account,sender,messageId:id},setStatus:s=>status=s,background:()=>{imports['react-native'].AppState.currentState='background';},failSave:v=>failSave=v,queued:()=>queued,account,sender};
 }
+test('tapping a recovery notice records a trace without treating it as a message or a read receipt',async()=>{
+ const f=fixture(),wakeTrace='a'.repeat(24);
+ await f.mod.handleRootNotificationAction('root-recovery-open',{wakeTrace});
+ assert.deepEqual(f.calls,[['diagnostic','recovery_notice_decision',{reason:'opened',wakeTrace}],['retry-notice',wakeTrace]]);
+ assert.equal(f.queued(),0);
+});
 test('a background decline dismisses the card before signaling and releases its wake lease',async()=>{
  const f=fixture(),data={type:'root_neuron_call',account:f.account};
  f.background();

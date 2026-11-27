@@ -16,7 +16,7 @@ export function registerRootBackgroundHandlers(){
  const process=async(message:Message,jobToken?:string)=>{try{
   if(jobToken&&!Native?.messageRecoveryCurrent?.(jobToken))return;
   console.info('[Axonic background wake] received');
-  if((message.data as {type?:string})?.type==='neuron_message')await receiveRootMessageWake(message.data,(...args)=>recoverRootMessage(...args,jobToken),recoverWakeSender);
+  if((message.data as {type?:string})?.type==='neuron_message')await receiveRootMessageWake(message.data,(account,sender,id,expires,progress,envelope,custodian,payload,evidence)=>recoverRootMessage(account,sender,id,expires,progress,envelope,custodian,payload,jobToken,evidence),recoverWakeSender);
   else await receiveRootCallWake(message.data);
  }catch{rootMessageWakeFailed();/* Invalid or unavailable local state must not produce a notification. */}};
  const receive=async(message:Message)=>{

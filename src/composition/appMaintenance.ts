@@ -5,8 +5,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {getPlayUpdateInfoAsync,startPlayUpdateAsync,completePlayUpdateAsync,observePlayInstallState} from '../../modules/axonic-app-update';
 import {createPlayUpdates} from '../services/playUpdates';
 import {openAppDestination} from '../services/appDestinations';
-import {localAccountCalls} from './neuronRuntime';
-import {localAccountSession} from '../modules/identity';
+import {localAccountCalls,prioritizeActiveWakeCustodian} from './neuronRuntime';
+import {localAccount,localAccountSession} from '../modules/identity';
+import {reconcileRootRecoveryNotice} from '../services/identity/rootMessageWake';
 import {rootVoiceRecordingActive} from '../services/identity/rootVoiceRecorder';
 import {queueIdentityLink} from '../services/identity/identityLinks';
 let owners=0,stopMaintenance:(()=>void)|undefined;
@@ -23,6 +24,15 @@ export const appUpdates=createPlayUpdates({now:Date.now,foreground:()=>owners>0&
 function maintenanceIdle(){const call=localAccountCalls()?.snapshot();return !rootVoiceRecordingActive()&&(!call||call.status==='ended');}
 function startMaintenance(){
  startRingerModeListener();const stopSounds=startMessageSounds();
+ const reconcileNotice=()=>{void reconcileRootRecoveryNotice(prioritizeActiveWakeCustodian).catch(()=>{});};
+ const initialAccount=localAccount.status();
+ let noticeOwner=initialAccount.state==='unlocked'?initialAccount.account:null;
+ const offNoticeOwner=localAccount.subscribe(()=>{
+  const {state,account}=localAccount.status(),unlocked=state==='unlocked'?account:null;
+  if(unlocked&&unlocked!==noticeOwner&&AppState.currentState==='active')reconcileNotice();
+  noticeOwner=unlocked;
+ });
+ reconcileNotice();
  let active=true,sawLink=false;const links=Linking.addEventListener('url',e=>{sawLink=true;queueIdentityLink(e.url);});void Linking.getInitialURL().then(url=>{if(active&&!sawLink)queueIdentityLink(url);}).catch(()=>{});
  const check=()=>{void appUpdates.check();};check();
  const install=observePlayInstallState(state=>{if(!__DEV__)appUpdates.installState(state);});
@@ -38,11 +48,11 @@ function startMaintenance(){
  };
  const offUpdates=appUpdates.subscribe(schedule);
  const lifecycle=AppState.addEventListener('change',next=>{
-  if(next==='active')void appUpdates.check(['downloading','installing','available','ready'].includes(appUpdates.snapshot().status));
+  if(next==='active'){void appUpdates.check(['downloading','installing','available','ready'].includes(appUpdates.snapshot().status));reconcileNotice();}
   schedule();
  });
  schedule();
- return()=>{active=false;stopRingerModeListener();stopSounds?.();links.remove();clearTimeout(timer);offUpdates();lifecycle.remove();install?.remove();};
+ return()=>{active=false;stopRingerModeListener();stopSounds?.();links.remove();clearTimeout(timer);offUpdates();offNoticeOwner();lifecycle.remove();install?.remove();};
 }
 export function startAppMaintenance(){
  if(++owners===1)stopMaintenance=startMaintenance();

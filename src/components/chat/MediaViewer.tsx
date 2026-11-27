@@ -8,7 +8,7 @@ import {Chrome} from '../../theme';
 import {useTheme} from '../../contexts/ThemeContext';
 import {t} from '../../localization/language';
 import {localAccount} from '../../modules/identity';
-import {selectedVideoThumbnail} from '../../modules/storage';
+import {selectedVideoThumbnail,withMotionPhotoVideo} from '../../modules/storage';
 import {openAttachmentPreview} from '../../modules/ui/openAttachmentPreview';
 import ScreenHeader from '../ui/ScreenHeader';
 import StatusBarFade from '../ui/StatusBarFade';
@@ -16,6 +16,7 @@ import {KeyboardAvoidingScreen,KeyboardAwareTextInput} from '../ui/KeyboardForm'
 import PhotoEditor from './photo-editor';
 import ZoomablePhotoPreview from './ZoomablePhotoPreview';
 import {useAttachmentFile,useAttachmentPreview} from './useAttachmentFile';
+import {useMotionPhoto} from './useMotionPhoto';
 
 export interface PreviewItem {
  id:string;uri:string;name:string;kind:'image'|'video'|'file';caption?:string;
@@ -51,16 +52,44 @@ function useVideoFrame(uri:string|undefined,read:(uri:string)=>Promise<string|nu
  return frame&&frame.uri===uri?frame.image:null;
 }
 
-function MediaSlide({item,active,busy,frameFor,onZoomChange}:{
- item:MediaViewerItem;active:boolean;busy:boolean;frameFor:(uri:string)=>Promise<string|null>;onZoomChange(value:boolean):void;
+function MediaSlide({item,active,busy,reviewing,frameFor,onZoomChange}:{
+ item:MediaViewerItem;active:boolean;busy:boolean;reviewing:boolean;frameFor:(uri:string)=>Promise<string|null>;onZoomChange(value:boolean):void;
 }){
  const {colors}=useTheme(),uri=useViewerUri(item),preview=useViewerPreview(item);
+ const insets=useSafeAreaInsets();
  const frame=useVideoFrame(item.kind==='video'&&active&&!preview?uri:undefined,frameFor)??(item.kind==='video'?preview:null);
+ const motion=useMotionPhoto(active&&item.kind==='image'?uri:undefined,item.mimeType);
  const [failed,setFailed]=useState<string>();
+ const [motionState,setMotionState]=useState<'opening'|'failed'>();
+ const playing=useRef(false),activeUri=useRef<string|undefined>(undefined);
+ activeUri.current=active&&!busy?uri:undefined;
+ useEffect(()=>()=>{activeUri.current=undefined;},[]);
+ useEffect(()=>{setMotionState(undefined);},[uri,active]);
+ function canOpen(){
+  if(!uri||activeUri.current!==uri)return false;
+  const status=localAccount.status();
+  return status.state==='unlocked'&&(!('local' in item)||status.account===item.local.owner);
+ }
+ async function playMotion(){
+  if(!uri||!motion||playing.current||!canOpen())return;
+  playing.current=true;setMotionState('opening');
+  try{
+   await withMotionPhotoVideo(uri,motion,video=>openAttachmentPreview(video,'video/mp4'),canOpen);
+   if(canOpen())setMotionState(undefined);
+  }catch{if(canOpen())setMotionState('failed');}
+  finally{playing.current=false;}
+ }
  const unavailable=!uri||failed===uri;
  const error=t(uri?'Preview unavailable':'Not available on this device');
  if(item.kind==='image'&&uri)return <>
   <ZoomablePhotoPreview uri={uri} active={active} onZoomChange={onZoomChange} onError={()=>setFailed(uri)}/>
+  {!!motion&&!unavailable&&<View pointerEvents="box-none" style={{position:'absolute',...(reviewing?{top:8,left:24,alignItems:'flex-start'}:{top:insets.top+8,right:24,alignItems:'flex-end'}),gap:6}}>
+   {motionState==='failed'&&<Text accessibilityRole="alert" style={{backgroundColor:colors.headerBg,color:colors.text,padding:8,borderRadius:12}}>{t('Motion photo playback unavailable')}</Text>}
+   <Pressable accessibilityRole="button" accessibilityLabel={t('Play motion photo')} disabled={busy||motionState==='opening'} onPress={()=>void playMotion()} style={{minHeight:44,paddingHorizontal:14,flexDirection:'row',gap:8,alignItems:'center',borderRadius:22,borderWidth:1,borderColor:colors.neonBorder,backgroundColor:colors.headerBg}}>
+    {motionState==='opening'?<ActivityIndicator color={colors.primary}/>:<Ionicons name="play-circle-outline" size={22} color={colors.primary}/>}
+    <Text style={{color:colors.text}}>{t('Motion photo')}</Text>
+   </Pressable>
+  </View>}
   {unavailable&&<Text accessibilityRole="alert" style={{position:'absolute',alignSelf:'center',color:colors.text,backgroundColor:colors.surface,padding:12,borderRadius:16}}>{error}</Text>}
  </>;
  if(!uri&&'local' in item&&(item.local.downloadUntil??0)>Date.now()){
@@ -149,7 +178,7 @@ export default function MediaViewer({items,initialId,visible=true,busy=false,rev
      testID="axonic-media-pages" initialScrollIndex={index||undefined} getItemLayout={(_,i)=>({length:pageWidth,offset:pageWidth*i,index:i})}
      onMomentumScrollEnd={event=>{const i=Math.max(0,Math.min(items.length-1,Math.round(event.nativeEvent.contentOffset.x/pageWidth)));setSelected(items[i]?.id);scrollThumbs(i,true);}}
      renderItem={({item})=><View style={{width:pageWidth,height:'100%',paddingHorizontal:review?12:0,justifyContent:'center'}}>
-      <MediaSlide item={item} active={item.id===current?.id} busy={busy} frameFor={frameFor} onZoomChange={value=>setZoomed(old=>value?item.id:old===item.id?undefined:old)}/>
+      <MediaSlide item={item} active={item.id===current?.id} busy={busy} reviewing={!!review} frameFor={frameFor} onZoomChange={value=>setZoomed(old=>value?item.id:old===item.id?undefined:old)}/>
      </View>}/>
     {review&&current&&<View pointerEvents="box-none" style={{position:'absolute',top:8,right:24,flexDirection:'row',gap:8}}>
      {current.kind==='image'&&control(t('Edit photo'),'create-outline',()=>setEditing(current.id))}

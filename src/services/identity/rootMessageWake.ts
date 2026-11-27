@@ -2,7 +2,7 @@ import {rootNotificationAvatar} from './rootNotificationAvatar';
 import {verifyGroupCustodyPayload,matchesGroupGrant,type GroupCustodyPayload} from './groupCustodyProtocol';
 import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
 import {diagnosticJournal} from '../diagnosticJournal';
-import {createMessageNotificationDeadline,type MessageWakeRecoveryOutcome} from './messageNotificationDeadline';
+import {createMessageNotificationDeadline,type MessageWakeEvidence,type MessageWakeRecoveryOutcome} from './messageNotificationDeadline';
 import {rootMessageNotificationId,currentRootMessageNotification,cancelRootMessageNotification} from './rootMessageNotification';
 import {publishRootMessageToast} from './rootMessageToast';
 import {readRootNotificationPreferences} from './rootNotificationPreferences';
@@ -27,9 +27,16 @@ export const rootMessageWakeFailed=()=>{setStage('failed');if(localAccount.statu
 let opening:Promise<SQLite.SQLiteDatabase>|undefined,tail:Promise<unknown>=Promise.resolve();
 function serial<T>(work:()=>Promise<T>){const result=tail.then(work);tail=result.catch(()=>{});return result;}
 function db(){return opening??=SQLite.openDatabaseAsync('axonic_root_message_wakes_v1.db',{useNewConnection:true}).then(async value=>{
- await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires); CREATE TABLE IF NOT EXISTS recovery_notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,PRIMARY KEY(owner,sender,id));');return value;
+ await value.execAsync('PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,displayed INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,sender,id)); CREATE INDEX IF NOT EXISTS notices_expiry ON notices(expires); CREATE TABLE IF NOT EXISTS recovery_notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,wake_trace TEXT,custodian TEXT,PRIMARY KEY(owner,sender,id));');
+ const columns=await value.getAllAsync<{name:string}>('PRAGMA table_info(recovery_notices)');
+ for(const name of ['wake_trace','custodian'])if(!columns.some(column=>column.name===name))await value.execAsync(`ALTER TABLE recovery_notices ADD COLUMN ${name} TEXT`);
+ return value;
 }).catch(error=>{opening=undefined;throw error;});}
 const recoveryNoticeId=(owner:string)=>'root-recovery:'+owner;
+const recoveryForeground=()=>AppState.currentState==='active';
+function recoveryNoticeDecision(reason:string,wakeTrace?:string){
+ diagnosticJournal.record('recovery_notice_decision',{reason,wakeTrace});
+}
 async function messageAlreadyAdmitted(owner:string,sender:string,id:string){
  const store=ownChatStore(owner),raw=store.indexed?await store.indexed.readMessage(sender,id):await store.read();
  return !!raw&&(JSON.parse(raw) as RootChatState).messages.some(m=>m.direction==='incoming'&&m.peer===sender&&m.id===id);
@@ -39,6 +46,38 @@ async function messagePolicy(owner:string,sender:string,group?:string){
  const state=JSON.parse(raw);if(state.version!==1||!Array.isArray(state.contacts))throw Error('Contact policy unavailable');
  return {blocked:state.contacts.some((c:{account:string;blocked?:boolean})=>c.account===sender&&c.blocked),
   muted:state.contacts.some((c:{account:string;muted?:boolean})=>c.account===sender&&c.muted===true)||!!group&&state.groups?.some((g:{id:string;muted?:boolean})=>g.id===group&&g.muted===true)};
+}
+async function cancelSettledRecoveryNotice(database:SQLite.SQLiteDatabase,owner:string){
+ if(await database.getFirstAsync('SELECT 1 FROM recovery_notices WHERE owner=? AND expires>? LIMIT 1',owner,Date.now()))return;
+ if(localAccount.status().state==='unlocked'&&localAccount.status().account===owner)await notifee.cancelNotification(recoveryNoticeId(owner)).catch(()=>{});
+}
+
+/** Reconcile the quiet fallback when the existing foreground sync resumes. */
+export function reconcileRootRecoveryNotice(prioritize?:(custodian:string)=>void,wakeTrace?:string){
+ return serial(async()=>{
+  const {state,account:owner}=localAccount.status();
+  if(state!=='unlocked'||!owner||!recoveryForeground())return;
+  const database=await db();
+  const rows=await database.getAllAsync<{sender:string;id:string;expires:number;wake_trace:string|null;custodian:string|null}>(
+   'SELECT sender,id,expires,wake_trace,custodian FROM recovery_notices WHERE owner=?'+(wakeTrace?' AND wake_trace=?':''),
+   owner,...(wakeTrace?[wakeTrace]:[]));
+  const custodians=new Set<string>();
+  for(const row of rows){
+   if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner||!recoveryForeground())return;
+   const expired=row.expires<=Date.now();
+   if(!expired&&!await messageAlreadyAdmitted(owner,row.sender,row.id)){
+    recoveryNoticeDecision('foreground_retry',row.wake_trace??undefined);
+    if(row.custodian&&validAccountId(row.custodian))custodians.add(row.custodian);
+    continue;
+   }
+   await database.runAsync('DELETE FROM recovery_notices WHERE owner=? AND sender=? AND id=?',owner,row.sender,row.id);
+   recoveryNoticeDecision(expired?'expired':'admitted',row.wake_trace??undefined);
+  }
+  if(localAccount.status().state!=='unlocked'||localAccount.status().account!==owner||!recoveryForeground())return;
+  if(prioritize)for(const custodian of custodians)prioritize(custodian);
+  if(!custodians.size&&(rows.length|| (await notifee.getDisplayedNotifications()).some(row=>row.notification.id===recoveryNoticeId(owner))))
+   await cancelSettledRecoveryNotice(database,owner);
+ });
 }
 async function messageChannel(sound:boolean){
  // Android channel sound is immutable. The old channel was created without one.
@@ -69,7 +108,7 @@ async function waitForRecovery(work:Promise<void>,ms:number,remaining?:()=>numbe
  finally{finished=true;if(timer!==undefined)clearTimeout(timer);}
 }
 /** Signed hint with optional ciphertext. Plaintext remains unavailable until local unlock. */
-export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload)=>Promise<MessageWakeRecoveryOutcome|void>,recoverSender?:ReturnType<typeof createWakeSenderRecovery>){
+export async function receiveRootMessageWake(data:unknown,recover?:(account:string,sender:string,id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload,evidence?:MessageWakeEvidence)=>Promise<MessageWakeRecoveryOutcome|void>,recoverSender?:ReturnType<typeof createWakeSenderRecovery>){
  setStage('context');
  const reject=(reason:string)=>{setStage(reason);diagnosticJournal.record('wake_failed',{reason});};
  const d=data as {type?:string;event?:string};if(d?.type!=='neuron_message'||typeof d.event!=='string'||d.event.length>2048){reject('invalid-payload');return;}
@@ -87,14 +126,16 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
   record=await records.read(sender);
  }
  const current=await rootWakeContext();if(current?.account!==owner.account||current.device!==owner.device||await rootWakeBlocked(owner.account,sender)){reject('context-changed');return;}
- const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event){reject('signature-or-record-invalid');return;}setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified',{wakeTrace:custodyWakeTraceId(event.digest)});
+ const event=record&&verifyCustodyWake(data,record,owner.account,owner.device,Date.now());if(!event){reject('signature-or-record-invalid');return;}
+ const wakeTrace=custodyWakeTraceId(event.digest);
+ setStage('recovery');deliveryDiagnosticEvent(owner.account,sender,event.id,'wake_verified',{wakeTrace});
  const deadline=createMessageNotificationDeadline();
  const hint=(data as {custodian?:unknown})?.custodian;
  const custodian=typeof hint==='string'&&validAccountId(hint)?hint:undefined;
  let envelope=custodyWakeEnvelope(data,event,Date.now())??undefined,payload:GroupCustodyPayload|undefined;
  const rawPayload=(data as {payload?:unknown}).payload;
  if(rawPayload!==undefined){try{const parsed=typeof rawPayload==='string'&&rawPayload.length<=3500?JSON.parse(rawPayload):null;if(envelope&&await verifyGroupCustodyPayload(parsed,records,Date.now())&&matchesGroupGrant(parsed,envelope))payload=parsed;else envelope=undefined;}catch{envelope=undefined;}}
- const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,envelope,custodian,payload)).catch(()=>{setStage('recovery-failed');});
+ const recovery=Promise.resolve().then(()=>recover?.(owner.account,sender,event.id,event.expires,deadline.progress,envelope,custodian,payload,{digest:event.digest,wakeTrace})).catch(()=>{setStage('recovery-failed');});
  // Three seconds without new progress, capped at ten seconds overall. A preview
  // publishes independently; retries and repeated milestones cannot extend this.
  await waitForRecovery(recovery.then(()=>{}),10000,deadline.remaining);
@@ -116,27 +157,31 @@ export async function receiveRootMessageWake(data:unknown,recover?:(account:stri
  });
  const outcome=await recovery;
  if(!outcome||event.wakeMode==='silent')return;
+ // The custodian already owns retryable delivery. Foreground and reconnect
+ // inbox events retry it without a notification or a new background schedule.
+ if(outcome!=='confirmed-stalled'){recoveryNoticeDecision(outcome==='stalled'?'unconfirmed_stall':'route_unavailable',wakeTrace);return;}
  await serial(async()=>{
   const current=await rootWakeContext();
-  if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now()||AppState.currentState==='active')return;
+  if(current?.account!==owner.account||current.device!==owner.device||event.expires<=Date.now())return;
+  if(recoveryForeground()){recoveryNoticeDecision('foreground',wakeTrace);return;}
   const [preferences,policy]=await Promise.all([readRootNotificationPreferences(owner.account),messagePolicy(owner.account,sender)]);
-  if(!preferences.messages||policy.blocked||policy.muted)return;
+  if(!preferences.messages||policy.blocked||policy.muted){recoveryNoticeDecision('policy_suppressed',wakeTrace);return;}
   const database=await db(),id=recoveryNoticeId(owner.account);
   const shown=(await notifee.getDisplayedNotifications()).some(entry=>entry.notification.id===id);
-  if(!shown)await database.runAsync('DELETE FROM recovery_notices WHERE owner=?',owner.account);
   const consumed=await database.getFirstAsync('SELECT 1 FROM notices WHERE owner=? AND sender=? AND id=? AND displayed=2 AND expires>?',owner.account,sender,event.id,Date.now());
   // The regular notification already covers an admitted message, including media
   // whose bytes are still downloading or awaiting contact approval.
-  if(consumed||await messageAlreadyAdmitted(owner.account,sender,event.id))return;
+  if(consumed||await messageAlreadyAdmitted(owner.account,sender,event.id)){recoveryNoticeDecision('already_handled',wakeTrace);return;}
   await database.runAsync('DELETE FROM recovery_notices WHERE owner=? AND expires<=?',owner.account,Date.now());
   const channelId=await notifee.createChannel({id:'root-recovery-v1',name:t("Message recovery"),importance:AndroidImportance.LOW,vibration:false});
-  if(await messageAlreadyAdmitted(owner.account,sender,event.id))return;
-  await database.runAsync('INSERT OR REPLACE INTO recovery_notices(owner,sender,id,expires) VALUES(?,?,?,?)',owner.account,sender,event.id,event.expires);
-  if(shown)return;
-  await notifee.displayNotification({id,title:'Axonic',body:t("Some messages may be missing. Open Axonic to sync."),android:{
-   channelId,pressAction:{id:'default',launchActivity:'default'},autoCancel:true,onlyAlertOnce:true,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
+  if(await messageAlreadyAdmitted(owner.account,sender,event.id)){recoveryNoticeDecision('already_handled',wakeTrace);return;}
+  if(recoveryForeground()){recoveryNoticeDecision('foreground',wakeTrace);return;}
+  await database.runAsync('INSERT OR REPLACE INTO recovery_notices(owner,sender,id,expires,wake_trace,custodian) VALUES(?,?,?,?,?,?)',owner.account,sender,event.id,event.expires,wakeTrace,custodian??null);
+  if(shown){recoveryNoticeDecision('coalesced',wakeTrace);return;}
+  await notifee.displayNotification({id,title:'Axonic',body:t("Some messages may be missing. Open Axonic to sync."),data:{wakeTrace},android:{
+   channelId,pressAction:{id:'root-recovery-open',launchActivity:'default'},autoCancel:true,onlyAlertOnce:true,visibility:AndroidVisibility.PRIVATE,smallIcon:'notification_icon',
   }});
-  diagnosticJournal.record('notification_fallback_posted');
+  diagnosticJournal.record('notification_fallback_posted',{wakeTrace});
   setStage('custodian-recovery-notice');
  });
 }
@@ -209,8 +254,8 @@ export async function finishRootMessageWake(owner:string,sender:string,id:string
   const [database,current]=await Promise.all([db(),rootWakeContext()]);
   const key=rootMessageNotificationId(owner,sender,preview?.group);
   if(current?.account!==owner||localAccount.status().account!==owner||localAccount.status().state!=='unlocked')return;
-  const cleared=await database.runAsync('DELETE FROM recovery_notices WHERE owner=? AND sender=? AND id=?',owner,sender,id);
-  if(cleared.changes&&!(await database.getFirstAsync('SELECT 1 FROM recovery_notices WHERE owner=? AND expires>? LIMIT 1',owner,Date.now())))await notifee.cancelNotification(recoveryNoticeId(owner)).catch(()=>{});
+  const pending=await database.getFirstAsync<{wake_trace:string|null}>('DELETE FROM recovery_notices WHERE owner=? AND sender=? AND id=? RETURNING wake_trace',owner,sender,id);
+  if(pending){recoveryNoticeDecision('admitted',pending.wake_trace??undefined);await cancelSettledRecoveryNotice(database,owner);}
   // Suppressed/control/read events cannot expose content. They do not need to
   // load the full history and preferences before taking the silent path.
   const suppressed=!preview||preview.read||(AppState.currentState==='active'&&rootConversationVisible(sender,preview.group));

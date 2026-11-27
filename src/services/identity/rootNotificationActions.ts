@@ -7,9 +7,11 @@ import {cancelRootMessageNotification} from './rootMessageNotification';
 import Native from '../../../modules/axonic-nearby';
 import {localAccount,startLocalAccount} from './localAccount';
 import {localRootChat} from './localRootChat';
-import {startLocalAccountNetwork} from '../../composition/neuronRuntime';
+import {prioritizeActiveWakeCustodian,startLocalAccountNetwork} from '../../composition/neuronRuntime';
 import {rootNotificationTarget,queueRootNotificationOpen} from './rootNotificationRoute';
 import {rootChatView} from './rootChatActions';
+import {diagnosticJournal} from '../diagnosticJournal';
+import {reconcileRootRecoveryNotice} from './rootMessageWake';
 let tail:Promise<unknown>=Promise.resolve();
 async function declineCall(data:unknown){
  const target=rootCallNotificationTarget(data);
@@ -29,6 +31,12 @@ async function declineCall(data:unknown){
 }
 /** OS actions operate only on a message already admitted into this device's own inbox. */
 export function handleRootNotificationAction(action:string,data:unknown,input?:string){
+ if(action==='root-recovery-open'){
+  const wakeTrace=(data as {wakeTrace?:string})?.wakeTrace;
+  if(typeof wakeTrace!=='string'||!/^[0-9a-f]{24}$/.test(wakeTrace))return Promise.resolve();
+  diagnosticJournal.record('recovery_notice_decision',{reason:'opened',wakeTrace});
+  return reconcileRootRecoveryNotice(prioritizeActiveWakeCustodian,wakeTrace);
+ }
  if(action==='root-call-decline')return declineCall(data);
  if(action==='root-call-open'||action==='root-call-answer')return queueRootCallNotificationAction(action,data).then(()=>{});
  if(!['root-reply','root-mark-read'].includes(action))return Promise.resolve();

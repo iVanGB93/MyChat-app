@@ -19,7 +19,7 @@ import RootMessageReactions from './RootMessageReactions';
 import RootMessageStatus from './RootMessageStatus';
 import RootReplyContent from './RootReplyContent';
 import StickerArt from './sticker-art';
-import {CHAT_STICKER_SIZE,messageBubbleStyles as styles,photoMessageWidth,type ChatPhotoSize} from './message-bubble-styles';
+import {CHAT_STICKER_SIZE,messageBubbleStyles as styles,mediaMessageWidth,type ChatPhotoSize} from './message-bubble-styles';
 
 type Props={
  message:RootChatMessage;olderAt?:number;at:number;owner:string|null;disabled:boolean;highlighted:boolean;
@@ -40,10 +40,12 @@ export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled
  const photo=attachment&&!imported&&/^(image|video)\//.test(attachment.mime);
  const [measuredPhoto,setMeasuredPhoto]=useState<{id:string;size:ChatPhotoSize}>();
  const photoSize=measuredPhoto?.id===m.id?measuredPhoto.size:undefined;
- const imageWidth=photo&&attachment.mime.startsWith('image/')?photoMessageWidth(attachment.preview??photoSize):undefined;
+ const mediaWidth=photo?mediaMessageWidth(attachment.preview??photoSize):undefined;
  const fileFooter=!!attachment&&!audio&&!photo&&!imported;
  const sizeOnRight=fileFooter&&!mine;
  const menu=(event:GestureResponderEvent)=>onMenu(m,event);
+ const reply=m.deleted?undefined:m.reply;
+ const bubbleSide=mine?styles.replyAlignRight:styles.replyAlignLeft;
  const edited=m.edited?t("Edited"):'';
  const meta=(inline=false)=><View style={[styles.metaRow,inline&&{marginTop:0},audio&&{flexShrink:0}]}>
   {attachment&&!sizeOnRight&&<RootMediaSize message={m} media={attachment} fileFooter={fileFooter}/>}
@@ -60,18 +62,18 @@ export default memo(function ChatMessageRow({message:m,olderAt,at,owner,disabled
      <Text numberOfLines={1} style={[styles.senderName,{color:colors.primary}]}>{senderName}</Text>
     </Pressable>}
     <RootMessageReactions message={m} owner={owner} disabled={disabled||!group&&m.localPending} onReact={value=>onReact(m,value)}>
+     {reply&&<Pressable accessibilityRole="button" accessibilityLabel={t("Go to original message")} onPress={()=>onJump(quoted)} onLongPress={menu} style={[
+      styles.quoteBlock,bubbleSide,{backgroundColor:colors.surfaceVariant,borderColor:colors.border},
+     ]}>
+      {group&&!!quoteAuthorName&&<Text numberOfLines={1} style={[styles.quoteName,{color:colors.textSecondary}]}>{quoteAuthorName}</Text>}
+      <RootReplyContent message={quoted}/>
+     </Pressable>}
      <Pressable accessibilityLabel={!group&&!attachment?m.text:undefined} onLongPress={menu} style={[
       styles.bubble,mine?styles.bubbleSent:styles.bubbleReceived,{minWidth:attachment?260:96,borderColor:highlighted?colors.primary:colors.neonBorder,backgroundColor:highlighted?colors.highlight:mine?colors.bubbleSent:colors.bubbleReceived},
       !m.deleted&&attachment&&styles.mediaBubble,!m.deleted&&fileFooter&&styles.fileBubble,!m.deleted&&audio&&styles.voiceBubble,!m.deleted&&photo&&styles.photoBubble,!m.deleted&&(sticker||imported)&&styles.stickerBubble,
-      !m.deleted&&imageWidth!==undefined&&{width:imageWidth},
+      !m.deleted&&mediaWidth!==undefined&&{width:mediaWidth},
+      reply&&bubbleSide,
      ]}>
-      {!m.deleted&&m.reply&&<Pressable accessibilityRole="button" accessibilityLabel={t("Go to original message")} onPress={()=>onJump(quoted)} style={[
-       group?styles.quoteBlock:{borderLeftWidth:3,borderRadius:8,padding:8,marginBottom:6},
-       {borderLeftColor:colors.primary,backgroundColor:m.reply.author===owner?colors.bubbleSent:colors.bubbleReceived},
-      ]}>
-       {group&&!!quoteAuthorName&&<Text numberOfLines={1} style={[styles.quoteName,{color:colors.primary}]}>{quoteAuthorName}</Text>}
-       <RootReplyContent message={quoted}/>
-      </Pressable>}
       {m.deleted?<DeletedMessage color={colors.textSecondary}/>:attachment?
        <RootAttachmentBubble message={m} media={attachment} photoSize={photoSize} onPhotoSize={size=>setMeasuredPhoto({id:m.id,size})} onMedia={onMedia} voiceKey={audio?voiceMessageKey(m):undefined} nextVoice={nextVoice} onLongPress={menu} audioFooter={audio?meta(true):undefined} onError={onError}/>:sticker?
        <Pressable accessibilityLabel={sticker.label+' sticker'} onLongPress={menu} onPress={()=>onSticker(sticker)}><StickerArt sticker={sticker} size={CHAT_STICKER_SIZE}/></Pressable>:

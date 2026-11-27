@@ -1,5 +1,5 @@
 import type {GroupCustodyPayload} from './groupCustodyProtocol';
-import type {CustodyEnvelope} from './custodyProtocol';
+import {custodyDigest,type CustodyEnvelope} from './custodyProtocol';
 import {AppState} from 'react-native';
 import {deliveryDiagnosticEvent} from '../mobileDeliveryDiagnostics';
 import Native from '../../../modules/axonic-nearby';
@@ -9,7 +9,7 @@ import {acquireMessageWakeLease} from './messageWakeLease';
 import {subscribeRootChatCommitted} from './localRootChat';
 import {subscribeAttachmentJobProgress,subscribeAttachmentReceiveProgress} from './mobileAttachmentJobs';
 import {configuredWakeCustodian} from './internetAxonTransport';
-import type {MessageWakeRecoveryOutcome} from './messageNotificationDeadline';
+import type {MessageWakeEvidence,MessageWakeRecoveryOutcome} from './messageNotificationDeadline';
 // Wakes share the runtime and native wake window, not a per-message FIFO.
 // A missing relay receipt must not delay admission of the next inline message.
 let pumping:Promise<number>|undefined;
@@ -48,7 +48,7 @@ function pump(network:ReturnType<typeof startLocalAccountNetwork>,events=false){
 function clockSnapshot(){try{return Native?.axonClockSnapshot?.();}catch{return undefined;}}
 const pending=new Map<string,{work:Promise<MessageWakeRecoveryOutcome|void>;envelope?:CustodyEnvelope;listeners:Set<(milestone:string)=>void>}>();
 /** Only verified wakes reach this bounded recovery path; locked-account policy is preserved. */
-export function recoverRootMessage(account:string,_sender:string,_id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload,jobToken?:string){
+export function recoverRootMessage(account:string,_sender:string,_id:string,expires:number,progress?:(milestone:string)=>void,envelope?:CustodyEnvelope,custodian?:string,payload?:GroupCustodyPayload,jobToken?:string,evidence?:MessageWakeEvidence){
  const requestedPeer=configuredWakeCustodian(custodian)?.account;
  const key=JSON.stringify([account,_sender,_id,requestedPeer]),previous=pending.get(key);
  // Repeated hints share work, but an inline payload arriving after a metadata-only
@@ -74,13 +74,14 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
   const route=background?(peer?'configured':custodian?'unsupported':'missing'):'foreground';
   console.info('[Axonic recovery route]',{route,inline:!!envelope,headlessJob:!!jobToken});
   if(background&&!peer&&!envelope){
-   try{deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished',{reason:'route_unavailable',route});}catch{/* Observation cannot prevent the recovery notice. */}
+   try{deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished',{reason:'route_unavailable',route,wakeTrace:evidence?.wakeTrace,custodianConnected:false,custodyPolls:0});}catch{/* Observations cannot prevent recovery. */}
    return 'route-unavailable';
   }
   const budgetMs=jobToken?120000:20000;
   const started=Date.now(),until=Math.min(expires,started+budgetMs),clocks=clockSnapshot();
   let setupMs=0,waitLagMs=0,reason='error',waitReason='setup',attachmentState:string|undefined;
   let targetProgressAt=started,attachmentCursor=-1,streamBytes=0,receiptSeen=false,mediaSeen=false,checkedAdmittedContent=false;
+  let custodianConnected=false,custodyPolls=0,lastCustodyPollAt=0;
   let network:ReturnType<typeof startLocalAccountNetwork>|undefined,releaseLease:(()=>void)|undefined;
   const offEvents:(()=>void)[]=[];
   const events=typeof subscribeRootChatCommitted==='function'&&typeof subscribeAttachmentJobProgress==='function';
@@ -97,14 +98,23 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
     }));
     offEvents.push(localAccount.subscribe(recoveryChanged));
    }
-   try{deliveryDiagnosticEvent(account,_sender,_id,'recovery_started');}catch{/* Observation cannot prevent recovery. */}
+   try{deliveryDiagnosticEvent(account,_sender,_id,'recovery_started',{wakeTrace:evidence?.wakeTrace,route});}catch{/* Observation cannot prevent recovery. */}
    // A foreground wake can become a background task during this lease.
    // Grant it now rather than relying on the app state captured before recovery.
    console.info('[Axonic recovery] grant');releaseLease=acquireMessageWakeLease();console.info('[Axonic recovery] granted');
    network=startLocalAccountNetwork(background?{custodian:peer}:undefined);
-   const connected=(account:string)=>{if(!background||account===peer){notify('connected:'+account);recoveryChanged();}};
+   const connected=(account:string)=>{if(!background||account===peer){if(account===custodian||account===peer)custodianConnected=true;notify('connected:'+account);recoveryChanged();}};
    offEvents.push(network.subscribeConnected(connected));
    for(const session of network.snapshot().sessions)if(session.state==='connected'&&session.account)connected(session.account);
+   if(peer&&evidence&&typeof network.subscribeRecoveryCustody==='function')offEvents.push(network.subscribeRecoveryCustody((packet,relay)=>{
+    if(relay!==peer||packet.sender!==_sender||packet.id!==_id||packet.recipient!==account||custodyDigest(packet)!==evidence.digest)return;
+    // A second poll of this exact signed envelope is evidence of a failed
+    // recovery after the existing courier retries, not just a routing hint.
+    const now=Date.now();
+    if(custodyPolls&&now-lastCustodyPollAt<1000)return;
+    lastCustodyPollAt=now;
+    if(custodyPolls++===0)targetProgressAt=now;
+   }));
    if(network.subscribeRecovery)offEvents.push(network.subscribeRecovery((sender,id)=>{if(sender===_sender&&id===_id)recoveryChanged();}));
    // Start inline admission and the authenticated inbox in the same wake. The
    // ledger serializes racing copies, and the relay still requires a signed receipt.
@@ -162,7 +172,7 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    if(localAccount.status().state!=='unlocked'||localAccount.status().account!==account)reason='account_changed';
    else if(!currentJob())reason='job_stopped';
    if(background&&(reason==='custodian_stalled'||reason==='deadline')&&Date.now()<expires
-     &&!await network.hasRecoveredContent(_sender,_id))return 'stalled';
+     &&!await network.hasRecoveredContent(_sender,_id))return custodyPolls>=2?'confirmed-stalled':'stalled';
   }catch(error){reason='error';throw error;}
   finally{
    for(const off of offEvents)off();
@@ -174,8 +184,8 @@ export function recoverRootMessage(account:string,_sender:string,_id:string,expi
    try{
     const end=clockSnapshot(),milliseconds=clocks&&end?Math.max(0,end.elapsedMs-clocks.elapsedMs):Math.max(0,Date.now()-started);
     const waiting=reason==='deadline'||reason==='custodian_stalled'?{waitReason,...(attachmentState?{attachmentState}:{})}:{};
-    console.info('[Axonic recovery timing]',{milliseconds,setupMs,waitLagMs,reason,route,...waiting});
-    deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished',{milliseconds,setupMs,waitLagMs,budgetMs,overrunMs:Math.max(0,milliseconds-budgetMs),reason,route,...waiting,
+    console.info('[Axonic recovery timing]',{milliseconds,setupMs,waitLagMs,reason,route,wakeTrace:evidence?.wakeTrace,custodianConnected,custodyPolls,...waiting});
+    deliveryDiagnosticEvent(account,_sender,_id,'recovery_finished',{milliseconds,setupMs,waitLagMs,budgetMs,overrunMs:Math.max(0,milliseconds-budgetMs),reason,route,wakeTrace:evidence?.wakeTrace,custodianConnected,custodyPolls,...waiting,
      ...(clocks&&end?{sleepMs:Math.max(0,milliseconds-(end.uptimeMs-clocks.uptimeMs)),processCpuMs:Math.max(0,end.processCpuMs-clocks.processCpuMs)}:{})});
    }catch{/* Diagnostics cannot change delivery or cleanup. */}
   }

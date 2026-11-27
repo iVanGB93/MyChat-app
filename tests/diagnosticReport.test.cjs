@@ -110,6 +110,18 @@ test('deadline wait phase accepts only bounded fixed reasons on deadline events'
  assert(!JSON.stringify(d.snapshot()).includes('secret'));
 });
 
+test('recovery evidence and notice decisions join by opaque wake trace without private fields',()=>{
+ const d=journal.createDiagnosticJournal(()=>1),wakeTrace='a'.repeat(24);
+ d.record('recovery_finished',{wakeTrace,reason:'custodian_stalled',route:'configured',waitReason:'attachment',custodianConnected:true,custodyPolls:2,attachmentState:'retry-pending',sender:'private'});
+ d.record('recovery_notice_decision',{wakeTrace,reason:'unconfirmed_stall'});
+ d.record('recovery_notice_decision',{wakeTrace:'account',reason:'private'});
+ const [recovery,decision,invalid]=d.snapshot().events;
+ assert.deepEqual(recovery,{at:1,event:'recovery_finished',wakeTrace,reason:'custodian_stalled',route:'configured',waitReason:'attachment',custodianConnected:true,custodyPolls:2,attachmentState:'retry-pending'});
+ assert.equal(decision.wakeTrace,wakeTrace);
+ assert.equal(decision.reason,'unconfirmed_stall');
+ assert.deepEqual(invalid,{at:1,event:'recovery_notice_decision'});
+});
+
 
 test('push delivery observations distinguish lowering without exposing payload or identifiers',()=>{
  const {pushDeliveryObservation:observe}=load('src/services/identity/pushDeliveryObservation.ts');

@@ -51,25 +51,28 @@ test('stale sender refresh cannot bypass failed lookup, owner change or forged s
   assert.equal(recovered,0,mode);assert.equal(f.shown.length,0,mode);
  }
 });
-test('stalled recovery displays one quiet notice, while silent control wakes display none',async t=>{
+test('unconfirmed stalls and unavailable routes stay quiet; repeated custody evidence permits one notice',async t=>{
  const f=await fixture(t);
  await f.mod.receiveRootMessageWake(f.data,async()=>'stalled');
  await f.mod.receiveRootMessageWake(f.data,async()=>'route-unavailable');
+ assert.equal(f.shown.length,0);
+ await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');
+ await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');
  assert.equal(f.shown.length,1);
  assert.equal(f.shown[0].body,'Some messages may be missing. Open Axonic to sync.');
  assert.equal(f.channels[0].importance,2);
- assert.equal(f.shown[0].data,undefined);
+ assert.deepEqual(f.shown[0].data,{wakeTrace:c.custodyWakeTraceId(c.custodyDigest(f.envelope))});
  assert.equal(f.shown[0].android.smallIcon,'notification_icon');
  const silent=await fixture(t,{silent:true});
- await silent.mod.receiveRootMessageWake(silent.data,async()=>'stalled');
+ await silent.mod.receiveRootMessageWake(silent.data,async()=>'confirmed-stalled');
  assert.equal(silent.shown.length,0);
 });
 
 test('one recovery notice remains until the last tracked message is admitted',async t=>{
  const f=await fixture(t),owner=f.recipient.account,sender=f.sender.account;
  const second=await c.sealCustody({record:f.sender,signingSeed:seed(2),encryptionSeed:seed(3),recipient:f.recipient,recipientDevice:f.recipient.devices[0].id,id:'ab'.repeat(32),text:'second text',now:Date.now(),random:async n=>new Uint8Array(n).fill(13)});
- await f.mod.receiveRootMessageWake(f.data,async()=>'route-unavailable');
- await f.mod.receiveRootMessageWake(c.createCustodyWake(second,f.sender),async()=>'stalled');
+ await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');
+ await f.mod.receiveRootMessageWake(c.createCustodyWake(second,f.sender),async()=>'confirmed-stalled');
  const key=f.shown[0].id;
  assert.equal(f.shown.length,1);
  await f.mod.finishRootMessageWake(owner,sender,f.envelope.id,{name:'Peer',text:'Photo',at:Date.now()});
@@ -82,8 +85,47 @@ test('one recovery notice remains until the last tracked message is admitted',as
 test('an admitted attachment does not get a second generic warning while its bytes are pending',async t=>{
  const f=await fixture(t);
  f.storage.set('@axonic_root_chat_v1:'+f.recipient.account,JSON.stringify({version:1,contacts:[],messages:[{id:f.envelope.id,peer:f.sender.account,direction:'incoming',status:'pending',attachment:{}}]}));
- await f.mod.receiveRootMessageWake(f.data,async()=>'stalled');
+ await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');
  assert.equal(f.shown.length,0);
+});
+
+test('foreground sync clears an expired or already stored recovery notice',async t=>{
+ for(const state of ['expired','admitted']){
+  const f=await fixture(t),owner=f.recipient.account;
+  await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');
+  const notice=f.shown[0].id;
+  if(state==='expired')f.database.prepare('UPDATE recovery_notices SET expires=0 WHERE owner=?').run(owner);
+  else f.delivered();
+  f.app.currentState='active';
+  await f.mod.reconcileRootRecoveryNotice();
+  assert.equal(f.displayed.has(notice),false,state);
+  assert.equal(f.database.prepare('SELECT COUNT(*) AS n FROM recovery_notices').get().n,0);
+ }
+});
+
+test('a tapped notice prioritizes only its recorded custodian and keeps unresolved rows',async t=>{
+ const f=await fixture(t),owner=f.recipient.account,sender=f.sender.account;
+ await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');
+ const trace=f.shown[0].data.wakeTrace,otherTrace='ab'.repeat(12);
+ f.database.prepare('UPDATE recovery_notices SET custodian=? WHERE owner=?').run(sender,owner);
+ f.database.prepare('INSERT INTO recovery_notices(owner,sender,id,expires,wake_trace,custodian) VALUES(?,?,?,?,?,?)')
+  .run(owner,sender,'99'.repeat(32),Date.now()+60000,otherTrace,owner);
+ const requested=[];
+ f.app.currentState='active';
+ await f.mod.reconcileRootRecoveryNotice(peer=>requested.push(peer),trace);
+ assert.deepEqual(requested,[sender]);
+ assert.equal(f.database.prepare('SELECT COUNT(*) AS n FROM recovery_notices').get().n,2);
+});
+
+test('the existing recovery notice table is upgraded in place',async t=>{
+ const f=await fixture(t),owner=f.recipient.account,sender=f.sender.account;
+ f.database.exec('CREATE TABLE recovery_notices(owner TEXT NOT NULL,sender TEXT NOT NULL,id TEXT NOT NULL,expires INTEGER NOT NULL,PRIMARY KEY(owner,sender,id))');
+ f.database.prepare('INSERT INTO recovery_notices(owner,sender,id,expires) VALUES(?,?,?,?)').run(owner,sender,'cc'.repeat(32),Date.now()+60000);
+ await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');
+ const rows=f.database.prepare('SELECT id,wake_trace,custodian FROM recovery_notices ORDER BY id').all();
+ assert.equal(rows.length,2);
+ assert.equal(rows[0].wake_trace,null);
+ assert.match(rows[1].wake_trace,/^[0-9a-f]{24}$/);
 });
 
 test('boot restores only the tracked unread notice, silently and without copying its preview',async t=>{
@@ -148,7 +190,7 @@ test('a failed OS display can retry, while foreground delivery remains quiet',as
 
 test('muted signed message hints remain silent without treating the contact as blocked',async t=>{
  const f=await fixture(t);f.storage.set('@axonic_root_chat_v1:'+f.recipient.account,JSON.stringify({version:1,contacts:[{account:f.sender.account,muted:true,blocked:false}],messages:[]}));
- await f.mod.receiveRootMessageWake(f.data,async()=>'stalled');assert.equal(f.shown.length,0);
+ await f.mod.receiveRootMessageWake(f.data,async()=>'confirmed-stalled');assert.equal(f.shown.length,0);
 });
 
 test('background previews use an audible channel while sound opt-out remains silent',async t=>{

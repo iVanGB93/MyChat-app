@@ -42,19 +42,8 @@ export const chatRoomStyles = StyleSheet.create({
   composerReplyTop: {
     alignSelf: 'flex-end',
     maxWidth: '86%',
-    paddingRight: Spacing.sm,
-    paddingTop: 6,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    borderLeftWidth: 3,
-    borderTopLeftRadius: composerRadius,
-    borderTopRightRadius: composerRadius,
-    borderBottomLeftRadius: composerRadius,
-  },
-  composerReplyInput: { borderTopWidth: 0, borderTopRightRadius: 0 },
-  composerReplyShoulder: {
-    position: 'absolute', top: 0, left: -1, height: composerRadius,
-    borderTopWidth: 1, borderLeftWidth: 1, borderTopLeftRadius: composerRadius,
+    paddingHorizontal: 0,
+    borderRadius: composerRadius,
   },
   inputRowWrap: {
     flexDirection: 'row',
